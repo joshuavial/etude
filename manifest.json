@@ -372,6 +372,72 @@
         ]
       },
       "timestamp": "2026-06-30T02:34:43Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T02:26:12Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "all in etude-aqh"
+          ],
+          "timestamp": "2026-06-30T02:26:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "include exact built-binary command lines in artifact"
+          ],
+          "timestamp": "2026-06-30T02:26:12Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-aqh"
+        ]
+      },
+      "timestamp": "2026-06-30T02:26:12Z"
     }
   ]
 }
