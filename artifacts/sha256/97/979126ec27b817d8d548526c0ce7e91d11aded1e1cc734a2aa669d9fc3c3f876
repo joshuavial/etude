@@ -1,0 +1,42 @@
+# Cadence retro (2026-05-27) — etude-8hq phase complete: roles, checklists, sidecar backfill
+
+Cohort: etude-8hq.6 (reviewer roles/lenses), etude-8hq.7 (executable checklists),
+etude-8hq.5 (backfill structured retro-meta sidecars + supersession-aware audit).
+Beads 6-8 of phase etude-8hq — this CLOSES the phase (all 8 children + the epic shipped).
+
+## Trigger
+3-ticket cadence flagged by `dogfood-completeness-audit.sh` check (c). Carries a 7-key
+sidecar (META=Y).
+
+## What went well (preserve)
+- **The phase landed its own thesis.** etude-8hq set out to move dogfood completeness
+  "from memory into a mechanical close/push gate." It now is: close wrapper +
+  `.beads/hooks/pre-push` hook + the full check suite (run/gate/pushed/cadence/
+  cadence-sidecar/subject-consistency), and `make dogfood-audit` is fully clean.
+- **The multi-seat gate kept catching real, escalating bugs to the very end.** 8hq.5's
+  implement gate: codex found a Tier-1 MASKING hole (a post-cutoff cadence retro
+  missing a sidecar could be hidden by superseding it with a non-validating ref) that
+  gemini AND opus both GO'd. The not-a-vote-count rule (P3) made it decisive.
+- **Faithful backfill, not fabrication.** The 10 cohort sidecars were extracted from
+  each retro's body (empty arrays where the body had none).
+
+## What went wrong / was caught late
+- **cutoff × supersede interaction, twice.** 8hq.8 hit it first (superseding a
+  pre-cutoff retro mints a post-cutoff ref that check (f) hard-gates) → pivoted to
+  annotate. 8hq.5 hit the inverse (a skip applied BEFORE classification can mask a
+  hard gap) → fixed by gating the check-(f) skip to pre-cutoff only. Root cause: a
+  skip/exemption in a HARD gate must be applied AFTER the gate's own classification,
+  never before — otherwise it bypasses the very check it sits in front of.
+- **Epic-close needs allowlisting.** When the etude-8hq epic auto-closed, it entered
+  the audit window as a runless closed bead → blocked the push until allowlisted
+  (epics are rollups; children carry the runs). This recurs every phase.
+
+## Durable changes landed
+- 8hq.6: reviewer "lenses" (every seat applies all four); 8hq.7: compact
+  `checklists.md` index; 8hq.5: supersession-aware audit + `f-mask-guard` regression
+  test + the 17-retro sidecar/​re-tag backfill.
+- This retro: the "skip/exemption AFTER classification in hard gates" lesson + the
+  "allowlist the phase epic when it closes" note (ledger).
+
+## Decision
+informational — phase etude-8hq is complete; durable changes implemented.

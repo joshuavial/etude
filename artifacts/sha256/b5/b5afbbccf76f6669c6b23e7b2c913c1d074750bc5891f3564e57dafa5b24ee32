@@ -1,0 +1,28 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-27",
+  "failure_modes": [
+    "cutoff x supersede interaction hit twice: 8hq.8 (superseding a pre-cutoff retro mints a post-cutoff ref that check (f) hard-gates) and 8hq.5 (a skip applied before classification can mask a hard gap)",
+    "the phase epic auto-closed as a runless bead and blocked the push until allowlisted"
+  ],
+  "root_causes": [
+    "a skip/exemption in a HARD gate must be applied AFTER the gate's own classification, never before — otherwise it bypasses the check it sits in front of",
+    "epics are rollups with no run; they need an allowlist entry when they close (recurs every phase)"
+  ],
+  "follow_up_beads": [
+    "etude-9ey (now UNBLOCKED — cross-retro index has real sidecar data)"
+  ],
+  "decisions": [
+    "8hq.6: reviewer roles are LENSES every seat applies (not one-per-seat)",
+    "8hq.7: a separate compact checklists.md index, not in-place blocks (avoids re-thickening + drift)",
+    "8hq.5: check (f) superseded-skip restricted to PRE-cutoff refs; post-cutoff cadence refs always validated",
+    "8hq.5 workflow retros re-tagged process-retro (mis-tagged cadence); B16 repaired via supersede + --bead nm6"
+  ],
+  "durable_changes": [
+    "reviewer-lens layer in review-gate-runbook.md (8hq.6)",
+    "docs/plans/dogfood/checklists.md compact operational index (8hq.7)",
+    "supersession-aware dogfood-completeness-audit.sh + f-mask-guard regression test (8hq.5)",
+    "17 migrated retros backfilled: 10 cohort META=Y sidecars + 7 workflow re-tags",
+    "etude-8hq epic added to dogfood-completeness-allow.txt (epic rollup pattern)"
+  ]
+}
