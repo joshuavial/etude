@@ -1,0 +1,249 @@
+# Plan — etude-9uf.2: Supervisor + worker-lane runbook; retire the dogfood protocol docs
+
+## Why this bead is first
+
+`docs/plans/dogfood/` currently documents a *manual capture protocol*: the agent
+does the work, closes the bead, and then `scripts/dogfood-capture.sh` rebuilds
+five stage artifacts from the bead `design` field and `git show <sha>`. Because
+recording is reconstruction, it is skippable — 99 refs exist under
+`refs/etude/runs/`, 98 of them named after bead ids, one with a live run-id.
+2,481 lines of completeness audit exist to police that gap.
+
+This bead writes the replacement model down **before** `etude gate` is built,
+because the runbook is the specification for that command. Bead .1 is
+implemented to this document; if implementation proves something here wrong, the
+runbook changes in the same bead with a note saying what the implementation
+taught us.
+
+## What changes
+
+### New: `docs/plans/dogfood/supervisor-runbook.md`
+
+The single operational doc for the new model. It states:
+
+1. **The two roles.** A *worker lane* (a claude worker on its own workmux
+   worktree, running the `etude-loop` skill) produces each phase artifact. A
+   *supervisor* advances each phase boundary with one command. The supervisor
+   never produces the artifact and never writes a verdict by hand.
+
+2. **Where a phase artifact lands.** `.etude/tmp/<bead>/<phase>.md` in the
+   worker's worktree — gitignored scratch. The durable record is the run ref:
+   `etude capture` content-addresses the artifact into
+   `refs/etude/runs/<bead>`. Phase artifacts are never committed to the repo.
+
+3. **The per-phase sequence** (the thing the supervisor types):
+
+   ```bash
+   # 1. worker produces .etude/tmp/<bead>/<phase>.md
+   # 2. supervisor records the stage (creates the run ref on the first capture)
+   etude capture <phase> --run <bead> \
+       --output <role>=.etude/tmp/<bead>/<phase>.md \
+       --harness claude-code --model <model> --skill-id <workflow stage skill>
+   # 3. supervisor runs the gate for real
+   etude gate --run <bead> --stage <phase> --artifact .etude/tmp/<bead>/<phase>.md
+   ```
+
+   Exit 0 → advance to the next phase. Non-zero → the gate did not pass; the
+   supervisor hands the printed `required` items back to the worker.
+
+4. **What `etude gate` does** — this section is the spec bead .1 implements:
+
+   - Resolves the stage by `--stage` against `.etude/workflow.yaml`. Unknown
+     stage → clear error, exit non-zero, nothing recorded.
+   - Reads `gate.tier`, `gate.abstraction` and `gate.checks` from that stage.
+   - Resolves the tier's seats from `.etude/registry.yaml` (`tiers.<L>.seats`).
+   - Requires `refs/etude/runs/<run>` to already exist (created by the first
+     `etude capture`). Missing run ref → clear error, exit non-zero.
+   - Derives the round from the attempts already recorded for that phase, so a
+     re-gate after a worker fix is round N+1 (reuses `nextPhaseRound`).
+   - Runs `gate.checks` (deterministic; exit code IS the verdict) and then each
+     seat, both against the same shared prompt.
+   - Synthesizes one verdict with the existing fail-closed algorithm
+     (`synthesizeVerdict`): any failing check → not-pass; fewer than
+     `min(2, len(seats))` usable seat verdicts → `escalated`; unanimous-enough
+     `go` → `pass`; otherwise not-pass.
+   - Appends one `GateAttempt` to the run ref with per-seat verdicts, raw output,
+     and session evidence — the same record shape `etude capture-gate` writes.
+   - Prints the synthesized verdict and each seat's `required` items.
+   - Exits 0 only on `pass`. `rerun` and `escalated` exit non-zero.
+
+   There is no rerun loop: `etude run`'s gate re-invokes a stage runner, but a
+   supervised lane has no runner to re-invoke — a not-pass returns to the
+   supervisor, who returns it to the worker.
+
+5. **The seat contract** (load-bearing; discovered while reading the engine).
+   `etude` invokes a seat as a subprocess with a hermetic environment — `PATH`,
+   `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, plus any names in the workflow's
+   `env_allowlist`. The seat reads the shared prompt from `$ETUDE_INPUTS_DIR`
+   and MUST write a JSON verdict envelope to `$ETUDE_OUTPUT_FILE`:
+
+   ```json
+   {"verdict": "go|block", "required": [], "optional": [],
+    "session": {"session_id": "", "transcript_path": ""}}
+   ```
+
+   A bare model CLI does not do this — it writes prose to stdout. So a seat's
+   registry `invoke` must name an **adapter** that wraps the model CLI and emits
+   the envelope. The registry's current `invoke` strings (`claude -p --model
+   opus`, `codex exec ... -`) are bare CLIs and would every one of them be
+   classified `empty`. Bead .1 ships the adapters and repoints `invoke` at them.
+   Seat identities, tiers and quorum are unchanged — only the invocation becomes
+   contract-conformant.
+
+   The runbook also records that `env_allowlist` must carry `HOME` for any seat
+   whose CLI reads credentials from the user's home directory, and that values
+   are never written anywhere — only names.
+
+6. **The shared prompt.** `gate.abstraction` is currently parsed by
+   `internal/workflow` and passed to no one: `runGate` sends seats only the
+   reviewed artifact. `etude gate` composes the prompt the registry already
+   describes — role, phase, decision standard, the stage's `abstraction` prose,
+   and the inlined artifact — and hands every seat the identical text. Seats are
+   model identities voting on one prompt, never role personas.
+
+7. **Degraded gates and stop-the-line.** A seat that cannot run is never a pass.
+   The known exception is recorded verbatim: the `opus` seat's `claude -p`
+   invocation returns "Not logged in" when Claude Code is itself the
+   orchestrator, because the host session's credentials are not exposed to a
+   subprocess. That exception lives in a registry comment, not in code, so
+   `etude gate` cannot honour it — it records the seat `failed` and escalates.
+   The runbook names `etude-pqv` as the bead that makes registry exceptions
+   machine-honored, and names the bootstrap fallback below as the interim path.
+
+8. **The bootstrap path that survives.** `scripts/dogfood-gate-capture.sh`
+   stays. It appends a hand-assembled `GateAttempt` to the run ref and pushes
+   it, and it is the only path available (a) before `etude gate` exists and (b)
+   when a documented seat exception makes a seat un-invokable as a subprocess.
+   Using it requires writing down which seat could not be invoked and why.
+
+   Because both paths write to the same run ref, they must write the SAME
+   record. The runbook states that as a requirement on bead .1: the
+   `GateAttempt` `etude gate` produces and the one `capture-gate` accepts from
+   the bootstrap script must be interchangeable — same field set, same
+   `gate_id` convention (`<phase>.r<round>`), same verdict vocabulary, same
+   `failure_note` rules. `etude gate` is expected to build the record through
+   the same construction path `capture-gate` uses rather than a parallel one,
+   so the two cannot drift.
+
+9. **What the supervisor may not do.** Not lower a tier to clear a BLOCK, not
+   substitute its own judgement for a seat verdict, not record a gate it did not
+   run, not advance a phase whose gate exited non-zero.
+
+### Rewritten: `docs/plans/dogfood/README.md`
+
+Index pointing at the supervisor runbook first. Drops the "Dogfood Scripts"
+table rows for the retired scripts and the Session Boot step 10
+(`scripts/dogfood-close.sh` as terminal close step).
+
+### Deleted: `docs/plans/dogfood/capture-protocol.md` (690 lines)
+
+Entirely the manual capture protocol, close checklist, allowlist and pre-push
+enforcement contract that the new model removes. Nothing in it survives the
+change of model; the parts worth keeping (where artifacts live, what a phase
+records) are restated in the supervisor runbook against the real commands.
+
+### Deleted: `docs/plans/dogfood/checklists.md` (79 lines)
+
+A link-index over `capture-protocol.md` and the manual gate sections. The
+supervisor runbook is the compact operational doc now; a second index that
+points at deleted anchors is worse than no index.
+
+### Edited: `docs/plans/dogfood/review-gate-runbook.md` (1,101 lines)
+
+Keep the review *judgement* content, which is model-independent and hard-won:
+Reviewer Roles (review lenses), Gate Weight, Gate Inputs, Reviewer Prompt
+Template, Result Classification, Degraded Gate Policy, Scope Discipline,
+Recurring Defect Classes, Plan-Phase Discipline, Epic-Close Gate.
+
+Remove the sections `etude gate` now owns, replacing each with a pointer to the
+supervisor runbook: Invocation mechanics, Gate Orchestration (Claude Code),
+Waiting And Status, Reruns bookkeeping, Recording Results / Structured capture.
+Anything that instructs running `dogfood-capture.sh` or `dogfood-close.sh` goes.
+
+### Edited: `docs/plans/dogfood/review-gate-process.md` (113 lines)
+
+Keeps its decision (no human approval as the gate; a seat that cannot complete
+is not a GO). Replaces the hardcoded "three-reviewer panel (Gemini/Opus/codex)"
+with the tier the stage's `gate.tier` names, resolved from `registry.yaml` — the
+config is the source of truth and this doc must not restate a seat list that can
+drift from it.
+
+### Edited: `docs/plans/dogfood/retro-ledger.md` (591 lines)
+
+The ledger is an append-only record of retros already performed, and four of its
+entries name `dogfood-capture.sh` / `dogfood-close.sh` as durable changes those
+retros produced (lines 104, 202, 260, 496). The acceptance criterion says
+`docs/plans/dogfood` carries **no** references to those two scripts and states no
+historical exception, so those four mentions are rewritten to name the mechanism
+rather than the retired file — "the retroactive run-capture script (retired in
+etude-9uf)" — which keeps the retro's finding intact while removing the pointer
+to a file that will not exist. The entries' verdicts, dates and bead ids are not
+touched; this is a naming edit inside history, not a rewrite of it.
+
+Mentions of `dogfood-completeness-audit.sh` and
+`dogfood-completeness-allow.txt` in the same file are NOT touched here: the
+acceptance names only the two capture/close scripts, and bead .4 owns the audit's
+replacement and its own sweep. Splitting it that way keeps each bead's diff to
+the files its own change makes false. The ledger edit carries a one-line inline
+note saying so, so a later reader sees the remaining audit references as a
+deliberate deferral to bead .4 rather than an oversight in the grep sweep.
+
+`docs/plans/dogfood/review-gate-runbook.md:891` also names `dogfood-capture.sh`;
+it is covered by the runbook edit above.
+
+Verification for this criterion is mechanical:
+`grep -rn 'dogfood-capture\.sh\|dogfood-close\.sh' docs/plans/dogfood/` must
+return nothing.
+
+### Refreshed: `.etude/loop.local.md`
+
+Names epic `etude-9uf` and its ready-bead order, points `## Capture` at
+`etude capture` + `etude gate` (with the bootstrap script named as the
+exception), and drops the `## Tracker` claim that a pre-push audit hook must
+pass — `.beads/hooks/pre-push` exists as a file but the repo's git hooks
+directory contains only `.sample` files, so no hook is installed. The file is
+gitignored (`.gitignore:20`), so it is refreshed in the worktree and is
+deliberately NOT part of this bead's commit; the commit cannot contain it.
+
+## Out of scope (filed, not fixed here)
+
+- Deleting the scripts themselves, the Makefile targets, and the sweep OUTSIDE
+  `docs/plans/dogfood/` (`docs/retro.md`, `docs/plans/product/`, `examples/`,
+  `.beads/hooks/pre-push`) — bead .3.
+- Shrinking the completeness audit — bead .4.
+- Making the registry's prose seat exception machine-honored — bead `etude-pqv`.
+- `--workflow` reads `.etude/workflows/<name>.yaml`, a directory that does not
+  exist; the flag is built but unused. Noted, not fixed.
+- Live `etude run` for the producing step — GH #15, explicitly out of scope.
+
+## Verification
+
+- `make docs-check` — generated CLI docs unchanged (no CLI change in this bead).
+- `make docs-reality` — hand-written doc/CLI drift guard; must stay clean after
+  the rewrite, and it is the check that would catch the runbook naming a command
+  or flag that does not exist.
+- `make test` and `make lint` green.
+- Grep proof, with NO exception anywhere under the directory:
+  `grep -rn 'dogfood-capture\.sh\|dogfood-close\.sh' docs/plans/dogfood/` returns
+  nothing and exits 1. `retro-ledger.md` is included in that sweep and is edited
+  in this bead (see its section above); it is not exempt. Bead .3 owns only the
+  sweep OUTSIDE `docs/plans/dogfood/`.
+- Every command line quoted in the new runbook is either an existing `etude`
+  subcommand verified against `etude --help`, or explicitly marked as the
+  contract bead .1 must implement.
+
+## Risks
+
+- **The runbook specifies a command that does not exist yet.** Deliberate: it is
+  the spec. Every such line is marked as bead .1's contract so a reader cannot
+  mistake it for shipped behavior, and `docs/plans/` is planning material, not
+  the shipped docs site.
+- **The seat-adapter finding widens bead .1.** Without adapters, `etude gate`
+  invokes seats that produce no envelope and every gate escalates — so the
+  adapters are load-bearing for .1's own acceptance ("invokes the L2 seats from
+  registry.yaml"), not a new feature. Stating it here is what keeps .1 from
+  discovering it at its own gate.
+- **Deleting 769 lines of protocol docs loses history.** The retro ledger and
+  the git history keep it; the deleted docs describe a protocol that no longer
+  runs, and leaving them would leave two contradictory descriptions of how a
+  bead is worked — which is the failure this epic exists to end.
