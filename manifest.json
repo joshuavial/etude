@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-9uf.3",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -59,6 +59,62 @@
         "size": 9235
       },
       "timestamp": "2026-08-15T08:34:54.648618Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r1",
+          "role": "plan",
+          "artifact": "5380eb98cca7080afde70676bf49ae15ccc4d75f088a0b62436a6e18d3cb3e1b"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The plan leaves scripts/dogfood-completeness-audit.sh referencing a deleted script, violating the acceptance criterion that no file in the repo references them; bead .4 owning that file later does not satisfy this bead's acceptance.",
+            "2. If .workmux/PROMPT-* is tracked or otherwise in-repo, the second exemption violates the same acceptance criterion unless the implementation proves it is outside repo source/control."
+          ],
+          "timestamp": "2026-08-15T08:35:23Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The plan's central factual claim is wrong: dogfood-close_test.sh is THREE sections, not two. Section C (line 643, case C1) tests the SAME live pre-push hook as Section B - that the bd block does not consume stdin and the classifier still sees the buffered refs, the subtlest property of the hook. The plan says extract Section B and delete the rest, and makes its verification 'all ten B-cases', so a coder following it literally deletes C1 and every stated check still goes green - the exact silent coverage regression the plan exists to prevent, one level down.",
+            "2. The extraction's dependencies are understated in a way that can make the extracted suite pass while wired to nothing. B and C also depend on the bd PATH shim (lines 106-121, BD_SHIM plus export PATH), defined in the Section A setup region; without it the suite runs against the real bd, C1 stops proving anything and B cases can be masked by a non-zero bd exit. The stated negative control does not cover this - a shim-less copy would still fail against a deliberately broken refs/etude/* branch."
+          ],
+          "timestamp": "2026-08-15T08:35:23Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats BLOCK, converging on the completeness-audit exemption. The opus seat ran as an in-harness sub-agent because the registry's claude -p invocation cannot authenticate when the orchestrator is itself Claude Code; the agy fallback is also dead (wrong flags and model id, quota exhausted) and is filed as its own P1 bead. Both verdicts are real verdicts on the identical frozen packet (artifact sha 5380eb98), recorded through the bootstrap path per the runbook."
+      },
+      "timestamp": "2026-08-15T08:35:23Z"
     }
   ]
 }
