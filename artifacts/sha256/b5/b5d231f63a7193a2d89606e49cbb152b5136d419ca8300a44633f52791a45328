@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `internal/liverun/gate.go` deletes `firstCheckoutGitlink`, the only usage shown for `exec.CommandContext`, but the diff shows no corresponding import cleanup. If `os/exec` is now unused, this will fail Go compilation before the artifact can advance.
+OPTIONAL: none
+CONFIDENCE: medium

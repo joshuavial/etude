@@ -903,6 +903,100 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T05:56:40.821784Z"
+    },
+    {
+      "gate_id": "implement.r12",
+      "phase": "implement",
+      "round": 12,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r11",
+          "role": "diff",
+          "artifact": "b2e0747c00b42f787c5051d1ad1b4aedc162a1cccba288a92d2ce7663e680d0e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `run.md` lists the sidecar failure causes (bounds, unknown fields, invalid Unicode, malformed JSON, non-regular file) but omits the control-character rejection that `ValidateSessionInfo` enforces — a `\"session_id\":\"a\\nb\"` is valid JSON yet fails the stage; add it to the list. 2) `exec_runner.go` reads the session sidecar before reading `ETUDE_OUTPUT_FILE`, so a runner that both omits its output and writes a bad sidecar reports `ErrSessionInvalid` instead of `ErrOutputMissing`; moving the sidecar read after Step 9 keeps the primary failure primary. 3) The engine's `len(res.Log) > replay.MaxStageLogBytes` check aborts the entire run for an in-process runner, a state `ExecRunner` cannot produce; truncating with a dropped-bytes header would match the framing contract already used for the streams. 4) `TestExecRunner_AcceptsReplacementCharacterInSessionID` relies on the shell's `printf` expanding `\\ufffd`, which is not portable to dash-style `/bin/sh`; emitting the UTF-8 bytes (`\\303\\277`-style octal) removes the host dependency."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "20df59abbecd11c5aa52a764b1296a4792b69fa21f02d7efee8734298b616c76",
+            "path": "artifacts/sha256/20/20df59abbecd11c5aa52a764b1296a4792b69fa21f02d7efee8734298b616c76",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1200
+          },
+          "session": {
+            "session_id": "opus-c41905b53d950538",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "c41905b53d9505389d0abfcab3e2dfe805f9c06d5b9116c3c8a41e3404a45027",
+              "path": "artifacts/sha256/c4/c41905b53d9505389d0abfcab3e2dfe805f9c06d5b9116c3c8a41e3404a45027",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1101
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:00:31.52795Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `internal/liverun/gate.go` deletes `firstCheckoutGitlink`, the only usage shown for `exec.CommandContext`, but the diff shows no corresponding import cleanup. If `os/exec` is now unused, this will fail Go compilation before the artifact can advance."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "af7c070fd59440948093bc5ae329a2e280eb2ab6538210f4d3237799ae51e25f",
+            "path": "artifacts/sha256/af/af7c070fd59440948093bc5ae329a2e280eb2ab6538210f4d3237799ae51e25f",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 402
+          },
+          "session": {
+            "session_id": "codex-b5d231f63a7193a2",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "b5d231f63a7193a2d89606e49cbb152b5136d419ca8300a44633f52791a45328",
+              "path": "artifacts/sha256/b5/b5d231f63a7193a2d89606e49cbb152b5136d419ca8300a44633f52791a45328",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 312
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:04:12.279506Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T06:04:12.281324Z"
     }
   ]
 }
