@@ -1,0 +1,15 @@
+# Final Review — etude-qih (`etude log` session-narration command)
+
+Verdict: GO. Commit 333cdf3 "add etude log session-narration command".
+
+- Coherent: new read-only top-level `etude log` unions refs/etude/runs/* + refs/etude/retros/*, reads each manifest (refstore List + ReadFile + runmanifest.ParseJSON — same path as run/retro list), builds one event per ref, sorts ascending by (Created, Kind, ID), prints a TIMESTAMP/KIND/ID/SUMMARY tabwriter table. Plan → impl → tests → docs consistent.
+- Read-only by construction: logRunner holds only refstore + io.Writer; only List/ReadFile/ParseJSON; no AddContent/Writer/update-ref; cobra.NoArgs. A ref-set before/after snapshot test proves no mutation.
+- Filters correct: --kind {run,retro} validated before any git call (invalid → error, empty stdout); --subject matches a run's own id and a retro's subject_run.N/bead.N (NOT the retro's own id — fixed at the implement gate); --limit = tail-N-after-ascending-sort, 0=unlimited, negative rejected.
+- Empty + malformed parity with run/retro list: empty union → "no events found" exit 0; any ReadFile/ParseJSON failure → fmt.Errorf("<kind> %q: %w", id, err), non-zero, names the offending ref on stderr, nothing to stdout (full event slice built before any write).
+- Gate-attempts deferred (grounded): GateAttempt is a Manifest.Gates field (mv3), not a ref namespace; run Summary surfaces "; N gates" count; docs state the dedicated gate kind is deferred.
+- Docs: regenerated docs/cli/etude.md (SEE ALSO) + docs/cli/etude_log.md; hand guide docs/log.md (gate kind deferral + --limit tail semantics spelled out per gate seats); docs/README.md index; README.md implemented-list + surface paragraph + CLI usage block. docs-check / docs-reality (13 cmds) / gen-docs TestDriftGuard / lint all green.
+- Scope: internal/cli/log.go (new), root.go (+1, alphabetical init<log<prime), log_test.go (new, 18 tests incl. the subject-own-id regression) + the 5 docs files. Reuses runsPrefix/retrosPrefix + retroSubjectsList (no duplication). 1-bead=1-commit.
+
+Gate history (3-seat degraded, pilms outage):
+- Plan Tier-1: codex BLOCK (verified-true: file scope omitted the regenerated root page docs/cli/etude.md SEE ALSO) → design amended; gemini + Opus GO; all 6 substantive points unanimous.
+- Implement Tier-1: codex BLOCK r1 (verified-true: --subject filter checked subjectSet[e.ID] before the kind branch, so a retro wrongly matched its own retro id — a spec deviation both Opus and gemini missed/rationalized as correct). Fixed surgically (run → own id; retro → subjects only) + added TestLogSubjectFilterRetroOwnIdNotMatched. codex round-2 GO; gemini + Opus already GO → unanimous. Verify re-confirmed the fix on the built binary.
