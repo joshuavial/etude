@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-4jr",
   "workflow": "blocker-resolution",
   "workflow_version": "blocker-resolution-v1",
@@ -32,6 +32,54 @@
         "size": 1477
       },
       "timestamp": "2026-08-16T02:23:06.706718Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "resolution.r1",
+      "phase": "resolution",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "resolution",
+          "role": "resolution"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Classify remaining Gemini references as historical examples or stale live pins before changing them."
+          ],
+          "timestamp": "2026-08-16T02:26:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T02:26:12Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:26:12Z"
     }
   ]
 }
