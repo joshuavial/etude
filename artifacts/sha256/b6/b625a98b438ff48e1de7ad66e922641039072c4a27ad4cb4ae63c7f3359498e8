@@ -1,0 +1,101 @@
+# Implement — etude-9uf.5: the proof run
+
+## What was run
+
+`etude-3xt` was worked end to end by a **real `workmux` worker lane** and gated by
+this supervisor from a different worktree. It landed on `origin/main` as
+**`752be1a`** (6 files, +457/−20) and the worker closed the bead itself.
+
+- Lane: `lane/3xt-retro-ref` at `.worktrees/lane-3xt`, created with
+  `workmux add … -a claude -P <prompt>`, branched from `origin/main` at `1b837a1`.
+- The worker ran the `etude-loop` skill, wrote `.etude/tmp/etude-3xt/<phase>.md`
+  after each phase, and stopped. It never gated its own work.
+- The supervisor captured each artifact, ran `etude gate`, completed the panel,
+  recorded the attempt, and handed the seats' findings back verbatim.
+- Communication was `SendMessage` between two Claude sessions plus a file dropped
+  in the lane's `.workmux/`. That worked without incident.
+
+## The measurement
+
+Computed from `refs/etude/runs/etude-3xt:manifest.json`:
+
+| phase | attempts | outcome |
+|---|---|---|
+| plan | 2 | `plan.r1` escalated (etude gate) → `plan.r2` **pass** (out of band) |
+| implement | 2 | `implement.r1` escalated → `implement.r2` **pass** |
+| verify | 2 | `verify.r1` escalated → `verify.r2` **pass** |
+| docs | 2 | `docs.r1` escalated → `docs.r2` **pass** |
+| review | 2 | `review.r1` escalated → `review.r2` **pass** |
+
+- **10 attempts. 5 produced by `etude gate` alone; all 5 escalated.**
+- **All 5 escalations are the same cause**: the `opus` seat recorded `failed`
+  because it cannot be invoked as a subprocess.
+- **5 attempts completed out of band; all 5 passed.**
+- **`etude gate` alone passed zero of five gates.** Every single passing verdict
+  on this run required a manual bootstrap append.
+- 0 seat BLOCK verdicts. 0 ungated stage artifacts.
+
+That last pair is the headline for `etude-4ed`: the gate machinery is not
+*failing* — the checks ran, codex ran, the synthesis was correct, and fail-closed
+behaviour was exactly right every time. It simply **cannot complete a panel**,
+so the supervisor is required to hand-append the deciding verdict five times per
+bead. That is the mechanism, measured, in one place.
+
+## The supervision hazard this run surfaced
+
+**`etude gate` runs its deterministic checks in the CALLER's working directory.**
+
+The supervisor and worker are in different worktrees. The supervisor's worktree
+does not contain the worker's change at all — `grep -c retro_file
+internal/cli/retro.go` returns 0 there. Running `etude gate --stage verify` from
+the supervisor's own cwd, which is the obvious thing to do since that is where
+the supervisor is, would have run `make test` and `make lint` against a tree
+without the change, passed both, and certified nothing.
+
+Nothing in `etude gate`, `.etude/workflow.yaml`, or the supervisor runbook says
+which worktree the checks run in. **This is a silent fail-open on the one gate
+whose entire value is executing real checks, and it is invisible because the
+wrong answer is green.** Every other gate defect this epic found announced itself
+with a BLOCK; this one would announce itself with a pass.
+
+Worked around by invoking the gate with cwd set to the lane. Filed as
+**`etude-4qi` (P1)**. The durable half of the fix is not a flag but *recording
+the resolved check directory in the gate attempt* — today a gate record cannot be
+audited for this at all.
+
+## What the worker produced
+
+All five phases passed at their **first completed panel — zero BLOCK rounds.**
+For contrast, this supervisor's own beads `.3` and `.4` took 16 and 20 attempts.
+
+The worker was given the bead text and each phase's abstraction level, and
+nothing about what a seat would ask. It nonetheless:
+
+- **inverted the bead's suggested fix** — rather than capturing a ref when
+  markdown lands, it made capture *emit* the markdown, so the file is an output
+  of the command that writes the ref rather than a second remembered step — and
+  both plan seats preferred the inversion;
+- **measured rather than asserted** that its regressions fail without the change,
+  by scripted neutering edits, twice, and the verify seat independently
+  reproduced one;
+- **filed its own follow-on beads** (`etude-24d`, `etude-8ft`) when a seat asked.
+
+21 optionals were returned across the four earlier gates. The final-review seat
+verified each was folded or explicitly declined — none vanished silently.
+
+## Findings against my own earlier work
+
+The proof run surfaced two defects in beads I had already closed:
+
+1. **`docs/plans/dogfood/supervisor-runbook.md` step 6** still told a supervisor
+   to hand-write a retro and commit it, with no pointer to `etude retro capture`.
+   The worker fixed it as part of `etude-3xt` — the practice fix had otherwise
+   landed only in `retro-ledger.md`, leaving the document supervisors actually
+   follow describing the old two-step habit.
+2. **`mkdocs.yml:66` still lists `plans/dogfood/checklists.md`**, a file bead
+   `.2` deleted. My sweep there checked prose and missed the nav. Neither
+   `make docs-check` nor `make docs-reality` builds the site, so every docs gate
+   on this epic reported green over a dangling nav target. Filed as `etude-fn8`.
+   (An earlier draft of this artifact cited a bead id I had invented rather than
+   read from `bd`. Caught before the gate, but it is the same class of defect the
+   seats blocked three of this epic's final reviews on, so it is recorded.)
