@@ -341,6 +341,52 @@
         "degraded_reason": "Seats split - codex GO, opus BLOCK - so no pass under unanimous quorum. Both round-1 fail-opens were confirmed fixed. opus's new finding is correct and is the same class the bead exists to remove: I had classified the whole retro-ledger as historical no-ops, but it contains a prescriptive convention block asserting in the present tense that a check deleted by this bead still enforces the sidecar. Its own deferral note, which I had cited as justification for the no-op classification, deferred the sweep TO this bead and so was false the moment the bead landed. The durable lesson recorded in the artifact: 'this file is historical' is a judgement about a file, and a file is not uniformly one thing. Six optionals also folded, five of them the same fail-open family as round 1, audited together rather than patched one at a time: a case statement with no default arm, an unchecked non-list gates value, mapfile discarding its producer's exit status so a truncated window read as clean, a for-each-ref failure that would have made check (d) pass vacuously, and a ref BEHIND origin reported as unpushed - telling the operator to push when they need to fetch. Three were inherited from the 902-line predecessor, which does not make them acceptable in a rewrite whose subject is a check that must not fail open. Four new regressions added; suite is 32 green."
       },
       "timestamp": "2026-08-15T11:57:44Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r3",
+          "role": "diff",
+          "artifact": "c9e63db492a055f06efae5fe802414570a89e5733341d6e03ad0b4985738675c"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T12:09:42Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T12:09:42Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. Three implement rounds, and every non-passing one found a fail-open on a script that gates every lane's push: r1 a run ref with no readable manifest passing CLEAN via a pipefail interaction, plus git ls-remote failure swallowed into unpushed-ref gaps; r2 a prescriptive docs block still asserting a deleted check enforces the sidecar convention, plus four more members of the same fail-open family. r3 optionals folded, two of them substantive. The script now cd's to its own repo root - it had resolved the allowlist from this repo while querying refs from the ambient cwd, so running it inside another checkout would have audited that repo against these exemptions. And the behind-vs-ahead distinction was mostly inert, because deciding it needs origin's commit present locally, which a repo that is behind is exactly the one not to have; there are now three outcomes rather than two, and the undecidable case says 'fetch to compare' instead of 'push it', which would have been the wrong instruction half the time. A regression using a separate clone pins that, so the remote tip genuinely never enters the local object store. Final shape: 902 -> 223 and 1579 -> 349, 34 audit tests, make dogfood-audit exits 0 where it failed before this bead, pre-push suite unchanged at 20/20."
+      },
+      "timestamp": "2026-08-15T12:09:42Z"
     }
   ]
 }
