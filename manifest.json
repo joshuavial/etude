@@ -303,6 +303,54 @@
         "degraded_reason": "opus seat run as the documented substitute (registry invoke claude -p --model opus returns Not logged in under a Claude Code orchestrator; the in-harness sub-agent seat has returned no verdict on five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Both seats PASS_WITH_FOLLOWUPS; both follow-ups FOLDED (a prescriptive Contract subheading on the etude gate section, and a requirement that bead .1 VERIFY exercises the built binary against each of the ten contract items). Opus also noted the packet omitted the review-gate-runbook diff; recorded as packet-hygiene guidance for later gates, not a change to this diff."
       },
       "timestamp": "2026-08-15T05:35:21Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Criterion 1 is not demonstrated: grep only proves banned script names are absent; the positive claim that docs/plans/dogfood describes the worker-lane + supervisor model is asserted without quoted/diff evidence."
+          ],
+          "timestamp": "2026-08-15T05:38:58Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:38:58Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry invoke claude -p --model opus returns Not logged in under a Claude Code orchestrator; the in-harness sub-agent seat returned no verdict across five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Seats split on severity but converged on the SAME finding (criterion 1 positive half asserted, not demonstrated); treated as the blocker codex called it, so the gate did NOT pass. Opus also adjudicated Q3: rebuilding the lost run ref and disclosing beats re-running already-adjudicated gates, escalating to BLOCK if it recurs after etude-nad is fixed."
+      },
+      "timestamp": "2026-08-15T05:38:58Z"
     }
   ]
 }
