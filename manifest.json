@@ -450,6 +450,38 @@
         "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus returns Not logged in under a Claude Code orchestrator; in-harness sub-agent seat returned no verdict across five attempts). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Stage gate.checks make test and make lint both green and re-run after the r1 fold."
       },
       "timestamp": "2026-08-15T05:39:58Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:41:44Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus returns Not logged in under a Claude Code orchestrator; in-harness sub-agent seat returned no verdict across five attempts). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. L4 is a single-seat tier, so this is the tier full complement, not a reduced panel."
+      },
+      "timestamp": "2026-08-15T05:41:44Z"
     }
   ]
 }
