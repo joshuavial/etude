@@ -1,0 +1,121 @@
+# Plan: etude-q396 — terminate runner subprocess descendants on timeout
+
+Bead: etude-q396 (P1 bug, audit A03 from etude-jhnk). Base: e1770dacc9c525477121deaad2ef48c6ba6415da.
+Lane: etude-q396-dev-claude, profile dev-claude, lead claude-fable-5-1.
+Risk class: subprocess lifecycle change across four execution entrypoints → high-risk; L2 plan gate + L2 final review.
+
+## Problem (verified against current code)
+
+All four external-command sites build `exec.CommandContext`, set `cmd.WaitDelay = 10s`, and call `cmd.Run()`:
+
+- `internal/replay/exec_runner.go:186-196` (`ExecRunner.Run`; used for producers AND reviewer seats via `liverun/resolve.go`)
+- `internal/liverun/gate.go:153-160` (`execCheckRunner.RunCheck`)
+- `internal/eval/exec_judge.go:179-188` (`ExecJudge.Judge`)
+- `internal/retro/exec_generator.go:136-145` (`ExecGenerator.Generate`)
+
+`CommandContext`'s default cancel is `Process.Kill()` on the direct child only. Descendants (a backgrounded helper, a wrapper script's real worker, a child that redirected its stdio) survive:
+
+1. timeout/cancel: the direct child dies, its children keep running and can write into the caller worktree / output file after `Run` returns (audit A03: returned after 51 ms, descendant wrote later);
+2. wrapper exits early while a child holds the inherited pipes: `WaitDelay` bounds the hang but nothing kills the pipe holder;
+3. child redirects stdio and outlives the wrapper: `Run` returns promptly and nothing is ever signalled.
+
+No process-group handling exists anywhere in the repo (`grep Setpgid|Cancel` → none). The CLI installs no signal handler (`cmd.Context()` is `context.Background()`), which matters once children leave the terminal's foreground group (see invariant I5).
+
+## Design
+
+### New package `internal/subproc` (OS-specific files)
+
+```go
+// subproc.go (all platforms)
+// Run configures cmd for group-scoped cancellation and cleanup, then runs it.
+// cmd must have been created with exec.CommandContext (exec.Start rejects a
+// non-nil Cancel otherwise). waitDelay is assigned to cmd.WaitDelay.
+func Run(cmd *exec.Cmd, waitDelay time.Duration) error {
+    cmd.WaitDelay = waitDelay
+    configure(cmd)          // OS-specific
+    err := cmd.Run()
+    if cmd.Process != nil { // Start succeeded
+        cleanup(cmd)        // OS-specific; runs on success, error, and cancel paths
+    }
+    return err
+}
+```
+
+`subproc_unix.go` (`//go:build unix`):
+
+- `configure`: set `cmd.SysProcAttr.Setpgid = true` (allocating `SysProcAttr` if nil, preserving other fields); set `cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }`.
+- `killGroup(pid)`: `syscall.Kill(-pid, syscall.SIGKILL)`. With `Setpgid` the child's pgid == its pid. `ESRCH` → return `os.ErrProcessDone` (Go's documented sentinel so `Wait` does not turn an already-exited process into a spurious cancel error). Any other errno → fall back to `cmd.Process.Kill()` on the direct child and return the original error.
+- `cleanup`: `killGroup(cmd.Process.Pid)` again after `Run` returns, ignoring the result. This is what handles cases 2 and 3: by the time `Wait` returns, the direct child is reaped, but the group id lives as long as any member does, so the kill reaches every ordinary descendant still in the group. No timer, no goroutine, no post-return work.
+
+`subproc_other.go` (`//go:build !unix`): `configure` and `cleanup` are no-ops. Behavior is exactly today's: `CommandContext` kills the direct child; `WaitDelay` bounds pipe draining. Job objects are out of scope; documented as the fallback.
+
+### Call-site change (mechanical, all four)
+
+Replace `cmd.WaitDelay = X; runErr := cmd.Run()` with `runErr := subproc.Run(cmd, X)`. Keep the per-package `*WaitDelay` vars/const (tests override them). Error classification, stderr diagnostics, bounded streams and output reading are untouched.
+
+### CLI signal handling (`internal/cli/root.go`, ~5 lines)
+
+`ExecuteWithWriters` creates `ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` and calls `cmd.ExecuteContext(ctx)`; a goroutine calls `stop()` once ctx is done so a second Ctrl-C gets the default action. Rationale: once children run in their own process group, a terminal SIGINT no longer reaches them. Without this, Ctrl-C on `etude gate` would kill etude and orphan the seat CLI (a regression versus today). With it, SIGINT cancels the context → `Cancel` SIGKILLs the group → etude exits non-zero. `syscall.SIGTERM` is defined on all supported GOOS including windows (never delivered there; harmless).
+
+## Acceptance criteria → verification
+
+| # | Criterion | Evidence |
+|---|---|---|
+| AC1 | Timeout: shell spawns a grandchild that writes a marker after the deadline and the parent `wait`s; `Run` returns a timeout-classified error, the grandchild is gone, no marker ever appears. | `subproc` unit test + one integration test per entrypoint (replay/liverun/eval/retro). Failing-before evidence: run the replay integration test on base e1770da (expected: marker appears / pid alive). |
+| AC2 | Wrapper exits early while the child holds inherited pipes: `Run` returns within `WaitDelay`+margin and the pipe-holding child is gone afterwards. | `subproc` unit test; existing `*_SpawnsSurvivingChild` tests keep passing (they now also stop leaking `sleep 300`). |
+| AC3 | Child redirects stdio to /dev/null and outlives the wrapper: `Run` returns promptly (exit 0) and the child is gone, no marker. | `subproc` unit test. This is the case `CommandContext` cannot handle at all. |
+| AC4 | Ordinary successful output, exit-status errors, `ctx` cancellation (non-deadline) and stderr diagnostics are preserved at all four sites. | Existing suites for the four packages (they exercise every branch) + `subproc` success/cancel tests. |
+| AC5 | Shared helper is used at all four entrypoints; no `cmd.Run()` on a managed command remains outside the helper. | `grep -n "cmd.Run()" internal/replay internal/liverun/gate.go internal/eval internal/retro` → only inside `subproc`. |
+| AC6 | Supported-platform semantics are explicit: Unix guarantee + Windows/other fallback documented; all targets compile. | `GOOS=windows go build ./...` and `GOOS=linux go vet ./...`; docs below. |
+| AC7 | Ctrl-C / SIGTERM cancels a running managed command and its group. | Fresh-binary manual check: run `etude replay`/`etude gate` with a runner that backgrounds a marker-writer, send SIGINT to etude, confirm non-zero exit, group gone, no marker. |
+
+Planned regressions (test names):
+
+- `internal/subproc/subproc_test.go`: `TestRun_TimeoutKillsWaitingGrandchild`, `TestRun_WrapperExitsEarlyChildHoldsPipes`, `TestRun_DetachedStdioChildOutlivesWrapper`, `TestRun_SuccessAndOutputPreserved`, `TestRun_ContextCancelClassification`, `TestRun_RequiresCommandContext`, `TestKillGroup_ESRCHIsProcessDone` (unix-only).
+- `internal/replay/exec_runner_test.go`: `TestExecRunner_TimeoutKillsDescendants` (covers producers and seats; both use `ExecRunner.Run`).
+- `internal/liverun/gate_test.go`: `TestExecCheckRunner_TimeoutKillsDescendants`.
+- `internal/eval/exec_judge_test.go`: `TestExecJudge_TimeoutKillsDescendants`.
+- `internal/retro/exec_generator_test.go`: `TestExecGenerator_TimeoutKillsDescendants`.
+- `internal/cli/root_test.go` (or existing root test file): `TestExecuteWithWriters_ContextIsCancellable` is NOT planned — signal delivery is verified manually against the built binary (AC7); a unit test would have to signal the test process itself.
+
+Test mechanics: scripts write `$!` of the backgrounded subshell to a pidfile so tests assert liveness with `kill(pid, 0)` under bounded polling (≤3 s, 20 ms steps; a killed grandchild is reparented to init/launchd and reaped, so `ESRCH` is the terminal state). Marker absence is asserted after the pid is gone and again after a short bounded wait past the child's scheduled write time. No sleeps longer than ~1 s in any test; all scripts are `#!/bin/sh`, skipped on Windows like the existing tests.
+
+## Invariants
+
+- I1: On Unix, every ordinary descendant remaining in the command's process group receives SIGKILL before `subproc.Run` returns, on every return path (success, non-zero exit, deadline, cancel, WaitDelay abort).
+- I2: Pipe draining stays bounded by `WaitDelay`; a group kill on cancel typically makes `Wait` return sooner than today because the pipe holders die.
+- I3: Timeout precedence is unchanged: callers still test `ctx.Err()` before `runErr`; `os.ErrProcessDone` from `Cancel` on an already-exited group never surfaces as a caller-visible error.
+- I4: No delayed timer or background goroutine touches a pgid after `Run` returns (pgid reuse safety).
+- I5: Interactive cancel still works: SIGINT/SIGTERM to etude cancels the root context, which cancels the group. Second signal → default action.
+- I6: Env handling, `Dir`, stream buffers and the reserved-env skip logic at each site are byte-for-byte unchanged apart from the two replaced lines.
+
+## Edge cases and known limitations (disclosed for adjudication)
+
+- Not a sandbox: a child that calls `setsid`/`setpgid` leaves the group and is not reached. Documented, out of scope.
+- Zombies: a killed descendant may linger as a zombie until its parent/init reaps it. We guarantee termination was delivered, not disappearance. Tests poll to `ESRCH`.
+- pgid reuse after `Wait`: `cleanup` runs immediately after `Wait` reaps the direct child. If the whole group had already exited, the pid could in principle have been reused by a new process that also made itself a group leader in that microsecond window. The window is bounded to the synchronous cleanup call (no timer), which is the trade-off the ticket explicitly accepts. A pgid still in use cannot be reused (POSIX), so the guarantee for surviving descendants is unaffected.
+- `EPERM` from `kill(-pgid)` (a descendant changed uid): fall back to killing the direct child; surfaced only via the existing error path.
+- `Setpgid` moves the child out of the terminal foreground group. Stdin is `/dev/null` (Cmd.Stdin nil) and stdout/stderr are pipes or `/dev/null` at all four sites, so no SIGTTIN/SIGTTOU stops occur. A seat adapter that opens `/dev/tty` directly would be affected; none does.
+- `exec.Start` returns an error for a non-`CommandContext` cmd with `Cancel` set; the helper documents the contract and a test pins the loud failure.
+- Windows/other: `configure`/`cleanup` are no-ops; existing direct-child kill + `WaitDelay` remains. Compiles via `GOOS=windows go build ./...`.
+- Concurrency: seats/checks may run concurrently; each command has its own group, no shared state in `subproc`. `go test -race` on the five packages.
+
+## Files
+
+Touch: `internal/subproc/{subproc.go,subproc_unix.go,subproc_other.go,subproc_test.go}` (new), `internal/replay/exec_runner.go`, `internal/liverun/gate.go`, `internal/eval/exec_judge.go`, `internal/retro/exec_generator.go`, `internal/cli/root.go`, the four `*_test.go` files above, docs listed below, `.etude/run-map.tsv` (add `etude-q396 etude-q396-dev-claude`).
+Concerns: (1) group-scoped cancellation + post-run cleanup, (2) interactive signal propagation made necessary by (1), (3) docs. Anything else is a split.
+
+## Documentation
+
+- `docs/run.md`: new `### Subprocess lifecycle` section under Live run: process group per command on Unix; SIGKILL of the group on timeout/cancel and again after exit; 10 s pipe-drain grace; not a sandbox (setsid escapes); Windows/other fallback = direct child + grace; Ctrl-C/SIGTERM behavior.
+- `docs/replay.md` (`--timeout` row), `docs/bench.md` (`--timeout` row), `docs/retro.md` (Generator timeout section), `docs/gates.md` (checks paragraph ~L328): state that the process group is terminated and link to the run.md section instead of the "small grace period" wording alone.
+- Package doc comment on `internal/subproc` carries the same contract for maintainers.
+- `docs/cli/*` unchanged (no flag changes) → `make docs-check` must stay green; `make docs-reality` must stay green.
+- Planning notes: none reference this behavior; audit bead etude-jhnk A03 is the source and gets the fix noted in the bead on close by the parent.
+
+## Verification plan
+
+Implementation worker (Opus) owns: `make test`, `make lint`, `go test -race ./internal/subproc ./internal/replay ./internal/liverun ./internal/eval ./internal/retro`, `GOOS=windows go build ./...`, `GOOS=linux go vet ./...`, `make docs-check`, `make docs-reality`, `make shell-test` (process behavior changed), and the failing-before run of the replay integration test on base.
+Lead: inspects actual logs/exit codes and file hashes; `make build` then exercises `bin/etude replay`/`gate` in a disposable repo with a runner that backgrounds a marker-writer past the timeout (and the SIGINT case, AC7); confirms no marker and no surviving pid.
+Fresh QA worker (Opus): reads requirements, code, tests and docs; may add focused tests; returns pass/fail/blocked with evidence.
+Final: L2 review gate (Astra + Fable) on a self-contained packet with requirements, full source of the new package and the four changed functions, exact diff, docs diff and verify record.
