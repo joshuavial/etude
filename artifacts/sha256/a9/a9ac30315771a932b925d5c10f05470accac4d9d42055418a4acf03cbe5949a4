@@ -1,0 +1,62 @@
+○ etude-nbv · Remove dead fetchBangAbort branch in sync fetch()   [● P4 · OPEN]
+Owner: joshuavial · Type: task
+Created: 2026-05-24 · Updated: 2026-05-24
+
+DESCRIPTION
+During etude-zcq, multiple review-gate seats (Opus verify + final) noted that internal/cli/sync.go fetch() at ~L142-143 maps fetchBangAbort to a generic error, but that switch case is provably DEAD: the preceding 'if classifyErr != nil { return classifyErr }' (~L136-137) always returns first whenever result is fetchBangAbort (the abort always carries a non-nil error). So the user already gets the richer classifyFetchBang error (now incl. merge-base stderr from etude-zcq). Cleanup: delete the dead case or have fetch() return classifyErr directly, to avoid misleading future readers. Behavior-preserving. Low priority.
+
+DESIGN
+## Plan
+
+**Approach:** Behavior-preserving dead-code removal in internal/cli/sync.go fetch().
+Verified by reading the actual code: classifyFetchBang returns fetchBangAbort ONLY
+at L242/L244/L248, and ALL THREE carry a non-nil error. fetchBangRealFailure (L218,
+L231) and fetchBangBenign (L237) always return nil error. In fetch() the call site
+(L135-138) does 'result, classifyErr := classifyFetchBang(...); if classifyErr != nil
+{ return classifyErr }' BEFORE the switch, so the 'case fetchBangAbort:' arm (L142-143)
+is provably unreachable: abort always implies non-nil classifyErr, which already
+returned the richer error (incl. merge-base stderr from etude-zcq). No path exists
+where fetchBangAbort reaches the switch with a nil error, so the bead premise holds.
+Delete the dead case arm only; leave the reachable fetchBangRealFailure and
+fetchBangBenign arms and all error messages untouched.
+
+**Files:**
+- internal/cli/sync.go - delete unreachable 'case fetchBangAbort:' arm (L142-143) from
+  the switch in fetch(). Keep fetchBangRealFailure (L140-141) and fetchBangBenign
+  (L144-145) arms unchanged. The fetchBangAbort const (L164) and its three return
+  sites in classifyFetchBang (L242/L244/L248) STAY — they are live and tested. Switch
+  needs no default (Go does not require exhaustiveness; the two reachable results are
+  covered, and an impossible value falls through harmlessly as before).
+
+**Tests:**
+- No new test warranted (dead-code removal, behavior identical).
+- Existing tests must stay green: TestClassifyFetchBangAbortSurfacesStderr already
+  covers the abort path at the classify level (asserts fetchBangAbort + non-nil error
+  carrying merge-base stderr), proving abort always has a non-nil error.
+  TestSyncLockInducedRejectedFF covers fetch() returning the classify error first.
+  Run: go build ./... && go test ./internal/cli/.
+
+**Docs:**
+- None. Internal dead-code removal with no user-facing or behavior change.
+  Confirmed docs/sync.md (L107 generic 'stuck ref lock aborts the sync') does NOT
+  reference the removed error string or the switch arm. No command reference affected.
+
+**Risks:** None - removed branch is provably unreachable and untested at the fetch()
+level; reachable behavior and all error messages are unchanged. Touches git-plumbing
+but the control-flow claim was reproduced by reading the actual code, not assumed.
+
+**Capture:**
+- inputs: bead etude-nbv description, internal/cli/sync.go (fetch + classifyFetchBang),
+  internal/cli/sync_test.go (TestClassifyFetchBangAbortSurfacesStderr,
+  TestSyncLockInducedRejectedFF), docs/sync.md
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (traced all 3 abort returns non-nil + fetch() returns classifyErr before switch => arm genuinely dead); pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Tier rationale: touches git-plumbing code (sync.go). Behavior-preserving dead-code removal.
+Optional folded into Implement (opus): add a one-line comment near the switch noting fetchBangAbort always returns non-nil and is handled by the classifyErr guard above, so nobody re-adds the dead arm.
+
+LABELS: phase:plan
+
