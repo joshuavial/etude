@@ -694,6 +694,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:10:22Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "2a7bb01cd1afa53115e8d786ca25e5bfee754067a1a3cd7375b2e7472dc70f76"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/verify-gate-r3.md sha256 bb1bbeefbb8f9c34d7dfa6266f3d2ef5dea7483730fdabd1e1fa7bc6b7904046"
+          ],
+          "timestamp": "2026-08-16T01:12:10Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Full suite remains required for etude-5dr.2 and final PR.",
+            "packet path .etude/tmp/etude-5dr.1/verify-gate-r3.md sha256 bb1bbeefbb8f9c34d7dfa6266f3d2ef5dea7483730fdabd1e1fa7bc6b7904046"
+          ],
+          "timestamp": "2026-08-16T01:12:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:12:10Z"
     }
   ]
 }
