@@ -502,6 +502,68 @@
         ]
       },
       "timestamp": "2026-06-29T22:07:22Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-29T21:54:22Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "double-print only manual-tested"
+          ],
+          "timestamp": "2026-06-29T21:54:22Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "AC1 mid-run inspect not evidenced by a test; double-print fix under-verified (no stderr assertion)"
+          ],
+          "timestamp": "2026-06-29T21:54:22Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-29T21:54:22Z"
     }
   ]
 }
