@@ -1,0 +1,70 @@
+# Final integration review
+
+## Scope
+
+PR #23's four issue commits are rebased onto `origin/main` 644e717, followed by
+one integration commit, `717d5f4 test caller rerun evidence composition`.
+The branch changes only GH #17 behavior plus the focused composition proof.
+
+## Requirements audit
+
+- Session sidecar: ExecRunner reads optional atomic `ETUDE_SESSION_FILE`; engine
+  imports safe transcripts and records producer session evidence. Nil session is
+  explicitly valid and deterministic runners remain unchanged.
+- Stage logs: successful stdout and stderr are bounded, stored as a stage-log
+  artifact, and referenced by each stage record.
+- Prior attempts: a gate rerun appends manifest-recorded input artifacts carrying
+  killed attempts' stage/round/session, output/log/transcript digests and exact
+  killing verdict. The producer receives them in its actual `RunRequest.Inputs`.
+- Reserved namespace: declarative and programmatic workflows fail at engine entry
+  before checkout or runner resolution.
+- Caller composition: session paths use caller `runnerDir`; logs/session coexist
+  with caller post-run provenance; both attempts must leave clean descendant
+  commits; rerun receives prior inputs from the caller attempt.
+- Read-checkout composition: every model seat still receives its own isolated
+  checkout at `OriginalGitSHA`, cannot see caller mutations, and leaves no
+  reusable checkout state between rounds.
+- Replay composition: resume/replay/forward replay/bench retain
+  `ResolvedStage.RunGitSHA = Manifest.OriginalCheckout()`.
+- Manifest policy: logs and caller provenance share v4; combined documents retain
+  both `original_git_sha` and log refs without a second bump. Log-only v4 remains
+  valid, caller requires original SHA, and featureless v4 fails closed. Issue #24
+  owns broader version semantics.
+
+## Verification
+
+```text
+make test         PASS
+make lint         PASS
+make docs-check   PASS
+make docs-reality PASS
+make build        PASS
+```
+
+STRICT gate history on `refs/etude/runs/etude-e1r6`:
+
+- plan r1: infrastructure escalation (Opus CLI identity unavailable); plan r2:
+  PASS from Opus and Codex after restoring the real CLI environment.
+- implement r1: BLOCK because the packet lacked code; implement r3: PASS from
+  Opus and Codex after inlining the binding code evidence.
+- verify r1: BLOCK because binary QA was deferred; verify r3: PASS from checks,
+  Opus, and Codex after executing and inlining built-binary QA.
+- docs r1: PASS from Opus.
+
+## Manual behavior
+
+Built `bin/etude` completed sidecar and deterministic no-sidecar runs. The
+caller-workspace QA run `qa-second-rebase-caller-rerun-008` recorded v4 plus
+`OriginalGitSHA`, two distinct caller post-run SHAs, both session IDs and logs,
+`produce.r1=rerun`, and `produce.r2=pass` with `read_checkout=true`. Its stored r2
+output begins `R2 CONSUMED THIS INPUT FILE: 02-prior-attempts` and contains the
+previous caller attempt's session ID, all three digests, and killing verdict.
+The reserved-role CLI run exited 1 with its runner sentinel absent, and the
+programmatic zero-runner-call test passed.
+
+## Risk assessment
+
+The new code after rebase is a regression test; production conflict resolutions
+are small unions at existing seams. The highest-risk path is covered at Go
+integration level and through the built CLI. No merge is requested: update the
+existing PR branch and leave PR #23 open for GitHub CI/review.
