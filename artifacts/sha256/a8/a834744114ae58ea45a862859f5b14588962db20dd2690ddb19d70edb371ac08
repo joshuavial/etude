@@ -1,0 +1,382 @@
+✓ etude-eval-interface · Define evaluator interface and result format   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: Phase-3 keystone: internal/eval defines the Evaluator interface (Evaluate->Evaluation, separated from caller-built EvalResult) + persisted eval_result.json under refs/etude/evals/<eval-id> — flat per-Kind Score (rubric/pairwise/assertion) with documented win-rate, Targets/Context lanes, commit-validated ArtifactSource, pinned Winner orientation, concrete AssertionSpec, IsValidEvalID/AllocateEvalID, Writer create-semantics; StubEvaluator. Contract-only (no evaluator impls); Plan 4/4 (2 rounds) + Implement 4/4 + Final 4/4, mutation-verified; 8741968. Unblocks assertion/rubric/pairwise evaluators + bench.
+
+DESCRIPTION
+Define the Evaluator contract, context model, score representation, structured findings, and persisted eval result format under refs/etude/evals/*.
+
+DESIGN
+## Plan (attempt 2 — REVISED, incorporates all four-seat gate feedback)
+
+**Approach:** Ship the Phase-3 keystone as a contract-only package `internal/eval` — no
+evaluator implementations — mirroring how phase2.3 shipped `replay.Runner`+`StubRunner`+
+`RunResult` (separating execution from persistence). Two files:
+`internal/eval/eval.go` (the `Evaluator` interface + request/result VALUE types + `StubEvaluator`)
+and `internal/eval/result.go` (the persisted `EvalResult` doc: `Validate`/`JSON`/`ParseJSON`/
+`Writer`, mirroring `internal/runmanifest/manifest.go` discipline byte-for-byte). The persisted
+doc lives at `refs/etude/evals/<eval-id>` (tree holds ONLY `eval_result.json` — no artifact
+blobs; targets/context reference artifacts already stored in their run commits by
+`{run_id, stage, commit, artifact-sha256}`). `refstore.validateRef` already permits the
+`evals/` namespace (internal/refstore/store.go:19,276) so NO refstore change is needed.
+
+The gate's core BLOCK was under-specification. Below is the fully-pinned contract.
+
+### Separation of evaluation from persistence (Opus+Gemini SR #5, mirrors runner.Run/Manifest)
+`Evaluate` returns a LIGHTWEIGHT `Evaluation{ Score; Findings }` — it does NOT mint an
+eval_id, does NOT carry targets/context/created. The CALLER (a future `etude eval`/`etude bench`
+command, a different bead) assembles the persisted `EvalResult` from: the `Evaluation` +
+the request's `Targets`/`Context` ArtifactSources + the request's `Method`/`Rubric`/`Assertion`
++ `Producer` + a minted `eval_id` + a UTC `Created` timestamp. Exactly parallels
+`replay.Runner.Run` returning `RunResult` while the CLI builds the `runmanifest.Manifest`
+(internal/replay/runner.go:9-59, internal/cli/replay.go).
+
+### Context lane (codex BLOCK #1 — BRIEF §4.8 `(artifact, context) → score`)
+`EvalRequest` carries TWO distinct lanes:
+- `Targets []EvalInput` — the artifact(s) being SCORED. len==1 for rubric/assertion, len==2
+  for pairwise (A,B).
+- `Context []EvalInput` — UNSCORED inputs the evaluator MAY read (the task, the plan, the diff).
+  Optional (may be empty/nil).
+The persisted `EvalResult` records both lanes as separate ArtifactSource lists (`targets[]`
+and `context[]`) so an eval is fully auditable: WHAT was scored AND WHAT context it saw.
+
+### EXACT Go types (internal/eval/eval.go)
+
+```go
+package eval
+
+import (
+    "context"
+    "github.com/joshuavial/etude/internal/runmanifest"
+)
+
+// Evaluator scores Targets (optionally informed by Context) and returns a
+// lightweight Evaluation. It does NOT persist: the caller builds the durable
+// EvalResult from the Evaluation plus the request provenance + a minted eval_id.
+// Mirrors replay.Runner.Run / RunResult (internal/replay/runner.go).
+type Evaluator interface {
+    Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error)
+}
+
+// Method is the closed set of eval methods (matches workflow.validEvalMethods).
+type Method string
+
+const (
+    MethodRubric    Method = "rubric"
+    MethodPairwise  Method = "pairwise"
+    MethodAssertion Method = "assertion"
+)
+
+// EvalRequest describes one evaluation.
+//   Targets — artifact(s) being SCORED: len 1 for rubric/assertion, len 2 (A,B) for pairwise.
+//   Context — UNSCORED inputs the evaluator may read (task/plan/diff); optional.
+// Method is EXPLICIT (SR #6) — never inferred from which config pointer is set.
+type EvalRequest struct {
+    Method    Method
+    Targets   []EvalInput
+    Context   []EvalInput
+    Rubric    *RubricRef     // required iff Method==rubric; nil otherwise
+    Assertion *AssertionSpec // required iff Method==assertion; nil otherwise
+    Producer  runmanifest.Producer // who runs the eval (LLM judge for rubric/pairwise; zero for assertion)
+}
+
+// EvalInput is a fully-materialized artifact plus its provenance.
+// Content is always fully-materialized bytes; pointer rejection is the CALLER's
+// job (mirrors replay.RunInput, internal/replay/runner.go:14-23).
+type EvalInput struct {
+    Role      string
+    MediaType string
+    Content   []byte         // fully-materialized bytes
+    Source    ArtifactSource // provenance back-link (persisted into targets[]/context[])
+}
+
+// ArtifactSource is the durable back-link to a stored artifact. Commit is
+// MANDATORY (inherits the replay_of commit-pin durability lesson,
+// runmanifest.ReplayLink, manifest.go:46-53): pinning the immutable source
+// commit keeps the link resolvable after future appends to the source run.
+type ArtifactSource struct {
+    RunID    string // IsValidRunID
+    Stage    string // validateIdentifier
+    Commit   string // isHexOID (40/64 lowercase hex)
+    Artifact string // validSHA256 (content address)
+}
+
+// RubricRef pins WHICH rubric version was scored against (BRIEF §4.8
+// comparability: a rubric edit must not silently break comparability).
+type RubricRef struct {
+    Path    string // workflow-relative rubric path (matches workflow.Eval.Rubric)
+    Version string // pinned rubric version
+}
+
+// AssertionSpec is the concrete, persisted assertion config (codex+pilms+Gemini
+// BLOCK #2). Passed is not auditable without recording WHICH checks ran.
+type AssertionSpec struct {
+    Checks []AssertionCheck
+}
+
+// AssertionCheck names a built-in deterministic check + its args. Kind is
+// resolved via a registry (Kind->impl) defined in the assertion-eval bead.
+// Example kinds: "test-plan-exists", "mentions-changed-files" (BRIEF §4.8).
+type AssertionCheck struct {
+    Kind string
+    Args map[string]string
+}
+
+// ScoreKind discriminates the Score shape; MUST equal EvalRequest.Method.
+type ScoreKind string
+
+const (
+    ScoreRubric    ScoreKind = "rubric"
+    ScorePairwise  ScoreKind = "pairwise"
+    ScoreAssertion ScoreKind = "assertion"
+)
+
+// Winner is the pairwise outcome enum. Empty for non-pairwise.
+// Orientation is PINNED (SR #7): Targets[0]==A, Targets[1]==B; by convention
+// A=original, B=replay, so bench computes win-rate deterministically regardless
+// of randomized judge prompt order (BRIEF §8 position-bias mitigation).
+type Winner string
+
+const (
+    WinnerNone Winner = ""    // non-pairwise
+    WinnerA    Winner = "A"
+    WinnerB    Winner = "B"
+    WinnerTie  Winner = "tie"
+)
+
+// Score uses POINTERS for the numeric/bool fields (SR #9) so "absent" is
+// distinct from "zero" under DisallowUnknownFields round-trips.
+//
+// Per-Kind coherence (enforced by Validate, BLOCK #4):
+//   pairwise:  Kind=pairwise; Winner in {A,B,tie}; Value=Max=Passed=nil.
+//   rubric:    Kind=rubric;   Value in [0,Max], Max>0 (non-nil); Winner=""; Passed=nil.
+//   assertion: Kind=assertion; Passed set (non-nil); Value=Max=nil; Winner="".
+//
+// bench win-rate over a pairwise cohort:
+//   win_rate = (count(Winner==A) + 0.5*count(Winner==tie)) / total
+type Score struct {
+    Kind       ScoreKind
+    Value      *float64 // rubric only
+    Max        *float64 // rubric only
+    Winner     Winner   // pairwise only
+    Passed     *bool    // assertion only
+    Confidence *float64 // OPTIONAL/future (pairwise, omitempty) — not required now
+}
+
+// Severity is the finding-severity enum.
+type Severity string
+
+const (
+    SeverityInfo    Severity = "info"
+    SeverityWarning Severity = "warning"
+    SeverityError   Severity = "error"
+)
+
+// Finding is one structured observation. Message required; Pointer optional
+// (free-form locator into the artifact, e.g. a line/section ref).
+type Finding struct {
+    Severity Severity
+    Message  string
+    Pointer  string
+}
+
+// Evaluation is the LIGHTWEIGHT evaluator output (no persistence identity).
+type Evaluation struct {
+    Score    Score
+    Findings []Finding
+}
+
+// StubEvaluator is a test double satisfying Evaluator (mirrors StubRunner,
+// internal/replay/runner.go:78-138).
+//   - Err, if non-nil, is returned immediately.
+//   - otherwise returns Canned verbatim.
+type StubEvaluator struct {
+    Canned Evaluation
+    Err    error
+}
+
+var _ Evaluator = (*StubEvaluator)(nil)
+```
+
+### EXACT persisted type (internal/eval/result.go)
+
+```go
+// EvalResult is the durable eval document persisted at refs/etude/evals/<eval-id>.
+// Method is EXPLICIT at top level (SR #6, like Manifest.Workflow). Targets and
+// Context are recorded as separate ArtifactSource lists (codex BLOCK #1).
+type EvalResult struct {
+    EvalResultVersion int       // current = 1 (SR #10; no legacy 0/2 quirk — emit & require v1)
+    EvalID            string    // IsValidEvalID
+    Method            Method
+    Score             Score
+    Findings          []Finding
+    Rubric            *RubricRef     // present iff Method==rubric
+    Assertion         *AssertionSpec // present iff Method==assertion
+    Targets           []ArtifactSource // len 1 rubric/assertion, len 2 pairwise (A,B)
+    Context           []ArtifactSource // optional unscored inputs
+    Producer          runmanifest.Producer
+    Created           time.Time // RFC3339Nano UTC
+}
+```
+
+### eval-id scheme (pilms+codex BLOCK #3 — DEFINED, not deferred; bench enumerates this namespace)
+Scheme: `<method>-<primaryRunID>-<stage>-<UTC yyyymmddThhmmssZ>` with a numeric collision
+suffix `-2..-N`, mirroring `allocateReplayRunID` (internal/cli/replay.go:331-357).
+- `primaryRunID` = `Targets[0].RunID`; `stage` = `Targets[0].Stage`.
+- Timestamp uses compact `20060102T150405Z` (UTC, no colons — colons are rejected by
+  refstore validateFilePath/charset and would break the identifier charset).
+- The MINTING helper (`AllocateEvalID(ctx, store, base)`) probes base then base-2..base-N
+  for a free `refs/etude/evals/<id>`; lives WITH the validator here (the actual call site is
+  a future command bead, but the scheme + validation + ref path are pinned here).
+- `IsValidEvalID(string) bool` — EXPORTED; reuses `runmanifest.IsValidRunID` charset rules
+  so `refstore.validateRef`/`check-ref-format` accept the ref. (Charset [A-Za-z0-9_.-] already
+  covers the `T` and `Z` and `-` of the timestamp; no `:`.)
+- Writer uses CREATE-semantics: `WriteOptions.ExpectedOld == ""` -> refstore returns
+  `ErrRefExists` on collision (a HARD error, never an overwrite — store.go:64-67).
+
+### eval_result.json schema (field order, omitempty, validation)
+
+Field order (deterministic, SetEscapeHTML(false) + SetIndent("","  "), like manifest.go:160-172):
+1. `eval_result_version` (int, ==1; NOT omitempty)
+2. `eval_id` (string; IsValidEvalID)
+3. `method` (string; one of rubric|pairwise|assertion)
+4. `score` { `kind`, then per-Kind subset of `value`/`max`/`winner`/`passed`/`confidence`,
+   all numeric/bool as omitempty pointers so absent != zero }
+5. `findings` [] { `severity`, `message`, `pointer`(omitempty) } — may be empty array
+6. `rubric` { `path`, `version` } (omitempty object; present IFF method==rubric)
+7. `assertion` { `checks`: [ { `kind`, `args`(omitempty map) } ] } (omitempty object; present
+   IFF method==assertion)
+8. `targets` [] { `run_id`, `stage`, `commit`, `artifact` } (len 1 or 2 per method)
+9. `context` [] { `run_id`, `stage`, `commit`, `artifact` } (omitempty; optional)
+10. `producer` { harness?, model?, skill? } — REUSE runmanifest producerJSON shape
+11. `created` (RFC3339Nano UTC string)
+
+`Validate()` (the guard matrix the gate demanded):
+- `eval_result_version == 1` (reject 0/2/other).
+- `IsValidEvalID(eval_id)`.
+- `method` in closed set.
+- `Score.Kind == method` (string equality after cast).
+- Per-Kind coherence (BLOCK #4):
+  - pairwise: `Winner` in {A,B,tie}; `Value==nil && Max==nil && Passed==nil`.
+  - rubric: `Value!=nil && Max!=nil && *Max>0 && 0<=*Value<=*Max`; `Winner=="" && Passed==nil`.
+  - assertion: `Passed!=nil`; `Value==nil && Max==nil && Winner=="" && Confidence==nil`.
+  - Confidence: allowed ONLY when method==pairwise (omitempty; optional/future).
+- method<->config coherence: `rubric` requires non-nil `Rubric{Path!="",Version!=""}` and nil
+  `Assertion`; `assertion` requires non-nil `Assertion` with len(Checks)>=1 and each
+  `Check.Kind` a non-empty identifier, and nil `Rubric`; `pairwise` requires both nil.
+- `len(Targets)`: ==2 for pairwise, ==1 for rubric/assertion.
+- Each Targets[i] AND each Context[i]: `IsValidRunID(RunID)`, `validateIdentifier(Stage)`,
+  `isHexOID(Commit)`, `validSHA256(Artifact)` (SR #8). Context may be empty.
+- findings: each `severity` in {info,warning,error}; `message` non-empty (trimmed).
+- `created` non-zero.
+`JSON()` calls Validate first (manifest.go:160-163 pattern). `ParseJSON` uses
+`DisallowUnknownFields` + an `ensureEOF` trailing-data guard (manifest.go:174-192,635-643),
+then Validate.
+
+### isHexOID decision (SR #8 note)
+`runmanifest.isHexOID` is unexported. DECISION: add a tiny eval-local `isHexOID` (and
+`validSHA256` equivalent) private helper in result.go rather than widening runmanifest's
+export surface — keeps each package's validator self-contained, matching how refstore has its
+own `validateOID` (store.go:337-347) instead of importing runmanifest's. `IsValidEvalID`
+reuses `runmanifest.IsValidRunID` (already exported) for the charset rules.
+
+### Writer create-path (internal/eval/result.go)
+```go
+type Writer struct{ Store refstore.Store }
+type WriteOptions struct{ Message string } // no ExpectedOld: evals are create-only
+
+func (w Writer) Write(ctx, r EvalResult, opts WriteOptions) (string, error) {
+    // Validate, marshal deterministically, WriteCommit with ExpectedOld="" (create-semantics).
+    // refs/etude/evals/<eval-id>, single file eval_result.json.
+}
+```
+Mirrors runmanifest.Writer.Write (manifest.go:210-248) minus artifact verification (eval trees
+carry no blobs). Collision -> ErrRefExists (hard error).
+
+**Files:**
+- internal/eval/eval.go - NEW: Method/ScoreKind/Winner/Severity consts; EvalRequest, EvalInput,
+  ArtifactSource, RubricRef, AssertionSpec, AssertionCheck, Score, Finding, Evaluation,
+  Evaluator interface, StubEvaluator + compile-time `var _ Evaluator = (*StubEvaluator)(nil)`.
+- internal/eval/result.go - NEW: EvalResult + Validate/JSON/ParseJSON, the *JSON wire structs +
+  toJSON/toResult, Writer + WriteOptions, IsValidEvalID, AllocateEvalID, evalsPrefix const,
+  eval-local isHexOID/validSHA256 helpers, ensureEOF.
+
+**Tests (internal/eval/eval_test.go, result_test.go):**
+- Golden deterministic JSON, exact byte match, one per method (rubric/pairwise/assertion) —
+  like TestManifestJSONIsDeterministicAndExact (manifest_test.go:19). Pairwise golden includes
+  2 targets + a context[] entry to lock the context lane; assertion golden includes the
+  checks[] block.
+- Round-trip: JSON -> ParseJSON -> JSON byte equality for all three methods (incl. context lane,
+  pointer null-vs-zero preservation, omitted rubric/assertion blocks).
+- ParseJSON rejects unknown fields + trailing data (DisallowUnknownFields + ensureEOF).
+- Validate guard matrix (each a row in a table test): bad version (0/2); invalid eval_id;
+  bad method; Kind!=method; pairwise with Value/Max/Passed non-nil or missing/invalid Winner;
+  rubric with Max==nil or *Max<=0 or *Value<0 or *Value>*Max or Winner set or Passed set;
+  assertion with Passed==nil or any numeric/Winner/Confidence set; Confidence on non-pairwise;
+  rubric method missing RubricRef / RubricRef present on non-rubric; assertion method missing
+  AssertionSpec / empty Checks / empty Check.Kind / Assertion present on non-assertion;
+  wrong target count (pairwise!=2, rubric/assertion!=1); bad RunID/Stage/Commit/Artifact in a
+  target AND in a context entry; empty/whitespace finding message; bad severity; zero Created.
+- StubEvaluator: returns Canned verbatim; Err injection returns the error + zero Evaluation.
+- Writer round-trip in a temp git repo (initGitRepo pattern, manifest_test.go:968): write to
+  refs/etude/evals/<id>, Resolve, ReadFile eval_result.json, ParseJSON, assert equality + exact
+  ref path; second Write with same id -> ErrRefExists (create-semantics collision).
+- IsValidEvalID unit table (valid scheme string; rejects `:`-bearing, empty, leading/trailing
+  dot, `..`, `.lock`); AllocateEvalID collision-suffix probe against a seeded ref.
+
+**Docs:** None required this bead. Internal interface/schema, NO CLI surface, no user-facing
+behavior (identical posture to phase2.3 runner). The eval_result schema gets user docs when
+`etude eval`/`etude bench` ship and expose it; BRIEF §4.2/§4.8 already describe the namespace
+and the (artifact,context)->score contract. No generated command reference affected.
+
+**Risks:** Low now that the contract is fully pinned. The two load-bearing choices remain the
+`Score` shape (bench's win-rate aggregation reads `Winner` directly; formula documented) and
+the `targets[]`/`context[]` split (bench's pairwise = targets[0]=A=original, targets[1]=B=replay;
+context auditable). Both are now explicit + validated. AssertionCheck.Args is a typed
+`map[string]string` whose per-Kind semantics the assertion-eval bead refines via the Kind
+registry — deliberately deferred, not under-specified (the persisted shape is fixed here).
+
+**Tier:** Tier 1 (schema + git storage). Built-binary manual test: NO — no CLI surface added,
+identical posture to phase2.3. Coverage via `go test` (golden JSON + Validate guard matrix +
+StubEvaluator + Writer round-trip + IsValidEvalID/AllocateEvalID).
+
+**Capture:**
+- inputs: bead etude-eval-interface description + NOTES (consolidated gate feedback) + parent
+  etude-phase3; BRIEF.md §3/§4.2/§4.8/§6/§8; internal/runmanifest/manifest.go (Writer/JSON/
+  ParseJSON/Validate/DisallowUnknownFields/ensureEOF/Producer/ReplayLink/validateStage/
+  IsValidRunID/IsValidIdentifier/isHexOID/validSHA256) + manifest_test.go (golden + Writer
+  round-trip + initGitRepo); internal/refstore/store.go (validateRef evals/ + create-semantics
+  ErrRefExists); internal/replay/runner.go (Runner/StubRunner/RunResult separation precedent);
+  internal/cli/replay.go (allocateReplayRunID collision-suffix); internal/workflow/workflow.go
+  (validEvalMethods + Eval).
+- output: bead --design field
+
+NOTES
+PLAN GATE attempt 1: 2 GO (Opus, Gemini) / 2 BLOCK (pilms, codex). Strong convergence — this keystone contract was underspecified. Consolidated required + strongly-recommended changes for attempt 2:
+REQUIRED (pilms+codex BLOCKs):
+- CONTEXT LANE (codex): eval is (artifact, context)->score per BRIEF §4.8. EvalRequest must carry a CONTEXT lane (unscored inputs e.g. task/plan/diff) SEPARATE from the scored Targets. Add Context []EvalInput; persist referenced context (as context ArtifactSources) distinct from targets.
+- ASSERTION config concrete + persisted (pilms+codex+Gemini): AssertionSpec{Checks []AssertionCheck{Kind string, Args map[string]string}} (+ built-in kind registry concept); persist assertion{checks[]} in eval_result.json REQUIRED iff method==assertion, forbidden otherwise (Passed isn't auditable without the checks).
+- EVAL-ID scheme DEFINED (pilms+codex): <method>-<primaryRunID>-<stage>-<UTC yyyymmddThhmmssZ> + numeric collision suffix (mirror replay allocateReplayRunID); add exported IsValidEvalID (reuse IsValidRunID charset so refstore validateRef accepts it). Writer uses create-semantics (collision = hard error).
+- SCORE per-Kind coherence rules SPELLED OUT (pilms): pairwise -> Kind=pairwise, Winner in {A,B,tie}, others absent; rubric -> Value in [0,Max], Max>0, Winner/Passed absent; assertion -> Passed set, others absent. Document win-rate formula: (count(A) + 0.5*count(tie))/total.
+STRONGLY RECOMMENDED (Opus+Gemini, fold in):
+- SEPARATE Evaluate(ctx, EvalRequest) (Evaluation, error) returning lightweight Evaluation{Score, Findings}; the CALLER builds the persisted EvalResult (eval_id, targets, context, created). Mirrors runner.Run/Manifest separation.
+- Explicit Method field on BOTH EvalRequest and EvalResult (don't infer from config pointer / Score.Kind).
+- Pairwise Winner orientation pinned: targets[0]=A, targets[1]=B; document A=original, B=replay convention for bench.
+- targets[] + context[] ArtifactSource{run_id,stage,commit,artifact}: commit mandatory, validated (IsValidRunID, validateIdentifier, isHexOID, validSHA256) — inherits the replay_of commit-pin lesson.
+- Score fields as POINTERS (Value/Max *float64, Passed *bool) to distinguish null vs zero under DisallowUnknownFields.
+- eval_result_version starts at 1 (no legacy 0/2 quirk).
+OPTIONAL/DEFER: Confidence *float64 on Score for pairwise (only if judge provides).
+Re-planning (dev-planner) then rerunning the four-seat gate (attempt 2).
+PLAN GATE attempt 2: 4/4 GO (Opus, Gemini, pilms, codex). All 4 attempt-1 BLOCK items (context lane, assertion persistence, eval-id scheme, per-Kind Score coherence) resolved + the strongly-recommended refinements folded in. Implement-time notes from GO seats: (a) isHexOID + validSHA256 are UNEXPORTED in runmanifest -> add eval-local helpers (refstore.validateOID precedent); (b) Winner as a typed string enum (type Winner string + consts); (c) ParseJSON parity: DisallowUnknownFields + ensureEOF trailing-data check like runmanifest; (d) validate Method via validateIdentifier (eval_id embeds it -> path-injection safety); (e) doc the win-rate total==0 / denominator behavior. Proceeding to Implement.
+IMPLEMENT GATE (Tier 1): 4/4 GO (Opus, Gemini, pilms, codex). Opus mutation-verified (broke per-Kind guard -> matrix test fails; tampered golden byte -> golden fails; isHexOID always-true -> commit guards fail). VERIFY: go test ./... GREEN (68 eval tests incl 50-row Validate guard matrix + golden JSON per method + Writer round-trip + collision). Contract-only internal package (no CLI surface) -> built-binary manual test N/A (phase2.3 posture). DOCS: none (no shipped CLI surface; schema gets user docs when etude eval/bench ship; BRIEF §4.2/§4.8 already describe the namespace + (artifact,context)->score contract). Proceeding to Final Review.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-phase3: (EPIC) Phase 3: evals and bench workflow ● P2
+
+BLOCKS
+  ← ○ etude-assertion-eval: Implement deterministic assertion evaluator ● P3
+  ← ○ etude-pairwise-eval: Implement pairwise evaluator ● P2
+  ← ○ etude-rubric-eval: Implement rubric evaluator ● P2
+
