@@ -1,0 +1,4 @@
+# Verify — etude-bench-command.3 (bench eval-result caching)
+Result: PASS. go test ./... green (incl. existing eval/cli/bench tests UNCHANGED — the additive EvalResult.JudgeID/Seed fields preserve backward-compat); gofmt/vet/build clean.
+Coverage: omitempty round-trip (empty JudgeID + nil Seed → byte-identical JSON, no judge_id/seed keys; old docs ParseJSON ok); JudgeIdentity (ExecJudge stable non-empty, differs on cmd/model; StubJudge → ""); cache MISS (judge called, doc written w/ JudgeID+Seed); HIT (non-empty JudgeID both runs, errorIfCalledJudge double NOT called, Reused=true, no new write); EMPTY-JudgeID → judge CALLED despite identical prior doc (no reuse); different targets/judge/seed → miss; --no-cache forced. Opus mutation-verified all teeth (ignore-JudgeID/ignore-Seed/remove-gate mutations all caught).
+No CLI surface added beyond .4's --no-cache flag (the only manual-testable bit; covered by bench_test).
