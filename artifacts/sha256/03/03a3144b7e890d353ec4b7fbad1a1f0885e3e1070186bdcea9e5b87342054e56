@@ -1,0 +1,7 @@
+## Docs — etude-dpz (Changed: no)
+
+No shipped docs needed (behavior-preserving internal refactor). docs/run.md documents six run-id
+rejection rules; each was cross-checked against IsValidRunID and all match exactly. docs/capture.md role
+charset [A-Za-z0-9_.-] matches IsValidIdentifier. Error messages (invalid run id "<id>", run "<id>" not
+found, invalid <name> "<v>", <name> is required) are unchanged by the refactor. No generated docs/CHANGELOG.
+Deferred follow-up: refresh the workflow.go isIdentChar comment now that IsValidIdentifier is exported.
