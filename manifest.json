@@ -159,6 +159,58 @@
         "size": 3171
       },
       "timestamp": "2026-05-25T03:59:19.847433Z"
+    },
+    {
+      "stage": "review",
+      "produced_by": "original",
+      "git_sha": "2b13eed791a70fc35c88f83186ebfce75f2eaa23",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-pr-reviewer",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "diff",
+          "artifact": "26d18e09daaa42f2593feab7f1fcc99e445e3903c1be7f81900670fb27dee1a8",
+          "path": "artifacts/sha256/26/26d18e09daaa42f2593feab7f1fcc99e445e3903c1be7f81900670fb27dee1a8",
+          "media_type": "text/x-diff; charset=utf-8",
+          "storage": "content",
+          "size": 13086
+        },
+        {
+          "role": "plan",
+          "artifact": "c319874ccd64bd26351db380a84cb42297ed1ce76cf90a5b00a0454402b7b8e9",
+          "path": "artifacts/sha256/c3/c319874ccd64bd26351db380a84cb42297ed1ce76cf90a5b00a0454402b7b8e9",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 6474
+        },
+        {
+          "role": "verify",
+          "artifact": "c4129c48ba32ed5a7713373bd302c57bc2e97e3794435c901f34e5e1d19f45da",
+          "path": "artifacts/sha256/c4/c4129c48ba32ed5a7713373bd302c57bc2e97e3794435c901f34e5e1d19f45da",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 1109
+        }
+      ],
+      "output": {
+        "role": "review",
+        "artifact": "8e0d8633cec108a85a59c540d6c03843cae609e24656ff604dd0452e020b06d8",
+        "path": "artifacts/sha256/8e/8e0d8633cec108a85a59c540d6c03843cae609e24656ff604dd0452e020b06d8",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 89
+      },
+      "timestamp": "2026-05-25T03:59:20.063124Z"
     }
   ]
 }
