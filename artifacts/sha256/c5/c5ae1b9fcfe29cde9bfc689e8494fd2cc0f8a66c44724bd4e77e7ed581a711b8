@@ -1,0 +1,151 @@
+# Verify — etude-9uf.1: `etude gate`
+
+## The contract, item by item, against the built binary
+
+The supervisor runbook obliges this bead's verify phase to walk its ten-item
+contract against the real binary rather than against tests. Done below with
+`./bin/etude` built from this tree.
+
+| # | Contract item | Evidence |
+|---|---|---|
+| 1 | Unknown stage → clear error, non-zero, nothing recorded | `unknown stage "bogus" in .etude/workflow.yaml; stages are: plan, implement, verify, docs, review` — exit 1; run ref gate count unchanged |
+| 2 | Reads the stage's `gate.tier`/`abstraction`/`checks` | the live `plan` gate resolved tier L2 and inlined the plan stage's abstraction into the prompt (asserted byte-for-byte by `TestGateStagePassRecordsOneAttemptAndAdvances`) |
+| 3 | Resolves the tier's seats from `registry.yaml`; no flag can lighten it | there is no seat/tier flag on the command; `--help` shows only `--run/--stage/--artifact/--workflow/--timeout` |
+| 4 | Missing run ref → clear error, non-zero | `run not found: refs/etude/runs/absent-run; capture the stage first (etude capture <stage> --run absent-run ...)` — exit 1 |
+| 5 | Derives the round from attempts already on the run | live: successive real invocations recorded `plan.r3`, `plan.r4`, then `implement.r2` without being told a round |
+| 6 | Runs checks then seats against the same shared prompt | `TestGateStagePassRecordsOneAttemptAndAdvances` asserts both seats received byte-identical input |
+| 7 | Fail-closed synthesis | live `implement.r2`: one `go`, one `failed` → `escalated`, not a pass |
+| 8 | Appends one `GateAttempt` with per-seat verdicts, raw output, session evidence | `etude run show etude-9uf.1` lists every attempt with seat verdicts; `TestGateStageRecordParitesWithCaptureGate` asserts session-evidence and raw-output fields |
+| 9 | Prints the verdict and each blocking seat's `required` | live output shows `gate implement.r2: escalated` then per-seat lines with notes |
+| 10 | Exit 0 only on pass | unknown stage / missing run / no reviewable stage / missing flags all exit 1; a not-passing gate exits 1 while still recording the attempt |
+
+Additional guards exercised live: an empty artifact is refused
+(`artifact /tmp/e.md is empty; there is nothing to review`), and a run that
+exists but has no stage producing the phase's role is refused
+(`no reviewable stage on run: ... capture it before gating stage "verify"`),
+which is what enforces capture-before-gate per phase rather than merely
+"the run exists".
+
+## Checks required by the verify stage's `gate.checks`
+
+| check | result |
+|---|---|
+| `make test` | green |
+| `make lint` | green (`gofmt -l cmd internal` empty, `go vet ./...` clean) |
+
+## Additional checks
+
+| check | result |
+|---|---|
+| `make docs-check` | no diff (24 generated pages, `etude_gate.md` among them) |
+| `make docs-reality` | OK — 15 commands; docs match the shipped CLI |
+| `make seat-adapter-test` | 49 checks, all green |
+
+## CLI-facing: yes, and exercised as a CLI
+
+This bead ships a new command, so the surface was driven from a shell, not only
+through tests: `--help`, every required-flag omission, all three error paths, and
+two complete live gate runs against real seats. Both live runs are recorded on
+`refs/etude/runs/etude-9uf.1` and pushed to origin.
+
+## The merge with `origin/main`
+
+The branch was rebased onto `origin/main`, where another lane had landed
+`invocation_fallbacks` plus a guard asserting the checked-in registry equals
+`registry.Default()`. Both designs were kept: fallbacks are the config-level
+candidate list, the adapter is the execution-level bridge. Their guard did its
+job — it caught that the YAML edits had not been mirrored into `Default()`.
+
+Their two tests were updated rather than bypassed: the golden registry YAML was
+regenerated from `Default()`, and `TestSeatInvocationsReturnsIndependentSlice`
+now captures the real first fallback instead of hardcoding `"agy"` (which is now
+the sub-agent). That test is about aliasing, not ordering, so binding it to a
+literal name made it fail on an unrelated change; it is stronger now.
+
+## Seats
+
+The opus seat runs as an in-harness sub-agent — a fresh, separately
+authenticated opus identity given only the shared gate prompt and the inlined
+artifact. That is the arrangement `.etude/registry.yaml` documents, and it is now
+machine-honored as the first `invocation_fallbacks` entry rather than living in a
+comment a worker could read and stop at. Its verdict is a normal seat verdict and
+its record carries no `degraded_reason`.
+
+## Known limitation, disclosed
+
+`etude gate` resolves `invoke` and execs it. It does not yet ACT on
+`invocation_fallbacks`: when the primary invocation fails it records the seat
+`failed` rather than trying the next candidate. The config now expresses the
+ladder faithfully and `Seat.Invocations()` returns it in order, so the consumer
+side is a contained follow-up rather than a redesign. Filed as **etude-5f6**.
+
+## Gate outcome
+
+The implement gate PASSED at round 8 — codex GO, opus GO — on a tree frozen and
+sha256-verified across both verdicts. Eight rounds; six of them caught a real
+defect. Every BLOCK was in my work, and none was argued down.
+
+Rounds 5, 6 and 7 turned out to be ONE family: a parsing rule that is safe in one
+direction being unsafe in the other. r5 and r6 were fail-OPEN (a stated BLOCK, and
+then a cancelled finding, each becoming a pass). r7 was fail-CLOSED — my r6 fix
+removed an implicit tolerance the buggy rule had been providing, so an echoing
+seat could no longer cast a GO at all. A false outage is not the safe failure it
+looks like: it escalates every gate rather than one seat.
+
+Round 8's four non-blocking follow-ups were all folded before commit, with
+regressions, and confirmed by the seat that raised them. Two were further
+fail-opens: a label with a space before its colon (`BLOCKING : 1. real finding`)
+read as an empty body, and the placeholder rule was body-shaped so a genuine
+angle-wrapped finding was dropped. The fourth added the `anchorCommand` unit test
+that the round-6 fix had shipped without; a negative control proves it fails if
+that bug is reintroduced.
+
+## What the opus seat found once it was convened properly
+
+The seat's first real verdict on this bead was a BLOCK, and it was the most
+valuable finding of the epic. `scripts/seat-adapter.sh` applied "last VERDICT
+line wins" even when an EARLIER line-anchored VERDICT resolved to the opposite
+valid token, so a reply of the form
+
+    VERDICT: BLOCK
+    BLOCKING: 1. real defect
+    ...
+    If fixed I would say:
+    VERDICT: GO
+
+exited 0 and wrote `{"verdict":"go","required":["1. real defect"]}`. Nothing
+downstream compensates — `synthesizeVerdict` counts the token and discards
+`required` — so a stated BLOCK became a passing vote. The seat verified it
+against the real script; I reproduced it before changing anything.
+
+Position no longer arbitrates between two valid verdicts, in either direction. A
+second opus instance reviewing the same packet independently named that exact
+attack as its best one and recommended the identical hardening, which is why this
+was treated as certain rather than arguable.
+
+Five smaller findings from the same pair of reviews were folded with regressions:
+a `GO` carrying blocking findings is refused (raised by both seats); the prompt is
+not guessed when several inputs exist; the envelope pre-clear is verified; `trap`
+covers `INT`/`TERM`; and `anchorSeatCommands` anchors fallback commands too. Two
+residual items are filed as **etude-vnf** (P3) rather than fixed.
+
+## Correction: the opus seat was always available
+
+Earlier in this epic I reported the in-harness opus seat as unreachable after six
+attempts, and filed `etude-zc3` on that basis. That diagnosis was wrong in an
+important way, and the cause was mine.
+
+Every one of those six spawns gave the agent a NAME. A named agent becomes a
+persistent, addressable teammate: it runs, goes idle, and waits to be messaged —
+it never returns a report to the caller. An unnamed spawn launches async and
+delivers its result through a completion notification, which is the shape a
+one-shot reviewer seat needs.
+
+So the seat was reachable the whole time; I was invoking it in a shape that
+cannot return a verdict, and then reading the resulting silence as an outage. The
+`agy` substitute I fell back on was never needed, and the quota exhaustion that
+followed was a consequence of that wrong turn rather than a cause of anything.
+
+`etude-zc3` is updated accordingly rather than closed silently, because the
+misdiagnosis is the useful part: a seat that "returns nothing" should prompt a
+check of the invocation shape before it is recorded as an outage.
