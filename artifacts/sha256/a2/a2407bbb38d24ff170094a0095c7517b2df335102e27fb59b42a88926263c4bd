@@ -1,0 +1,73 @@
+# Verify — etude-n9b.1 workflow and manifest contract
+
+Status: pass
+
+Recommendation: proceed to Docs.
+
+ANCESTOR: etude-n9b (P1) — deliver GitHub issue #16 with an opt-in,
+manifest-recorded checkout-read grant and an output-only default.
+
+BLAST RADIUS: none outside this worktree. Verification reads and tests the four
+changed Go files and creates only ignored gate artifacts.
+
+## Inputs
+
+- bead: etude-n9b.1
+- approved plan: run stage `plan.r2`
+- implementation: run stage `implement`
+
+## Automated tests
+
+Test changes: six focused functions across two packages:
+
+1. `TestGateReadCheckoutRoundTrip`
+2. `TestGateReadCheckoutDefaultsOutputOnlyAndOmitsFalse`
+3. `TestGateReadCheckoutRejectsNearMissAndNonBoolean` in workflow
+4. `TestGateReadCheckoutJSONRoundTrip`
+5. `TestGateReadCheckoutFalseOmittedAndLegacyParses`
+6. `TestGateReadCheckoutRejectsNearMissAndNonBoolean` in runmanifest
+
+State: dirty, pending the bead's final gate and commit.
+
+Commands and results:
+
+- `go test ./internal/workflow ./internal/runmanifest` — pass.
+- `make test` — pass across every package.
+- `make lint` — pass (`gofmt -l` empty and `go vet ./...` clean).
+- `git diff --check` — pass.
+
+The independent literal YAML and JSON goldens prove the true wire spelling and
+field placement. False/absent tests prove omission and the output-only zero
+value. Strict-decode cases prove near-miss names and non-boolean values remain
+rejected. The full suite covers consumers outside the two focused packages.
+
+## Manual tests
+
+Required: no. This child changes no CLI command or built-binary behavior; it is
+an additive schema/codec contract consumed by etude-n9b.2.
+
+## Docs
+
+Changed: no. Documenting the inert schema leaf before runtime consumption would
+claim unshipped behavior. User-facing docs belong to etude-n9b.2.
+
+## QA findings
+
+- Correctness: true round-trips; absent and false remain output-only and omit
+  the wire field.
+- Coverage: encode, decode, legacy, strict-name, strict-type, and full-suite
+  paths pass.
+- Regressions: none observed.
+- Code quality: minimal four-file diff using existing codec primitives.
+- Risks: older strict binaries reject a newer manifest containing the additive
+  leaf; this one-way compatibility policy was explicit in the approved plan.
+
+TOPOLOGY: no concurrency change.
+
+DURABILITY CLASS: no irreversible or delivery operation.
+
+TRUST BOUNDARY: workflow YAML and manifest JSON stay untrusted through their
+existing strict decoders; no manifest value is used as runtime authorization in
+this child.
+
+IRREVERSIBLE SEQUENCES: none
