@@ -319,6 +319,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:52:00Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "cite WaitDelay",
+            "enumerate artifact-add residuals"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r4",
+            "artifact": "e64e53b0c0e544657fccb54c74e2753241cb2110a2e1ac5260708cd2ed9a7a4c",
+            "path": "artifacts/sha256/e6/e64e53b0c0e544657fccb54c74e2753241cb2110a2e1ac5260708cd2ed9a7a4c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 281
+          },
+          "timestamp": "2026-08-16T00:55:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "name transcript ref and GC walks",
+            "retain stderr tail",
+            "cite unique scratch paths"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r4",
+            "artifact": "ac131af81c15864967f45c188cfc38c2a5abf85201c072ce7d9fbc0f4aec6095",
+            "path": "artifacts/sha256/ac/ac131af81c15864967f45c188cfc38c2a5abf85201c072ce7d9fbc0f4aec6095",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 315
+          },
+          "timestamp": "2026-08-16T01:01:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:02:00Z"
     }
   ]
 }
