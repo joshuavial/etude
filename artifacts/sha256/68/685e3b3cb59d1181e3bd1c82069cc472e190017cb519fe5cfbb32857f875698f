@@ -1,0 +1,9 @@
+# PR #23 evidence review follow-up
+
+Address three medium correctness findings from the two-seat review panel:
+
+1. Detect session reuse against every earlier producer attempt, including attempts whose gates passed, while handing over only killed attempts.
+2. Preserve a valid runner-reported transcript when `etude replay --record` creates the linked run.
+3. Emit an honest manifest schema version when a stage log is present, without making durable development refs unreadable.
+
+Document that stage logs are raw, unscanned evidence supplied to later reruns. Defer a transcript redaction false-positive recovery or operator override to `etude-ve81`, because that changes security policy and durable operator UX.

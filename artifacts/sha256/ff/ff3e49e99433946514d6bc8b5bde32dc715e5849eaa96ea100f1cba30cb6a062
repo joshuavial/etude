@@ -1,0 +1,23 @@
+# PR #23 evidence review follow-up plan
+
+ANCESTOR: GitHub issue #17 requires durable stage session/log evidence and digest-bound prior-attempt handoff. PR #23 already implements that contract; this follow-up corrects review-found gaps before merge.
+
+MEASUREMENT: both independent reviewers approved the PR but identified three concrete persisted-evidence errors: passed attempts were absent from session identity history, replay recording discarded an existing transcript path, and stage logs were written under schema versions whose strict readers did not recognize the field.
+
+BLAST RADIUS: localized changes to prior-attempt construction, replay recording, manifest JSON version selection, focused tests, and behavior/security documentation. No new executable, environment variable, ref namespace, credential path, external service, or destructive operation. New writes containing stage logs identify as manifest v4; readers keep accepting development refs that carried logs under v2/v3.
+
+IRREVERSIBLE SEQUENCES: none. Artifact writes and run-ref CAS retain their existing atomic visibility and unreferenced-content crash semantics.
+
+Implementation:
+
+- Determine `resumed_session` by comparing a killed attempt's nonblank session identifier byte-for-byte with every preceding stage record, not merely other killed attempts.
+- Give `RunRecorder` the already-live scratch/worktree containment roots and use the existing bounded, no-follow transcript read plus secret scan before adding transcript evidence.
+- Emit manifest v4 whenever any stage has a log; accept v2/v3 log documents only as a compatibility bridge for durable development refs already written.
+- State plainly that stage logs are unscanned raw evidence and cross attempt boundaries.
+- Track the broader fail-closed redaction recovery policy in `etude-ve81` rather than adding an implicit bypass here.
+
+Proof:
+
+- Unit regressions for passed-session history, replay transcript import, v4 emission/round-trip, and legacy log parsing.
+- Full `make test`, `make lint`, and repository documentation checks.
+- Built CLI replay with a sidecar transcript and both streams, followed by manifest/artifact inspection; repeat with no sidecar.
