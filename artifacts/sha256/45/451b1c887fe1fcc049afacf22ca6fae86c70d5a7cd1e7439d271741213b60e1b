@@ -1,0 +1,5 @@
+# Verify — etude-x0r (refresh docs/plans/README.md planned-vs-shipped + index label)
+Result: PASS. Docs-only (docs/plans/README.md + docs/README.md), Tier 3.
+- Every shipped/planned classification verified ACCURATE against the built binary + code: all 13 shipped commands present (etude --help); retro generate/list/show present; eval is library-only (consumed by bench, no `etude eval` command); reindex builds the SQLite index, no query command consumes it; no `etude import`; capture adapters (xenota/github) are Phase 1 (unimplemented, referenced only in prime.go:93); AddPointer has zero non-test callers (confirms inline-only artifact store + etude-8b7 dead-code finding); no docs site.
+- Guards: make docs-check exit 0; make docs-reality OK (13 cmds). Both files hand-written (no docs/cli regen). All relative links resolve.
+Scope: docs/plans/README.md + docs/README.md. 1-bead=1-commit.

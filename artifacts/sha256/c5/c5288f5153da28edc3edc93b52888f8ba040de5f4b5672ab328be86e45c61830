@@ -1,0 +1,8 @@
+✓ etude-x0r · Refresh docs/plans/README.md planned-vs-shipped + docs index label   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Docs audit finding. docs/plans/README.md:1-9,53-72 headers the list as 'expected to build, not implemented yet' then lists Go CLI, workflow schema, ref store, capture, run manifests, artifact store, sync, query index, replay, eval, bench, gc — ALL now shipped. Only Import + the docs site remain genuinely unbuilt. Rewrite to mark shipped items (or strip them), leaving Import + docs-site as planned. Also fix docs/README.md:21 ('notes on planned components that do not exist yet' -> 'planning/design notes, some shipped'). Optional: trim the init<->sync refspec-rationale duplication (docs/sync.md:127-134 restates docs/init.md:24-39) to a cross-link.
+

@@ -1,0 +1,5 @@
+# Final Review — etude-x0r (refresh docs/plans/README.md planned-vs-shipped + index label)
+Verdict: GO (Tier 3, single Opus seat). Commit 6381bac.
+- Closes a docs-audit finding: docs/plans/README.md headed its component list "things etude has not implemented yet" then listed ~12 now-shipped components. Rewrote into "Shipped" (Go CLI, workflow schema, ref store, capture, manifests, inline artifact store, sync, replay, eval-as-library, bench, gc, reindex-built query index, retro) + "Still planned" (capture adapters/import, query command, standalone eval CLI, external artifact pointers, docs site), softened the header, and fixed the docs index label.
+- The classification was verified accurate against the CLI + code by the review seat (incl. confirming AddPointer is dead/test-only → external pointers correctly "still planned", consistent with etude-8b7). No mis-classification, no overclaim, no broken links.
+- Guards: docs-check/docs-reality green; both files hand-written (no docs/cli regen). Scope: 2 docs files.
