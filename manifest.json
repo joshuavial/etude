@@ -364,6 +364,120 @@
         "degraded_reason": "Both seats GO at round 1. Six of seven optionals folded, all the same wrong-pointer class this bead removes: dead code carried across in the extraction (both seats flagged the unused assert_output_* helpers; opus also found an unused INITIAL_SHA); a stale comment block naming DOGFOOD_CLOSE_AUDIT_SCRIPT, a variable of the deleted close script, which also mis-described how the audit sentinel is injected; a lost section banner rule; present-tense prose in the schema doc about a deleted capture path; and the new file's header overstating core.hooksPath, which in a worktree resolves to the MAIN checkout while PRE_PUSH_HOOK is built from this worktree's REPO_ROOT. The sharpest optional was that the artifact's 'verified pre-existing, 22 gaps' claim about make dogfood-audit did not reproduce - the audit scans a MOVING --last 9 window, so a stash-and-compare against it is not reproducible evidence. Re-checking found one gap that was mine and fixable rather than pre-existing (unpushed-ref on this bead's own run ref, because the implement stage was captured after the last gate push); pushing the ref cleared it, leaving 2 pre-existing cadence-sidecar gaps that bead .4 covers. Not folded: shell-test is a deliberate addition the passed plan names. make test, make lint, make docs-check, make docs-reality and make pre-push-test (18/18) all re-run green after the folds. The opus seat ran as an in-harness sub-agent per the documented registry exception."
       },
       "timestamp": "2026-08-15T09:18:54Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "8b1382a76dd1cda1d0e1e530ee83ccdb40b8154f261e02536ec8627f7c5f8188"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "10708718233ae301386295731a9d4a0c3e2abcd67af028c218eb734e904dd631",
+            "path": "artifacts/sha256/10/10708718233ae301386295731a9d4a0c3e2abcd67af028c218eb734e904dd631",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1239
+          },
+          "timestamp": "2026-08-15T09:21:31.937421Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T09:21:32.164572Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T09:21:33.274886Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add CI or hook coverage for `shell-test` in a follow-up, since it remains manual."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "9a6e803bfd9f3e800e23a253b876c73fecb3a6c3cb49b792514ed686c387b596",
+            "path": "artifacts/sha256/9a/9a6e803bfd9f3e800e23a253b876c73fecb3a6c3cb49b792514ed686c387b596",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 231
+          },
+          "session": {
+            "session_id": "codex-ba5892af57a277a8",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ba5892af57a277a86d9834e0bd53fc78db3efcd91296dd6c9542b67513c67cc2",
+              "path": "artifacts/sha256/ba/ba5892af57a277a86d9834e0bd53fc78db3efcd91296dd6c9542b67513c67cc2",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 139
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T09:21:55.510634Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T09:21:55.51073Z"
     }
   ]
 }
