@@ -1,0 +1,21 @@
+# Documentation evidence for etude-5dr.5
+
+The shipped documentation now distinguishes the two manifest v4 identities:
+
+- top-level `original_git_sha` is the immutable checkout that pins resume,
+  replay, recovered gates, and bench worktrees;
+- a caller-workspace stage's `git_sha` is its clean post-run HEAD.
+
+`docs/run.md` documents why old v4 manifests without the new identity fail
+closed and states that resume uses the immutable run value. `docs/replay.md`
+documents original-checkout selection for replay and recorded replay.
+`docs/gates.md` documents preservation and use of the original checkout during
+gate recovery and gate-attempt rewrites.
+
+Verification:
+
+- `make docs-check`: pass
+- `make docs-reality`: pass (`docs-reality: OK — 15 commands; docs match the shipped CLI.`)
+- `git diff --check`: pass
+
+No planned or unrelated documentation was changed.
