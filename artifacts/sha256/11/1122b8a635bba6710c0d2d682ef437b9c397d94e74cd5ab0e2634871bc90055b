@@ -1,0 +1,10 @@
+codex seat — etude-jqs. PLAN gate: 7 rounds, final PASS_WITH_FOLLOWUPS. VERIFY gate: round 2 PASS_WITH_FOLLOWUPS.
+"The sibling prefixes are structurally disjoint from refs/etude/*; existing push, sync, cleanup, and reader
+patterns cannot match the mirror. The four config writes are convergent, correctly ordered, and have safe
+documented crash prefixes. Deferring mirror reads and expiry is acceptable. Constructed-ref validation is
+appropriate; slash aliasing and possible D/F fetch failures are disclosed and cannot reach authoritative refs."
+Across the plan rounds this seat caught: a predicate that would have UN-FIXED etude-i19 on every unmigrated
+repo; a push trap surviving in every already-initialised repo; a harmful crash ordering; two invalid-ref
+cases; a sequence omitting the original hazard; and the repo-GLOBAL multi-remote hazard that triggered the
+layout change from nested to sibling. At verify it caught a test using the production enumeration as its own
+oracle, and a test that SKIPped rather than proving the validation wiring.

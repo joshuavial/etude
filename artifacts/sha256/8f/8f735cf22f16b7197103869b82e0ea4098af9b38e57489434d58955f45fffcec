@@ -1,0 +1,10 @@
+opus seat — etude-jqs. PLAN gate PASS_WITH_FOLLOWUPS; VERIFY gate PASS_WITH_FOLLOWUPS. No blocking findings.
+Plan: identified that refs/etude-mirror/ is a STRING-prefix extension of refs/etude, so refspec globbing is
+safe (component-anchored) but any unanchored HasPrefix would match mirrors — prompting an audit that found no
+such check in production Go, now pinned by TestMirrorNamespaceIsDisjointFromLocal.
+Verify: found a LIVE DATA-LOSS PATH in shipped code that this diff did not introduce — fetch.prune or
+remote.<name>.prune in user/global config makes git prune the destinations of COMMAND-LINE refspecs too, so
+etude sync's LOCAL-namespace refspec could delete unpushed refs/etude/* even though etude never passes
+--prune. Fixed by passing --no-prune explicitly, with a regression driving the real scenario and a negative
+control confirming it fails without the fix. Also: raise etude-26i (mirror object pinning is the largest live
+cost), keep the etude-cng-before-etude-eje gate explicit, and assert push-line COUNT rather than survival.

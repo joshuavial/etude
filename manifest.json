@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-jqs",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -86,6 +86,91 @@
         "size": 11550
       },
       "timestamp": "2026-08-16T02:30:48.746759Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "ca2552e41733837094dbb9b11b71dde4fa5cc2874ca762414c64f34e79061001"
+        },
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "0ebaa4d4945902ebcad474659f60ce709a70f36b6ee36efb59bbadeb9d5c9c73"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness-subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "sync --no-prune (fixed in-round)",
+            "raise etude-26i: mirror object pinning",
+            "etude-cng before etude-eje",
+            "no test for two lanes running init concurrently on one .git/config"
+          ],
+          "raw_output": {
+            "role": "opus-verdict",
+            "artifact": "8f735cf22f16b7197103869b82e0ea4098af9b38e57489434d58955f45fffcec",
+            "path": "artifacts/sha256/8f/8f735cf22f16b7197103869b82e0ea4098af9b38e57489434d58955f45fffcec",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 1054
+          },
+          "timestamp": "2026-08-16T02:31:15Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec-ephemeral"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "complete etude-cng before any reader relies on per-remote mirror identity",
+            "complete etude-26i to bound object retention"
+          ],
+          "raw_output": {
+            "role": "codex-verdict",
+            "artifact": "1122b8a635bba6710c0d2d682ef437b9c397d94e74cd5ab0e2634871bc90055b",
+            "path": "artifacts/sha256/11/1122b8a635bba6710c0d2d682ef437b9c397d94e74cd5ab0e2634871bc90055b",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 1052
+          },
+          "timestamp": "2026-08-16T02:31:15Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "7 plan rounds. The bead's originally specified NESTED mirror layout was replaced by a SIBLING namespace on operator decision after three of four blocking findings proved to exist only because nesting puts the mirror inside the namespace push refspecs span. That change took the diff from six code files to two and the migration from eight steps to five.",
+        "degraded_reason": "Full committed L1 panel (opus + codex). Upstream 770584b removed the gemini seat and redefined L1 as [opus, codex]; the registry notes L1 is now identical to L2/L3 in composition, with a genuine third seat tracked as etude-pzq. Nothing waived.",
+        "deferred_beads": [
+          "etude-cng",
+          "etude-26i",
+          "etude-eje"
+        ]
+      },
+      "timestamp": "2026-08-16T02:31:15Z"
     }
   ]
 }
