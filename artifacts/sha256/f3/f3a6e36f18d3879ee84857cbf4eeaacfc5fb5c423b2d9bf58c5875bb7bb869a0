@@ -1,0 +1,6 @@
+# Final Review — etude-ojz (provision ripgrep for the gemini reviewer seat)
+Verdict: GO.
+- Root cause (verified both seats): gemini-cli 0.43.0 getRipgrepPath() looks ONLY for a bundled rg-<platform>-<arch> at <bundle>/vendor/ripgrep/ (+ ../../), never system rg; vendor dir missing -> "Cannot find bundled ripgrep binary" -> bleeding GrepTool fallback. useRipgrep defaults true.
+- Fix: scripts/provision-gemini-ripgrep.sh symlinks system rg into the candidate-1 path. Target-handling guards a future real bundled binary (regular file left untouched; only manages symlinks). node-derived binName; rg verified runnable before linking + target after; idempotent. bash -n clean; both gate seats cleared script correctness.
+- Empirically verified: gemini stops falling back. Docs: runbook root-cause + script + KEEP ground-truth backstop; ledger B2 -> [IMPLEMENTED]. Scope: script + 2 dogfood docs, no product code.
+Commit: add provision-gemini-ripgrep script to fix gemini seat GrepTool fallback (ff47c76).
