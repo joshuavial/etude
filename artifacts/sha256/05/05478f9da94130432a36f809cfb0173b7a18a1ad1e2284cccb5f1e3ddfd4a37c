@@ -1,0 +1,9 @@
+# Final Review — etude-7no (etude prime agent-onboarding command)
+Verdict: GO.
+- Coherent: etude prime prints a read-only primer, exits 0 outside a repo, derives the command reference at runtime from cmd.Root().Commands(), labels eval/import planned, covers purpose/concepts/storage/workflow. Plan->impl->tests->docs consistent.
+- Primer accuracy (the bead's whole point, verified): capture-flow flags match capture.go exactly (capture --run/--output/--input/--skill-id; capture-gate --run/--gate-file) — the r1 hallucinated flags (--file/--bead/--reviewer/--decision) are gone; storage model real (refs/etude/runs|evals|retros, artifacts/sha256/<aa>/<hash>, manifest_version 2/3); eval/import the only planned items + genuinely unregistered; every derived command is real.
+- Code quality: read-only by construction (no refstore/git, cobra.NoArgs); deriveCommands/skipCommand clean (sorted, filters help/completion/hidden, one-level recurse); drift-guard now genuinely robust — indent-anchored ("  name " 2-space vs "    parent sub " 4-space) distinguishes sibling-prefix (capture/capture-gate) AND parent/child (run/run list); a dropped top-level line fails. No dead code.
+- Docs: README/docs-README accurate (read-only, no args); generated etude_prime.md + index consistent; no hand-guide (prime IS the primer). docs-check/docs-reality(12 cmds)/TestDriftGuard/lint green.
+- Scope: 7 files, 1-bead=1-commit; product code = prime.go + root.go registration.
+Gate history (all real codex catches): plan re-tiered Tier2->1 + docs-reality completeness; implement 4 rounds (r1 hallucinated flags; r2 substring; r3 parent/sub; r4 GO on indent-anchored guard).
+Commit: add etude prime agent-onboarding command (740b0d7).
