@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.3",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,87 @@
         "size": 1862
       },
       "timestamp": "2026-05-27T00:15:34.47834Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T05:10:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "add durable_changes[] (phase doc mandates 'durable changes landed')",
+            "WARN-only does not satisfy REQUIRE; post-convention cadence retros must hard-fail"
+          ],
+          "timestamp": "2026-05-27T05:10:30Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "add durable_changes[]",
+            "enforce REQUIRE mechanically (cutoff BLOCK) not just WARN"
+          ],
+          "timestamp": "2026-05-27T05:11:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU); see decision.degraded_reason",
+          "timestamp": "2026-05-27T05:11:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down (0 CPU). 2 BLOCK (codex, gemini) / 1 GO (opus). Both blockers agreed on two fixes: add durable_changes[]; replace WARN-only with a cutoff-date BLOCK. Plan amended."
+      },
+      "timestamp": "2026-05-27T05:12:00Z"
     }
   ]
 }
