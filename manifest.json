@@ -498,6 +498,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:28:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "915078ec739d539f4f84362ba6dc14b1082ab3905f7325df5dda2b7fbb6931a6"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Sparse-checkout remains fail-closed and unsupported for caller mode.",
+            "packet path .etude/tmp/etude-5dr.4/verify-gate-r1.md sha256 78d91851d4627981bc8a99b47e5a76e5fb20cbad8cd120e5be1b1a8197f8cabb"
+          ],
+          "timestamp": "2026-08-16T03:33:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Explicitly bind the trusted Git-semantics premise: caller runners must not rewrite configuration or controls to alter what Git reports."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/verify-gate-r1.md sha256 78d91851d4627981bc8a99b47e5a76e5fb20cbad8cd120e5be1b1a8197f8cabb"
+          ],
+          "timestamp": "2026-08-16T03:33:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:33:00Z"
     }
   ]
 }
