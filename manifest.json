@@ -993,6 +993,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T02:43:12Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r3",
+          "role": "docs-diff",
+          "artifact": "93223bc599ddc720e1e0b37e9b4817287806daf938b9fbc53617261a5f086948"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Widen or remove raw clean-filter wording if non-filter Git normalization remains allowed.",
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r3.md sha256 0f5632517eb9bec6f74f293b8f07c7dd09e391d60875d7a5288196e1ea301282"
+          ],
+          "timestamp": "2026-08-16T02:55:37Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Do not claim raw-filesystem binding while core.excludesFile and non-filter Git clean transformations such as ident remain outside the guard."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r3.md sha256 0f5632517eb9bec6f74f293b8f07c7dd09e391d60875d7a5288196e1ea301282"
+          ],
+          "timestamp": "2026-08-16T02:55:37Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:55:37Z"
     }
   ]
 }
