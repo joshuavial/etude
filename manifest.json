@@ -303,6 +303,64 @@
         "degraded_reason": "pilms down. 3-seat unanimous GO on check (g) code: collects bead.* AND subject_run.* (critical), etude-prefix normalized, anchored fullmatch, WARN-only, batch-only. Opus ran 57 tests + real audit + confirmed the bead.*-only g.3 case asserts no-WARN."
       },
       "timestamp": "2026-05-27T09:42:00Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T10:05:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T10:05:30Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T10:06:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. PIVOT re-confirm: the gated plan's SUPERSEDE breaks against check (f)'s post-cutoff sidecar requirement (a supersede mints a post-cutoff ref). codex+gemini both GO annotate-via-allowlist (acceptance-allowed) and confirm deferring the supersede+sidecar to etude-8hq.5 (supersession-aware, all 17 refs at once) is the right scope boundary. The temporary auditable allowlist entry is fine."
+      },
+      "timestamp": "2026-05-27T10:06:30Z"
     }
   ]
 }
