@@ -1,0 +1,15 @@
+# GH #15 rebase integration plan
+
+Goal: preserve caller-workspace production and its fail-closed tracked-tree mutation guard while integrating the landed submodule checkout/validation behavior from GH #14 and pinned gate-seat checkout behavior from GH #16.
+
+The run-level `original_git_sha` remains the immutable pre-caller checkout A. A caller stage may record a clean post-run HEAD B in its own `git_sha`. Every hermetic consumer must select A: live resume, gate seat checkout and recovery, direct replay, forward replay, recorded replay, and bench. Every checkout path must also populate submodules and validate the recorded submodule map before invoking a runner or seat.
+
+The caller mutation guard stays broad and fail-closed: inspect before runner execution and after it completes; reject dirty tracked state, hidden index flags, tracked submodules, replacement refs, or an unstable HEAD; publish no output, manifest stage, run ref, or gate pass on failure. Default runners and all gates remain hermetic.
+
+Planned regression: TestEngineResumeAfterCallerCommitUsesOriginalCheckout
+Planned regression: TestReplayForwardCallerStageUsesOriginalCheckout
+Planned regression: TestGateReadCheckoutPopulatesRecordedSubmodule
+Planned regression: TestCallerWorkspaceRejectsTrackedSubmoduleBeforeRunner
+Planned regression: caller tracked-file mutation leaves no run ref and no gate pass
+
+Verification: targeted integration tests; full `make test`; `make lint`; `make docs-check`; `make docs-reality`; built-binary caller/default/mutation/resume/replay/submodule QA.
