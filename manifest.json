@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-o9z",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -32,6 +32,75 @@
         "size": 5879
       },
       "timestamp": "2026-08-16T00:26:50.74843Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "bound log capture",
+            "use a binary media type"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r1",
+            "artifact": "cf84edb9be23787783f90f00de864e87a932cafa6ae4e30a92ad2f577fd285db",
+            "path": "artifacts/sha256/cf/cf84edb9be23787783f90f00de864e87a932cafa6ae4e30a92ad2f577fd285db",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 266
+          },
+          "timestamp": "2026-08-16T00:28:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "constrain transcript targets",
+            "fail stale-sidecar cleanup"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r1",
+            "artifact": "ca8c6d4e2dd48f028da1f743382eecff653a9c41b763f5b42fc7ac966a72d304",
+            "path": "artifacts/sha256/ca/ca8c6d4e2dd48f028da1f743382eecff653a9c41b763f5b42fc7ac966a72d304",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 287
+          },
+          "timestamp": "2026-08-16T00:31:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:32:00Z"
     }
   ]
 }
