@@ -1,0 +1,7 @@
+## Docs — etude-cr2 (Changed: no)
+
+No shipped docs needed. Pure internal Go type-safety refactor (type StorageType string); JSON wire +
+CLI display values byte-identical. docs/run.md shows storage=content/storage=pointer and describes the
+field (content=inline bytes / pointer=external pointer record) — both stay accurate. No other shipped
+doc references the discriminator; no generated reference docs. (When --json output lands, the storage
+enumeration becomes an externally-contracted value worth pinning — deferred, not now.)
