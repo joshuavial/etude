@@ -1,0 +1,8 @@
+## Verify — etude-roadmap.1.1 (status: pass, recommend proceed to Docs)
+
+Automated: go test ./internal/runmanifest/ -race -v all pass (incl. 3 new tests); go test ./... -race all 7 packages green; vet clean; gofmt clean. manifest.go unchanged in Verify (test-run only).
+Built-binary (go install ./cmd/etude):
+- Legacy back-compat (REAL refs): etude run show etude-88o + etude run show etude-dpz -> exit 0, all stages print cleanly (predate producer; lifted via legacy decode).
+- New write+read (throwaway repo): etude capture plan --run r1 ... -> git cat-file manifest.json shows "manifest_version": 2 + nested producer.skill + NO top-level skill key + harness/model absent; etude run show r1 -> exit 0.
+Tests discriminate: byte-exact v2 golden; TestLegacyBackCompatFrozenBytes; TestProducerWinsConflict; TestProducerRoundTrip; unknown-field rejection preserved.
+QA: JSON fold single point; DisallowUnknownFields preserved; Validate relaxed (skill identity required; harness/model optional this bead). capture/run/replay untouched.
