@@ -145,6 +145,76 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:16:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "state arbitrary same-process code execution trust-boundary disposition"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r2",
+            "artifact": "26bd80240b68a5d46d23a28967cf5e7a35817560533cc726598316a982196764",
+            "path": "artifacts/sha256/26/26bd80240b68a5d46d23a28967cf5e7a35817560533cc726598316a982196764",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 431
+          },
+          "timestamp": "2026-08-16T03:23:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "define durable ordinary-input reconstruction across recovery",
+            "do not permanently fail reruns on transcript retrieval failure",
+            "reserve internal prior-attempt roles to prevent ambiguous collisions"
+          ],
+          "optional": [
+            "pin seat order, eligible attempt scope, and legacy status normalization"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r2",
+            "artifact": "e8ee0c7b37ea013cbccac43515f23e5b4b0086c611f4037870500d5d047f6521",
+            "path": "artifacts/sha256/e8/e8ee0c7b37ea013cbccac43515f23e5b4b0086c611f4037870500d5d047f6521",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 658
+          },
+          "timestamp": "2026-08-16T03:23:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:23:00Z"
     }
   ]
 }
