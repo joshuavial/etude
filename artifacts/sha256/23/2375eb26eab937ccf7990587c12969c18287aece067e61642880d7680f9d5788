@@ -1,0 +1,4 @@
+# Final Review — etude-reindex-command (derived SQLite query index)
+PLAN gate: GO x3 (codex, gemini, Opus). Decisions: pure-Go modernc.org/sqlite (cgo-free OSS distribution win) over cgo mattn; .git/etude-index.db via git rev-parse --absolute-git-dir (worktree/bare-safe; never in working tree); full-rebuild temp+os.Rename atomicity; schema runs/stages/artifacts/evals/eval_sources/meta; PURELY ADDITIVE (no command consumes it yet — Opus noted it's foundation for a future consumer bead). Folds: runs.commit=store.Resolve OID; row-level (not byte) test equality.
+IMPLEMENT+FINAL gate: attempt 1 codex BLOCK (schema DDL outside the rebuild tx — install-atomic but not fully transactional). Fixed: createSchema runs inside the tx (SQLite transactional DDL). attempt 2 GO x3 (codex, gemini, Opus mutation-verified atomicity + teeth). pilms 0-CPU outage throughout; 3-substantive-seat fallback.
+Docs: docs/reindex.md + README + run.md note. Committed 1611c69.
