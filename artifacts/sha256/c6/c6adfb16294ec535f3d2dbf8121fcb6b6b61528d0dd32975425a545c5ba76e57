@@ -1,0 +1,76 @@
+# etude-5dr.3 verification
+
+ANCESTOR: etude-5dr (P1) — issue #15 must ship caller-cwd producing runners and
+the fail-closed post-run mutation guard together. The required measurement is a
+clean caller-created commit succeeding with post-run provenance while dirty
+tracked state fails before capture.
+
+BLAST RADIUS: verification built `bin/etude` in this worktree and created three
+repositories under one `mktemp -d` directory. The proof script removed that
+directory through its EXIT trap. No CLI was installed, no shared service or
+package was changed, and no process remains running.
+
+TRUST BOUNDARY: the actual compiled CLI, Git, disposable workflow fixtures, and
+the synchronous runner contract were exercised. The dirty runner's claimed
+output was not trusted; the observable run ref and live Git diff were inspected.
+
+TOPOLOGY: one built Etude CLI invoked one synchronous runner per disposable
+repository. No concurrent writers were used; the manual proof supplies the
+exclusive working-tree access required by caller mode.
+
+DURABILITY CLASS: the clean caller runner committed once and the resulting SHA
+was compared to the manifest. The dirty runner left its tracked residual and no
+run ref, proving the fail-closed boundary before publication.
+
+COMPLETENESS ENUMERATION: automated tests cover workflow/schema/resolver/CLI,
+manifest compatibility, all guard failure classes, and pinned gate execution.
+The manual command surface covers default hermetic execution, caller execution
+from a nested invocation directory with a clean commit, JSON manifest audit data,
+and a successful runner that leaves a tracked mutation but must exit nonzero
+without publishing its run ref.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Automated results
+
+- `make test` — PASS; all Go packages green, including `internal/liverun`,
+  `internal/workflow`, `internal/runmanifest`, and `internal/cli` regressions.
+- `make lint` — PASS; `gofmt -l` returned empty and `go vet ./...` passed.
+- `make docs-check` — PASS; 25 generated command docs matched.
+- `make docs-reality` — PASS; 15 commands matched the shipped CLI docs.
+- `git diff --check` — PASS.
+
+The guard tests assert the rejecting seam directly: staged, unstaged, and
+non-ignored untracked mutations return `ErrCallerWorkspaceDirty`; changed HEAD
+returns `ErrCallerWorkspaceChanged`; tracked submodules present before or added
+and committed by the runner return `ErrCallerWorkspaceUnsupported`; and every
+case asserts `refs/etude/runs/<id>` is absent. The gate-isolation regression
+asserts the gate still observes the original pinned detached checkout.
+
+## Actual CLI proof
+
+`make build` produced the real `bin/etude` entrypoint. The disposable proof then
+ran:
+
+1. A default hermetic workflow, asserting success, manifest version 2, and no
+   `runner_workspace` field.
+2. A `workspace: caller` workflow invoked from a nested directory. Its executable
+   runner recorded physical cwd, edited and committed a tracked file, and wrote
+   its stage output. The proof asserted the recorded cwd equals the invocation
+   directory and manifest version 4 records `runner_workspace: caller` plus the
+   repository's post-run HEAD.
+3. A `workspace: caller` workflow whose executable runner exits zero after
+   modifying a tracked file and writing a stale output. The Etude command exited
+   nonzero, the tracked diff remained observable, and
+   `refs/etude/runs/dirty-run` did not exist.
+
+Final output:
+
+```text
+manual CLI proof: hermetic default, caller clean commit, and dirty fail-closed all passed
+```
+
+The first fixture draft used shell redirection inside inline `runner.command` and
+was rejected by the existing argv-based runner contract. The final proof uses
+tracked executable scripts, matching production runner semantics; all scenarios
+then passed.
