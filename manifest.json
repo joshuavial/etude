@@ -233,6 +233,81 @@
         "degraded_reason": "pilms reproducible 0-CPU hang all session; 3 active seats reviewed"
       },
       "timestamp": "2026-05-26T03:00:55Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "resolveArtifactPath accepts absolute + ..-escape (violates relative-to-spec-dir/self-contained contract); parseCaptureRunSpec swallows malformed trailing YAML doc (accept only io.EOF)"
+          ],
+          "timestamp": "2026-05-26T03:20:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T03:20:20Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T03:20:40Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang reproduced all session; known artifact, seat skipped",
+          "timestamp": "2026-05-26T03:20:50Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms reproducible 0-CPU hang all session; 3 active seats reviewed"
+      },
+      "timestamp": "2026-05-26T03:20:55Z"
     }
   ]
 }
