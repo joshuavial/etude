@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-github-import",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,72 @@
         "size": 1095
       },
       "timestamp": "2026-05-27T12:14:44.452157Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "mapping the final merged diff to an `implement` stage is dishonest (brief: imported PRs yield only final diff + body, review/docs-only; first-draft plan/implement never saved); use review-only stages, no plan/implement"
+          ],
+          "timestamp": "2026-05-27T20:10:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "same: remove the implement stage; map diff+body to a single review stage (diff input, body output); omit plan/implement"
+          ],
+          "timestamp": "2026-05-27T20:10:30Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T20:11:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. codex+gemini both BLOCK on stage honesty (final diff as implement stage); adopted the agreed fix (review-only, no plan/implement). opus seated on r2."
+      },
+      "timestamp": "2026-05-27T20:11:30Z"
     }
   ]
 }
