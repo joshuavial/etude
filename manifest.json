@@ -558,6 +558,55 @@
         "degraded_reason": "First round convened with BOTH seats. The opus seat ran as an in-harness sub-agent, which is the arrangement .etude/registry.yaml documents and now encodes as the first invocation_fallbacks entry — a real seat, no substitute, no degradation. Seats split: codex GO, opus BLOCK on an empirically reproduced fail-open. The BLOCK stands; the gate did NOT pass. A second opus instance reviewing the same packet independently identified the SAME attack as its best attack and recommended the identical hardening, choosing not to block on it — the convergence is why this was treated as certain rather than arguable."
       },
       "timestamp": "2026-08-15T06:54:15Z"
+    },
+    {
+      "gate_id": "implement.r6",
+      "phase": "implement",
+      "round": 6,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r5",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "GO-with-BLOCKING hardening is incomplete: extract BLOCKING keeps only the last line, so an earlier non-empty BLOCKING: followed by BLOCKING: none still writes a go envelope and drops the finding."
+          ],
+          "timestamp": "2026-08-15T07:04:06Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "seat exceeded its window without returning a verdict on this round; its subject code was superseded by the round-6 fix before it returned, so the round was re-gated rather than waiting.",
+          "timestamp": "2026-08-15T07:04:06Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Gate did NOT pass. codex reproduced a real fail-open: the same last-wins arbitration flaw as round 5, one label over. No degraded pass was taken; the round is re-gated with both seats on the corrected code."
+      },
+      "timestamp": "2026-08-15T07:04:06Z"
     }
   ]
 }
