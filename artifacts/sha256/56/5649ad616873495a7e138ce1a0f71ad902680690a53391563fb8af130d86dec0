@@ -1,0 +1,19 @@
+# Verify — etude-8t4 (etude retro list + show, read side)
+
+Status: PASS. Recommendation: proceed to Docs.
+
+## Automated
+- `go build ./...` clean; `go test ./...` all packages green; `make lint` clean (gofmt + go vet). Uncached `go test ./internal/cli -run Retro` passes all retro test groups (list zero/one/many/lexical-order/corrupt-manifest; show happy-path/body-dump/subjects/flat-metadata/unknown-id/invalid-id-before-git/workflow-no-subjects).
+
+## Built-binary manual test (throwaway temp git repos; freshly built bin/etude)
+Seeded 3 retros via the shipped `retro capture`: cohort (2 subject-runs + 2 beads), gate (--gate/--bench/--eval/--ref note), workflow (no subjects).
+- `retro list`: deterministic across runs, sensible columns (RETRO ID|SCOPE|TRIGGER|SUBJECTS|CREATED), no-subject row renders cleanly.
+- `retro show` (gate): sorted `metadata:` block (bench.1/eval.1/gate.1/note), body inline, no duplicate scope/subject lines.
+- Body fidelity: byte-for-byte via hexdump (no-trailing-newline body emits verbatim).
+- Error paths: unknown id -> `retro "<id>" not found` exit 1; `bad/id` -> `invalid retro id "bad/id"` exit 1 (identical outside a git repo -> id validation precedes git access); empty repo -> `no retros found` exit 0.
+
+## QA findings
+Matches the approved plan exactly (read-only, mirrors run list/show, inline body dump as the documented divergence, no mutation/new schema). Scope clean: only internal/cli/retro.go + internal/cli/retro_test.go (impl); a stale comment at retro.go:206 was corrected to match the lexical sort behavior (zero behavior change). No regressions.
+
+## Notes
+- make docs-check is RED until the Docs phase runs `make docs` (new etude_retro_list.md/etude_retro_show.md pages) — expected, handled in Docs. TestDriftGuard stays green due to its known-incomplete expectedCommands list (separate follow-up bead filed).
