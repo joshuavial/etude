@@ -201,6 +201,59 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T07:24:53Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r2",
+          "role": "diff",
+          "artifact": "b75169df7b426c55342e46a864b7e65aee2293a904876f386d6e6ff8df5ef0fe"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add direct ParseJSON invalid-OID coverage.",
+            "Assert gate-attempt rewrite preserves original_git_sha.",
+            "Assert replay recording does not copy runner_workspace.",
+            "packet sha256 79c33f213415e7e2fa3c01c9b2347c8eeaabb2bd3fa285e577b553b8ba69fba7"
+          ],
+          "timestamp": "2026-08-16T07:34:29Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet sha256 79c33f213415e7e2fa3c01c9b2347c8eeaabb2bd3fa285e577b553b8ba69fba7"
+          ],
+          "timestamp": "2026-08-16T07:34:29Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T07:34:29Z"
     }
   ]
 }
