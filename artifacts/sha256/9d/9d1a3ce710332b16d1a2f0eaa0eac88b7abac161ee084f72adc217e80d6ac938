@@ -1,0 +1,23 @@
+# Verify — etude-kb0.1 (v1 scope/boundary doc)
+
+Docs-only (Tier 3). New doc `docs/plans/product/V1-SCOPE.md`.
+
+## Checks
+- `go build ./...` unaffected; `make docs-reality` → OK (13 commands, no drift);
+  `make reconcile` → green. `git status` → only the one new doc.
+- Independently fact-checked (plan gate codex+opus; implement gate opus): the 13
+  shipped commands match `internal/cli/root.go:36-48`; subcommands (run list/show,
+  retro capture/generate/list/show) correct; deferred list accurate (no eval/import/
+  query cobra command; pointer API exists but NOT exposed via the capture CLI — store
+  is not inline-only); brief reconciliation lines (BRIEF.md:5, §5 ~381-384, §7
+  ~429-434, §9 ~467) verified to say what the table claims.
+- One factual error caught + fixed at verify: the `etude prime` row said "pre-load
+  context for a replay run"; corrected to "print a structured agent-onboarding primer
+  to stdout" (matches prime.go Short).
+- docs-reality phrasing safe: no "not yet/not built" adjacent to a SHIPPED command
+  token (deferred items reference non-shipped names only).
+
+## Result: PASS
+The doc anchors the kb0 v1 phase: enumerates the v1 surface, lists deferred/post-v1
+items with reasons (Phase 1 USER-BLOCKED, eval/query/pointers/site), and reconciles
+the brief's aspirational-vs-shipped inconsistencies. No code/feature change.

@@ -1,0 +1,147 @@
+✓ etude-kb0.1 · Write v1 scope and boundary doc reconciling the brief   [● P1 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-27 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+Create an explicit v1 scope/boundary doc (e.g. docs/plans/product/V1-SCOPE.md) that states what etude v1 ships vs what is deferred, and RECONCILES it with the existing brief. v1 = phases 0/2/3/4 (init, capture, capture-run, capture-gate, run list/show, sync, replay, bench [eval is a bench-only library], retro capture/generate/list/show, gc, reindex, prime, log; git-native refs/etude/* storage, content-addressed artifacts, run manifests v2/3 with producer + gate-reviewer records + retro-meta sidecars). Deferred / post-v1: the Phase 1 live xenota capture adapter and 'etude import --from-github' (USER-BLOCKED, needs external access); a standalone 'etude eval' CLI (eval is bench-only today); a 'query' command consuming the index; external/out-of-tree artifact pointers; the docs site. Must explicitly reconcile the brief's inconsistencies: BRIEF.md §5 lists 'etude import' and standalone 'etude eval' as if present, and §9/§7 lean on the blocked xenota capture adapter as near-term plan — the scope doc must clarify Phase 1 + the still-planned list are post-v1. Do NOT build any deferred feature.
+
+DESIGN
+## Plan
+
+**Approach:** Add ONE new planning-reconciliation doc, `docs/plans/product/V1-SCOPE.md`,
+that (a) enumerates the shipped v1 surface as fact, (b) lists deferred/post-v1 items
+with reasons, and (c) explicitly reconciles the brief's aspirational-vs-shipped
+inconsistencies. No code, no feature work; this only ADDS a doc.
+
+**Doc location decision (+ policy rationale):** `docs/plans/product/V1-SCOPE.md`.
+Rationale, citing the repo's doc policy:
+- The repo policy (`docs/plans/README.md:3-9`) puts planning/design reconciliation
+  under `docs/plans/` and names `docs/plans/product/BRIEF.md` as "the source of truth
+  for the current product direction." This doc's load-bearing job is to RECONCILE that
+  brief (call out §5/§7/§9 aspirational items as post-v1) and list deferred work with
+  reasons — that is planning reconciliation, not shipped behavior prose.
+- `docs/plans/dogfood/capture-protocol.md` "Storage Rules" states shipped docs describe
+  implemented behavior and plans live under `docs/plans/`. The deferred-list + brief
+  reconciliation halves are planning content, so `docs/plans/product/` is the policy-correct
+  home. Placing it beside `BRIEF.md` makes the cross-link coherent (both in `product/`).
+- The v1-surface ENUMERATION is a factual snapshot, but it is the README (kb0.2) and
+  CHANGELOG (kb0.3) that own the shipped-release presentation. This doc's surface list is
+  there to DEFINE the boundary against the deferred list, so it stays planning-adjacent.
+- Drift-check safety: `scripts/docs-reality-check.sh` step 3 scans ONLY `docs/plans/**`
+  for lines saying a SHIPPED command is "not yet/not built" (lines 86-101). Every deferred
+  item this doc names (`etude eval`, `etude import`, `query`, external pointers via CLI,
+  docs site) is NOT a shipped top-level command, so "not yet built" phrasing about them
+  will NOT trip the check. The doc must never write "not yet"-style phrasing next to a
+  SHIPPED command token (e.g. `etude bench`, `etude reindex`); if unavoidable, add a
+  suppression to `scripts/docs-reality-allow.txt`.
+
+**Verified v1 surface (13 top-level commands, confirmed against `internal/cli/root.go:36-48`):**
+init, capture, capture-gate, capture-run, gc, log, prime, reindex, replay, retro, run,
+sync, bench. Subcommands confirmed: `run list` / `run show` (`internal/cli/run.go:37-38`);
+`retro capture` / `retro generate` / `retro list` / `retro show` (`internal/cli/retro.go:128-136`).
+Storage/manifest features to note as v1: git-native `refs/etude/*` store (`internal/refstore`);
+content-addressed inline artifacts (`internal/artifactstore/store.go`); run manifests
+version 2 and 3 (`internal/runmanifest/manifest.go:932-935,1063`) where v3 adds gate-reviewer
+records and the producer record is authoritative (manifest.go:1196); retro-meta sidecars
+(`internal/cli/retro.go`, `internal/retro/generator.go`).
+
+**Deferred / post-v1 (with reasons, all confirmed):**
+- Phase 1 live xenota capture adapter + `etude import --from-github` — USER-BLOCKED, needs
+  external access; no `import` cobra command exists (verified: no Use:"import" in internal/cli).
+  Brief §9 row Phase 1 (BRIEF.md:467) and §7 (BRIEF.md:429-434) describe these as near-term.
+- Standalone `etude eval` CLI — eval is a bench-only LIBRARY today: `internal/eval` is consumed
+  only by `internal/bench`, `internal/gc`, `internal/index`; no `eval` cobra command (verified).
+- `query` command consuming the SQLite index — `internal/index` is consumed only by
+  `internal/cli/reindex.go`; `reindex` builds the index, nothing queries it (verified).
+- External / out-of-tree artifact pointers via the CLI — the store has an `AddPointer` API and
+  a `pointer` storage type (`internal/artifactstore/store.go:90,20`), but it is NOT wired to the
+  capture CLI (verified: AddPointer not called from capture.go/capture_run.go). So the user-facing
+  capture surface is inline-only; phrase precisely as "not exposed via the capture CLI," not
+  "does not exist."
+- Documentation site (likely Hugo) — not built.
+- Cross-check: this matches README.md "Still planned / not yet built" — wait, that list is in
+  `docs/plans/README.md:75-87`; README.md (top-level) carries the equivalent status framing at
+  lines 39-46. The scope doc must REFERENCE these and not contradict them.
+
+**Brief lines to reconcile (quote exactly):**
+- BRIEF.md:5 — "*Status: design brief — this document is the plan; implementation has not
+  started.*" — aspirational/stale; v1 has in fact shipped 13 commands. The scope doc notes the
+  brief is the original plan, not the shipped state.
+- BRIEF.md §5 CLI surface (375-388): lists `etude eval <run-id> --stage <s>` (381),
+  `etude eval --pairwise ...` (382), and `etude import --from-github ...` (384) as if present.
+  Reconcile: `eval` is a bench-only library, `import` is unbuilt/blocked — both post-v1.
+- BRIEF.md §7 (423-434): leans on the Phase 1 capture adapter + `etude import` backfill as the
+  xenota testbed plan. Reconcile: post-v1, USER-BLOCKED.
+- BRIEF.md §9 Phasing (462-470): Phase 1 row (467) "Capture adapter for xenota ... + import
+  backfill." Reconcile: Phase 1 deferred; v1 = phases 0/2/3/4.
+
+**Files:**
+- `docs/plans/product/V1-SCOPE.md` — NEW. The only file changed. Sections: (1) v1 surface
+  (13 commands + subcommands + storage/manifest features); (2) deferred/post-v1 list with
+  reasons; (3) brief reconciliation table citing BRIEF.md §5/§7/§9 + the status line.
+- Cross-link from BRIEF.md is OUT OF SCOPE for kb0.1 (kb0.1 only ADDS the scope doc). If a
+  1-line pointer in BRIEF.md is wanted, leave it to kb0.2 (README/docs polish). Note this
+  explicitly in the doc's header so the next bead picks it up.
+
+**Tests:** None (docs-only, no code). Verification = the three gates stay green:
+`go build ./...` / `go test ./...` (untouched), `make docs-reality`, `make reconcile`.
+The doc must avoid "not yet/not built" phrasing adjacent to any SHIPPED command token so the
+step-3 stale-claim scan stays clean; deferred items are non-shipped commands and are safe.
+
+**Docs:** This bead IS the doc. No other docs change. README polish = kb0.2, CHANGELOG = kb0.3,
+release checklist = kb0.4 (out of scope here). No generated `docs/cli/*` regeneration needed
+(no command changes).
+
+**Risks:** Low. Two accuracy traps to avoid: (1) "external pointers" — the store API exists,
+so phrase as "not exposed via capture CLI," not "absent." (2) docs-reality step-3 scan over
+`docs/plans/**` — do not put "not yet"-type phrasing next to a shipped command token; if a
+phrasing is unavoidable, add a targeted line to `scripts/docs-reality-allow.txt`.
+
+**Capture:**
+- inputs: bead etude-kb0.1 (`bd show`), `docs/plans/README.md`, top-level `README.md`,
+  `docs/plans/product/BRIEF.md` (§5/§7/§9 + status line), `internal/cli/root.go`,
+  `internal/cli/run.go`, `internal/cli/retro.go`, `internal/cli/capture.go`,
+  `internal/artifactstore/store.go`, `internal/runmanifest/manifest.go`,
+  `scripts/docs-reality-check.sh`, `Makefile`, `scripts/docs-reality-allow.txt`,
+  grep confirmations of eval/index/import wiring.
+- output: bead --design field; planned new doc docs/plans/product/V1-SCOPE.md
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Created docs/plans/product/V1-SCOPE.md: v1 scope/boundary doc with 4 sections: (1) status/intent line linking to BRIEF.md, (2) v1 surface enumerating 13 shipped commands + subcommands + storage/manifest features, (3) deferred/post-v1 items with reasons, (4) brief reconciliation table citing BRIEF.md §5/§7/§9 and the stale status line.
+- eval noted as bench-only library (no standalone CLI) per plan.
+- External artifact pointer phrasing: 'not exposed via the capture CLI' (not 'inline-only').
+- All deferred items use non-shipped command names (eval CLI, import, query, docs site) — no 'not yet' phrasing adjacent to a shipped command token.
+
+**Checks run:**
+- go build ./... → pass
+- make docs-reality → OK — 13 commands; docs match the shipped CLI.
+- make reconcile → OK (docs-reality + docs-check both green)
+- git status → only docs/plans/product/V1-SCOPE.md untracked
+
+**Changed files:**
+- docs/plans/product/V1-SCOPE.md (NEW)
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (etude-kb0.1 --design), internal/cli/root.go, docs/plans/product/BRIEF.md, README.md, scripts/docs-reality-check.sh, scripts/docs-reality-allow.txt
+- output: docs/plans/product/V1-SCOPE.md (new file); bead notes
+
+ACCEPTANCE CRITERIA
+A v1 scope/boundary doc exists in the repo that (a) enumerates the 13 shipped commands as v1 surface, (b) lists deferred/post-v1 items with reason (Phase 1 blocked, eval/query/pointers/site not built), and (c) explicitly notes the brief §5/§7/§9 items that are aspirational vs shipped. No code or feature changes. go build/test, make docs-reality, make reconcile remain green.
+
+LABELS: phase:implement
+
+PARENT
+  ↑ ○ etude-kb0: (EPIC) Ship etude v1 ● P1
+
+BLOCKS
+  ← ○ etude-kb0.2: Polish README and docs for coherent v1 release presentation ● P1
+  ← ○ etude-kb0.3: Add CHANGELOG and document version/release mechanics ● P1
+  ← ○ etude-kb0.4: Write v1 release checklist and handoff doc ● P1
+
