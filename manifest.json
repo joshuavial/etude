@@ -861,6 +861,42 @@
         "degraded_reason": "BLOCK, and correct. The sweep had missed five more present-tense enforcement claims in docs/retro.md - the very file the artifact claimed to have swept - two of which directly contradicted the bold 'Nothing enforces it now' correction three sentences above them. The artifact's own section on the lesson it had learned (classify per STATEMENT, not per FILE) was written in the same document that then repeated the error one round later. That is recorded in the revised artifact rather than smoothed over, along with the observation that nothing mechanical in this repo detects 'this sentence promises a guarantee that no longer exists': make docs-check and make docs-reality were green throughout both rounds and neither reads prose. Three optionals also folded: retro-capture.md read as a live mandate for a sidecar nothing verifies; the POST-cutoff bullets in retro.md were present tense and depended on one distant framing sentence to read as history; and supervisor-runbook.md still described the audit as shrinking to 'two checks' when the plan gate overturned that premise and three hard checks shipped. L4 is single-seat and that seat has no working subprocess path (bead etude-8li), so etude gate escalated and the verdict was produced in-harness per the documented registry exception."
       },
       "timestamp": "2026-08-15T13:14:26Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff",
+          "artifact": "c0fb437b0f6589dd6906d4e8ee460555531a94ece9411f9551776f14246a4170"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. scripts/retro-meta-index.sh - the docs artifact explicitly claims it swept this file for the defect it names as 'line citations into a rewritten file are dead pointers'. Five such citations survive, including one it claims to have deleted: L87 'mirror audit :413-414', L89 and L103 'mirror audit :491', L90 and L111 'mirror audit :524-554'. The rewritten audit is 223 lines so every one points past EOF, and :524-554 was the OLD check (f) sidecar-read, so those two assert a mirroring relationship with code that no longer exists anywhere - sitting ten lines above a comment this bead DID update. Same intra-file contradiction shape round 1 blocked on, in a file the artifact says is clean."
+          ],
+          "timestamp": "2026-08-15T13:22:59Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, correct, and the seat explicitly superseded its own earlier GO after checking the file's comments - a self-correction worth recording. Five line-number citations into the replaced audit survived in retro-meta-index.sh, in a file the artifact claimed to have swept for exactly that defect, ten lines above a comment this bead had already updated. Two of the five named the removed sidecar check's line range specifically, asserting a mirroring relationship with code that exists nowhere. All now name the behavior rather than a line range, which is what makes a comment survive the next rewrite. The sharpest optional was the INVERSE error and is folded with its own note: my sweep past-tensed 'the cadence and subject-consistency checks also skip superseded refs', but the cadence check SURVIVES and still does. Blanket past-tensing a section swept a live behavior into history - correcting docs after deleting code can be wrong in both directions, and that direction is harder to spot because the sentence looks appropriately humble. Also folded: a present-tense 'presence + type checked' three lines below 'nothing checks it now'; the last surviving mention of the audit's deleted --bead flag; and the allowlist header, previously called a verified no-op, which was accurate but omitted that the file is the cadence check's denominator - the fact that nearly made this bead block every push in the checkout."
+      },
+      "timestamp": "2026-08-15T13:22:59Z"
     }
   ]
 }
