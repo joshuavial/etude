@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-04i",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,42 @@
         "size": 1469
       },
       "timestamp": "2026-06-29T23:25:56.837019Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "block",
+          "required": [
+            "live-execution.md §1 stale gate no-op bullet contradicts §2",
+            "gates.md:191 'schema below' should be 'above'"
+          ],
+          "timestamp": "2026-06-29T23:22:07Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-29T23:22:07Z"
     }
   ]
 }
