@@ -1,0 +1,18 @@
+# Verify — etude-pairwise-eval
+
+Result: PASS (proceed to final review).
+
+- `go test ./...` — all packages green (95 tests in internal/eval, full suite green).
+- `gofmt -l internal/eval/` clean; `go vet ./...` clean; `go build ./...` clean.
+
+Coverage of the new evaluator:
+- Head-validation (method, rubric-nil, assertion-nil, exactly-2-targets, nil-Judge → ErrJudgeNotConfigured).
+- perPairSwap: deterministic per-pair swap from FNV-1a-64(Seed + both pair keys, opposite order) → PCG → IntN(2). PerPairVariation test (fixed cohort, Seed=0) confirms mixed orders (10 swap / 6 not) — catches the constant-swap regression that the plan gate flagged. Determinism test confirms same Seed+targets → same order via a recording judge. Fallback-key path (empty Source.Artifact → Role:sha256hex(Content)) covered.
+- mapWinnerBack table (swapped × {A,B,tie}); buildJudgeRequest neutral left/right roles.
+- validateJudgeOutput "pairwise": winner∈{A,B,tie}, reject value/max, confidence∈[0,1]; checkResponseCoherence mirror for the StubJudge path.
+- DoubleJudge: agree→winner, disagree→tie (incl A-vs-tie), min-confidence, tagged [A-first]/[B-first] findings, call2-error + coherence-failure propagation.
+- Score{Kind:pairwise} round-trip through result.go validateScoreCoherence + EvalResult.Validate().
+
+Mutation-verified by the Opus gate seat: back-mapping table, disagree→tie, and PerPairVariation all fail under the corresponding mutations.
+
+No CLI surface (library only) → no built-binary manual test applies.
