@@ -1,0 +1,155 @@
+# Docs — etude-3xt
+
+Three docs files changed. Every long-lived docs path was checked; the no-change
+decisions and their reasons are below, path by path.
+
+## Docs debt this phase owed
+
+From the plan, implement and verify gates, four items plus one wording fix:
+
+| Owed | Where it landed |
+|---|---|
+| the `retro markdown <path>` stdout line — **the string that actually ships**, not the plan's `wrote <path>` | `docs/retro.md` capture Output block + generate Output block |
+| the `retro_file` manifest key, and that it is **not always** `<retro-id>.md` | `docs/retro.md` §"The landed markdown" + §"Provenance" |
+| capture does **not** `git add` the landed file | `docs/retro.md` §"The landed markdown", first bullet |
+| non-zero exit **after** a successful ref commit if the file write fails | `docs/retro.md` §"The landed markdown", third bullet |
+| create-only: an existing file is an error, never an overwrite | same section, second bullet (not owed, but it is user-visible and belongs with the other two) |
+
+The plan's contract table said `wrote <path>`; the code ships
+`retro markdown <path>`, because nothing is written in the in-place case. The
+docs describe the shipped string. This artifact is the record that the drift was
+deliberate.
+
+## Files changed
+
+### `docs/retro.md` — canonical product docs (the Retro guide in `mkdocs.yml` nav)
+
+1. **Capture output block** — replaced the one-line "Prints `captured …` and
+   `ref …`" with the actual three-line block including
+   `retro markdown .etude/retros/<retro-id>.md`.
+2. **New §"The landed markdown"** — the substantive addition. States why the
+   landing exists (one command produces both artifacts, so neither can appear
+   without the other), the two cases (outside the dir → land under the retro id;
+   already inside → recorded in place, nothing written), and the consequence that
+   `retro_file` is not always `<retro-id>.md` — *"A consumer that needs the
+   correspondence must read `refs.retro_file` out of each manifest; deriving the
+   filename from the ref id reports a false gap on every in-place capture."*
+   Then the three behaviors above: not staged, create-only, non-zero exit after
+   a successful ref write with the literal error text.
+3. **Generate §"Output"** — added the third line, plus that a generated body has
+   no source path so it always lands under the allocated id, with a link to the
+   new section.
+4. **Generate §"Provenance"** — added `retro_file` to the `metadata:` example and
+   noted that all three derived keys (`produced_via`, `generator`, `retro_file`)
+   are rejected as `--ref` values, quoting the message that ships
+   (`is reserved; etude sets it`).
+
+### `docs/plans/dogfood/retro-ledger.md` — the practice doc lanes follow
+
+Added a paragraph to §"Retro cadence": **"Run capture, don't hand-write the
+markdown."** This is the doc change that actually addresses the bead's practice
+half. It gives the sequence (draft → `etude retro capture` → `git add` the
+printed path → commit → push branch and refs), names the failure it prevents
+(three retro files on epic `etude-9uf`, two refs, a cadence check counting the
+refs), says what to do if you already wrote the file (pass that path to
+`--file`), and states plainly that **nothing yet detects a hand-written retro
+with no ref — that is bead `etude-24d`.**
+
+That last sentence is deliberate. This doc claims a capability ("capture and the
+markdown cannot diverge") and would be misread as claiming the whole symptom is
+fixed; naming the surviving gap and its bead is the honest form.
+
+### `docs/plans/dogfood/retro-capture.md` — the retro-capture planning note
+
+Three sentences near the top: capture lands the markdown and records
+`refs.retro_file`, an in-place body is recorded rather than copied, the file is
+not staged, pointer to `docs/retro.md`. This file is the first thing a reader
+lands on for "how are retros captured here", so it would have been stale
+immediately.
+
+## Paths checked, not changed
+
+| Path | Why no change |
+|---|---|
+| `docs/cli/*.md` | **Generated** by `cmd/gen-docs` from the cobra tree. This bead adds no flag and no help text, so the generated pages are byte-identical — confirmed by `make docs-check` passing (it regenerates into a temp dir and `diff -r`s). Editing them by hand would be reverted by the next generation. |
+| `docs/README.md`, root `README.md` | Command index + usage prose. No new command; `make docs-reality` confirms the shipped surface still matches (15 commands). |
+| `docs/gates.md`, `docs/capture.md`, `docs/capture-run.md`, `docs/run.md`, `docs/sync.md`, `docs/log.md`, `docs/replay.md`, `docs/bench.md`, `docs/gc.md`, `docs/reindex.md`, `docs/import.md`, `docs/init.md` | Other command guides. Grepped for `retro` / `retros`: `log.md` mentions retros only as timeline rows (`etude log` reads created/occurred times, not `retro_file`); `sync.md` covers `refs/etude/*` generically and the retros namespace is unchanged. None describes retro capture behavior. |
+| `docs/retro.md` §"Cadence retro-meta convention" | The sidecar is a separate artifact with its own storage (a second `retro-meta` stage). `retro_file` names the body's markdown twin; it does not affect sidecar handling, and no sidecar sentence became false. |
+| `docs/plans/product/etude-retro-command.md`, `docs/plans/product/retrospectives.md` | Product *plans* for the retro feature, not shipped-behavior docs. Per the loop's rule that shipped docs describe verified behavior and plans stay in the plans area, the shipped behavior went to `docs/retro.md`. Neither file makes a claim this change falsifies (checked: neither mentions where a retro body lives on disk). |
+| `scripts/dogfood-completeness-audit.sh` header comment | It says check (c) counts refs "while lanes write retro MARKDOWN under `.etude/retros/` — see bead `etude-3xt`". Still **true**: (c) is unchanged and the hand-written case still exists. Rewriting it now would describe `etude-24d`'s work, not this bead's. Left for that bead. |
+| `CHANGELOG.md` | **Deliberate no-change, and it is debt.** The file is release-time-maintained here: 26 commits have landed since `v1.0.0`, including two whole new commands (`etude gate`, `etude import`), with no entry and no `[Unreleased]` section. Adding one entry for this change would imply the changelog is current when it is 26 commits behind. Flagged for whoever cuts the next release: the retro capture/generate output gained a line and the retro manifest gained `retro_file`. |
+| `.claude` / `~/.claude` skills (the etude-loop retro rule that prescribes `.etude/retros/<date>-<epic>-etude-retro-N.md`) | Out of this worktree's blast radius, and the in-place branch was built precisely so that convention keeps working: a lane that writes that filename and passes it to `--file` gets the ref with its file recorded under the existing name. No skill edit is needed for the change to be correct. |
+
+## Cross-consistency pass
+
+The new section states both a capability and its limits, so they were read
+against each other rather than only against the source:
+
+- *"the committed markdown and the ref come out of one command"* vs *"the file is
+  written, not staged"* — not contradictory, and the second is stated in the same
+  section so the first cannot be read as "capture commits it for you". The
+  sentence spells out the consequence: until you stage it, `retro_file` names a
+  working-tree path that is not in history.
+- *"the file name is the ref name"* vs the in-place case — the first is scoped to
+  the outside-the-dir case in the bullet where it appears, and the very next
+  paragraph says `retro_file` is **not always** `<retro-id>.md`. This is the
+  contradiction the plan gate warned about (optional 2); it is now impossible to
+  read only the strong half.
+- *"exits non-zero"* vs *"the ref has been written"* — stated together in one
+  bullet, with the ordering rationale, so a reader cannot conclude a non-zero exit
+  means nothing happened.
+- `docs/retro.md` says nothing detects a missing ref; `retro-ledger.md` says the
+  same and names `etude-24d`. The two agree.
+
+## Docs checks
+
+```
+$ make docs-check     → generated 25 command docs, diff clean, exit 0
+$ make docs-reality   → docs-reality: OK — 15 commands; docs match the shipped CLI
+$ mkdocs build        → exit 0 (site builds, my pages included)
+$ make lint           → exit 0
+$ make test           → exit 0, all packages ok
+```
+
+`mkdocs build --strict` aborts with **5 warnings, all pre-existing and none in a
+file I touched**: a nav reference to a missing `plans/dogfood/checklists.md`, and
+four `../run.md` links in `plans/product/live-execution.md`. Reproduced
+identically on a clean detached `HEAD` worktree (`git worktree add --detach
+/tmp/base-3xt HEAD`, same 5 warnings, same abort), so they are not mine and not
+introduced here. The worktree was removed. Not filed as a bead — it is a
+pre-existing docs-nav gap outside this bead, and the repo's own docs gates
+(`docs-check`, `docs-reality`) are the ones wired into `make reconcile`; if the
+supervisor wants it tracked, say so and I will file it.
+
+## Code change in this phase
+
+One test-only fold from the verify gate's optional 5:
+`TestRetroGenerateLandsMarkdownUnderEtudeRetros` now also asserts generate's
+`retro markdown <path>` stdout line (only capture's was pinned). Re-run: PASS,
+and `make test` / `make lint` re-run green with it. No production code changed
+during the docs phase.
+
+## Verify-gate optionals — disposition
+
+1. **Record WHY the worktree the checks ran in matters.** Folded into
+   `verify.md`: the checks inherit the caller's cwd, so a gate invoked from a
+   worktree that lacks the change runs `make test` / `make lint` against the wrong
+   tree and returns green having certified nothing. Noted there as the reason the
+   artifact states where it ran. Worth more than a line — it is a fail-open on the
+   one gate whose value is executing real checks, and green is the wrong answer.
+2. **Misquoted diffstat.** Correct: `git diff --numstat` gives
+   `internal/cli/retro.go` **+145/-15** (the 160 I wrote was `--stat`'s combined
+   figure, which counts deletions twice). Corrected in `verify.md`. Current
+   totals with the docs changes (`git diff --numstat`): `retro.go` +145/-15,
+   `retro_test.go` +223/-0, `docs/retro.md` +57/-3, `retro-ledger.md` +13/-0,
+   `retro-capture.md` +7/-0.
+3. **Stdout wording drift.** Documented as shipped, and named in the debt table
+   at the top of this artifact.
+4. **Root-unresolvable-before-any-ref-is-written has no automated regression.**
+   Listed in `verify.md`'s disclosed limitations rather than left silent: the
+   guarantee rests on code reading plus a manual check (outside a repo the command
+   fails earlier still, at HEAD resolution, leaving no ref and no file). Not
+   automated — reaching the root-resolution failure specifically requires a repo
+   where `git rev-parse --show-toplevel` fails while HEAD resolves, which is not a
+   state a test can construct honestly.
+5. **Generate's stdout line unasserted.** Folded — see the code change above.
