@@ -1,0 +1,218 @@
+# Plan — etude-9uf.3: Delete the retroactive capture path
+
+## What is being deleted and why
+
+The after-the-fact reconstruction the supervisor model replaces:
+
+| File | Lines | What it did |
+|---|---|---|
+| `scripts/dogfood-capture.sh` | 139 | Rebuilt five stage artifacts from the bead `design` field and `git show <sha>` AFTER the bead closed. |
+| `scripts/dogfood-close.sh` | 146 | Orchestrated the close sequence: preflight, capture run, capture gates, terminal audit. |
+| `scripts/dogfood-close_test.sh` | 689 | Fixture tests. **Only partly deletable — see below.** |
+
+Under the worker-lane model every phase artifact exists at gate time and is
+captured by `etude capture` as the phase completes, so there is nothing left to
+reconstruct. Keeping them would leave two contradictory descriptions of how a
+bead is recorded — the failure this epic exists to end.
+
+`scripts/dogfood-gate-capture.sh` is NOT in the deletion set. It remains the
+bootstrap path for a hand-assembled gate record, which the supervisor runbook
+documents and which this very bead's gate is being recorded through.
+
+### The test file is three suites, and only one of them dies
+
+`scripts/dogfood-close_test.sh` is one file containing three independent
+sections. The bead's line count (689) treats them as one deletable unit. They
+are not:
+
+| Section | Lines | Cases | Subject | Fate |
+|---|---|---|---|---|
+| A | 269–428 | 11 | `dogfood-close.sh`: happy path, gateless run, unpushed ref, allowlist bypass, capture/gate/audit sequencing, preflight guard. | **Delete** — its subject is deleted. |
+| B | 429–642 | 16 | `.beads/hooks/pre-push` ref classification, B1–B10: etude-only exempt, code push audited, gap rejected, mixed refs, deletion-only, tags, empty stdin, unknown refs, missing audit script, and audit-exit-2 fails closed. | **KEEP** |
+| C | 643–689 | 2 | `.beads/hooks/pre-push` bd/stdin coexistence, C1: the bd block does not consume stdin, so the dogfood classifier still sees the buffered refs. | **KEEP** |
+
+Sections B and C do not test the close script at all. Both drive
+`$PRE_PUSH_HOOK` directly with synthetic stdin and an injected
+`DOGFOOD_HOOK_AUDIT_SCRIPT` sentinel. Their subject is the hook this bead is
+*editing* and which stays live afterwards.
+
+Deleting all 689 lines would drop the only coverage of a push gate that fires on
+every push in this checkout, including its fail-closed branch. The acceptance's
+"the three scripts are gone" does not authorize that: the bead scopes the
+deletion by what the retroactive path *is*, and B and C are not part of it.
+
+**So: extract Sections B and C to `scripts/pre-push_test.sh`** and delete the
+rest of the file. Net deletion from this file is ~428 lines, not 689 — the
+bead's line count is corrected rather than met by dropping tests.
+
+**What Section C is and is not.** An earlier draft of this plan claimed C1 pins a
+property no B case covers, and that a hook change breaking bd/stdin coexistence
+"would leave every B case green". That is false, and the correction matters
+because a negative control was resting on it. C1 (lines 653–676) is an inline
+duplicate of B2's flow: the same synthetic `refs/heads/main …` line, the same
+`audit_sentinel`, the same two assertions, differing only in not calling
+`run_hook_split`. B2 fails identically under that breakage. C1 is still worth
+keeping — it is real coverage, it is named in the bead's subject area, and
+deleting it silently is still the wrong way to lose it — but it is redundant
+coverage, not unique coverage, and the plan should not have claimed otherwise.
+
+### What the extraction must carry
+
+The surviving suites depend on setup defined up in the Section A region. Copying
+only the cases would produce a suite that runs but proves less. The extraction
+carries, and the implementation must verify each is present:
+
+| Lines | What | Why B/C need it |
+|---|---|---|
+| 27 | `PRE_PUSH_HOOK="$REPO_ROOT/.beads/hooks/pre-push"` | the system under test. |
+| 43–45 | `pass_count`, `fail_count`, **`current_test=""`** | the counters drive the exit code; `current_test` is set by `t_start` and read by `t_pass`/`t_fail`. |
+| 47–86 | `t_start` / `t_pass` / `t_fail` / `assert_exit` | every case calls these. |
+| 88–104 | throwaway repo + bare origin fixture (`tmpdir`, `bare_origin`, `work_repo`), initial commit, the `EXIT` trap | cases `cd "$work_repo"` and push to `$bare_origin`. |
+| **106–121** | **the bd PATH shim (`BD_SHIM` + `export PATH="$tmpdir:$PATH"`)** | **load-bearing and easy to miss.** The hook runs its bd block before the classifier. Without the shim the suite runs against whatever real `bd` is on the machine, and cases can be masked by its exit status. |
+
+Two adjustments the copy must make, not just carry:
+
+- **The `EXIT` trap must be trimmed to `rm -rf "$tmpdir"`.** Line 89 is
+  `trap 'rm -rf "$tmpdir" "$PREBUILT_ETUDE_DIR"' EXIT`, and `PREBUILT_ETUDE_DIR`
+  belongs to the prebuild block that is deliberately not carried. Under
+  `set -u` the trap would error on every exit.
+- Explicitly NOT carried: the top-of-file `go build ./cmd/etude` and the
+  `DOGFOOD_AUDIT_ETUDE_BIN` export. B and C inject sentinels and never invoke
+  the real audit or the etude binary.
+
+## The sweep — exhaustive, over every tracked file
+
+The r1 and r2 gates both BLOCKed on the same underlying defect: a verification
+check that structurally could not detect what it claimed to verify. The r2 grep
+was anchored on `.sh`, so a live runbook naming `dogfood-close` extension-less
+survived it while the check reported clean.
+
+Rather than patch the one site the seat named, this is the exhaustive pass. The
+inventory below is `git ls-files -z | xargs -0 grep -nE 'dogfood[-_ ](capture|close)'`
+over tracked files only, minus the three deleted files: **25 hits in 13 files.**
+Every hit is classified, and the no-ops are enumerated so the widened
+verification grep has a known-clean baseline instead of being narrowed until it
+passes.
+
+### Edit (names the deleted script, or describes it as live)
+
+| File:line | Treatment |
+|---|---|
+| `.beads/hooks/pre-push:38` | comment explaining the `refs/etude/*` exemption; names `dogfood-capture.sh`. Reword to the surviving flow. |
+| `.beads/hooks/pre-push:112` | the BLOCKED message: "Close the listed bead(s) with scripts/dogfood-close.sh". **This hook is LIVE** — `git config core.hooksPath` resolves to `/Users/jv/projects/etude/.beads/hooks`, whose `pre-push` is byte-identical to the tracked copy, so it runs on every push from every worktree. It would send an operator to a script that no longer exists. |
+| `Makefile:7,60,61,62` | `.PHONY` entry, comment, target, recipe. **Rename** `dogfood-close-test` → `pre-push-test`, pointing at `scripts/pre-push_test.sh`. Not a bare deletion — the surviving suite needs a named home or it will rot unrun. Additionally add a `shell-test` aggregate (`dogfood-audit-test`, `pre-push-test`, `seat-adapter-test`, `retro-index-test`), since both seats independently raised that `make test` will never reach the surviving suite. See the honesty note under Risks: this is discoverability, not enforcement. |
+| `docs/plans/dogfood/review-gate-runbook.md:344–347` | **The worst site, and the one r2's grep missed.** A live judgement runbook, and the section is stale on three counts, not one: it names `dogfood-close`; it asserts "A captured run has stages `plan/implement/verify/review` (NOT `docs` — docs is not a captured stage)"; and it prescribes mapping the docs-phase gate onto the `implement` diff stage. Bead `etude-1od` landed the opposite two beads ago — `etude capture docs --output docs-diff=` creates a real docs stage and `etude gate` resolves the reviewed stage by produced role — and eliminating exactly that transport-only alias was `etude-1od`'s stated purpose. Rewrite the section to the `etude capture` / `etude gate` flow; the underlying constraint (a gate must name a stage that exists on the run) still holds and is preserved. |
+| `docs/plans/product/gate-reviewer-record-schema.md:87,366` | historical justifications citing "dogfood-capture.sh line 69" and a byte-identical-output claim. Reword so the evidence stays checkable: name the retired mechanism AND the commit that removed it, rather than dropping the pointer and leaving an unsourced assertion. |
+| `examples/summarize/README.md:51,137`, `examples/summarize/walkthrough.sh:6` | asides contrasting the generic example with "the tracker-coupled `dogfood-capture.sh`". The contrast still has a point; name the retired mechanism instead of the file. |
+| `scripts/dogfood-gate-capture.sh:14` | header comment contrasting a gate attempt with "a stage capture (dogfood-capture.sh, run once post-close)". This script SURVIVES, so the comment is a live wrong pointer, not history. |
+| `scripts/dogfood-completeness-audit.sh:53` | "Style follows scripts/docs-reality-check.sh and scripts/dogfood-capture.sh." An r1 draft exempted this because bead .4 replaces the file; that reason did not hold, since .4 is BLOCKED BY .3 and the two are strictly sequential. Both seats flagged it. Reworded here. |
+| `docs/plans/dogfood/retro-capture.md:38,52` | "Manual dogfood capture supports these retro triggers now" / "For manual dogfood capture…". Present tense, naming the retired protocol as the thing that supports live retro triggers. The triggers are live; the protocol is not. Reword to the supervised model. (Line 3 already says "the retired dogfood capture protocol" and is correct as-is.) |
+
+### Deliberate no-ops, enumerated
+
+These match the widened grep and are correct after the deletion. They are listed
+so the verification has a known-clean baseline:
+
+| File:line | Why it stays |
+|---|---|
+| `docs/plans/dogfood/dev-workflow-audit.md:168`, `verify-phase-design.md:279,282,285`, `scripts/dogfood-completeness-allow.txt:49` | all are the **bead id** `etude-dogfood-capture-protocol`, not the script. A bead id is a permanent tracker handle. |
+| `docs/plans/dogfood/retro-ledger.md:107,265` | past-tense retro records of work that happened ("dogfood-capture script + gate-tooling fixes", "etude-21z rewire dogfood-capture onto capture-run"). Rewriting history to match the present is the opposite of what a ledger is for. |
+| `docs/plans/dogfood/retro-capture.md:3` | already reads "the retired dogfood capture protocol". |
+| `docs/plans/dogfood/verify-phase-design.md:211` | "the standard capture envelope defined by the dogfood capture protocol" — a design note describing the era it was written in. |
+| `internal/bench/corpus_runrefs.go:15` | a comment explaining what the corpus does NOT reconstruct, referring to the protocol by name. |
+| `.workmux/PROMPT-epic-9uf-supervised-lanes.md` | **git-excluded**, so it never enters a tracked-files sweep at all: `git check-ignore -v` resolves it to `.git/info/exclude:9:.workmux/`, and both `git ls-files .workmux/` and `git status --porcelain .workmux/` are empty. |
+
+## Verification
+
+- **The widened sweep check.** `git ls-files -z | xargs -0 grep -nE
+  'dogfood[-_ ](capture|close)'` over tracked files returns **exactly the
+  enumerated no-op set above, and nothing else.** Anchoring on `.sh` is what let
+  r2's check pass over a live wrong pointer, so the check now matches the
+  mechanism names in every form they appear — hyphenated, underscored, spaced,
+  with or without extension.
+- `make test` and `make lint` green.
+- `make docs-check` and `make docs-reality` green.
+- **`make pre-push-test` passes all 18 cases — B1–B10 AND C1.** Case-count parity
+  is the check: the pre-extraction file reports 29 passed (11 in A, 18 in B+C),
+  so the extracted suite must report exactly 18. A suite reporting 16 has
+  silently dropped C1.
+- `bash examples/summarize/walkthrough.sh` still runs end to end.
+- `make dogfood-audit` still runs (it is .4's to replace, not mine to break).
+- `make -n dogfood-close-test` fails with "No rule to make target".
+
+### Negative controls
+
+1. **Hook wiring** — temporarily break the `refs/etude/*` exemption branch in the
+   hook so it falls through to the audit, and confirm `make pre-push-test`
+   FAILS. Proves `$PRE_PUSH_HOOK` resolves to the real, live hook rather than a
+   stale path.
+2. **bd shim carriage** — the shim's presence is verified **by inspection** of
+   the extracted file (the `BD_SHIM` heredoc and the `export PATH` line must both
+   be there), plus a run with the `export PATH` line removed to confirm suite
+   behavior changes at all. An earlier draft claimed this control would make
+   "C1 specifically" fail; that is not observable, because C1 duplicates B2's
+   flow and shares the dependency, and on a machine with a real `bd` the hook may
+   exit 3 and leave both green. Inspection is the actual guarantee here; the run
+   is a weaker corroboration, and this plan no longer claims more for it.
+
+Both controls are reverted immediately after observing the result.
+
+## Risks
+
+- **The pre-push hook is live, and it is on the path of every push.** A syntax
+  error or a bad edit there does not produce a wrong message, it blocks pushes
+  repo-wide for every lane sharing this checkout — a blast radius larger than
+  this bead. Mitigation: the edit is confined to two message/comment strings and
+  changes no control flow; verify with `bash -n`, confirm the diff touches no
+  `if`/`exit`/test construct, and exercise it by pushing after the change.
+- **The deletion could have taken live coverage with it.** Two thirds of the
+  named test file tests the deleted script; one third tests a hook that
+  survives. A line-count-driven deletion would have passed `make test` and
+  `make lint` cleanly while removing the only tests of a live push gate —
+  because `make test` is `go test ./...` and has never invoked any shell suite.
+- **Nothing runs the shell suites automatically, and the `shell-test` aggregate
+  does not change that.** There is no CI in this repo (`.github/workflows/` does
+  not exist), so `make test` staying green proves nothing about any shell suite.
+  Both seats asked for the aggregate and it is worth adding — one command now
+  runs every shell suite, and a new suite has an obvious place to be listed —
+  but it is discoverability, not enforcement. Nothing invokes it unless a person
+  does. Claiming otherwise would be exactly the kind of green-check-over-nothing
+  this bead's own gate rounds kept catching. Closing the gap for real means
+  either CI or a pre-push hook that runs it, and neither is in scope here.
+- **Deleting ~713 lines removes the only executable description of the old
+  protocol.** Git history keeps it, and bead .2 already removed the prose that
+  described it; leaving the scripts would leave the repo able to *perform* a
+  protocol its own docs no longer describe.
+
+## Corrections to this plan
+
+Recorded rather than silently amended, because a plan asserting a state the repo
+is not actually in is the exact failure this bead exists to remove.
+
+1. **Sweep table omitted `scripts/dogfood-gate-capture.sh`**, and the
+   verification asserted a grep result that draft would not have produced.
+2. **The Risks section claimed the pre-push hook was not installed.** It is:
+   `core.hooksPath` points at `.beads/hooks`, so the tracked file IS the running
+   hook.
+3. **The deletion set treated `dogfood-close_test.sh` as a single unit** because
+   the bead does. It is three suites, two of which test a hook that survives.
+4. **Round 1, both seats BLOCK.** codex: the completeness-audit exemption
+   violates the acceptance outright, and the `.workmux` exemption needed proof.
+   opus: three sections not two, and the dependency list omitted the bd PATH
+   shim.
+5. **Round 2, codex GO / opus BLOCK.** opus found a missed sweep site the plan's
+   own verification structurally could not catch — `review-gate-runbook.md:346`
+   names `dogfood-close` without an extension, and the check was anchored on
+   `.sh`. It also showed the Section C rationale was overstated and that the
+   second negative control rested on that overstatement.
+
+**The theme, and why this round is different.** Three of these five are one
+failure: a verification claim that does not cover what it says it covers. Per
+the supervisor runbook's own rule — when a seat names a new site for a finding
+you already fixed, stop patching the named site and enumerate every place the
+invariant must hold — this round replaces the narrow grep with an exhaustive
+tracked-file inventory of all 25 hits in 13 files, classified into 10 edit sites
+and an enumerated no-op baseline, and it corrects the two claims that were
+overstated rather than defending them. That audit also surfaced the
+`review-gate-runbook.md` section being stale on two further counts beyond the
+one the seat reported.
