@@ -1,0 +1,35 @@
+commit 906f43af3b0b5dd229b286114c686ea386be43af
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 02:40:20 2026 +0800
+
+    backfill retro improvement links into beads
+
+diff --git a/docs/plans/dogfood/retro-ledger.md b/docs/plans/dogfood/retro-ledger.md
+index da299c9..3e0bbcb 100644
+--- a/docs/plans/dogfood/retro-ledger.md
++++ b/docs/plans/dogfood/retro-ledger.md
+@@ -40,8 +40,10 @@ Landed (`[IMPLEMENTED]`/`[PLANNED]` per change) · Follow-up beads · Remaining.
+   `[IMPLEMENTED]`; optional-improvements-mandatory-before-advance `[IMPLEMENTED]`;
+   reviewer run-status surfacing `[IMPLEMENTED]`; explicit reviewer-seat prompts
+   `[IMPLEMENTED]` (all in review-gate-runbook.md / review-gate-process.md).
+-- **Follow-up beads / Remaining:** carry the safe-bead-update rule into the
+-  workflow skill (later reinforced by the scope-fence retro, B5).
++- **Follow-up beads / Remaining:** none open — the safe-bead-update rule landed
++  in the runbook's "Safe Bead Updates" section and the dev-workflow skill
++  delegates to that runbook. `[IMPLEMENTED]` (The separate scope-fence rule, B5,
++  is a distinct later improvement.)
+ 
+ ### A2. Gate-auth + four-seat expansion retro (2026-05-23)
+ - **Trigger/date/scope:** a nested `claude -p` reviewer hit a 401 auth failure,
+@@ -157,8 +159,9 @@ Phase-0-completion notes).
+   the README/BRIEF/index refresh `[IMPLEMENTED]` → **etude-phase-prep.2** (commit
+   e16b9b6, which made the guard pass — a closed loop).
+ - **Follow-up beads / Remaining:** etude-phase-prep.5 (closed), etude-phase-prep.2
+-  (closed). An epic-close holistic docs/reality reconciliation remains a
+-  `[PLANNED]` convention (folded into the docs-checklist, not yet a hard gate).
++  (closed). An epic-close holistic docs/reality reconciliation remains `[PLANNED]`
++  (folded into the docs-checklist + a runbook note, not yet a hard gate) — tracked
++  as open bead **etude-4o0**.
+ 
+ ---
+ 
