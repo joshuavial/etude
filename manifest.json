@@ -196,6 +196,73 @@
       ],
       "decision": {},
       "timestamp": "2026-06-29T22:03:12Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "replay gate stderr warning",
+            "explicit ManifestVersion"
+          ],
+          "timestamp": "2026-06-29T21:36:15Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "explicit reseed byte assertion",
+            "reserved-name guard dead code"
+          ],
+          "timestamp": "2026-06-29T21:36:15Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "explicit --run-id override not validated via IsValidRunID (Security/Data-Integrity); validate before any git op"
+          ],
+          "timestamp": "2026-06-29T21:36:15Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-29T21:36:15Z"
     }
   ]
 }
