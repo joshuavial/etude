@@ -1,0 +1,14 @@
+# Final Review — etude-4n7 (confine capture-gate + replay output paths against symlink follow)
+
+Verdict: GO. Commit 2374ea8 "confine capture-gate and replay output paths against symlink follow".
+
+- Coherent, threat-model-scoped hardening: closes the symlink-follow class in the two sites with a real story — capture-gate `raw_output.path` (the machine-fed gate-JSON vector: a crafted gate file could exfiltrate a file outside the intended transcript) and replay `--output` (a symlinked output could clobber the symlink's target). DELIBERATELY EXCLUDES capture `--input`/`--output` (direct user-typed CLI args with no confinement anchor — confining them would break legitimate captures and secure nothing under the local-user trust model). All three seats confirmed the scope split is correct.
+- Atomic, TOCTOU-safe: the capture-gate read is `os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)` (open IS the check — a final-component symlink fails with ELOOP) + `f.Stat()` regular-file check + `io.ReadAll(f)` from the same fd + `defer f.Close()` — NOT the originally-planned Lstat-then-ReadFile (which was a TOCTOU and the unanimous plan-gate BLOCK). replay `--output` uses `O_CREATE|O_WRONLY|O_TRUNC|nofollowFlag` as the atomic guard (Lstat is friendly-error only).
+- Portable: `nofollowFlag` is build-tagged — `syscall.O_NOFOLLOW` on `//go:build unix`, `0` on `//go:build !unix` — so the package compiles on ALL platforms (the initial direct `syscall.O_NOFOLLOW` usage broke `GOOS=windows`, a regression the implement gate caught; fixed). On non-unix it degrades to the non-atomic Stat check (documented; windows is out of the threat model).
+- Verified empirically (Opus gate seat): a symlinked capture-gate raw_output leaks the secret into ZERO git objects; a symlinked replay --output leaves the victim byte-unchanged. Backward compatible: regular-file paths work unchanged; existing tests green. Also fixed an inert windows test-skip (`os.Getenv("GOOS")` → `runtime.GOOS`).
+- Docs: docs/gates.md (raw_output now requires a regular file — behavior note) + docs/replay.md (--output symlink rejection). No new flag → no docs/cli regen. docs-check / docs-reality (13) / lint green.
+- Scope: capture.go, replay.go, capture_test.go, replay_test.go, nofollow_{unix,other}.go (new), docs/gates.md, docs/replay.md. 1-bead=1-commit.
+
+Gate history (3-seat):
+- Plan Tier-1: UNANIMOUS BLOCK — all three seats independently caught the capture-gate read TOCTOU (Lstat-then-ReadFile on attacker-controlled input) and agreed on the O_NOFOLLOW-open fix; scope + replay guard confirmed sound. (My scrutiny-point seeding surfaced it.)
+- Implement Tier-1: Opus GO (empirical exploit probes) but codex+gemini BLOCK on a verified windows-compile regression (syscall.O_NOFOLLOW undefined on GOOS=windows; HEAD compiled before) → fixed with build-tagged nofollowFlag + the windows-skip nit; codex+gemini round-2 GO → UNANIMOUS.

@@ -1,0 +1,185 @@
+✓ etude-4n7 · Confine capture/capture-gate/replay file paths against symlink+traversal   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Hardening audit finding (med; highest-value hardening gap). capture-run already confines artifact paths via resolveArtifactPath (realpath/EvalSymlinks, etude-094) but the same class is UNGUARDED elsewhere: (1) capture --output/--input addFileArtifact (capture.go:252) and capture-gate raw_output.path buildSeatResult (capture.go:544) os.ReadFile ANY absolute path, following symlinks -> a machine-fed gate JSON could exfiltrate e.g. /etc/passwd into a stored artifact; (2) replay --output (replay.go:215) os.WriteFile through a symlink with no Lstat/regular-file guard (the runner-output READ at exec_runner.go:129 is Lstat-guarded; the write-out is not). Apply the capture-run-style confinement/regular-file checks. Severity is med IF gate files are ever machine/PR-derived, low if always hand-authored.
+
+DESIGN
+RECOMMENDATION: SCOPED BUILD
+
+IN scope (2 sites):
+  - capture-gate raw_output.path (capture.go:544, buildSeatResult os.ReadFile) — the
+    one real (latent) untrusted-input vector: the gate JSON is the realistic
+    machine-fed surface (CI/PR automation may emit it). Apply a regular-file +
+    no-symlink read guard (NOT the capture-run relative-to-dir model — see rationale).
+  - replay --output (replay.go:220, os.WriteFile) — direct user arg, but a WRITE that
+    follows symlinks could clobber an unexpected target. Cheap defensive-depth
+    no-symlink-follow write guard mirroring exec_runner's existing output guard.
+
+OUT of scope (1 site), excluded by threat model:
+  - capture --input / --output (capture.go:252, addFileArtifact os.ReadFile). These
+    paths come DIRECTLY from CLI flags the user types (`--input role=path`,
+    `--output role=path`). A trusting local user who types a path can already read any
+    file they own; there is NO natural confinement boundary for a bare CLI arg (unlike
+    capture-run, whose paths are anchored to the spec DIRECTORY). Confining these would
+    BREAK the legitimate use of capturing a file from anywhere the user chooses, and
+    would buy no security under the current all-hand-authored trust model. Do NOT touch.
+
+## Strongest reason to build (vs DEFER)
+capture-gate is the one site whose input shape (a JSON document with an embedded file
+path) is plausibly machine/CI-emitted rather than hand-typed — that is exactly the
+"machine-fed gate JSON names /etc/passwd and exfiltrates it into a stored, content-
+addressed, possibly-pushed artifact" vector the audit flagged as med. The guard is
+small, won't break any current usage (no existing test or doc example sets
+raw_output.path to a symlink), and closes the highest-value gap. replay --output rides
+along as a near-free write-side guard that matches a guard the runner-output READ path
+already has (consistency, not new behavior). The direct-CLI reads are correctly left
+unconfined.
+
+## Per-site threat verdict
+  - capture-gate raw_output.path: REAL (latent). Untrusted-input story holds the moment
+    a gate file is produced by automation rather than hand-authored. Worth hardening now;
+    cheap and non-breaking.
+  - replay --output: LOW but cheap. User named the path, so not an exfiltration vector,
+    but a symlinked --output silently clobbering another file is a real footgun; the
+    READ side is already guarded, so guarding the WRITE side is consistency + defensive
+    depth.
+  - capture --input/--output: NO BOUNDARY. Direct user-typed args with no anchor;
+    confinement is the wrong move (breaks legitimate use, secures nothing under the
+    current trust model). Explicitly excluded.
+
+## Confinement model decision for capture-gate (the non-obvious call)
+Do NOT reuse capture-run's resolveArtifactPath relative-to-spec-dir model here. Reasons:
+  1. No stable anchor. --gate-file accepts "-" (stdin); gate JSON can be piped from a
+     pipeline with no on-disk directory, so "relative to the gate-file's directory" is
+     undefined for the stdin case. capture-run always has a real spec file on disk.
+  2. The gate file is a thin RECORD-of-an-attempt, not a portable bundle. capture-run
+     spec dirs are deliberately self-contained/portable (artifacts shipped alongside the
+     spec); gate raw_output transcripts are not bundled that way today, and forcing
+     relative-to-dir would change the path contract AND break stdin.
+Chosen guard for raw_output.path: a regular-file + no-symlink Lstat guard (same shape as
+exec_runner.go:164-173). This blocks the symlink-follow exfiltration (the actual attack:
+a symlink named in the JSON pointing at /etc/passwd) while leaving the path itself
+otherwise as-is, so legitimate absolute or cwd-relative transcript paths keep working and
+stdin keeps working. This is the lighter, correct guard — it neutralizes the symlink
+vector without imposing a containment boundary that has no natural anchor here.
+
+## The guards (exact shape — design only, no code)
+Add one shared helper in internal/cli (e.g. readRegularFile(path) ([]byte, error)) that:
+  - os.Lstat(path); if not exist -> wrap as a plain "does not exist" / read error (a
+    missing transcript is a user typo, not an escape — mirror resolveArtifactPath's
+    ErrNotExist handling tone).
+  - if fi.Mode()&os.ModeSymlink != 0 (or !fi.Mode().IsRegular()) -> reject with a clear
+    "raw_output %s must be a regular file (not a symlink)" style error.
+  - else os.ReadFile(path) and return.
+Site wiring:
+  - capture.go:544 buildSeatResult: replace os.ReadFile(s.RawOutput.Path) with the
+    regular-file-guarded read; keep the existing "read raw_output %s: %w" wrap.
+  - replay.go:220 write-out: before os.WriteFile(outputPath, ...), Lstat outputPath; if
+    it EXISTS and is a symlink or non-regular file, reject ("refusing to write --output
+    %s: not a regular file"). If it does not exist, proceed (normal create). Open with
+    O_CREATE|O_WRONLY|O_TRUNC|O_NOFOLLOW via os.OpenFile to also defeat the create-time
+    TOCTOU/symlink-follow on the final path component, then write res.Output and chmod/
+    perm 0o644 (preserve current mode). Keep "write output file: %w" wrap.
+NOTE: do NOT entangle with refactor bead etude-6j8 (moving inferMediaType to
+artifactstore). resolveArtifactPath stays in capture_run.go untouched (we are not reusing
+it). The new guard helper is independent and small.
+
+## Tests (internal/cli)
+  - capture_test.go: gate JSON with raw_output.path -> a symlink targeting a file outside
+    -> capture-gate rejected with the regular-file error; run unchanged. (Mirror the
+    os.Symlink + "escapes" assertions in capture_run_test.go:715+, adapted to the new
+    message.)
+  - capture_test.go: gate JSON with raw_output.path -> a normal regular file -> accepted,
+    transcript hashed into the artifact store (positive path; stdin variant too if cheap).
+  - replay_test.go: --output pointing at an existing symlink -> rejected, target file NOT
+    clobbered; --output pointing at a fresh path -> written normally (regression).
+
+## Docs
+  - docs/gates.md: the raw_output line (currently "path is a local transcript file hashed
+    in", line 48) gains a note that the path must be a regular file (symlinks rejected).
+    This is a (minor) behavior change for the gate input contract -> docs MUST be updated.
+  - docs/replay.md: note --output rejects pre-existing non-regular/symlink targets.
+  - Blast radius (defect-class #6): NO new flag, NO new command -> NO docs/cli regen,
+    NO generated-reference churn. Verify the cli/*.md generated files are untouched.
+
+## File scope (1 bead = 1 commit)
+  - internal/cli/capture.go      (guard buildSeatResult raw_output read)
+  - internal/cli/replay.go       (guard --output write)
+  - internal/cli/<one helper>    (shared regular-file read/write-guard helper; may live
+                                  inline in capture.go/replay.go if small enough — prefer
+                                  a single shared func to avoid divergence)
+  - internal/cli/capture_test.go (gate raw_output symlink-reject + regular-file-accept)
+  - internal/cli/replay_test.go  (output symlink-reject + regular-file-accept)
+  - docs/gates.md, docs/replay.md (behavior-change notes)
+
+## Risks
+Low. The capture-gate guard is non-breaking (no current usage sets raw_output.path to a
+symlink; no test/doc example does). The replay O_NOFOLLOW write is a behavior change only
+for the pathological symlinked-output case; legitimate fresh-file and regular-file
+overwrites are unaffected. O_NOFOLLOW is supported on darwin and linux (the CI targets).
+Main thing to get right: don't reject a non-existent --output path (that's the normal
+create case), only reject when it exists and is non-regular/symlink.
+
+## Capture
+  - inputs: bead etude-4n7 description; capture.go (addFileArtifact:252, buildSeatResult:
+    523-554, runGate gate-file/stdin handling:416-521); capture_run.go (resolveArtifactPath
+    model:401-437, the boundary it relies on); replay.go (--output write:103,219-225);
+    exec_runner.go (Lstat regular-file guard:163-173 — the reuse template); capture_run_test
+    .go (symlink-containment test pattern:711+); capture_test.go (writeGateJSON helper:517,
+    no raw_output usage today); docs/gates.md (raw_output contract:48); bead etude-6j8
+    (refactor — kept un-entangled).
+  - output: bead --design field
+
+---
+## PLAN-GATE CORRECTION (Tier-1 gate, 3-seat: UNANIMOUS BLOCK — all three seats caught the same defect + agree on the fix)
+The SCOPE is confirmed correct by all three seats: harden capture-gate raw_output.path + replay --output; EXCLUDE capture --input/--output (direct user-chosen paths, no confinement anchor — confining them breaks legit captures without closing a real bug). The replay --output write guard is confirmed sound as designed.
+
+**REQUIRED FIX — the capture-gate READ must be atomic O_NOFOLLOW-open, not Lstat-then-ReadFile.** For the attacker-controlled gate JSON (the whole reason this site is in scope), `os.Lstat` then `os.ReadFile(path)` is a real TOCTOU: the final path component can be swapped to a symlink AFTER the Lstat and BEFORE the read, and ReadFile follows it — the exfil vector stays open. The exec_runner.go Lstat precedent is NOT sufficient here because that guards etude's OWN runner output, not machine-fed input.
+- Implement the capture-gate read (buildSeatResult, capture.go:544) as: `f, err := os.OpenFile(s.RawOutput.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)` — a final-component symlink fails atomically with ELOOP (reject with a clear error); then `fi, err := f.Stat()` and require `fi.Mode().IsRegular()` (reject non-regular); then `io.ReadAll(f)`; `f.Close()` on all paths. This preserves absolute + cwd-relative path behavior AND stdin gate-files (the gate JSON itself is unaffected; only raw_output.path resolution changes), while actually closing the symlink-follow vector.
+- Note: `O_NOFOLLOW` lives in the `syscall` package (`syscall.O_NOFOLLOW`), not `os`. It is a Unix facility; on Windows it is 0/no-op — acceptable (the repo targets Unix: POSIX-sh tests are windows-skipped). 
+
+**replay --output write** — UNCHANGED from the plan (already correct): `Lstat` for a friendly existing-target error, then `os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)` as the real atomic guard (nonexistent → creates; existing symlink final component → ELOOP reject; existing regular file → truncates). The Lstat is redundant-but-harmless friendly-error.
+
+**Shared helper**: a small internal/cli helper may wrap the O_NOFOLLOW open, BUT it must NOT blur the per-site contextual error messages (return the fd/err; let each caller wrap with its own "gate raw_output ..." / "replay output ..." context). Per codex.
+
+All other plan decisions stand (scope exclusion of capture --input/--output; behavior-change note in docs/gates.md + docs/replay.md; no new flag → no docs/cli regen; tests: symlink raw_output rejected + regular accepted; replay --output to symlink rejected, to new path creates, to existing regular file works; 1-bead=1-commit).
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- capture.go: added `syscall` import; replaced `os.ReadFile(s.RawOutput.Path)` in `buildSeatResult` with call to new `readRegularFile` helper; added `readRegularFile` function at bottom of file using `os.OpenFile(...|syscall.O_NOFOLLOW)` + `f.Stat().IsRegular()` check + `io.ReadAll(f)` with `defer f.Close()`.
+- replay.go: added `syscall` import; replaced `os.WriteFile(outputPath, ...)` in Step 11 with: Lstat friendly pre-check for non-regular existing target, then atomic `os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)` + `f.Write` + explicit close with error handling.
+- No shared helper was created for the write side (inline is cleaner for 2 distinct sites with different context messages); readRegularFile is the shared read helper used only by capture.go.
+- capture_test.go: added `writeGateJSONWithRawOutput` helper, `TestCaptureGateRawOutputSymlinkRejected` (symlink → rejected, error mentions raw_output), `TestCaptureGateRawOutputRegularFileAccepted` (regular file → accepted, artifact stored).
+- replay_test.go: added `TestReplayOutputSymlinkRejected` (symlink → rejected, protected file untouched), `TestReplayOutputNewPathCreated` (non-existent path → creates), `TestReplayOutputExistingRegularFileOverwritten` (existing regular → truncates+writes).
+
+**Checks run:**
+- `go build ./...`: pass
+- `go vet ./...`: pass
+- `gofmt -l` on changed files: pass (no output)
+- `go test ./internal/cli/... -run TestCaptureGateRawOutput|TestReplayOutput -v`: all 5 new tests PASS
+- `go test ./internal/cli/...`: PASS (full suite)
+- `go test ./...`: PASS (full suite, all packages including gen-docs — no new flag so no docs/cli drift)
+
+**Changed files:**
+- internal/cli/capture.go
+- internal/cli/replay.go
+- internal/cli/capture_test.go
+- internal/cli/replay_test.go
+
+**Plan deviations:**
+- Shared helper: readRegularFile (read side) is in capture.go per plan. No separate file was created (2 sites too few to warrant a new file). The write side in replay.go is inlined as the plan permitted ('if a helper adds more indirection than value for 2 sites, inline is acceptable').
+- The PLAN-GATE CORRECTION (atomic O_NOFOLLOW open for capture-gate read) was implemented EXACTLY as required.
+
+**Capture:**
+- inputs: approved plan (etude-4n7 --design), capture.go:544, replay.go:220, capture_test.go writeGateJSON helper, replay_test.go executeReplay helper
+- output: working tree diff (4 files changed) and this bead notes
+
+LABELS: phase:implement
+
+

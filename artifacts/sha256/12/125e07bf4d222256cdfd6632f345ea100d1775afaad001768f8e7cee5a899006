@@ -1,0 +1,364 @@
+commit 2374ea82c9a775fe8002ca22711f35186823a0f6
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 22:24:59 2026 +0800
+
+    confine capture-gate and replay output paths against symlink follow
+
+diff --git a/docs/gates.md b/docs/gates.md
+index e7c9187..ebb7510 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -64,6 +64,13 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
+ recorded artifacts (its output or one of its inputs). Invalid input is rejected without changing the run. A run that carries
+ any gates is written as `manifest_version` 3; gate-less runs are unchanged.
+ 
++A seat's `raw_output.path` must point at a **regular file**: it is opened
++without following symlinks (on Unix, atomically via `O_NOFOLLOW`), so a symlink
++or other non-regular file at that path is rejected rather than read through.
++This prevents a machine-generated gate file from causing `etude` to capture a
++file outside the intended transcript (e.g. via a symlink to a sensitive path).
++Absolute and working-directory-relative paths to regular files are unaffected.
++
+ ### Reviewer seat fields
+ 
+ Each seat records its identity on three axes plus its verdict:
+diff --git a/docs/replay.md b/docs/replay.md
+index 285ca18..0104309 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -25,7 +25,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
+ | Flag | Description |
+ |------|-------------|
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+-| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. |
++| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. The file is opened without following symlinks (on Unix, atomically via `O_NOFOLLOW`): a non-existent path is created, an existing regular file is overwritten, but an existing symlink (or other non-regular file) is rejected rather than followed — so `--output` cannot clobber a file the symlink points at. |
+ | `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
+ | `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
+ | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+diff --git a/internal/cli/capture.go b/internal/cli/capture.go
+index adb4e8a..f91cd33 100644
+--- a/internal/cli/capture.go
++++ b/internal/cli/capture.go
+@@ -541,7 +541,7 @@ func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.S
+ 		if mediaType == "" {
+ 			mediaType = inferMediaType(s.RawOutput.Path)
+ 		}
+-		content, err := os.ReadFile(s.RawOutput.Path)
++		content, err := readRegularFile(s.RawOutput.Path)
+ 		if err != nil {
+ 			return runmanifest.SeatResult{}, fmt.Errorf("read raw_output %s: %w", s.RawOutput.Path, err)
+ 		}
+@@ -611,3 +611,23 @@ func inferMediaType(filePath string) string {
+ 		return "application/octet-stream"
+ 	}
+ }
++
++// readRegularFile opens path with O_NOFOLLOW so a final-component symlink fails
++// atomically with ELOOP rather than being silently followed. It additionally
++// rejects non-regular files (devices, FIFOs, directories). Use this wherever
++// machine-fed or CI-emitted paths are read to prevent symlink-follow exfiltration.
++func readRegularFile(path string) ([]byte, error) {
++	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
++	if err != nil {
++		return nil, err
++	}
++	defer f.Close()
++	fi, err := f.Stat()
++	if err != nil {
++		return nil, err
++	}
++	if !fi.Mode().IsRegular() {
++		return nil, fmt.Errorf("%s is not a regular file", path)
++	}
++	return io.ReadAll(f)
++}
+diff --git a/internal/cli/capture_test.go b/internal/cli/capture_test.go
+index 8c56170..83c0a1a 100644
+--- a/internal/cli/capture_test.go
++++ b/internal/cli/capture_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -727,3 +728,114 @@ func TestCaptureGateRejectsDanglingArtifact(t *testing.T) {
+ 		t.Fatalf("error %q does not mention artifact rejection", err.Error())
+ 	}
+ }
++
++// writeGateJSONWithRawOutput writes a gate JSON file that includes a raw_output
++// entry with a seat transcript path. It is used by the symlink-guard tests.
++func writeGateJSONWithRawOutput(t *testing.T, dir, name, gateID, phase string, round int, transcriptPath string) string {
++	t.Helper()
++	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
++	content := fmt.Sprintf(`{
++  "gate_id": %q,
++  "phase": %q,
++  "round": %d,
++  "tier": 1,
++  "status": "pass",
++  "reviewed_stages": [{"stage":"plan"}],
++  "seats": [
++    {
++      "seat": "gemini",
++      "harness": {"name":"gemini-cli","version":"3.1"},
++      "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
++      "verdict": "go",
++      "timestamp": %q,
++      "raw_output": {"path": %q}
++    }
++  ],
++  "decision": {},
++  "timestamp": %q
++}`, gateID, phase, round, now, transcriptPath, now)
++	path := filepath.Join(dir, name)
++	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
++		t.Fatalf("write gate JSON with raw_output %s: %v", path, err)
++	}
++	return path
++}
++
++// TestCaptureGateRawOutputSymlinkRejected verifies that a gate JSON whose
++// raw_output.path is a symlink is rejected — the O_NOFOLLOW guard must fire
++// and no ref must be written.
++func TestCaptureGateRawOutputSymlinkRejected(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("symlinks not supported on windows")
++	}
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "# plan\n")
++	chdir(t, repo)
++
++	// Create an existing run to attach the gate to.
++	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
++		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
++	}
++
++	// Create a real transcript file and a symlink pointing at it.
++	realTranscript := filepath.Join(repo, "transcript.txt")
++	if err := os.WriteFile(realTranscript, []byte("transcript content\n"), 0o644); err != nil {
++		t.Fatalf("write transcript: %v", err)
++	}
++	symlinkPath := filepath.Join(repo, "transcript-link.txt")
++	if err := os.Symlink(realTranscript, symlinkPath); err != nil {
++		t.Skipf("symlink creation unsupported: %v", err)
++	}
++
++	gateFile := writeGateJSONWithRawOutput(t, repo, "gate.json", "plan.r1", "plan", 1, symlinkPath)
++
++	_, _, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
++	if err == nil {
++		t.Fatal("capture-gate accepted a symlink raw_output.path; want rejection")
++	}
++	// The error must mention the path to give useful context.
++	if !strings.Contains(err.Error(), "raw_output") {
++		t.Fatalf("error %q does not mention 'raw_output'", err.Error())
++	}
++}
++
++// TestCaptureGateRawOutputRegularFileAccepted verifies that a gate JSON whose
++// raw_output.path is a real regular file is accepted, and the transcript is
++// hashed into the artifact store.
++func TestCaptureGateRawOutputRegularFileAccepted(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "# plan\n")
++	chdir(t, repo)
++
++	// Create an existing run to attach the gate to.
++	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
++		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
++	}
++
++	// Write a real transcript file.
++	transcriptContent := "this is a real transcript\n"
++	transcriptPath := filepath.Join(repo, "transcript.txt")
++	if err := os.WriteFile(transcriptPath, []byte(transcriptContent), 0o644); err != nil {
++		t.Fatalf("write transcript: %v", err)
++	}
++
++	gateFile := writeGateJSONWithRawOutput(t, repo, "gate.json", "plan.r1", "plan", 1, transcriptPath)
++
++	stdout, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
++	if err != nil {
++		t.Fatalf("capture-gate with regular-file raw_output failed: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "captured ") {
++		t.Fatalf("stdout %q does not mention 'captured'", stdout)
++	}
++
++	// The gate should be recorded with a raw_output artifact reference.
++	m := readRunManifest(t, repo, "run-1")
++	if len(m.Gates) != 1 {
++		t.Fatalf("gates count = %d, want 1", len(m.Gates))
++	}
++	seat := m.Gates[0].Seats[0]
++	if seat.RawOutput == nil {
++		t.Fatal("gate seat has no raw_output artifact; want one")
++	}
++}
+diff --git a/internal/cli/nofollow_other.go b/internal/cli/nofollow_other.go
+new file mode 100644
+index 0000000..58f437c
+--- /dev/null
++++ b/internal/cli/nofollow_other.go
+@@ -0,0 +1,9 @@
++//go:build !unix
++
++package cli
++
++// nofollowFlag is 0 on platforms without O_NOFOLLOW (e.g. Windows): the atomic
++// no-follow-open guard is unavailable there, so symlink rejection falls back to
++// the caller's Lstat / f.Stat regular-file check (non-atomic). etude's threat
++// model targets unix; this keeps the package compiling on all platforms.
++const nofollowFlag = 0
+diff --git a/internal/cli/nofollow_unix.go b/internal/cli/nofollow_unix.go
+new file mode 100644
+index 0000000..ff66d3d
+--- /dev/null
++++ b/internal/cli/nofollow_unix.go
+@@ -0,0 +1,9 @@
++//go:build unix
++
++package cli
++
++import "syscall"
++
++// nofollowFlag, OR'd into an os.OpenFile flag, makes the open fail (ELOOP)
++// rather than follow a final-component symlink. On unix it is syscall.O_NOFOLLOW.
++const nofollowFlag = syscall.O_NOFOLLOW
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 2895bb0..cd54ab8 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -217,7 +217,23 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
+ 
+ 	// Step 11: emit the output (--output and --record may coexist).
+ 	if outputPath != "" {
+-		if err := os.WriteFile(outputPath, res.Output, 0o644); err != nil {
++		// Friendly pre-check: if the path already exists and is not a regular file
++		// (e.g. a symlink or directory), reject with a clear message before the
++		// atomic open below would return a less descriptive ELOOP or EISDIR.
++		if fi, statErr := os.Lstat(outputPath); statErr == nil && !fi.Mode().IsRegular() {
++			return fmt.Errorf("write output file: refusing to write --output %s: not a regular file", outputPath)
++		}
++		// Atomic guard: O_NOFOLLOW ensures a final-component symlink fails with
++		// ELOOP rather than being followed, defeating create-time TOCTOU races.
++		f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|nofollowFlag, 0o644)
++		if err != nil {
++			return fmt.Errorf("write output file: %w", err)
++		}
++		if _, err := f.Write(res.Output); err != nil {
++			f.Close()
++			return fmt.Errorf("write output file: %w", err)
++		}
++		if err := f.Close(); err != nil {
+ 			return fmt.Errorf("write output file: %w", err)
+ 		}
+ 		_, err = fmt.Fprintf(out, "output written to %s\n", outputPath)
+diff --git a/internal/cli/replay_test.go b/internal/cli/replay_test.go
+index ec2068c..58f4ffe 100644
+--- a/internal/cli/replay_test.go
++++ b/internal/cli/replay_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -739,3 +740,91 @@ func TestReplayHelp(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// TestReplayOutputSymlinkRejected verifies that --output pointing at an
++// existing symlink is rejected and the symlink target is NOT clobbered.
++func TestReplayOutputSymlinkRejected(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("symlinks not supported on windows")
++	}
++	repo, runID := captureStageForReplay(t)
++	chdir(t, repo)
++
++	// Create a file we want to protect, and a symlink that points to it.
++	protectedFile := filepath.Join(t.TempDir(), "protected.txt")
++	if err := os.WriteFile(protectedFile, []byte("do not clobber\n"), 0o644); err != nil {
++		t.Fatalf("write protected file: %v", err)
++	}
++	symlinkOut := filepath.Join(t.TempDir(), "out-link.txt")
++	if err := os.Symlink(protectedFile, symlinkOut); err != nil {
++		t.Skipf("symlink creation unsupported: %v", err)
++	}
++
++	stub := &replay.StubRunner{CannedOutput: []byte("should not reach disk")}
++	_, _, err := executeReplay(stub, runID, "gen", "--output", symlinkOut)
++	if err == nil {
++		t.Fatal("replay accepted --output pointing at a symlink; want rejection")
++	}
++	if !strings.Contains(err.Error(), "not a regular file") && !strings.Contains(err.Error(), symlinkOut) {
++		t.Fatalf("error %q does not indicate symlink rejection", err.Error())
++	}
++
++	// The protected file must be untouched.
++	got, err2 := os.ReadFile(protectedFile)
++	if err2 != nil {
++		t.Fatalf("read protected file: %v", err2)
++	}
++	if string(got) != "do not clobber\n" {
++		t.Fatalf("protected file was clobbered; content = %q", got)
++	}
++}
++
++// TestReplayOutputNewPathCreated verifies that --output to a non-existent path
++// creates the file normally (unchanged happy path).
++func TestReplayOutputNewPathCreated(t *testing.T) {
++	repo, runID := captureStageForReplay(t)
++	chdir(t, repo)
++
++	want := []byte("new file output")
++	stub := &replay.StubRunner{CannedOutput: want}
++	outFile := filepath.Join(t.TempDir(), "brand-new-output.txt")
++
++	_, stderr, err := executeReplay(stub, runID, "gen", "--output", outFile)
++	if err != nil {
++		t.Fatalf("replay --output to new path failed: %v\nstderr: %s", err, stderr)
++	}
++	got, err := os.ReadFile(outFile)
++	if err != nil {
++		t.Fatalf("read output file: %v", err)
++	}
++	if !bytes.Equal(got, want) {
++		t.Fatalf("output file content = %q, want %q", got, want)
++	}
++}
++
++// TestReplayOutputExistingRegularFileOverwritten verifies that --output to an
++// existing regular file truncates and rewrites it (unchanged happy path).
++func TestReplayOutputExistingRegularFileOverwritten(t *testing.T) {
++	repo, runID := captureStageForReplay(t)
++	chdir(t, repo)
++
++	want := []byte("overwritten content")
++	stub := &replay.StubRunner{CannedOutput: want}
++	outFile := filepath.Join(t.TempDir(), "existing-output.txt")
++	// Pre-populate the file with different content.
++	if err := os.WriteFile(outFile, []byte("old content that should be replaced"), 0o644); err != nil {
++		t.Fatalf("pre-populate output file: %v", err)
++	}
++
++	_, stderr, err := executeReplay(stub, runID, "gen", "--output", outFile)
++	if err != nil {
++		t.Fatalf("replay --output to existing regular file failed: %v\nstderr: %s", err, stderr)
++	}
++	got, err := os.ReadFile(outFile)
++	if err != nil {
++		t.Fatalf("read output file: %v", err)
++	}
++	if !bytes.Equal(got, want) {
++		t.Fatalf("output file content = %q, want %q", got, want)
++	}
++}

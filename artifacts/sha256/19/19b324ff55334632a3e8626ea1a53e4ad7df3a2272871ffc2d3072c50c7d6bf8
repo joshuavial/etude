@@ -1,0 +1,20 @@
+# Verify — etude-4n7 (confine capture-gate + replay output paths against symlink follow)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` green (no new flag → no gen-docs drift); `make docs-check` clean; `make docs-reality` OK (13 cmds); `make lint`/`go vet`/`gofmt` clean.
+- New tests: TestCaptureGateRawOutputSymlinkRejected, TestCaptureGateRawOutputRegularFileAccepted, TestReplayOutputSymlinkRejected, TestReplayOutputNewPathCreated, TestReplayOutputExistingRegularFileOverwritten — all PASS (and RUN, not skipped, on this unix host with nofollowFlag=syscall.O_NOFOLLOW active). Existing capture-gate/replay tests unchanged.
+
+## Cross-platform build (the implement-gate regression, fixed)
+- `GOOS=windows GOARCH=amd64 go build ./...` → SUCCEEDS (HEAD-before-bead also compiled for windows; the bead's initial direct syscall.O_NOFOLLOW usage regressed it; the build-tagged nofollowFlag fix restores it). `GOOS=linux` → succeeds. Native darwin → clean.
+
+## Empirical exploit probe (Opus gate seat, throwaway /tmp repos)
+- capture-gate with `raw_output.path` = a SYMLINK to a planted secret → REJECTED (ELOOP, error wraps "read raw_output <path>"); exhaustive `git cat-file --batch-all-objects` scan = secret marker in ZERO objects; run ref unchanged. No exfiltration. Regular-file raw_output → captured normally.
+- replay `--output` = a SYMLINK to a victim file → REJECTED ("not a regular file"); victim byte-unchanged, symlink intact. `--output` to a new path → creates; to an existing regular file → overwrites.
+
+## Mechanism
+capture-gate read (readRegularFile): `os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)` (atomic — final-component symlink → ELOOP) + `f.Stat().IsRegular()` + `io.ReadAll(f)`, `defer f.Close()` (no TOCTOU, no fd leak). replay `--output`: friendly Lstat pre-check + `os.OpenFile(O_CREATE|O_WRONLY|O_TRUNC|nofollowFlag)` atomic guard. `nofollowFlag` = syscall.O_NOFOLLOW on unix (build tag), 0 on non-unix (degrades to the non-atomic Stat check; windows out of threat model). Scope: capture --input/--output (direct user CLI args, no boundary) deliberately UNTOUCHED.
+
+## Scope
+internal/cli/capture.go, replay.go, capture_test.go, replay_test.go, nofollow_unix.go (new), nofollow_other.go (new), docs/gates.md, docs/replay.md. 1-bead=1-commit.
