@@ -1,0 +1,179 @@
+# Docs — etude-9uf.5
+
+The proof run's whole output is knowledge, so the docs phase is where it becomes
+usable. Everything below went into `docs/plans/dogfood/supervisor-runbook.md` —
+the document a supervisor actually follows — rather than into a plan note.
+
+## Three sections added to the supervisor runbook
+
+`git diff --numstat docs/` at the moment this revision was frozen: **163 added, 13 removed**, across `supervisor-runbook.md` and a correction to
+`review-gate-process.md`. Earlier drafts said "+53 lines" and then "94 added" —
+each true when written and stale one round later, inside a document arguing that
+a claim must be auditable against the record. Hence the timestamped phrasing.
+
+**1. "Run the gate from the WORKER'S worktree, not your own."** Placed inside the
+per-phase loop, immediately before the exit-code handling, because that is the
+moment a supervisor decides where to type the command. It states the failure in
+the form that matters — *every other gate defect announces itself with a BLOCK;
+this one announces itself with a pass* — gives the literal `cd <lane> && …`
+invocation, and records that two of five gates on this very run were invoked from
+the wrong worktree before it was noticed. Points at `etude-4qi`.
+
+**2. "Append the verdict BEFORE you act on it."** Carries the measurement:
+`etude gate` alone passed **0 of its 5 attempts** — on `refs/etude/runs/etude-3xt`,
+which the text now names. Most usefully it documents the **fingerprint** — a gap
+in a phase's round sequence is an attempt whose verdict was appended late or
+never. Three exist in this epic (`.3` verify r2, `.3` docs r2, `.4` verify r2) —
+plus a FOURTH that is a false positive, which is the more useful half of the
+finding: see below. It also warns that a bootstrap panel re-records seats
+evidence-free and omits the deterministic check seats, so a reader auditing "did
+the checks pass" must read the ESCALATED attempt rather than the passing one.
+
+**3. "Do not edit an artifact after its gate passes."** The drift found on this
+run: fold before the gate, or capture a rerun stage and gate again. Points at
+`etude-pq7`.
+
+**Corrected at the docs gate, and worth recording.** The first draft attributed
+BOTH the "0 of 5" and the "two of five gates from the wrong worktree" figures to
+`etude-9uf.5`. They are measurements of `etude-3xt`. `.5`'s own run has three
+`etude gate` attempts at the time (four now, after `docs.r6` was run with the
+rebuilt binary), all from the correct worktree — so "of five" meant two
+different runs within thirty lines, in a section whose entire point is that a
+claim must be auditable against the record.
+
+The draft also promised the round-gap fingerprint "would have caught what six
+separate seats had to notice". The manifests hold **three** gaps, carrying at
+most five seat verdicts — so either the count was wrong or a missed verdict left
+no gap, in which case the arithmetic would not have caught it. The text now says
+**partial** and explains why: a verdict never assigned a round id leaves no hole,
+so a clean gap check is not proof the record is complete. Promising a detector
+more completeness than it has is how the next person stops looking.
+
+**Round 2 then corrected the corrections, twice, and both matter.**
+
+First, the drift sentence was ALSO `etude-3xt`'s measurement — round 1 had
+asserted it "IS about `.5`" and I folded that premise without checking it.
+`etude-3xt` has five gated artifacts and two drifted; `.5` has three that passed
+a gate, and two of those drifted. Both are true; the denominators differ, and I
+had published one run's numerator against the other's run name.
+
+Second, and more valuable: **the detector has a FALSE POSITIVE mode, and this
+epic's own record contains one.** `etude-9uf.1`'s plan rounds run 1, 3, 4 — a
+hole by the stated rule — but that run has a STAGE named `plan.r2` which gates
+`plan.r3` and `plan.r4` both review, so the counter skipped the number to avoid a
+collision. No verdict is missing. I had told the reader the detector's only
+weakness was false negatives; a supervisor running it as first described would
+get four hits with no guidance on the fourth. The runbook now states both failure
+modes and says to treat a hit as a question.
+
+Filed `etude-a1i` (and corrected, since it carried the wrong count too): the
+runbook describes a detector nothing implements — the
+documented-but-unimplemented gap this epic exists to close, recreated in the act
+of documenting it.
+
+**Also corrected: a section this epic's own work had made stale.** The
+seat-exception text still said the exception "lives in prose, not in code" and
+that `etude gate` "resolves the `invoke` string verbatim". Bead `etude-5f6`
+landed the fallback ladder in `17d0ab5`, so the exception IS encoded and the
+ladder IS walked. The observed outcome is unchanged — every gate still escalates
+— but the stated mechanism was wrong, and the precise gap is narrower than the
+old text claimed: `etude gate` cannot CONSUME an in-harness verdict.
+
+## Why the runbook and not elsewhere
+
+`etude-3xt`'s own docs gate surfaced the general form of this: that bead's
+practice fix landed in `retro-ledger.md` while `supervisor-runbook.md` step 6
+still described the old two-step habit — the fix documented somewhere other than
+where the reader looks. All three sections are placed at the point of use: the
+worktree warning inside the per-phase loop, the other two under "The bootstrap
+path", which is where a supervisor doing the manual append is already reading.
+
+## What is NOT changed
+
+- **`.etude/workflow.yaml`, `.etude/registry.yaml`** — the tiers and seats are
+  right; the gap is that `etude gate` cannot consume an in-harness verdict, which
+  is code (`etude-4ed`), not config.
+- **`docs/plans/dogfood/review-gate-runbook.md`** — covers seat conduct and the
+  degraded-gate policy, both unchanged by this run.
+- **`docs/retro.md`** — `etude-3xt` updated it in the same window; nothing here
+  touches retro capture.
+- **No new document.** The findings belong in the runbook that already exists.
+  A "proof run findings" page is a page nobody opens twice.
+
+## The stale-pointer defect, found twice more in my own fix
+
+Round 3 blocked on two sections that this epic's own work had invalidated:
+
+- The seat-exception paragraph I had just rewritten still ended "Bead
+  `etude-pqv` covers making registry exceptions machine-honored. **Until it
+  lands**, [run the seat out-of-band]". `etude-pqv` is CLOSED — closed by
+  `17d0ab5`, the commit the same paragraph now cites. So the ONE instruction in
+  this runbook telling a supervisor to hand-append a verdict was conditioned on a
+  condition already satisfied, and read as expired — in the exact paragraph
+  governing the manual step this epic measured as where records go missing. It
+  now says the bootstrap path is the standing procedure, and names the actually
+  open bead (`etude-4ed`).
+- `docs/plans/dogfood/review-gate-process.md:37-40` carried the identical stale
+  claim — "lives in a registry comment rather than in code" — cross-linked from
+  the section I was editing, and absent from my "what is NOT changed" list. A
+  supervisor following that pointer, finding `pqv` closed, would conclude the
+  gate now handles the opus seat and skip the bootstrap path entirely.
+
+Both are this epic's own defect: a document describing a mechanism the repo has
+since changed. Finding it inside the fix for it, twice, is the argument for
+`etude-a1i` and for mechanical checks generally.
+
+## The finding that invalidated my own measurements' explanation
+
+Round 4 found something none of the earlier rounds could: **`bin/etude` in this
+worktree was built at 15:37, and `17d0ab5` — the commit that landed the fallback
+ladder — landed at 16:11.** Every escalation this bead measured was produced by a
+PRE-LADDER binary. The measurements are real; the mechanism I had offered as
+their explanation was not. The binary contained neither ladder marker, and no run
+ref in the repo carried one.
+
+The seat also caught that my text asserted the gate "finds no other exec-able
+[candidate]" when `.etude/registry.yaml` declares an exec-able `agy` rung right
+there in the stanza I was citing.
+
+**So I rebuilt and ran a gate to observe it, rather than correcting prose to a
+mechanism I still had not seen.** `docs.r6` on this run, with a ladder-aware
+binary, records:
+
+```
+CANDIDATE_FAILED harness=claude-code …opus claude -p --model opus verdict=failed;
+IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task …;
+CANDIDATE_FAILED harness=agy …opus agy --model opus --print
+```
+
+All three rungs are walked. The conclusion — every gate escalates for a Claude
+Code supervisor — **survives, but for a different reason than I had documented**:
+not because the ladder is unwalked, but because its last exec-able rung is dead
+(`etude-8li`). Both docs now say that, and the runbook warns to rebuild
+`bin/etude` before trusting any of it.
+
+That is the sharpest lesson of this bead: I documented a mechanism from reading
+code and a bead id, measured an outcome consistent with it, and was wrong about
+the causal link for four rounds. The outcome was never in question; the
+explanation was, and only running it settled that.
+
+## Findings that became beads instead of prose
+
+Documentation cannot fix a missing mechanism, so four went to the tracker:
+
+| Bead | |
+|---|---|
+| `etude-4qi` (P1) | gate checks run in the caller's cwd; the record cannot be audited for it |
+| `etude-pq7` (P2) | no detection for a stage artifact edited after its gate |
+| `etude-4ed` (extended) | verdict injection must COMPLETE an attempt, not re-record it lossily |
+| `etude-fn8` (P3) | mkdocs nav points at a file bead `.2` deleted — a docs defect four docs gates missed, because neither `docs-check` nor `docs-reality` builds the site |
+| `etude-a1i` (P2) | implement the round-gap check the runbook now describes |
+
+## Checks
+
+`make docs-check` and `make docs-reality` green.
+
+Worth stating plainly, since this bead is about what the model can and cannot
+see: **neither reads prose, and neither builds the site.** They are why
+`etude-fn8` survived four docs gates on this epic. The only thing that has
+reliably caught a false sentence here is a seat reading it.
