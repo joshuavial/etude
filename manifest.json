@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.1",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -34,6 +34,59 @@
         "size": 2398
       },
       "timestamp": "2026-08-16T00:50:21.953876Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "aec3f20f79e2038e37e6c832f981d6905b90a13728d559b38ae36ced26eaac84"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/plan-gate-r1.md sha256 3e1511c8c51e0e10bd3b87be92bf4593a48fec0ff984a085ea0f6d33b592cd56"
+          ],
+          "timestamp": "2026-08-16T00:51:22Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep v4 expectations independent and ensure older-version rejection reaches the version seam.",
+            "packet path .etude/tmp/etude-5dr.1/plan-gate-r1.md sha256 3e1511c8c51e0e10bd3b87be92bf4593a48fec0ff984a085ea0f6d33b592cd56"
+          ],
+          "timestamp": "2026-08-16T00:51:22Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:51:22Z"
     }
   ]
 }
