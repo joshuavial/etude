@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-ldf",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -113,6 +113,70 @@
         "size": 57266
       },
       "timestamp": "2026-08-16T05:23:35.993329Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "cfccfa02d8f467b26d6eb2c732effe0ed5e8bb7593ec9b8a27fdec03c56b80fa"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "block",
+          "required": [
+            "Preserve normal user authentication while excluding repository-local Git configuration from remote probes.",
+            "Resolve relative remote URLs against the repository instead of the neutral probe directory."
+          ],
+          "optional": [
+            "Drive local ref enumeration from refstore.Kinds.",
+            "Fix linked-worktree shallow detection and surface ls-remote stderr.",
+            "Handle adapter invocations with no reviewer token without an empty install instruction."
+          ],
+          "timestamp": "2026-08-16T05:30:11Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Prove namespace coverage structurally rather than with one sentinel ref and honor negative fetch exclusions.",
+            "Accept valid pseudo-ref push sources such as HEAD.",
+            "Resolve effective push URLs and compare multiple endpoints without unsafe sync advice.",
+            "Reject unknown remote helper schemes and bound advertisement output.",
+            "Reject rubric symlinks escaping .etude.",
+            "Validate explicit env executables and env chdir targets.",
+            "Make shell-quoting expectations independent of the production quoting helper."
+          ],
+          "timestamp": "2026-08-16T05:30:11Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T05:30:11Z"
     }
   ]
 }
