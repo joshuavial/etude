@@ -306,6 +306,77 @@
         "degraded_reason": "pilms down. codex re-confirmed GO: TIMESTAMP=Created + EVENT column + sort-by-effectiveTime resolves the capture-time-loss defect. gemini+opus r1 GO carried (fix is additive)."
       },
       "timestamp": "2026-05-27T07:37:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T08:05:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T08:05:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T08:06:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T08:06:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down (0 CPU). 3-seat unanimous GO. Verified: formatTimeOmitZero backward-compat (byte-stable, no version bump, optional), AMENDED log render (TIMESTAMP=capture, EVENT=occurred-or-dash, sort by effectiveTime), validated --occurred-at on capture+generate, runs unaffected. Opus ran the built binary + real-manifest byte-stability probe. NIT (no malformed generate test) covered by shared assembleAndWriteRetro path."
+      },
+      "timestamp": "2026-05-27T08:07:00Z"
     }
   ]
 }
