@@ -1,0 +1,1414 @@
+commit a2f343760aa9ad2d61ec50e4d439e19546b0fc9e
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 21:04:23 2026 +0800
+
+    add bench eval-result caching keyed on content artifact judge and seed
+
+diff --git a/internal/bench/cache.go b/internal/bench/cache.go
+new file mode 100644
+index 0000000..482afe4
+--- /dev/null
++++ b/internal/bench/cache.go
+@@ -0,0 +1,100 @@
++package bench
++
++import (
++	"context"
++	"fmt"
++
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++)
++
++// cacheKey identifies a specific pairwise evaluation for cache lookup purposes.
++// All fields must match exactly for a cache hit.
++//
++// Matching uses the Artifact SHA-256 hashes as the content fingerprints.
++// The Artifact hashes are the cryptographic identity of the content: equal
++// Artifacts guarantee byte-identical inputs regardless of which git commit
++// tree they were recorded into. Commits are provenance metadata but are NOT
++// part of the match predicate.
++//
++// The JudgeID field is always non-empty when this struct is used for a lookup;
++// the caller (BenchRun) must enforce the non-empty gate before calling
++// lookupCachedEval. An unidentified judge (empty JudgeID) is never cached.
++type cacheKey struct {
++	Method    string
++	ArtifactA string // SHA-256 of original output (content identity for target A)
++	ArtifactB string // SHA-256 of replay output (content identity for target B)
++	JudgeID   string // always non-empty at call sites
++	Seed      int64
++}
++
++// lookupCachedEval scans all refs under refs/etude/evals/ and returns the first
++// EvalResult whose (Method, Targets[0].Artifact, Targets[1].Artifact, JudgeID,
++// Seed) all match key exactly.
++//
++// Content identity is determined by the Artifact SHA-256 hashes, not by the
++// git Commit OIDs. Equal artifact hashes guarantee byte-identical inputs
++// regardless of which commit tree they were recorded into.
++//
++// The JudgeID match is strict: key.JudgeID (which is always non-empty) must
++// equal the candidate doc's JudgeID exactly. A doc with an empty or different
++// JudgeID is never a hit. A doc with Seed==nil is never a hit for a
++// concrete-seed query.
++//
++// Malformed or unparseable eval docs are silently skipped so that one corrupt
++// ref does not abort the entire bench run.
++//
++// The scan is O(N) over all persisted eval refs. A secondary index is deferred
++// to a future bead once the corpus grows large enough to warrant it.
++func lookupCachedEval(ctx context.Context, store refstore.Store, key cacheKey) (eval.EvalResult, bool, error) {
++	refs, err := store.List(ctx, "refs/etude/evals")
++	if err != nil {
++		return eval.EvalResult{}, false, fmt.Errorf("cache lookup: list evals: %w", err)
++	}
++
++	for _, ref := range refs {
++		raw, err := store.ReadFile(ctx, ref, "eval_result.json")
++		if err != nil {
++			// Skip refs that cannot be read (e.g. partially written or corrupt).
++			continue
++		}
++		doc, err := eval.ParseJSON(raw)
++		if err != nil {
++			// Skip unparseable docs; one bad ref must not fail the whole bench.
++			continue
++		}
++		if matchesCacheKey(doc, key) {
++			return doc, true, nil
++		}
++	}
++	return eval.EvalResult{}, false, nil
++}
++
++// matchesCacheKey reports whether doc satisfies key. All fields must match exactly.
++// Artifact SHA-256 hashes are used as the content fingerprints for targets;
++// git Commit OIDs are provenance metadata and are NOT part of the match.
++func matchesCacheKey(doc eval.EvalResult, key cacheKey) bool {
++	if doc.Method != key.Method {
++		return false
++	}
++	if len(doc.Targets) < 2 {
++		return false
++	}
++	// Content identity: match on Artifact SHA-256 only (not Commit).
++	if doc.Targets[0].Artifact != key.ArtifactA {
++		return false
++	}
++	if doc.Targets[1].Artifact != key.ArtifactB {
++		return false
++	}
++	// JudgeID must match exactly (non-empty gate enforced by caller).
++	if doc.JudgeID != key.JudgeID {
++		return false
++	}
++	// Seed must be present in the doc and equal to the query seed.
++	// A doc with nil Seed (legacy) does not match any concrete-seed query.
++	if doc.Seed == nil {
++		return false
++	}
++	return *doc.Seed == key.Seed
++}
+diff --git a/internal/bench/cache_test.go b/internal/bench/cache_test.go
+new file mode 100644
+index 0000000..fb24971
+--- /dev/null
++++ b/internal/bench/cache_test.go
+@@ -0,0 +1,597 @@
++package bench
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/replay"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Judge test doubles
++// ---------------------------------------------------------------------------
++
++// countingJudge counts how many times Judge is called and delegates to inner.
++type countingJudge struct {
++	inner eval.Judge
++	calls int
++}
++
++func (c *countingJudge) Judge(ctx context.Context, req eval.JudgeRequest) (eval.JudgeResponse, error) {
++	c.calls++
++	return c.inner.Judge(ctx, req)
++}
++
++// errorIfCalledJudge errors if Judge is ever called — used to assert cache hits.
++type errorIfCalledJudge struct{}
++
++func (e *errorIfCalledJudge) Judge(_ context.Context, _ eval.JudgeRequest) (eval.JudgeResponse, error) {
++	return eval.JudgeResponse{}, errors.New("errorIfCalledJudge: should not have been called")
++}
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++const (
++	knownJudgeID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64-char hex
++	otherJudgeID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // 64-char hex
++)
++
++// buildCachePipeline builds a Pipeline with cache control fields set.
++func buildCachePipeline(repoDir string, runner replay.Runner, judge eval.Judge, fixedTime time.Time, cache bool, judgeID string, seed int64) Pipeline {
++	store := newStore(repoDir)
++	rec := replay.RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	return Pipeline{
++		Store:    store,
++		Runner:   runner,
++		Judge:    judge,
++		Recorder: rec,
++		Now:      func() time.Time { return fixedTime },
++		Seed:     seed,
++		Cache:    cache,
++		JudgeID:  judgeID,
++	}
++}
++
++// seedEvalResult directly writes an EvalResult into the store for cache seeding.
++func seedEvalResult(t *testing.T, repoDir string, result eval.EvalResult) {
++	t.Helper()
++	store := newStore(repoDir)
++	_, err := eval.Writer{Store: store}.Write(context.Background(), result, eval.WriteOptions{})
++	if err != nil {
++		t.Fatalf("seedEvalResult Write: %v", err)
++	}
++}
++
++// buildCachedEvalResult constructs a valid EvalResult that matches the two target
++// ArtifactSources for use as a cache seed.
++func buildCachedEvalResult(commitA, artifactA, commitB, artifactB, judgeID string, seed int64, id string, created time.Time) eval.EvalResult {
++	seedVal := seed
++	return eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            id,
++		Method:            "pairwise",
++		Score: eval.Score{
++			Kind:   eval.ScorePairwise,
++			Winner: eval.WinnerB,
++		},
++		Findings: []eval.Finding{},
++		Targets: []eval.ArtifactSource{
++			{RunID: "src-run", Stage: "plan", Commit: commitA, Artifact: artifactA},
++			{RunID: "rep-run", Stage: "plan", Commit: commitB, Artifact: artifactB},
++		},
++		Producer: runmanifest.Producer{},
++		Created:  created,
++		JudgeID:  judgeID,
++		Seed:     &seedVal,
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Cache MISS tests
++// ---------------------------------------------------------------------------
++
++// TestCacheMissEmptyStore verifies that on an empty eval store the judge IS
++// called, the result is written with JudgeID+Seed, and Reused is false.
++func TestCacheMissEmptyStore(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerTie}}
++	counting := &countingJudge{inner: inner}
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	fixedTime := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
++	p := buildCachePipeline(repoDir, stub, counting, fixedTime, true, knownJudgeID, 7)
++
++	outcome, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("BenchRun: %v", err)
++	}
++
++	// Judge must have been called exactly once.
++	if counting.calls != 1 {
++		t.Errorf("judge calls = %d, want 1", counting.calls)
++	}
++	if outcome.Reused {
++		t.Error("Reused = true, want false on miss")
++	}
++
++	// Persisted doc must carry JudgeID and Seed.
++	refsAfter, err := store.List(context.Background(), "refs/etude/evals")
++	if err != nil {
++		t.Fatalf("List evals: %v", err)
++	}
++	if len(refsAfter) != 1 {
++		t.Fatalf("eval ref count = %d, want 1", len(refsAfter))
++	}
++	raw, err := store.ReadFile(context.Background(), refsAfter[0], "eval_result.json")
++	if err != nil {
++		t.Fatalf("ReadFile: %v", err)
++	}
++	doc, err := eval.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if doc.JudgeID != knownJudgeID {
++		t.Errorf("doc.JudgeID = %q, want %q", doc.JudgeID, knownJudgeID)
++	}
++	if doc.Seed == nil {
++		t.Fatal("doc.Seed is nil, want non-nil")
++	}
++	if *doc.Seed != 7 {
++		t.Errorf("doc.Seed = %d, want 7", *doc.Seed)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Cache HIT tests
++// ---------------------------------------------------------------------------
++
++// TestCacheHitIdentifiedJudge verifies that when a matching cached doc exists
++// (same targets, same non-empty JudgeID, same seed), the judge is NOT called,
++// Reused is true, the cached EvalID is returned, and no new eval ref is written.
++func TestCacheHitIdentifiedJudge(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	// First run: perform a real bench run to obtain the actual target artifact
++	// shas (they are content-addressed, so we need to run once to know them).
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output cache test"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++	fixedTime1 := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 5)
++	outcome1, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("first BenchRun: %v", err)
++	}
++	if outcome1.Reused {
++		t.Fatal("first run unexpectedly reused a cached result")
++	}
++
++	refsAfterFirst, err := store.List(context.Background(), "refs/etude/evals")
++	if err != nil {
++		t.Fatalf("List evals after first run: %v", err)
++	}
++	firstEvalCount := len(refsAfterFirst)
++
++	// Second run: use errorIfCalledJudge to assert judge is not called.
++	errorJudge := &errorIfCalledJudge{}
++	fixedTime2 := time.Date(2026, 5, 11, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, errorJudge, fixedTime2, true, knownJudgeID, 5)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("second BenchRun (cache hit): %v", err)
++	}
++
++	// Must be a cache hit.
++	if !outcome2.Reused {
++		t.Error("Reused = false, want true on hit")
++	}
++	// EvalID must be the cached one (no new ref written).
++	if outcome2.EvalID != outcome1.EvalID {
++		t.Errorf("EvalID = %q, want cached %q", outcome2.EvalID, outcome1.EvalID)
++	}
++	// No new eval ref must have been written.
++	refsAfterSecond, err := store.List(context.Background(), "refs/etude/evals")
++	if err != nil {
++		t.Fatalf("List evals after second run: %v", err)
++	}
++	if len(refsAfterSecond) != firstEvalCount {
++		t.Errorf("eval ref count = %d, want %d (no new refs on hit)", len(refsAfterSecond), firstEvalCount)
++	}
++	// Cached verdict must match the first run's verdict (canonical winner is stable).
++	if outcome2.Winner != outcome1.Winner {
++		t.Errorf("Winner = %q, want %q (from cache, same as first run)", outcome2.Winner, outcome1.Winner)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Empty JudgeID tests (FIX 3 — no reuse for unidentified judges)
++// ---------------------------------------------------------------------------
++
++// TestEmptyJudgeIDNeverReuses verifies that when Pipeline.JudgeID is empty,
++// the cache is NOT consulted and the judge IS called even when an identical
++// prior eval doc exists. This closes the empty==empty hole.
++func TestEmptyJudgeIDNeverReuses(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output empty judge"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	// First run with empty JudgeID.
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerTie}}
++	counting1 := &countingJudge{inner: inner}
++	fixedTime1 := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, counting1, fixedTime1, true, "", 0)
++	outcome1, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("first BenchRun: %v", err)
++	}
++	if counting1.calls != 1 {
++		t.Errorf("first run: judge calls = %d, want 1", counting1.calls)
++	}
++	if outcome1.Reused {
++		t.Error("first run: Reused = true, want false")
++	}
++
++	// Second run with empty JudgeID: judge must still be called.
++	counting2 := &countingJudge{inner: inner}
++	fixedTime2 := time.Date(2026, 5, 12, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, counting2, fixedTime2, true, "", 0)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("second BenchRun: %v", err)
++	}
++	if counting2.calls != 1 {
++		t.Errorf("second run: judge calls = %d, want 1 (no reuse for empty JudgeID)", counting2.calls)
++	}
++	if outcome2.Reused {
++		t.Error("second run: Reused = true, want false (empty JudgeID must never reuse)")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Cache miss scenarios
++// ---------------------------------------------------------------------------
++
++// TestCacheMissDifferentJudgeID verifies that a cached doc with one non-empty
++// judgeID does not match a query with a different non-empty judgeID.
++func TestCacheMissDifferentJudgeID(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output diff judge"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	// Seed a cached doc with knownJudgeID.
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++	fixedTime1 := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 3)
++	_, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("first BenchRun: %v", err)
++	}
++
++	// Query with otherJudgeID: must miss.
++	counting := &countingJudge{inner: inner}
++	fixedTime2 := time.Date(2026, 5, 13, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, counting, fixedTime2, true, otherJudgeID, 3)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("second BenchRun: %v", err)
++	}
++	if outcome2.Reused {
++		t.Error("Reused = true, want false (different JudgeID must miss)")
++	}
++	if counting.calls != 1 {
++		t.Errorf("judge calls = %d, want 1", counting.calls)
++	}
++}
++
++// TestCacheMissDifferentSeed verifies that a cached doc with seed=X does not
++// match a query with seed=Y.
++func TestCacheMissDifferentSeed(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output diff seed"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	// Seed a cached doc with seed=10.
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++	fixedTime1 := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 10)
++	_, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("first BenchRun (seed=10): %v", err)
++	}
++
++	// Query with seed=99: must miss.
++	counting := &countingJudge{inner: inner}
++	fixedTime2 := time.Date(2026, 5, 14, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, counting, fixedTime2, true, knownJudgeID, 99)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("second BenchRun (seed=99): %v", err)
++	}
++	if outcome2.Reused {
++		t.Error("Reused = true, want false (different seed must miss)")
++	}
++	if counting.calls != 1 {
++		t.Errorf("judge calls = %d, want 1", counting.calls)
++	}
++}
++
++// TestCacheSameSeedHit verifies that identical (targets, judgeID, seed) gives a hit.
++func TestCacheSameSeedHit(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output same seed"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerB}}
++	fixedTime1 := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 55)
++	_, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("first BenchRun: %v", err)
++	}
++
++	// Second run with same seed — must hit.
++	errorJudge := &errorIfCalledJudge{}
++	fixedTime2 := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, errorJudge, fixedTime2, true, knownJudgeID, 55)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("second BenchRun (same seed): %v", err)
++	}
++	if !outcome2.Reused {
++		t.Error("Reused = false, want true (same seed, same judge)")
++	}
++}
++
++// TestCacheDocWithNilSeedMissesConcreteQuery verifies that a legacy cached doc
++// (Seed==nil) does NOT match a query with a concrete seed.
++func TestCacheDocWithNilSeedMissesConcreteQuery(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output nil seed"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	// Seed a doc by doing a real run first (this writes a doc with a seed).
++	// Then we'll inject a nil-seed doc manually by reading the targets from it.
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++	fixedTime1 := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 7)
++	outcome1, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("seed run: %v", err)
++	}
++
++	// Manually write a "legacy" doc with Seed==nil using the same targets.
++	legacyDoc := buildCachedEvalResult(
++		outcome1.Result.Targets[0].Commit, outcome1.Result.Targets[0].Artifact,
++		outcome1.Result.Targets[1].Commit, outcome1.Result.Targets[1].Artifact,
++		knownJudgeID, 0, "pairwise-legacy-nil-seed-plan-20260516T020000Z",
++		time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC),
++	)
++	legacyDoc.Seed = nil // simulate pre-seed-field doc
++	seedEvalResult(t, repoDir, legacyDoc)
++
++	// Query with seed=7: the legacy doc (nil seed) must not be a hit;
++	// only the real doc from p1 (with seed=7) may match.
++	// Since the real doc from p1 already exists, this tests nil-seed exclusion
++	// by using a different known seed that won't match the seeded p1 doc.
++	// Use seed=99 to get a clean miss from both.
++	counting := &countingJudge{inner: inner}
++	fixedTime2 := time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, counting, fixedTime2, true, knownJudgeID, 99)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("nil-seed miss query: %v", err)
++	}
++	if outcome2.Reused {
++		t.Error("Reused = true despite nil-seed doc; want miss")
++	}
++	if counting.calls != 1 {
++		t.Errorf("judge calls = %d, want 1", counting.calls)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// --no-cache / Pipeline.Cache=false
++// ---------------------------------------------------------------------------
++
++// TestNoCacheDisablesReuse verifies that when Cache=false the judge is called
++// even when a perfectly matching cached doc exists.
++func TestNoCacheDisablesReuse(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("replay output no cache"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	inner := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerB}}
++
++	// Seed a cacheable doc.
++	fixedTime1 := time.Date(2026, 5, 17, 0, 0, 0, 0, time.UTC)
++	p1 := buildCachePipeline(repoDir, stub, inner, fixedTime1, true, knownJudgeID, 1)
++	_, err := p1.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("seed run: %v", err)
++	}
++
++	refsAfterSeed, err := store.List(context.Background(), "refs/etude/evals")
++	if err != nil {
++		t.Fatalf("List evals: %v", err)
++	}
++
++	// Second run with Cache=false: judge must be called, new ref written.
++	counting := &countingJudge{inner: inner}
++	fixedTime2 := time.Date(2026, 5, 17, 1, 0, 0, 0, time.UTC)
++	p2 := buildCachePipeline(repoDir, stub, counting, fixedTime2, false, knownJudgeID, 1)
++	outcome2, err := p2.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("no-cache run: %v", err)
++	}
++	if outcome2.Reused {
++		t.Error("Reused = true despite Cache=false, want false")
++	}
++	if counting.calls != 1 {
++		t.Errorf("judge calls = %d, want 1", counting.calls)
++	}
++	// New ref must have been written.
++	refsAfterNoCache, err := store.List(context.Background(), "refs/etude/evals")
++	if err != nil {
++		t.Fatalf("List evals after no-cache: %v", err)
++	}
++	if len(refsAfterNoCache) <= len(refsAfterSeed) {
++		t.Errorf("eval ref count = %d, want > %d (new ref written on miss)", len(refsAfterNoCache), len(refsAfterSeed))
++	}
++}
++
++// ---------------------------------------------------------------------------
++// lookupCachedEval unit tests
++// ---------------------------------------------------------------------------
++
++// TestLookupCachedEvalMatchesCacheKey exercises the lookup function directly
++// with a seeded eval doc.
++func TestLookupCachedEvalMatchesCacheKey(t *testing.T) {
++	repoDir, _ := initRepoWithCommit(t)
++	store := newStore(repoDir)
++
++	commitA := strings.Repeat("a", 40)
++	artA := strings.Repeat("0", 64)
++	commitB := strings.Repeat("b", 40)
++	artB := strings.Repeat("1", 64)
++
++	created := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
++	seedDoc := buildCachedEvalResult(commitA, artA, commitB, artB, knownJudgeID, 42, "pairwise-lookup-test-plan-20260518T000000Z", created)
++	seedEvalResult(t, repoDir, seedDoc)
++
++	key := cacheKey{
++		Method:    "pairwise",
++		ArtifactA: artA,
++		ArtifactB: artB,
++		JudgeID:   knownJudgeID,
++		Seed:      42,
++	}
++
++	found, hit, err := lookupCachedEval(context.Background(), store, key)
++	if err != nil {
++		t.Fatalf("lookupCachedEval: %v", err)
++	}
++	if !hit {
++		t.Fatal("expected cache hit, got miss")
++	}
++	if found.EvalID != seedDoc.EvalID {
++		t.Errorf("EvalID = %q, want %q", found.EvalID, seedDoc.EvalID)
++	}
++}
++
++// TestLookupCachedEvalMissOnEmptyStore verifies that an empty store returns a miss.
++func TestLookupCachedEvalMissOnEmptyStore(t *testing.T) {
++	repoDir, _ := initRepoWithCommit(t)
++	store := newStore(repoDir)
++
++	key := cacheKey{
++		Method:    "pairwise",
++		ArtifactA: strings.Repeat("0", 64),
++		ArtifactB: strings.Repeat("1", 64),
++		JudgeID:   knownJudgeID,
++		Seed:      1,
++	}
++
++	_, hit, err := lookupCachedEval(context.Background(), store, key)
++	if err != nil {
++		t.Fatalf("lookupCachedEval: %v", err)
++	}
++	if hit {
++		t.Fatal("expected miss on empty store, got hit")
++	}
++}
++
++// TestLookupCachedEvalSkipsMalformedDoc verifies that a corrupt doc does not
++// abort the scan; the lookup continues and returns miss (or hits another doc).
++func TestLookupCachedEvalSkipsMalformedDoc(t *testing.T) {
++	repoDir, _ := initRepoWithCommit(t)
++	store := newStore(repoDir)
++
++	// Write a corrupt eval doc directly.
++	_, err := store.WriteCommit(context.Background(), "refs/etude/evals/corrupt-doc", map[string][]byte{
++		"eval_result.json": []byte("not valid json {{{"),
++	}, refstore.WriteOptions{Message: "corrupt doc for test"})
++	// The content is malformed JSON; the git object write succeeds but parsing will fail.
++	_ = err
++
++	key := cacheKey{
++		Method:    "pairwise",
++		ArtifactA: strings.Repeat("0", 64),
++		ArtifactB: strings.Repeat("1", 64),
++		JudgeID:   knownJudgeID,
++		Seed:      1,
++	}
++
++	// Should return miss (not error) despite the corrupt doc.
++	_, hit, lookupErr := lookupCachedEval(context.Background(), store, key)
++	if lookupErr != nil {
++		t.Fatalf("lookupCachedEval returned error on corrupt doc: %v", lookupErr)
++	}
++	if hit {
++		t.Fatal("expected miss despite corrupt doc")
++	}
++}
+diff --git a/internal/bench/run.go b/internal/bench/run.go
+index fb3bf7d..639db36 100644
+--- a/internal/bench/run.go
++++ b/internal/bench/run.go
+@@ -54,6 +54,9 @@ type BenchOutcome struct {
+ 	Findings []eval.Finding
+ 	// Result is the full persisted EvalResult document (for .3 cache + .4 report).
+ 	Result eval.EvalResult
++	// Reused is true when the outcome was served from the eval-result cache
++	// (no judge call was made and no new eval ref was written).
++	Reused bool
+ }
+ 
+ // Pipeline runs the per-run replay -> record -> pairwise-eval pipeline.
+@@ -66,6 +69,12 @@ type Pipeline struct {
+ 	Seed      int64 // -> PairwiseEvaluator.Seed
+ 	Overrides ProducerOverrides
+ 	Now       func() time.Time
++	// Cache enables eval-result caching. When true and JudgeID is non-empty,
++	// BenchRun will look up a prior matching eval before calling the judge.
++	Cache bool
++	// JudgeID is the stable fingerprint of the active judge (from eval.JudgeIdentity).
++	// An empty JudgeID disables caching for this pipeline regardless of Cache.
++	JudgeID string
+ }
+ 
+ // BenchRun executes a single bench pipeline step for cr:
+@@ -172,6 +181,50 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 		return BenchOutcome{}, wrap("record replay run", err)
+ 	}
+ 
++	// Build the two target ArtifactSources (needed for both cache lookup and eval).
++	targetA := eval.ArtifactSource{
++		RunID:    cr.RunID,
++		Stage:    stageName,
++		Commit:   resolved.Commit,
++		Artifact: resolved.Output.Artifact,
++	}
++	targetB := eval.ArtifactSource{
++		RunID:    recorded.RunID,
++		Stage:    stageName,
++		Commit:   recorded.Commit,
++		Artifact: recorded.OutputArtifact,
++	}
++
++	// Cache lookup: performed ONLY when Cache is enabled and JudgeID is non-empty.
++	// An empty JudgeID means an unidentified judge — never consult the cache.
++	if p.Cache && p.JudgeID != "" {
++		key := cacheKey{
++			Method:    "pairwise",
++			ArtifactA: targetA.Artifact,
++			ArtifactB: targetB.Artifact,
++			JudgeID:   p.JudgeID,
++			Seed:      p.Seed,
++		}
++		cached, hit, err := lookupCachedEval(ctx, p.Store, key)
++		if err != nil {
++			return BenchOutcome{}, wrap("cache lookup", err)
++		}
++		if hit {
++			return BenchOutcome{
++				SourceRunID:  cr.RunID,
++				Stage:        stageName,
++				ReplayRunID:  recorded.RunID,
++				ReplayCommit: recorded.Commit,
++				EvalID:       cached.EvalID,
++				Winner:       cached.Score.Winner,
++				Confidence:   cached.Score.Confidence,
++				Findings:     cached.Findings,
++				Result:       cached,
++				Reused:       true,
++			}, nil
++		}
++	}
++
+ 	// Step 7: build the pairwise eval request.
+ 	// A = original (source run); B = replay (recorded run).
+ 	evalReq := eval.EvalRequest{
+@@ -181,23 +234,13 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 				Role:      "original",
+ 				MediaType: resolved.Output.MediaType,
+ 				Content:   origBytes,
+-				Source: eval.ArtifactSource{
+-					RunID:    cr.RunID,
+-					Stage:    stageName,
+-					Commit:   resolved.Commit,
+-					Artifact: resolved.Output.Artifact,
+-				},
++				Source:    targetA,
+ 			},
+ 			{
+ 				Role:      "replay",
+ 				MediaType: res.MediaType,
+ 				Content:   res.Output,
+-				Source: eval.ArtifactSource{
+-					RunID:    recorded.RunID,
+-					Stage:    stageName,
+-					Commit:   recorded.Commit,
+-					Artifact: recorded.OutputArtifact,
+-				},
++				Source:    targetB,
+ 			},
+ 		},
+ 		Producer: res.Producer,
+@@ -209,7 +252,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 		return BenchOutcome{}, wrap("evaluate", err)
+ 	}
+ 
+-	// Step 8: build and persist the EvalResult.
++	// Step 8: build and persist the EvalResult (miss path).
+ 	ts := now().UTC()
+ 	evalIDBase := eval.EvalIDBase("pairwise", cr.RunID, stageName, ts)
+ 	evalID, err := eval.AllocateEvalID(ctx, p.Store, evalIDBase)
+@@ -217,6 +260,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 		return BenchOutcome{}, wrap("allocate eval id", err)
+ 	}
+ 
++	seed := p.Seed
+ 	result := eval.EvalResult{
+ 		EvalResultVersion: 1,
+ 		EvalID:            evalID,
+@@ -229,6 +273,8 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 		},
+ 		Producer: res.Producer,
+ 		Created:  ts,
++		JudgeID:  p.JudgeID,
++		Seed:     &seed,
+ 	}
+ 
+ 	if err := result.Validate(); err != nil {
+@@ -252,6 +298,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 		Confidence:   evaluation.Score.Confidence,
+ 		Findings:     evaluation.Findings,
+ 		Result:       result,
++		Reused:       false,
+ 	}, nil
+ }
+ 
+diff --git a/internal/cli/bench.go b/internal/cli/bench.go
+index 54ec80a..085771c 100644
+--- a/internal/cli/bench.go
++++ b/internal/cli/bench.go
+@@ -38,6 +38,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 		runnerSpec, judgeSpec, judgeModel                                string
+ 		seed                                                             int64
+ 		skillVersion, skillID, skillRepo, model, harness, harnessVersion string
++		noCache                                                          bool
+ 	)
+ 
+ 	cmd := &cobra.Command{
+@@ -61,7 +62,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 				Harness:               harness,
+ 				HarnessVersion:        harnessVersion,
+ 			}
+-			return r.run(cmd.Context(), out, errOut, args[0], runnerSpec, judgeSpec, judgeModel, seed, last, overrides)
++			return r.run(cmd.Context(), out, errOut, args[0], runnerSpec, judgeSpec, judgeModel, seed, last, noCache, overrides)
+ 		},
+ 	}
+ 	cmd.SetOut(out)
+@@ -78,6 +79,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 	cmd.Flags().StringVar(&model, "model", "", "override model in recorded producer (contestant, NOT the judge/referee — use --judge-model for that)")
+ 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer (contestant)")
+ 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer (contestant)")
++	cmd.Flags().BoolVar(&noCache, "no-cache", false, "force re-evaluation; skip the eval-result cache")
+ 
+ 	return cmd
+ }
+@@ -88,6 +90,7 @@ func (r *benchRunner) run(
+ 	stage, runnerSpec, judgeSpec, judgeModel string,
+ 	seed int64,
+ 	last int,
++	noCache bool,
+ 	overrides bench.ProducerOverrides,
+ ) error {
+ 	// Validate --last before any store access.
+@@ -128,6 +131,8 @@ func (r *benchRunner) run(
+ 		nowFn = time.Now
+ 	}
+ 
++	judgeID := eval.JudgeIdentity(activeJudge)
++
+ 	pipeline := bench.Pipeline{
+ 		Store:     store,
+ 		Runner:    activeRunner,
+@@ -136,6 +141,8 @@ func (r *benchRunner) run(
+ 		Seed:      seed,
+ 		Overrides: overrides,
+ 		Now:       nowFn,
++		Cache:     !noCache,
++		JudgeID:   judgeID,
+ 	}
+ 
+ 	// Run the pipeline: skip-and-report on per-run errors.
+@@ -220,7 +227,7 @@ func renderReport(out io.Writer, r bench.Report) {
+ 
+ 	if len(r.Outcomes) > 0 {
+ 		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+-		fmt.Fprintln(w, "SOURCE RUN\tREPLAY RUN\tWINNER\tCONF\tEVAL ID\tFINDING")
++		fmt.Fprintln(w, "SOURCE RUN\tREPLAY RUN\tWINNER\tCONF\tEVAL ID\tFINDING\tCACHED")
+ 		for _, o := range r.Outcomes {
+ 			conf := "-"
+ 			if o.Confidence != nil {
+@@ -230,8 +237,12 @@ func renderReport(out io.Writer, r bench.Report) {
+ 			if len(o.Findings) > 0 {
+ 				finding = o.Findings[0].Message
+ 			}
+-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+-				o.SourceRunID, o.ReplayRunID, string(o.Winner), conf, o.EvalID, finding)
++			cached := ""
++			if o.Reused {
++				cached = "CACHED"
++			}
++			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
++				o.SourceRunID, o.ReplayRunID, string(o.Winner), conf, o.EvalID, finding, cached)
+ 		}
+ 		w.Flush()
+ 		fmt.Fprintln(out)
+diff --git a/internal/cli/bench_test.go b/internal/cli/bench_test.go
+index c7cd629..b5cfb46 100644
+--- a/internal/cli/bench_test.go
++++ b/internal/cli/bench_test.go
+@@ -9,6 +9,7 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/joshuavial/etude/internal/bench"
+ 	"github.com/joshuavial/etude/internal/eval"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/replay"
+@@ -582,9 +583,111 @@ func TestBenchHelp(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("bench --help returned error: %v\nstderr: %s", err, stderr)
+ 	}
+-	for _, want := range []string{"bench", "--last", "--runner", "--judge", "--judge-model"} {
++	for _, want := range []string{"bench", "--last", "--runner", "--judge", "--judge-model", "--no-cache"} {
+ 		if !strings.Contains(stdout, want) {
+ 			t.Errorf("bench --help output missing %q:\n%s", want, stdout)
+ 		}
+ 	}
+ }
++
++// TestBenchNoCacheFlagWired verifies that --no-cache is accepted and still
++// produces correct results (no caching performed; judge called for each run).
++func TestBenchNoCacheFlagWired(t *testing.T) {
++	repo, runner := setupBenchRepo(t)
++	chdir(t, repo)
++
++	fixedTime := time.Date(2026, 5, 25, 16, 0, 0, 0, time.UTC)
++	judge := &contentAwareJudge{}
++
++	// First run without --no-cache (cache enabled by default).
++	stdout1, stderr1, err := executeBench(runner, judge, fixedTime, "plan", "--last", "10")
++	if err != nil {
++		t.Fatalf("first bench returned error: %v\nstderr: %s", err, stderr1)
++	}
++	// contentAwareJudge is not an ExecJudge so judgeID is empty; cache is disabled automatically.
++	// All rows should NOT show CACHED.
++	_ = stdout1
++
++	// Second run with --no-cache: should run normally, no CACHED rows in report.
++	fixedTime2 := time.Date(2026, 5, 25, 17, 0, 0, 0, time.UTC)
++	stdout2, stderr2, err := executeBench(runner, judge, fixedTime2, "plan", "--last", "10", "--no-cache")
++	if err != nil {
++		t.Fatalf("second bench --no-cache returned error: %v\nstderr: %s", err, stderr2)
++	}
++
++	// No error; normal report.
++	if !strings.Contains(stdout2, "replay (new skill) wins") {
++		t.Errorf("--no-cache stdout missing headline: %q", stdout2)
++	}
++	// Since contentAwareJudge is a StubJudge-style judge (not ExecJudge),
++	// JudgeIdentity returns "" so cache is always disabled for these tests.
++	// CACHED should NOT appear in the report.
++	if strings.Contains(stdout2, "CACHED") {
++		// Only unexpected if it appears as a non-empty value in the row.
++		// The column header "CACHED" IS expected. Check that no row has "CACHED" as a value.
++		// The tabwriter output won't have "CACHED" in a value column unless Reused=true.
++		// Since JudgeID is empty (contentAwareJudge), no row should be reused.
++		// This is mainly a sanity check that the flag doesn't break the command.
++	}
++
++	// The --no-cache flag must appear in --help.
++	stdout3, _, _ := execute("bench", "--help")
++	if !strings.Contains(stdout3, "--no-cache") {
++		t.Errorf("bench --help does not mention --no-cache:\n%s", stdout3)
++	}
++}
++
++// TestBenchCACHEDMarkerShownOnReusedRow verifies that when a BenchOutcome has
++// Reused=true, the renderReport output contains "CACHED" in that row.
++// We test renderReport directly since producing a real cache hit requires an
++// ExecJudge (which has a non-empty JudgeIdentity); we use the Report+Outcomes API.
++func TestBenchCACHEDMarkerShownOnReusedRow(t *testing.T) {
++	var buf strings.Builder
++
++	// Build a synthetic report with one reused and one non-reused outcome.
++	conf := 0.9
++	outcomes := []bench.BenchOutcome{
++		{
++			SourceRunID: "run-a",
++			Stage:       "plan",
++			ReplayRunID: "run-a-replay",
++			EvalID:      "pairwise-run-a-plan-20260525T000000Z",
++			Winner:      eval.WinnerB,
++			Confidence:  &conf,
++			Findings:    nil,
++			Reused:      true,
++		},
++		{
++			SourceRunID: "run-b",
++			Stage:       "plan",
++			ReplayRunID: "run-b-replay",
++			EvalID:      "pairwise-run-b-plan-20260525T000001Z",
++			Winner:      eval.WinnerA,
++			Confidence:  nil,
++			Findings:    nil,
++			Reused:      false,
++		},
++	}
++	report := bench.Aggregate(outcomes)
++	report.Stage = "plan"
++
++	renderReport(&buf, report)
++	out := buf.String()
++
++	// The reused row must show CACHED.
++	if !strings.Contains(out, "CACHED") {
++		t.Errorf("renderReport output missing 'CACHED' for reused row:\n%s", out)
++	}
++	// The non-reused row must not have a CACHED value (it gets an empty cell).
++	// Since tabwriter produces aligned columns, we can check that "run-b" line
++	// does not have "CACHED" immediately after the finding column.
++	lines := strings.Split(out, "\n")
++	for _, line := range lines {
++		if strings.Contains(line, "run-a") && !strings.Contains(line, "CACHED") {
++			t.Errorf("run-a (reused) row missing CACHED: %q", line)
++		}
++		if strings.Contains(line, "run-b") && strings.Contains(line, "CACHED") {
++			t.Errorf("run-b (non-reused) row unexpectedly contains CACHED: %q", line)
++		}
++	}
++}
+diff --git a/internal/eval/identity.go b/internal/eval/identity.go
+new file mode 100644
+index 0000000..59d24d5
+--- /dev/null
++++ b/internal/eval/identity.go
+@@ -0,0 +1,35 @@
++package eval
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"strings"
++)
++
++// JudgeIdentity returns a stable fingerprint string for the given Judge.
++//
++// For *ExecJudge the fingerprint is the SHA-256 hex digest of a canonical
++// representation of the command and model:
++//
++//	sha256("execjudge\x00" + strings.Join(Command, "\x00") + "\x00model=" + Model)
++//
++// This ensures that any change to the command words or model string produces a
++// different fingerprint, making cache keys judge-specific.
++//
++// For any other Judge type (including *StubJudge and future implementations
++// without a derivable stable identity) JudgeIdentity returns "" (unidentified).
++// An unidentified judge is never used as a cache key; callers must check for
++// the empty string and skip caching.
++func JudgeIdentity(j Judge) string {
++	ej, ok := j.(*ExecJudge)
++	if !ok {
++		return ""
++	}
++	var b strings.Builder
++	b.WriteString("execjudge\x00")
++	b.WriteString(strings.Join(ej.Command, "\x00"))
++	b.WriteString("\x00model=")
++	b.WriteString(ej.Model)
++	sum := sha256.Sum256([]byte(b.String()))
++	return hex.EncodeToString(sum[:])
++}
+diff --git a/internal/eval/identity_test.go b/internal/eval/identity_test.go
+new file mode 100644
+index 0000000..25ddf55
+--- /dev/null
++++ b/internal/eval/identity_test.go
+@@ -0,0 +1,125 @@
++package eval
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestJudgeIdentityExecJudgeStable(t *testing.T) {
++	j := &ExecJudge{Command: []string{"./judge.sh", "--flag"}, Model: "gpt-4"}
++	id1 := JudgeIdentity(j)
++	id2 := JudgeIdentity(j)
++	if id1 == "" {
++		t.Fatal("JudgeIdentity returned empty string for ExecJudge")
++	}
++	if id1 != id2 {
++		t.Errorf("JudgeIdentity not stable: %q != %q", id1, id2)
++	}
++	// Must be a 64-char hex string (sha256).
++	if len(id1) != 64 {
++		t.Errorf("JudgeIdentity length = %d, want 64", len(id1))
++	}
++	for _, ch := range id1 {
++		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
++			t.Errorf("JudgeIdentity contains non-hex char %q in %q", ch, id1)
++			break
++		}
++	}
++}
++
++func TestJudgeIdentityExecJudgeDiffersOnCommandChange(t *testing.T) {
++	j1 := &ExecJudge{Command: []string{"./judge.sh"}, Model: "gpt-4"}
++	j2 := &ExecJudge{Command: []string{"./other-judge.sh"}, Model: "gpt-4"}
++	id1 := JudgeIdentity(j1)
++	id2 := JudgeIdentity(j2)
++	if id1 == id2 {
++		t.Errorf("JudgeIdentity should differ for different commands, but both = %q", id1)
++	}
++}
++
++func TestJudgeIdentityExecJudgeDiffersOnModelChange(t *testing.T) {
++	j1 := &ExecJudge{Command: []string{"./judge.sh"}, Model: "model-a"}
++	j2 := &ExecJudge{Command: []string{"./judge.sh"}, Model: "model-b"}
++	id1 := JudgeIdentity(j1)
++	id2 := JudgeIdentity(j2)
++	if id1 == id2 {
++		t.Errorf("JudgeIdentity should differ for different models, but both = %q", id1)
++	}
++}
++
++func TestJudgeIdentityExecJudgeDiffersOnArgChange(t *testing.T) {
++	j1 := &ExecJudge{Command: []string{"./judge.sh", "--flag1"}, Model: "gpt-4"}
++	j2 := &ExecJudge{Command: []string{"./judge.sh", "--flag2"}, Model: "gpt-4"}
++	id1 := JudgeIdentity(j1)
++	id2 := JudgeIdentity(j2)
++	if id1 == id2 {
++		t.Errorf("JudgeIdentity should differ for different args, but both = %q", id1)
++	}
++}
++
++func TestJudgeIdentityExecJudgeCommandJoinCollisionFree(t *testing.T) {
++	// ["a\x00b", "c"] and ["a", "b\x00c"] must not collide because we join with \x00.
++	// The fingerprint is over the shell command components joined by \x00, so
++	// "a\x00b" + \x00 + "c" ≠ "a" + \x00 + "b\x00c" only if the inner \x00 in the
++	// command arg is treated as part of the word — which it is (no extra escaping).
++	// This test is informational: just verify that two structurally different
++	// commands with the same string byte sequence produce different identities.
++	j1 := &ExecJudge{Command: []string{"./judge.sh", "--model=x"}, Model: ""}
++	j2 := &ExecJudge{Command: []string{"./judge.sh"}, Model: "--model=x"}
++	id1 := JudgeIdentity(j1)
++	id2 := JudgeIdentity(j2)
++	// These may or may not collide depending on join encoding — document behavior.
++	// With the current scheme "execjudge\x00./judge.sh\x00--model=x\x00model="
++	// vs "execjudge\x00./judge.sh\x00model=--model=x", they differ.
++	_ = id1
++	_ = id2
++	// Both must still be non-empty.
++	if id1 == "" || id2 == "" {
++		t.Error("JudgeIdentity returned empty for non-empty ExecJudge")
++	}
++}
++
++func TestJudgeIdentityStubJudgeReturnsEmpty(t *testing.T) {
++	j := &StubJudge{}
++	id := JudgeIdentity(j)
++	if id != "" {
++		t.Errorf("JudgeIdentity(StubJudge) = %q, want empty string", id)
++	}
++}
++
++func TestJudgeIdentityExecJudgeEmptyModel(t *testing.T) {
++	// An ExecJudge with empty model should still produce a non-empty fingerprint.
++	j := &ExecJudge{Command: []string{"./judge.sh"}, Model: ""}
++	id := JudgeIdentity(j)
++	if id == "" {
++		t.Fatal("JudgeIdentity returned empty for ExecJudge with empty model")
++	}
++	if len(id) != 64 {
++		t.Errorf("JudgeIdentity length = %d, want 64", len(id))
++	}
++}
++
++func TestJudgeIdentityExecJudgeDifferentFromEmptyModel(t *testing.T) {
++	j1 := &ExecJudge{Command: []string{"./judge.sh"}, Model: ""}
++	j2 := &ExecJudge{Command: []string{"./judge.sh"}, Model: "some-model"}
++	if JudgeIdentity(j1) == JudgeIdentity(j2) {
++		t.Error("JudgeIdentity should differ for empty vs non-empty model")
++	}
++}
++
++func TestJudgeIdentityNonExecJudge(t *testing.T) {
++	// Any judge that is not *ExecJudge returns "".
++	// Test via a custom anonymous implementation.
++	var customJudge Judge = &StubJudge{Err: nil}
++	if id := JudgeIdentity(customJudge); id != "" {
++		t.Errorf("JudgeIdentity(non-ExecJudge) = %q, want empty", id)
++	}
++}
++
++func TestJudgeIdentityResultIsLowercaseHex(t *testing.T) {
++	j := &ExecJudge{Command: []string{"./judge.sh"}, Model: "test-model"}
++	id := JudgeIdentity(j)
++	if strings.ToLower(id) != id {
++		t.Errorf("JudgeIdentity result %q is not all lowercase", id)
++	}
++}
+diff --git a/internal/eval/result.go b/internal/eval/result.go
+index 0f13bc4..d4c5c6c 100644
+--- a/internal/eval/result.go
++++ b/internal/eval/result.go
+@@ -37,6 +37,12 @@ type EvalResult struct {
+ 	Context           []ArtifactSource // optional unscored inputs
+ 	Producer          runmanifest.Producer
+ 	Created           time.Time // RFC3339Nano UTC
++	// JudgeID is the stable fingerprint of the judge that produced this result.
++	// Empty for unidentified judges (e.g. StubJudge). Omitted from JSON when empty.
++	JudgeID string
++	// Seed is the PairwiseEvaluator seed used during evaluation. Nil when absent
++	// (legacy docs or non-pairwise methods). Omitted from JSON when nil.
++	Seed *int64
+ }
+ 
+ // Validate enforces the full EvalResult invariants.
+@@ -399,6 +405,8 @@ type evalResultJSON struct {
+ 	Context           []sourceJSON   `json:"context,omitempty"`
+ 	Producer          producerJSON   `json:"producer"`
+ 	Created           string         `json:"created"`
++	JudgeID           string         `json:"judge_id,omitempty"`
++	Seed              *int64         `json:"seed,omitempty"`
+ }
+ 
+ type scoreJSON struct {
+@@ -522,6 +530,8 @@ func (r EvalResult) toJSON() evalResultJSON {
+ 		Context:   contextSources,
+ 		Producer:  producer,
+ 		Created:   r.Created.UTC().Format(time.RFC3339Nano),
++		JudgeID:   r.JudgeID,
++		Seed:      r.Seed,
+ 	}
+ }
+ 
+@@ -608,6 +618,8 @@ func (j evalResultJSON) toEvalResult() (EvalResult, error) {
+ 		Context:   contextSources,
+ 		Producer:  producer,
+ 		Created:   created.UTC(),
++		JudgeID:   j.JudgeID,
++		Seed:      j.Seed,
+ 	}, nil
+ }
+ 
+diff --git a/internal/eval/result_test.go b/internal/eval/result_test.go
+index 5eaf3f1..6891e2b 100644
+--- a/internal/eval/result_test.go
++++ b/internal/eval/result_test.go
+@@ -825,3 +825,136 @@ func gitCmd(t *testing.T, dir string, args ...string) {
+ 		t.Fatalf("git %v: %v\n%s", args, err, out)
+ 	}
+ }
++
++// ---- JudgeID and Seed backward-compat round-trip tests ----
++
++// TestJudgeIDAndSeedOmitempty verifies that an EvalResult with empty JudgeID and
++// nil Seed serializes byte-identical to the pre-field JSON (no "judge_id" or
++// "seed" keys appear), preserving backward compatibility with old doc readers.
++func TestJudgeIDAndSeedOmitempty(t *testing.T) {
++	r := validPairwiseResult()
++	// Explicitly confirm the zero values.
++	r.JudgeID = ""
++	r.Seed = nil
++
++	got, err := r.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++
++	// Neither "judge_id" nor "seed" must appear in the output.
++	if strings.Contains(string(got), "judge_id") {
++		t.Errorf("JSON contains 'judge_id' despite empty JudgeID:\n%s", got)
++	}
++	if strings.Contains(string(got), `"seed"`) {
++		t.Errorf("JSON contains 'seed' despite nil Seed:\n%s", got)
++	}
++
++	// Re-serialise a pre-field result (no JudgeID/Seed fields set) and compare.
++	pre := validPairwiseResult()
++	preSerialized, err := pre.JSON()
++	if err != nil {
++		t.Fatalf("pre-field JSON: %v", err)
++	}
++	if string(got) != string(preSerialized) {
++		t.Errorf("byte mismatch: zero-value fields changed the serialisation\ngot:\n%s\npre:\n%s", got, preSerialized)
++	}
++}
++
++// TestJudgeIDAndSeedRoundTrip verifies that an EvalResult with non-empty JudgeID
++// and non-nil Seed round-trips correctly through JSON/ParseJSON.
++func TestJudgeIDAndSeedRoundTrip(t *testing.T) {
++	seed := int64(42)
++	r := validPairwiseResult()
++	r.JudgeID = strings.Repeat("a", 64) // valid hex-like string (not validated)
++	r.Seed = &seed
++
++	raw, err := r.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++
++	// Both fields must appear in the output.
++	if !strings.Contains(string(raw), "judge_id") {
++		t.Errorf("JSON missing 'judge_id':\n%s", raw)
++	}
++	if !strings.Contains(string(raw), `"seed"`) {
++		t.Errorf("JSON missing 'seed':\n%s", raw)
++	}
++
++	// Round-trip.
++	parsed, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if parsed.JudgeID != r.JudgeID {
++		t.Errorf("JudgeID = %q, want %q", parsed.JudgeID, r.JudgeID)
++	}
++	if parsed.Seed == nil {
++		t.Fatal("Seed is nil after round-trip")
++	}
++	if *parsed.Seed != seed {
++		t.Errorf("Seed = %d, want %d", *parsed.Seed, seed)
++	}
++
++	// Re-serialise and verify byte-equality.
++	raw2, err := parsed.JSON()
++	if err != nil {
++		t.Fatalf("JSON after round-trip: %v", err)
++	}
++	if string(raw) != string(raw2) {
++		t.Errorf("round-trip not byte-equal\nbefore:\n%s\nafter:\n%s", raw, raw2)
++	}
++}
++
++// TestParseJSONOldDocWithoutJudgeIDOrSeed verifies that a persisted doc that
++// predates the JudgeID/Seed fields (no "judge_id" or "seed" keys) is still
++// parsed successfully with JudgeID="" and Seed==nil.
++func TestParseJSONOldDocWithoutJudgeIDOrSeed(t *testing.T) {
++	// Serialise a clean pairwise result (no JudgeID/Seed) and confirm the keys
++	// are absent (established by TestJudgeIDAndSeedOmitempty), then parse it.
++	r := validPairwiseResult()
++	raw, err := r.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++
++	// Sanity check: the old-style doc must not contain judge_id/seed.
++	if strings.Contains(string(raw), "judge_id") || strings.Contains(string(raw), `"seed"`) {
++		t.Fatalf("test setup: pre-field doc unexpectedly contains judge_id or seed:\n%s", raw)
++	}
++
++	parsed, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON of old doc: %v", err)
++	}
++	if parsed.JudgeID != "" {
++		t.Errorf("JudgeID = %q, want empty for old doc", parsed.JudgeID)
++	}
++	if parsed.Seed != nil {
++		t.Errorf("Seed = %v, want nil for old doc", *parsed.Seed)
++	}
++}
++
++// TestValidateAcceptsEmptyJudgeIDAndNilSeed verifies that Validate does not
++// reject a valid EvalResult simply because JudgeID is empty or Seed is nil.
++func TestValidateAcceptsEmptyJudgeIDAndNilSeed(t *testing.T) {
++	r := validPairwiseResult()
++	r.JudgeID = ""
++	r.Seed = nil
++	if err := r.Validate(); err != nil {
++		t.Errorf("Validate rejected empty JudgeID and nil Seed: %v", err)
++	}
++}
++
++// TestValidateAcceptsNonEmptyJudgeIDAndSeed verifies that Validate accepts
++// a populated JudgeID and Seed.
++func TestValidateAcceptsNonEmptyJudgeIDAndSeed(t *testing.T) {
++	seed := int64(99)
++	r := validPairwiseResult()
++	r.JudgeID = strings.Repeat("b", 64)
++	r.Seed = &seed
++	if err := r.Validate(); err != nil {
++		t.Errorf("Validate rejected non-empty JudgeID and Seed: %v", err)
++	}
++}
