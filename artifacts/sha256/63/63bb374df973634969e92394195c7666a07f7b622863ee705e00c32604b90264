@@ -1,0 +1,7 @@
+## Final Review — etude-88o (recommendation: close)
+
+Reviewed: plan (--design), implementation diff, verify artifact (pass), docs (no-docs-needed).
+Findings: none.
+Correctness: guard at workflow.go after validateRoleToken, before duplicate-register; reuses specialRoles; consistent %w wrapping; covers all stages. Stage.Produces doc-comment updated.
+Verification: go test ./... -race ok; vet clean; gofmt clean. .etude/workflow.yaml + Default() use no reserved produces (guard never fires there). Backward-compat tightening intentional, no shipped CLI surface (no CLI parses user workflow.yaml until Phase 1).
+Commit hygiene: only internal/workflow/workflow.go + workflow_test.go modified; no accidental/debug files; no secrets; one coherent commit.
