@@ -1,0 +1,14 @@
+# Final Review — etude-pairwise-eval
+
+## PLAN gate
+- Attempt 1: BLOCK (codex, gemini, Opus; pilms outage). Two issues: (1) fixed Seed + fresh per-call RNG → identical swap for every pair → zero within-cohort bias mitigation; (2) bead text "optionally support swapped-order judging" not implemented (deferral rejected by 2 of 3 seats).
+- Attempt 2: GO (codex, gemini, Opus; pilms outage). Per-pair FNV-1a-64 seed (Seed + both Source.Artifact ids, opposite order, fallback Role:sha256hex(Content)); opt-in DoubleJudge mode added (two deterministic calls, agree→winner / disagree→tie, min-confidence, tagged findings, error-propagate). All seats confirmed back-mapping, validateJudgeOutput rules, Score coherence, no-CLI scope.
+
+## Combined Implement+Final gate
+- GO (3 substantive: codex, gemini, Opus; pilms established tooling outage → 3-seat fallback per review-gate-runbook).
+- Opus mutation-verified: per-pair variation empirically (Seed=0 → 10 swap/6 not), end-to-end swapped trace canonical, errors+coherence failures propagate on either call, emitted Score passes result.go validateScoreCoherence, and the tests have teeth (back-mapping table, disagree→tie, PerPairVariation catch a constant-swap mutation).
+- Non-blocking (codex+Opus): PerPairVariation is cohort-based rather than pinned to explicit per-pair booleans; it is deterministic and catches the mutation, so left as-is.
+
+## Outcome
+Docs: NO-DOCS — internal library plumbing (internal/eval), no CLI/user-facing surface; docs land with the future eval/bench CLI command bead.
+Committed 10a49ba "add pairwise evaluator". 95 tests green; gofmt/vet/build clean.
