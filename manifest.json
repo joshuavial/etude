@@ -1025,6 +1025,72 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:34:00Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-verify-r3",
+            "artifact": "e311419bd4f716a8acb5b7d57a073b699cb13e5a27bb54911f47ef533d7fa011",
+            "path": "artifacts/sha256/e3/e311419bd4f716a8acb5b7d57a073b699cb13e5a27bb54911f47ef533d7fa011",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 292
+          },
+          "timestamp": "2026-08-16T03:50:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "reject control characters in session fields",
+            "extend invalid-Unicode field coverage",
+            "skip sidecar ingestion for shell producers",
+            "add Windows skip",
+            "use structural legacy-log assertion"
+          ],
+          "raw_output": {
+            "role": "opus-verify-r3",
+            "artifact": "d33d8359b72c094bb0c164271cfc6e08a758019ba83acb7aa36037e3278133a1",
+            "path": "artifacts/sha256/d3/d33d8359b72c094bb0c164271cfc6e08a758019ba83acb7aa36037e3278133a1",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 214
+          },
+          "timestamp": "2026-08-16T04:02:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T04:03:00Z"
     }
   ]
 }
