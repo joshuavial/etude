@@ -1,0 +1,29 @@
+# etude-ldf final review
+
+Scope: one new strictly read-only `etude doctor` command, its behavioral tests,
+portable executable/directory access probes, direct `x/sys` dependency
+classification, generated CLI reference, and canonical user documentation.
+
+Verified behavior:
+
+- strict workflow/registry cross-resolution and referenced-path validation;
+- mirrored fetch layout at `refs/etude/remotes/<remote>/<kind>/*` and rejection
+  of the old authoritative single-namespace destination;
+- name-preserving push coverage and conservative multi-endpoint unpushed-ref checks;
+- reviewer executable resolution through `env` and `seat-adapter.sh`;
+- exact, scoped remediation where derivable and explicit human authorship where not;
+- bounded, prompt-free, helper-free, custom-SSH-config-free remote reads;
+- whole-repository before/after snapshot showing no doctor mutation.
+
+Gate evidence: verify r5 passed Opus and Codex; docs r1 passed Opus and Codex.
+Implementation r3 reached its cap and cut authenticated custom-config probing to
+blocker `etude-7h3o`, preserving the absolute read-only contract.
+
+Checks: final `make test`, `make lint`, `make docs`, `make docs-check`, and Windows
+cross-build pass. `go mod tidy` promotes the already-present `golang.org/x/sys`
+requirement from indirect to direct. Generated command Markdown follows the
+repository generator's trailing-blank-line convention; `make docs-check` is the
+authoritative generated-doc consistency check.
+
+No unrelated files are changed. No migration, network write, ref write, config
+write, or repository mutation is performed by doctor.
