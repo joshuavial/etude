@@ -1,0 +1,157 @@
+# Final review — etude-3xt
+
+**Recommendation: ready to commit.** One bead, one commit, six files, no stray
+paths, every gate check green in this worktree.
+
+## Diffstat (`git diff --numstat`, not `--stat`)
+
+| Added | Removed | Path |
+|---:|---:|---|
+| 145 | 15 | `internal/cli/retro.go` |
+| 223 | 0 | `internal/cli/retro_test.go` |
+| 61 | 4 | `docs/retro.md` |
+| 13 | 0 | `docs/plans/dogfood/retro-ledger.md` |
+| 8 | 1 | `docs/plans/dogfood/supervisor-runbook.md` |
+| 7 | 0 | `docs/plans/dogfood/retro-capture.md` |
+
+`git status --porcelain` lists exactly those six as modified and nothing else.
+The gate artifacts under `.etude/tmp/` and the supervisor's `.workmux/` note are
+both ignored (`.gitignore:18` and `.git/info/exclude:9`) — confirmed with
+`git check-ignore -v`, not assumed. Staging will name all six paths explicitly.
+
+**Proposed commit message** (one short sentence, no body):
+
+> land retro markdown under .etude/retros when a retro ref is written
+
+## The bead, and what actually shipped against it
+
+The bead: check (c) of the completeness audit counts `cadence-retro` **refs**,
+while lanes write retro **markdown**. Two artifacts, no link, so the check can
+pass with no retro written or warn with three.
+
+Shipped: `etude retro capture` and `etude retro generate` write the retro body to
+`<root>/.etude/retros/<retro-id>.md` and record it in the manifest as
+`refs.retro_file`. The committed markdown is now an **output of the command that
+writes the ref**, so the two come from one step instead of two remembered ones.
+A body already inside `.etude/retros/` is recorded where it is rather than copied
+under a second name.
+
+This inverts the bead's suggested direction (it proposed capturing a ref when
+markdown lands). Both plan-gate seats accepted the inversion; the reasoning is in
+`plan.md` §"Why not the alternatives" — a sweep command that captures existing
+markdown is still a second remembered step, i.e. the present bug with one more
+subcommand.
+
+**What this does not fix, stated plainly:** a lane that hand-writes
+`.etude/retros/x.md` and never runs capture still produces no ref, and check (c)
+still cannot see it. That half is `etude-24d`, filed at the plan gate as the
+gate asked, and named in the shipped docs so no reader concludes the whole
+symptom is closed. Check (c) itself is untouched and still WARN-only, per the
+plan's scope boundary and `etude-9uf.4`'s reasoning.
+
+## Diff vs plan
+
+Everything the plan committed to is in the diff, and the three departures are
+each recorded in the phase artifact that made them:
+
+| Plan said | Shipped | Where recorded |
+|---|---|---|
+| stdout `wrote <path>` | `retro markdown <path>` — `wrote` is false in the in-place case | `implement.md` departure 1; docs describe the shipped string |
+| (implied) | `assembleAndWriteRetro` returns a fourth value | `implement.md` departure 2 |
+| 5 planned regressions | 6 (create-only added at the implement gate's request) | `verify.md` |
+
+Plan-committed ordering rules, all present in the code:
+
+- repo root resolved first, before any write — `assembleAndWriteRetro` line 1;
+- `refsMap["retro_file"]` set immediately after id allocation, before the
+  manifest is built;
+- file written only after the ref commit succeeds;
+- create-only write; failure names both artifacts.
+
+## Gate history
+
+| Gate | Panel | Result |
+|---|---|---|
+| plan | codex + opus | GO / GO — 7 optionals |
+| implement | codex + opus | GO / GO — 4 optionals |
+| verify | `make test` + `make lint` + codex + opus | GO / GO / GO / GO — 5 optionals |
+| docs | opus (L4) | GO — 5 optionals |
+
+21 optionals across four gates. 18 folded, 3 declined with reasons (below).
+
+## Checks, re-run on the final diff in this worktree
+
+```
+make test        → exit 0, all 20 packages ok
+make lint        → exit 0 (gofmt clean, go vet clean)
+make docs-check  → exit 0, generated CLI docs byte-identical
+make docs-reality→ OK — 15 commands; docs match the shipped CLI
+mkdocs build     → exit 0
+```
+
+The worktree matters: these checks inherit the caller's cwd, and this change
+exists only here. Run from any other tree they would pass while certifying
+nothing — the reason `verify.md` records the path.
+
+Manual CLI verification (built binary, throwaway repo, nine paths including
+in-place capture, stdin, the reserved-key split, the create-only collision and
+the both-artifacts-named error) is in `verify.md` §"Manual CLI verification". Six
+regressions, all confirmed red without the change by neutering the production
+code and re-running — measured, not asserted; method and output in `verify.md`.
+
+## Optionals NOT folded, and why
+
+1. **Automate the partial-write cleanup** (implement gate 1, partially). The
+   cleanup itself is folded; the **test** is not. Forcing a short write on a real
+   file needs a filesystem seam this package does not have, and adding one to
+   prove two lines costs more than it protects.
+2. **Automate "unresolvable root fails before any ref is written"** (verify gate
+   4). Reaching that failure specifically requires a repo where
+   `git rev-parse --show-toplevel` fails while HEAD resolves — not a state a test
+   can construct honestly. The guarantee rests on the code's first statement plus
+   a manual check; disclosed in `verify.md`, not silent.
+3. **Turn the cwd/store coupling into an assertion** (implement gate 3). Folded
+   as a doc comment instead: `refstore.Store` exposes no repo path to compare
+   against, so the assertion would have to shell out to `git rev-parse` on a path
+   the interface does not carry.
+
+Also deliberately not done, and tracked rather than dropped:
+
+- **`CHANGELOG.md`** — filed as **`etude-8ft`** (docs gate 5) with the specific
+  entries to backfill. Not edited here: the file is 26 commits and two whole
+  commands behind `v1.0.0`, so one entry would imply a currency it does not have.
+- **`scripts/dogfood-completeness-audit.sh`'s header comment** about check (c)
+  measuring the wrong artifact — still true, and rewriting it is `etude-24d`'s
+  work.
+- **The 5 pre-existing `mkdocs --strict` warnings** (missing nav target, four
+  `../run.md` links in `plans/product/live-execution.md`). Reproduced identically
+  on a clean detached `HEAD` worktree, so not mine. Not filed — say the word and
+  I will.
+
+## Self-review of the diff
+
+Read end to end after the folds. Two things I would flag to a reviewer rather
+than leave for them to find:
+
+- **`derivedKeys` duplicates three entries already in `reservedExactKeys`.**
+  Deliberate: the reserved set stays one complete list, and `derivedKeys` only
+  selects a better message. If a future key is added to the reserved list and not
+  to `derivedKeys`, it is still rejected — just with the older wording. The
+  failure mode of the redundancy is a slightly worse message, never a hole.
+- **A `--file` under `.etude/retros/<subdir>/x.md`** is treated as in-place and
+  recorded as `.etude/retros/subdir/x.md`. Not a case anyone has, and the
+  behavior is the sane one, but it is a consequence of the containment test being
+  prefix-based rather than "direct child".
+
+## Follow-ons filed
+
+| Bead | What |
+|---|---|
+| `etude-24d` (P2, bug) | the audit cannot see a retro markdown that was never captured — carries the constraint that the check must read `refs.retro_file`, not derive the filename |
+| `etude-8ft` (P3, task) | CHANGELOG has no `[Unreleased]` and is 26 commits behind v1.0.0 |
+
+## Not done yet, awaiting the gate
+
+Nothing is committed and nothing is pushed. On the word go: stage the six paths
+by name, commit with the one-sentence message above, then `bd close etude-3xt`
+with the landed sha.
