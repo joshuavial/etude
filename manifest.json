@@ -1415,6 +1415,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T06:44:36Z"
+    },
+    {
+      "gate_id": "rebase-implement.r3",
+      "phase": "rebase-implement",
+      "round": 3,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "rebase-implement.r4",
+          "role": "implementation",
+          "artifact": "e89b051c61eb5d3b2b9cd3e382281191b3a889206092d7d3027fb23aa8e362f3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Consider snapshotting info/exclude only if untracked effects enter the guard contract.",
+            "Batch raw hashes and reduce repeated scans if caller-stage cost becomes material.",
+            "Improve the error for intentionally unsupported normalized/smudged worktrees.",
+            "Add default_runner.workspace caller plus --runner override coverage.",
+            "Consider retaining original checkout objects independently of ordinary branch reachability."
+          ],
+          "timestamp": "2026-08-17T06:54:38Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Compare Git executable mode using owner-execute rather than any execute bit so mode 0654 cannot masquerade as 100755."
+          ],
+          "timestamp": "2026-08-17T06:54:38Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T06:54:38Z"
     }
   ]
 }
