@@ -340,6 +340,76 @@
         "degraded_reason": "Claude Opus CLI seat failed twice with quota: 'You've hit your weekly limit · resets 3am (Asia/Makassar)'. Per etude-loop standing exception, ran Claude Opus substitute via agy --model \"opus\" against the same impl-r2 prompt; substitute returned GO. Evidence: i2-opus.txt, i2-opus-reroll.txt, i2-opus-substitute-agy.txt."
       },
       "timestamp": "2026-06-07T08:47:31Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "harvestLabelHint can be optimized to find the latest gate in a single pass, avoiding intermediate slice allocation."
+          ],
+          "timestamp": "2026-06-07T08:54:23Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a future regression test around phase alias behavior if selectors later accept aliases distinct from manifest gate phase names.",
+            "Simplify harvestLabelHint later by tracking count/latest in one pass instead of allocating phaseGates."
+          ],
+          "timestamp": "2026-06-07T08:54:23Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a thin corpus-level test that Last<=0 through RunRefsSource.Fixtures yields a wrapped ErrInvalidLast.",
+            "harvestLabelHint could avoid the intermediate phaseGates slice by tracking max-round and count in one pass.",
+            "Consider a small comment or test note that Provenance.Phase is taken from the selector while gate filtering uses the matched cr.Stage.Name."
+          ],
+          "timestamp": "2026-06-07T08:54:23Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat had already failed twice during implement.r2 with quota: 'You've hit your weekly limit · resets 3am (Asia/Makassar)'. Per etude-loop standing exception, ran Claude Opus substitute via agy --model \"opus\" against the same verify prompt; substitute returned GO."
+      },
+      "timestamp": "2026-06-07T08:54:23Z"
     }
   ]
 }
