@@ -1,0 +1,8 @@
+## Docs — etude-zcq (Changed: no)
+
+No shipped docs needed. The change enriches the internal fetchBangAbort error (merge-base stderr) — a path
+unreachable via real etude sync (a successful fetch downloads the new object, so merge-base resolves at
+exit 0/1, never 128), exercised only by the new unit test. docs/sync.md documents fetch/push failures
+generically ('fetch failed: ...' / 'push failed: ...') and the diverged-ref path verbatim; it does NOT
+quote the abort message, so it stays accurate. No generated docs/CHANGELOG. (If the abort path ever
+becomes user-facing, docs/sync.md 'Transport or local failures' is its natural home — deferred.)
