@@ -954,6 +954,78 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T08:46:47Z"
+    },
+    {
+      "gate_id": "review.offline.r5",
+      "phase": "review.offline",
+      "round": 5,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review.final",
+          "role": "review",
+          "artifact": "63484cfea5b286518d9029ab9b40b22494eaad997c7b5327d6e84f7a7f227610"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Consider Windows .exe interpreter forms.",
+            "Retain a bare-name adapter PATH case.",
+            "Tighten malformed version suffixes."
+          ],
+          "raw_output": {
+            "role": "opus-transcript",
+            "artifact": "4826a44f37da101c0bb8551ca6f85d55222f95ab51ea57adf87d692843d6704a",
+            "path": "artifacts/sha256/48/4826a44f37da101c0bb8551ca6f85d55222f95ab51ea57adf87d692843d6704a",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 379
+          },
+          "timestamp": "2026-08-16T09:21:57Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Require numeric dot-separated interpreter version suffixes so python. is not classified as an opaque wrapper."
+          ],
+          "raw_output": {
+            "role": "codex-transcript",
+            "artifact": "ff2fee08d55c43de48487a716854357ba33136e2255580ded4d576b8592bd8d2",
+            "path": "artifacts/sha256/ff/ff2fee08d55c43de48487a716854357ba33136e2255580ded4d576b8592bd8d2",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 273
+          },
+          "timestamp": "2026-08-16T09:21:57Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-ldf.1"
+        ]
+      },
+      "timestamp": "2026-08-16T09:21:57Z"
     }
   ]
 }
