@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-05gs",
   "workflow": "dev-codex",
   "workflow_version": "manual-v1",
@@ -140,6 +140,60 @@
         "size": 35128
       },
       "timestamp": "2026-09-07T10:53:14.775518Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "routine-review.r1",
+      "phase": "routine-review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "routine-review",
+          "role": "routine-review",
+          "artifact": "e0bb730a16b25789305389b441bcc2ef381b080b2071e2b3c5271193827e6a24"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "sonnet",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-sonnet-5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "sonnet",
+            "artifact": "6b2f6986f272bf2133e5018e248e5964ca169ab22e882f549537ba534daaf8b1",
+            "path": "artifacts/sha256/6b/6b2f6986f272bf2133e5018e248e5964ca169ab22e882f549537ba534daaf8b1",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 147
+          },
+          "session": {
+            "session_id": "sonnet-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "sonnet-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T10:53:52.810489Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T10:53:52.811332Z"
     }
   ]
 }
