@@ -1,0 +1,84 @@
+# PR #21 corrected-artifact review
+
+BEAD: etude-8u3 — GH#14 populate submodules and record their SHAs
+
+PHASE: review
+
+DECISION STANDARD: Return BLOCK if the corrected PR can still let any actual
+checkout consumer record an unidentified populated submodule state, if the new
+regression is vacuous, or if the docs misstate shipped behavior. Otherwise PASS.
+
+ANCESTOR: etude-8u3 (P1) must populate every run checkout submodule and record
+the exact populated path-to-OID map. An independent PR panel found that BenchRun
+populated the checkout but passed a legacy absent map to RunRecorder.
+
+BLAST RADIUS: one bench recorder handoff, one real-Git regression, and two
+documentation paragraphs. The built-binary proof uses only a throwaway repo.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: one BenchRun creates one populated checkout, hands it to one runner,
+then records one replay stage. CLI recorded replay already follows the same
+authoritative-checkout pattern.
+
+DURABILITY CLASS: checkout content is disposable cache state; the recorded
+superproject SHA plus submodule path-to-OID map is AUTHORITATIVE run identity.
+
+COMPLETENESS ENUMERATION: the corrected recording sites are CLI single-stage
+recorded replay and BenchRun; live stages record the shared checkout map at
+construction; forward replay and resume validate their shared checkout against
+each stage. The review fix closes the sole omitted RunRecorder caller.
+
+TRUST BOUNDARY: the existing fail-closed worktree layer resolves and validates
+repository-controlled gitlinks and `.gitmodules`; this change copies its map and
+does not add a new command or trust input.
+
+CORRECTION:
+- `Pipeline.BenchRun` assigns `resolved.Submodules = wt.Submodules` immediately
+  before `RunRecorder.Record`, mirroring `internal/cli/replay.go`.
+- `TestBenchRunRecordsPopulatedSubmodulesForLegacySource` creates a real
+  submodule, pins it in a superproject, advances the source to different content,
+  seeds a legacy source stage with no map, proves the runner read the pinned old
+  payload, and asserts the replay manifest records the pinned submodule OID.
+
+NEGATIVE CONTROL: before the assignment, the new test failed with:
+`recorded modules/lib SHA = "", want populated SHA "5fe7d266..."`.
+
+VERIFICATION:
+- targeted regression and mismatch-before-runner test: PASS
+- `go test ./internal/bench`: PASS
+- `make test`: PASS
+- `make lint`: PASS
+- `make docs-check`: PASS
+- `make docs-reality`: PASS
+- `make build`: PASS
+
+BUILT-BINARY BENCH PROOF:
+- legacy source manifest: superproject `06e0d8a...`, `submodules: null`
+- source submodule advanced to `cc149c0...` with newer unpinned content
+- `bin/etude bench plan --last 1 ...` exited 0 with one B win
+- recorded runner output:
+  `RUNNER_CONTENT=PINNED-BENCH-CONTENT`
+  `RUNNER_SUBMODULE_HEAD=dbed0d08e286b6a9bc5eaee854af75d99435bc78`
+- replay manifest records:
+  `"modules/lib": "dbed0d08e286b6a9bc5eaee854af75d99435bc78"`
+- `git ls-tree` reports the same pinned gitlink OID.
+
+DOCS IMPACT:
+- checked `docs/run.md`, `docs/replay.md`, generated CLI docs, and product brief.
+- changed `docs/run.md` to state that forward replay and resume use one shared
+  checkout, require one `git_sha`, and mixed-commit stages remain available via
+  single-stage replay.
+- no generated CLI reference change because flags and help text are unchanged.
+- docs checks and cross-consistency check pass.
+
+KNOWN LIMITATION (disclosed, tracked): local submodule population can still
+perform remote ref negotiation even when the source module store has the pinned
+OID. This optimization is out of the correctness fix and is tracked on
+`etude-0jh`. Is that acceptable scoping for this bead or a blocker? Justify.
+
+RETURN exactly:
+VERDICT: PASS | BLOCK | PASS_WITH_FOLLOWUPS
+BLOCKING: <none or findings>
+FOLLOW_UPS: <none or findings>
+CONFIDENCE: <high|medium|low>
