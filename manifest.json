@@ -1092,6 +1092,51 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T05:20:00Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r3",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "clarify aborted and escalated prior-attempt evidence"
+          ],
+          "raw_output": {
+            "role": "opus-docs-r3",
+            "artifact": "d81e9c85c069569bf93d51102db6b3d230f0c223199b131bb08fe59995f47711",
+            "path": "artifacts/sha256/d8/d81e9c85c069569bf93d51102db6b3d230f0c223199b131bb08fe59995f47711",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 361
+          },
+          "timestamp": "2026-08-16T05:25:00Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-p0px"
+        ]
+      },
+      "timestamp": "2026-08-16T05:25:00Z"
     }
   ]
 }
