@@ -158,6 +158,75 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:26:36Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "suppress or declare Claude session persistence",
+            "add a complete crash-prefix residual table and correct logical durability"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r2",
+            "artifact": "fc67d35b7380da2d94b74e422e9c012800d2965c47dae0f82f84db93384d0341",
+            "path": "artifacts/sha256/fc/fc67d35b7380da2d94b74e422e9c012800d2965c47dae0f82f84db93384d0341",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 536
+          },
+          "timestamp": "2026-08-15T23:29:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "pin same-filesystem temporary publication",
+            "assert validation never invokes Claude",
+            "assert stage inputs and agent models",
+            "probe authentication failure exit status"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r2",
+            "artifact": "7fe27505b729d5bcc243e919b99c121869fdcad12dea0b81f22f684aa3499193",
+            "path": "artifacts/sha256/7f/7fe27505b729d5bcc243e919b99c121869fdcad12dea0b81f22f684aa3499193",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 654
+          },
+          "timestamp": "2026-08-15T23:31:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:32:06Z"
     }
   ]
 }
