@@ -206,6 +206,103 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-16T07:45:00.266594Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r2",
+          "role": "diff",
+          "artifact": "d75372bf77dd5b454a8294f97d090811bbd04cc27620a89f324aaff607177c59"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `resolveRecordedTranscriptPath` (internal/replay/record.go:197) duplicates `resolveTranscriptPath` (internal/liverun/gate.go:627) with slightly different out-of-root handling; both could move into `internal/sessionevidence` so containment rules stay in one place. 2. Replay transcript import uses unbounded `ReadRegularFileUnder`, while the session sidecar itself is capped at 64 KiB (exec_runner.go:347) — an oversized transcript is stored whole into the ref store; matches existing liverun behaviour, so worth a follow-up cap rather than a fix here. 3. The `.etude/workflow.yaml` `env_allowlist` addition of `USER, LOGNAME` is unrelated to stage/attempt evidence and lands without a rationale note next to the HOME comment. 4. `stageByName` still resolves by name to the last matching stage; correct only because rerun stages are uniquely named (`plan`, `plan.r2`, …) — a comment stating that invariant would keep it safe."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "6b6e6e1b749166dc9e455b09fd96c9bd4203f4a97479ebd313fe97ea560d6779",
+            "path": "artifacts/sha256/6b/6b6e6e1b749166dc9e455b09fd96c9bd4203f4a97479ebd313fe97ea560d6779",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1087
+          },
+          "session": {
+            "session_id": "opus-aaff635d0140dee4",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "aaff635d0140dee4c71dd52bcda060d6c2596c96d16e6c366b5ddf71f5aa40e3",
+              "path": "artifacts/sha256/aa/aaff635d0140dee4c71dd52bcda060d6c2596c96d16e6c366b5ddf71f5aa40e3",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 990
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T07:49:48.653497Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `internal/replay/record.go`: `resolveRecordedTranscriptPath` accepts relative paths like `../outside` by joining them to `scratchDir` or `worktreeDir`; containment is only enforced later against the selected root, but for missing scratch files it falls through to worktree with no pre-normalization/rejection, so relative traversal can be reported as failed rather than clearly rejected and may rely on downstream behavior not shown in the artifact. 2. `internal/replay/record.go`: replay transcript evidence is only recorded when `producer.Harness.Name` is not `\"shell\"`, but the docs now state replay runner session capture generally; if the replay runner reports `ETUDE_SESSION_FILE` while the harness name defaults empty or shell semantics are used, behavior is ambiguous and can silently omit expected evidence."
+          ],
+          "optional": [
+            "1. Add tests for failed secret scan, unreadable transcript, absolute path outside allowed roots, and relative path traversal. 2. Add a manifest test proving a gate-less run with a stage log emits version 4."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "6dd6be0b1861d3612ff683b3a358cdbff8c2d7539b5c386cbe5fd4c51d69ffa1",
+            "path": "artifacts/sha256/6d/6dd6be0b1861d3612ff683b3a358cdbff8c2d7539b5c386cbe5fd4c51d69ffa1",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1179
+          },
+          "session": {
+            "session_id": "codex-6e5f2ca4f71b8863",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "6e5f2ca4f71b8863369526c6231026782bd4874301cc558bf6b50fbca0f9be0f",
+              "path": "artifacts/sha256/6e/6e5f2ca4f71b8863369526c6231026782bd4874301cc558bf6b50fbca0f9be0f",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1081
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T07:50:13.473594Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-16T07:50:13.473903Z"
     }
   ]
 }
