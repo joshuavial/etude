@@ -1,0 +1,62 @@
+# Final review report — etude-n9b.2
+
+READY. The runtime child implements the approved opt-in pinned-checkout grant,
+passes full verification, and documents the shipped non-submodule behavior.
+
+ANCESTOR: `etude-n9b` (P1) delivers GitHub issue #16 in one pull request while
+preserving output-only as the default. MEASUREMENT: live model seats previously
+ran cwd-in-checkout without explicit authorization or measurement instructions;
+GH #14 records the observed empty-submodule false-evidence defect guarded here.
+
+BLAST RADIUS: none: worktree and repo only. Opted-in live gates create one
+temporary detached worktree and close it on every return path.
+
+## Contract review
+
+- Absent/false `read_checkout` gives every model seat a byte-identical
+  OUTPUT-ONLY prompt and records no grant.
+- True on a live gate with model seats creates a dedicated checkout at the
+  recorded full SHA, uses it as the seat cwd, emits READ-ONLY policy in the
+  shared prompt, and records `read_checkout: true`.
+- Deterministic checks retain raw stage output and the mutable stage worktree;
+  their writes cannot change the dedicated seat checkout.
+- Checks-only gates resolve no grant. Supervised gates reject the opt-in before
+  resolving checks or seats because their caller tree is not reproducible.
+- Actual recursive gitlinks fail closed before a model seat runs while GH #14
+  remains open; `.gitmodules` alone does not match and output-only is unchanged.
+- The workflow is the authorization source; the manifest boolean is audit only.
+
+## Prompt rule
+
+Every model seat prompt, including output-only prompts, states that embedded
+provenance is AUTHORITATIVE for measurements, arithmetic must not be re-derived,
+checkout reads may only falsify claims, and wrong stage output must produce
+BLOCK with evidence rather than silently substituted numbers.
+
+## Verification
+
+- Focused liverun, workflow, and manifest tests pass.
+- `make test` passes after the final docs edits.
+- `make lint` passes after the final docs edits.
+- `git diff --check` passes.
+- A built-binary live proof passed after both the caller tree and a successful
+  deterministic check mutated their execution-side markers; the seat still read
+  the committed marker from its dedicated checkout, and the manifest recorded
+  the pin, grant, check GO, seat GO, and gate pass.
+
+Strict gate history is durable on run `etude-n9b.2`: plan passed after two
+blocking rounds; implementation passed with folded follow-ups; verification
+blocked once on shared-worktree mutation, then passed after dedicated checkout
+isolation; docs had one honestly recorded inline-packet transcription
+malfunction, then passed on the exact compact packet.
+
+## Scope and delivery
+
+The runtime child changes exactly six files: two liverun sources, two liverun
+test files, and two docs files. The prerequisite schema child is the preceding
+single commit. No off-limits path changed. The PR must include `Closes #16`,
+disclose the all-live-seat shared prompt change, trusted prompt/harness policy,
+and fail-closed submodule limitation, then stop after CI is green without merge.
+
+No new tests in this final-review phase: it reviews the already-tested complete
+diff and verification evidence.
