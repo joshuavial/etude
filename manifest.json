@@ -201,6 +201,68 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:59:02Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "1211cf79d6d9b709242e19c5f056a628528d26afe120e64b361d94b6d98b2225"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Honor an explicit workspace-only hermetic stage override when the default runner uses caller workspace.",
+            "Force untracked-file enumeration so status.showUntrackedFiles=no cannot bypass the guard.",
+            "Fail closed when assume-unchanged or skip-worktree index flags hide tracked mutations.",
+            "Align the caller-stage gate checkout with the recorded post-run provenance."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr/implement-gate-r1.md sha256 30ff3ed2761c9b2b79043bb832932a84ec2c2adf9742b884690126be74a95072"
+          ],
+          "timestamp": "2026-08-16T00:18:56Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "Honor an explicit workspace-only hermetic stage override when the default runner uses caller workspace.",
+            "Repair the older-version runner_workspace fixture so it reaches and asserts the manifest-version guard."
+          ],
+          "optional": [
+            "State explicitly which pinned SHA a caller-stage gate checks out.",
+            "Align the manifest comment with the exact caller invocation directory.",
+            "packet path .etude/tmp/etude-5dr/implement-gate-r1.md sha256 30ff3ed2761c9b2b79043bb832932a84ec2c2adf9742b884690126be74a95072"
+          ],
+          "timestamp": "2026-08-16T00:18:56Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:18:56Z"
     }
   ]
 }
