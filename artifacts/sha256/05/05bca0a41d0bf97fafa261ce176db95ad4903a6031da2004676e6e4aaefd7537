@@ -1,0 +1,15 @@
+# Final Review — etude-0rt (shared WriteManifestTree run-writer helper)
+
+Verdict: GO — ready to commit. No blockers.
+
+1. **Behavior preservation (verbatim extraction)**: WriteManifestTree holds the identical sequence (Validate -> manifest.json collision/ErrManifestCollision -> referencedArtifactPaths -> per-stage input/output verifyArtifactFile -> unreferenced guard/ErrUnreferencedArtifact -> manifest.JSON -> WriteCommit), same error types + %w wrapping + messages. manifestPath const == retro's old "manifest.json" literal. cloneBytes byte-identical to retro's make+copy. The manifest.JSON() reorder (after the loop) is observably inert. The 3 parameterized differences (ref prefix; ExpectedOld forwarded vs omitted=create-only; retro default "retro: <RunID>" message) are the ONLY variation.
+
+2. **Code quality**: shared core clean, well-named, accurately documented; delegations minimal + correct. Deferred zero-caller exported wrappers noted as a follow-up bead (not a blocker).
+
+3. **Test**: TestWriteManifestTreeParameterization is purely additive; locks all 3 seams (prefix isolation, create-only ErrRefExists, CAS append w/ parent assertion + stale ErrStaleRef). No existing test touched.
+
+4. **Scope/commit hygiene**: exactly 3 files, all in-bead; no eval/capture/replay edits, no drift. go build clean; runmanifest+retro tests green.
+
+5. **Blockers**: none. Non-blocking follow-up: the filed bead to remove the zero-caller VerifyArtifactFile/ReferencedArtifactPaths wrappers.
+
+Commit: `extract WriteManifestTree shared core for run and retro writers` (landed as ad4a347).
