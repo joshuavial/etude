@@ -1,0 +1,5 @@
+# Final Review — etude-bench-command.2 (per-run pipeline + replay recorder extraction)
+PLAN gate: GO x3 (codex, gemini, Opus). Verified no import cycle, commit-pinning passes EvalResult.Validate, persistence create-only, producer overrides mirror replay. Recorder-extraction = option (a): shared exported replay.RunRecorder; partially closes etude-0rt (replay path; capture append-path remains).
+IMPLEMENT+FINAL gate: GO x3. codex (focused 609-line input — earlier large-input truncations avoided), gemini, Opus (mutation-verified all teeth). Refactor byte-identical (existing cli replay tests are the regression gate, pass unchanged). pilms 0-CPU outage throughout; 3-substantive-seat fallback per runbook.
+Non-blocking handled: strengthened the producer-override test (was weak-teeth) to provably pin the Overrides merge path; mutation-verified.
+Docs: NO-DOCS (internal library; user docs land with .4 CLI). Committed c2d6e9a.
