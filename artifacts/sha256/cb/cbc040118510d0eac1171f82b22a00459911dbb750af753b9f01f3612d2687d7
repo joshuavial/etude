@@ -1,0 +1,140 @@
+# etude-5dr plan — caller-cwd runner with fail-closed provenance
+
+## Goal
+
+Ship GitHub issue #15 as one coherent change: a workflow stage may opt its
+runner into the CLI caller's repository root, while Etude captures trustworthy
+post-run provenance and refuses to capture a caller-workspace output that is not
+represented by a clean committed tree. Default stage runners and every gate
+continue to execute in the existing detached worktree.
+
+ANCESTOR: etude-5dr (P1) — let Etude produce real work in the caller's live tree
+without allowing a gate to pass on provenance measured before that work. The
+measurement is the issue's demonstrated silent-failure sequence: manifest commit
+X is captured, the runner changes tracked state, and the gate still passes while
+reviewing an output that no longer names the live state; another project is
+blocked on this capability.
+
+BLAST RADIUS: none outside this repository/worktree and Etude's existing
+refs/etude run records. No host packages, services, containers, system paths, or
+shared runtimes are changed; gate scratch remains under the existing temp policy.
+
+TOPOLOGY: one Etude process invokes one stage runner at a time. A configured
+runner can spawn child processes, but arbitrary same-process code execution is
+out of scope. The caller repository may have other external writers, so the
+post-run provenance check must reject a changing HEAD rather than assuming sole
+ownership.
+
+DURABILITY CLASS: stage capture remains at-most-once per successful CAS append.
+Caller runners may create ordinary Git commits, which are durable and recoverable;
+Etude captures the resulting HEAD only after the runner returns. The guard uses
+the authoritative Git HEAD plus Git's tracked-state status, not timestamps or a
+proxy identity.
+
+COMPLETE SET / all-sites enumeration: runner workspace selection occurs at one
+stage execution site, `Engine.runAndCaptureStage`. The configuration surface has
+two runner sources that both require coverage: a stage-local runner and the
+workflow `default_runner`; the CLI `--runner` command override changes the command
+only and must retain the stage's effective workspace. Gate check runners, model
+seats, replay, bench, retro generation, and standalone `etude gate` are explicitly
+outside the new caller-workspace path and remain hermetic/pinned as today.
+
+TRUST BOUNDARY: workflow configuration and the resolved repository root are
+trusted operator inputs. Runner output and any tracked-tree mutation performed by
+the external runner are untrusted until the post-run Git check succeeds. Git's
+resolved HEAD and porcelain tracked-state result are authoritative facts produced
+by the repository. Environment values remain governed by the existing allowlist.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Design
+
+1. Extend `workflow.Runner` and its YAML representation with `workspace`. Accept
+   absent/`hermetic` as the current detached-worktree behavior and `caller` as the
+   explicit opt-in; reject every other value. Preserve stage-local and
+   `default_runner` round trips. Add an effective-workspace helper so command
+   resolution and workspace resolution cannot drift.
+2. In `Engine.runAndCaptureStage`, choose the runner directory from that effective
+   workspace. Hermetic stages continue receiving the existing detached worktree.
+   Caller stages receive `Engine.Root`, the repository root resolved from the CLI
+   invocation.
+3. After a caller runner returns successfully, capture provenance in fail-closed
+   order: resolve HEAD, require Git porcelain with untracked files excluded to be
+   empty, resolve HEAD again, and require both SHAs to match. This allows a runner
+   to edit and commit, rejects staged or unstaged tracked changes, and rejects a
+   concurrent commit during provenance capture. Only then store the output and
+   append the stage. Runner failure/output failure remains an ordinary failed
+   stage and cannot be captured.
+4. Record `runner_workspace: "caller"` on the manifest stage. Absence continues
+   to mean hermetic for existing manifests. Treat this as manifest schema v4:
+   preserve parsing of versions 0/2/3, emit v4 only when the new field is present,
+   reject the field on older versions, and keep all non-caller manifest bytes and
+   version selection unchanged. Render the caller workspace in `run show`.
+5. Keep gate wiring unchanged: `runGate` continues receiving the detached
+   `worktreeDir` and the existing pinned run SHA. The stage artifact remains the
+   review world; caller workspace paths and environment are never passed to a
+   gate seat or check.
+6. Document the opt-in syntax, post-run committed-clean requirement, recorded
+   manifest field, and unchanged gate isolation in `docs/run.md`.
+
+## Files
+
+- `internal/workflow/workflow.go`
+- `internal/workflow/workflow_test.go`
+- `internal/runmanifest/manifest.go`
+- `internal/runmanifest/manifest_test.go`
+- `internal/liverun/engine.go`
+- `internal/liverun/engine_test.go`
+- `internal/cli/run.go`
+- `internal/cli/run_test.go`
+- `docs/run.md`
+
+No generated Cobra reference changes are expected because no CLI flag or command
+is added.
+
+## Verification
+
+Planned regression: workflow stage runner workspace caller parses, validates, and
+round-trips while absent workspace retains byte-stable hermetic behavior.
+
+Planned regression: workflow default_runner workspace caller is inherited by a
+stage and an unknown workspace fails validation.
+
+Planned regression: caller-workspace runner receives the caller repository root,
+may commit a tracked edit, and records the post-run commit plus
+runner_workspace=caller in a v4 manifest.
+
+Planned regression: caller-workspace runner leaving an unstaged tracked edit
+fails the stage before any stage record or gate can be captured.
+
+Planned regression: caller-workspace runner leaving a staged tracked edit fails
+the same guard.
+
+Planned regression: a changing HEAD across the provenance check fails closed.
+
+Planned regression: default hermetic runner still receives the detached worktree,
+records no runner_workspace field, and existing manifest version selection stays
+unchanged.
+
+Planned regression: `run show` JSON includes runner_workspace=caller and human
+output names the caller workspace.
+
+Run targeted Go tests for workflow, runmanifest, liverun, and CLI; then run
+`make test`, `make lint`, `make docs-check`, and `make docs-reality`. Because this
+changes runnable CLI behavior, build and install the binary, then exercise a
+throwaway Git repository with: a default hermetic workflow, a caller workflow
+whose runner commits and succeeds, and a caller workflow whose runner leaves a
+tracked edit and must exit nonzero without reaching its gate. Clean up the
+throwaway repository afterward.
+
+## Rejected alternatives
+
+- Failing on every tracked change from the runner would preserve the old SHA but
+  defeat the requested ability to edit and commit; post-run committed provenance
+  preserves both safety and capability.
+- Recording only a warning for a dirty tree is rejected because the defect is
+  silent by construction.
+- Passing the caller directory to gates is rejected because it weakens the
+  explicitly preserved hermetic pinned gate boundary.
+- Encoding workspace only in workflow YAML is rejected because the acceptance
+  requires the executed choice in the durable manifest.
