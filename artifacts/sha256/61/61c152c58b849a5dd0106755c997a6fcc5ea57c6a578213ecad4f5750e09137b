@@ -1,0 +1,4 @@
+# Verify — etude-reindex-command (SQLite query index + etude reindex)
+Result: PASS. go test ./... green (11 pkgs incl. internal/index); gofmt/vet/build clean. New dep modernc.org/sqlite v1.50.1 (pure-Go, cgo-free); go.mod/go.sum tidy.
+Coverage: Reindex from seeded temp repo (row counts + specific stage/eval-source rows; runs.commit==store.Resolve); idempotent (row-level equality, built_at excluded); empty store; MALFORMED manifest → error naming ref + pre-existing db UNCHANGED (atomicity, mod-time preserved); Open wrong schema_version → ErrSchemaMismatch; LastRuns/RunsWithStage query API; CLI --db-path e2e + NoArgs + git-dir resolution. Opus mutation-verified all teeth (incl. atomicity: partial db never renamed).
+BUILT-BINARY MANUAL TEST (throwaway repo per capture-protocol): empty repo → "reindexed 0 runs, 0 evals"; after 2 captures → "reindexed 2 runs, 0 evals into .git/etude-index.db"; sqlite3 confirmed run_id+commit match captured refs.
