@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-64z",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,47 @@
         "size": 876
       },
       "timestamp": "2026-08-15T07:38:27.187732Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Reuse standard cmp offset diagnostics while adding byte sizes",
+            "Document the canonical pretty-manifest layout assumption and fail-closed behavior",
+            "Preserve first-match tone-police output selection"
+          ],
+          "timestamp": "2026-08-15T07:37:08Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T07:37:08Z"
     }
   ]
 }
