@@ -1011,6 +1011,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T05:39:51Z"
+    },
+    {
+      "gate_id": "rebase-plan.r3",
+      "phase": "rebase-plan",
+      "round": 3,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "rebase-plan.r3",
+          "role": "plan",
+          "artifact": "29c8d589089d6094088c81b812a80c308c2bc1e4b2033dd86c8f8dfebb2d5530"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a caller-stage BLOCK/rerun regression.",
+            "Keep the legacy divergent-SHA compatibility rejection covered.",
+            "Make file-mode and stat-policy tests distinguish content detection from configuration drift.",
+            "Keep submodule test environment handling consistent."
+          ],
+          "timestamp": "2026-08-17T05:54:08Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Reject a real-index-only staged mutation relative to HEAD before relying on the fresh comparison index.",
+            "Declare the bounded host-TMP comparison index and possible crash residue in the blast radius."
+          ],
+          "timestamp": "2026-08-17T05:54:08Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T05:54:08Z"
     }
   ]
 }
