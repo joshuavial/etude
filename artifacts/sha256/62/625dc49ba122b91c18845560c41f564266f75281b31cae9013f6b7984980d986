@@ -1,0 +1,438 @@
+commit a3334a1ef1a8fa451c61c209916e4355fbf90f45
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 21:19:24 2026 +0800
+
+    design etude retro command
+
+diff --git a/docs/plans/README.md b/docs/plans/README.md
+index b8b2fc5..8d1f489 100644
+--- a/docs/plans/README.md
++++ b/docs/plans/README.md
+@@ -15,6 +15,9 @@ should not yet be treated as shipped documentation.
+ - [Design brief](product/BRIEF.md) - current product direction and phased plan.
+ - [Retrospectives](product/retrospectives.md) - product planning for first-class
+   retro artifacts, triggers, CLI shape, and manifest integration.
++- [etude retro command](product/etude-retro-command.md) - concrete design for the
++  `etude retro` CLI and `refs/etude/retros/*` storage model, reconciled with the
++  shipped capture/run/eval/bench surfaces.
+ 
+ ## Dogfood Plans
+ 
+diff --git a/docs/plans/product/README.md b/docs/plans/product/README.md
+index 2868e86..b7a5351 100644
+--- a/docs/plans/product/README.md
++++ b/docs/plans/product/README.md
+@@ -6,6 +6,9 @@ user-facing documentation.
+ - [Design brief](BRIEF.md) - current product direction and phased plan.
+ - [Retrospectives](retrospectives.md) - first-class retro artifacts, triggers,
+   CLI shape, and manifest integration.
++- [etude retro command](etude-retro-command.md) - concrete design for the
++  `etude retro` CLI + `refs/etude/retros/*` storage, phased capture-first plan,
++  triggers, and open-question resolutions (implementation plan for etude-14r).
+ - [Manifest schema v2](manifest-schema-v2.md) - deferred manifest-schema
+   decisions (typed external refs, distinct unknown pointer size) and their
+   revisit triggers.
+diff --git a/docs/plans/product/etude-retro-command.md b/docs/plans/product/etude-retro-command.md
+new file mode 100644
+index 0000000..ba0c8d4
+--- /dev/null
++++ b/docs/plans/product/etude-retro-command.md
+@@ -0,0 +1,398 @@
++# etude retro command — design
++
++Status: planning note. This describes **planned** `etude retro` behavior. None of
++the commands or storage layouts below are implemented yet. The companion
++manual-capture contract that *is* in force today lives in
++[Dogfood capture protocol — Retro Capture](../dogfood/capture-protocol.md#retro-capture);
++the product thesis is [Retrospectives](retrospectives.md). This note makes that
++thesis concrete and reconciles it with the now-shipped `capture`, `run`,
++`replay`, `eval`, and `bench` surfaces. It is the concrete plan that
++[etude-14r](#relationship-to-etude-14r-and-evalbench) would implement.
++
++What ships today vs. what is planned is marked per section. "Implemented" refers
++to code under `internal/` on `main`; everything attributed to `etude retro` is
++planned.
++
++## Summary of decisions
++
++1. **Storage model:** a retro is a **content-addressed artifact in its own run**
++   under a new namespace `refs/etude/retros/<retro-id>`, reusing the
++   `runmanifest.Manifest` *type* and the artifact store, but written through its
++   own writer (the way `eval` reuses the types yet writes its own
++   `refs/etude/evals/*` namespace via `refstore.WriteCommit`). The retro's
++   *subjects* (the runs/beads it covers) are recorded as the manifest's external
++   `Refs` plus pointer inputs into the covered runs. This handles the multi-run
++   cohort case without overloading a covered run's own manifest. **Phase B is not
++   free reuse:** it requires extending the refstore namespace allowlist and a
++   dedicated retro writer (see §2 Phase B and Phase B prerequisites).
++2. **CLI surface (phased):** Phase A uses the *existing* `etude capture` +
++   `etude run` to store and inspect a retro as a stage today; Phase B adds
++   `etude retro capture/list/show` over a dedicated namespace (new writer + new
++   walk, modelled on `eval`/`run`); Phase C adds `etude retro generate` behind a
++   runner seam.
++3. **Generate vs capture (open question #1):** **capture-first.** `etude retro`
++   captures externally-generated retros first; generation is deferred to a
++   `retro.Generator` seam that mirrors `replay.Runner` / `eval.Judge`.
++4. **Triggers:** non-gating, advisory. Mapped to a `retros:` config block; only
++   `on_run_close` defaults on. Everything else opt-in.
++
++## 1. Storage model
++
++### Options considered
++
++- **(A) A `retro` stage inside the covered run's manifest** (`produced_by:"retro"`).
++  Matches the capture-protocol's import note ("treat retro notes ... as `retro`
++  stage attempts attached to the same run manifest as the bead"). Cheap for a
++  single-run retro, and `run show` renders it for free. **But:** a retro
++  frequently covers a *cohort* of runs/beads (the 3-ticket-cadence retro;
++  post-bench retros over `--last N`). A stage lives in exactly one manifest, so a
++  cohort retro would have to be duplicated into N manifests or arbitrarily
++  attached to one. It also mutates a "closed" run's ref to append a retro, which
++  fights the append-only/replay-contamination goals below.
++- **(B) A separate `refs/etude/retros/*` namespace** — a retro is its own run-like
++  document that *points at* the runs/beads it covers. Mirrors how `eval` already
++  lives in its own `refs/etude/evals/*` namespace and points at targets via
++  `ArtifactSource{run_id, stage, commit, artifact}`. Cleanly supports a cohort
++  (many subjects, one retro) and keeps covered runs immutable.
++- **(C) A retro keyed to a bead cohort only** (no run linkage). Too weak: loses
++  the artifact-level provenance (`commit`, `artifact` sha) that replay/eval/bench
++  already standardized on.
++
++### Decision: (B), with (A)-style rendering reuse
++
++Store each retro as its own commit at **`refs/etude/retros/<retro-id>`**. Reuse
++the `runmanifest.Manifest` document *type* (do **not** invent a parallel schema)
++plus the artifact store, so `ParseJSON`/`Validate` and content-addressing apply
++to a retro just as they do to a run. **What does NOT apply unchanged is the
++write path.** `runmanifest.Writer.Write` hardcodes the
++`refs/etude/runs/<run-id>` target (`internal/runmanifest/manifest.go:~244), and
++`refstore.validateRef`/`validatePrefix` only permit the `runs` and `evals`
++namespaces today (`internal/refstore/store.go:~276,~300). So a retro:
++
++- **cannot** be written via `runmanifest.Writer` (wrong, hardcoded namespace),
++  and
++- **cannot** be written to `refs/etude/retros/*` until the refstore allowlist is
++  extended to permit that namespace.
++
++The precedent is `eval`: it reuses the `Manifest`/`Producer`/`ArtifactRef` types
++but persists via `refstore.WriteCommit` directly to its own namespace
++(`internal/eval/result.go:~339). Retros follow the same pattern. Concretely:
++
++- **Ref / id.** `refs/etude/retros/<retro-id>`. Retro ids follow
++  `runmanifest.IsValidRunID` (same charset/rules eval already reuses for eval
++  ids). Suggested base id mirrors `eval.EvalIDBase`:
++  `retro-<scope>-<primary-subject>-<UTC yyyymmddThhmmssZ>`, with
++  `AllocateRetroId` probing `-2..-10` on collision (copy `eval.AllocateEvalID`).
++- **Manifest fields.** `workflow:"retro"`, `workflow_version:"retro-v1"`. One
++  stage named `retro`, `produced_by:"retro"`. `Producer` carries the
++  harness/model/skill that *wrote* the retro (the retro skill, a human, or a
++  future generator). `git_sha` is HEAD at capture time.
++- **The retro body is the stage `output` artifact** (`role:"retro"`,
++  `media_type:"text/markdown; charset=utf-8"`) — content-addressed in the
++  artifact store exactly like a captured plan/verify artifact. **The body
++  carries the FULL manual retro schema** defined in
++  [capture-protocol.md — Retro Capture](../dogfood/capture-protocol.md#retro-capture),
++  which is the authoritative schema: `scope`, `trigger`, `attempt`, `bead`,
++  `related stage`, `related gate attempts`, `related commits/diffs`, `inputs`,
++  `summary`, `timeline/key events`, `failure modes`, `root causes`,
++  `worked well`, `recommendations`, `follow-up refs`, `decision/status`, and the
++  standard capture envelope. Phase B capture must **accept and preserve every one
++  of these fields** — it may not drop any. The narrative fields (summary,
++  timeline, worked-well, recommendations) live in the markdown body; the
++  structural fields (scope/trigger/attempt/related-*/decision) are *also*
++  mirrored into the manifest where they have a natural home (`Refs`, producer,
++  stage name) so `retro show`/`list` can render them without re-parsing prose.
++- **Optional `retro-meta` JSON sidecar (Phase B+).** A second `output`-adjacent
++  structured artifact (`role:"retro-meta"`, `application/json`) for indexing
++  (§5). When present it MUST carry the **full** structured field set above —
++  the complete capture-protocol schema, **not a subset** — so the index never
++  loses a field that the markdown body recorded. For Phase A/B the markdown body
++  alone is sufficient; the JSON sidecar is Phase B+ and is purely an index
++  accelerator, never the source of truth.
++- **Subjects (the cohort).** A retro covers one *or many* runs/beads. Record
++  both, redundantly, so the link survives index loss:
++  - As manifest **`Refs`** (the `map[string]string` external-ref block). Ref
++    **keys** are validated to `[A-Za-z0-9_.-]` only
++    (`internal/runmanifest/manifest.go:~141,~383), so `:` and `@` are **illegal
++    in a key** — keep all punctuation-bearing data in the (unrestricted) value
++    and use indexed keys for cohorts:
++
++    ```text
++    subject_run.1 = <run-id>
++    subject_run.2 = <run-id>
++    bead.1        = <bead-id>
++    bench.1       = <bench-id-or-eval-id>
++    gate.1        = <stage>@<attempt>     # the "@" is in the VALUE; key is valid
++    ```
++
++    (The numbered suffix vs. a delimited single value is pending the
++    [typed-external-refs](manifest-schema-v2.md) decision — see Phase B
++    prerequisites.)
++  - As stage **`inputs`**: one `ArtifactRef` per covered artifact the retro
++    actually read, using **pointer storage** (`StoragePointer`) so the retro
++    references the covered run's artifact by sha/commit **without copying** its
++    bytes into the retro tree. This reuses `eval.ArtifactSource`'s
++    `{run_id, stage, commit, artifact}` idea: pin the covered artifact's
++    `commit` so the link stays resolvable after the covered run is appended to.
++- **Cohort linking concretely.** A cohort retro = one `refs/etude/retros/*` doc
++  whose `Refs` enumerate every covered run/bead and whose `inputs` pin the exact
++  covered artifacts. No covered run's manifest is mutated. A "this run's
++  end-of-run retro" is just the degenerate single-subject case.
++- **Append-only / supersede.** Retro docs are create-only per id (like eval:
++  no `ExpectedOld`, collision is a hard error). A later retro that revises an
++  earlier one is a *new* id with `Refs["supersedes"]=<old-retro-id>` (`supersedes`
++  is a valid `[A-Za-z0-9_.-]` key); the old doc is never mutated. (Matches
++  capture-protocol "a later retro can supersede ... but should not mutate it.")
++
++### Why not put it in the covered run
++
++The replay-contamination rule (§5) requires that a replay/bench of stage S reads
++only the artifacts that existed at S's original boundary. If retros lived as
++stages *inside* covered runs, `replay.ResolveInputs` / `bench.SelectCohort`
++walking that manifest could surface the retro as context and leak hindsight into
++a replay. A separate namespace makes leakage structurally impossible:
++cohort selection enumerates `refs/etude/runs/*` only and never
++`refs/etude/retros/*`.
++
++## 2. CLI surface (phased)
++
++### Phase A — works **today**, no new code
++
++A retro can already be stored and inspected with shipped commands, because
++`etude capture <stage>` takes a stage arg plus `--output role=path`:
++
++```bash
++# Capture a single-run retro as a `retro` stage appended to the covered run.
++# Ref KEYS are [A-Za-z0-9_.-]-only; "@" lives in the (unrestricted) VALUE.
++etude capture retro --run <bead-id> \
++  --produced-by retro \
++  --output retro=retro.md \
++  --ref bead.1=<bead-id> --ref gate.1=verify@2
++
++etude run show <bead-id>     # renders the retro stage
++etude run list               # the run's stage count includes it
++```
++
++This is option (A) layout and is the pragmatic stop-gap the dogfood protocol
++already sanctions. **Limit:** single-run only; mutates the covered run; no
++cohort; shows up in that run's stage list (acceptable for dogfood, not for the
++contamination guarantee). Phase A is "use what exists"; Phases B/C add the real
++surface.
++
++### Phase B — `etude retro` over a new `refs/etude/retros/*` namespace (first implementable slice)
++
++`etude retro` becomes a parent command (like `etude run`), registered in
++`internal/cli/root.go`. Three subcommands, all capture/inspect only:
++
++- **`etude retro capture <scope>`** — write a retro doc to
++  `refs/etude/retros/<id>`.
++  - args: `<scope>` ∈ `run|phase|gate|cohort|bench|workflow` (validated like a
++    stage identifier).
++  - flags: `--file retro.md` (required; the retro body), `--subject-run <id>`
++    (repeatable; ≥1 unless `--scope workflow`), `--bead <id>` (repeatable),
++    `--trigger <name>` (one of the §4 triggers; default `manual`),
++    `--stage <name>` / `--gate <stage@attempt>` (for phase/gate scope),
++    `--bench <bench-id>` / `--eval <eval-id>` (for bench scope),
++    `--supersedes <retro-id>`, `--decision accepted|deferred|superseded|informational`,
++    plus the shared producer flags already on `capture`
++    (`--harness`/`--model`/`--skill-*`/`--git-sha`/`--message`).
++  - behavior: resolve each `--subject-run`, read its manifest, and (Phase B+)
++    build pointer `inputs` for the covered artifacts; assemble the
++    `workflow:"retro"` manifest preserving the full capture-protocol schema (§1);
++    allocate the id; write create-only via a **dedicated retro writer**
++    (`refstore.WriteCommit` to `refs/etude/retros/<id>`, mirroring
++    `eval.Writer.Write` — **not** `runmanifest.Writer`, which targets the runs
++    namespace).
++  - output: `captured <commit>\nref refs/etude/retros/<id>` (mirrors
++    `capture`'s output).
++  - errors: subject run not found; `--file` unreadable; id collision after 10
++    probes; scope/flag mismatch (e.g. `--gate` without `phase|gate` scope).
++- **`etude retro list`** — walk `refs/etude/retros/*` with a **new** walk
++  (the `run list` walk is bound to `refs/etude/runs/*`; model the retro walk on
++  `runShowListRunner.list`). Columns: `RETRO ID | SCOPE | TRIGGER | SUBJECTS |
++  CREATED`. Flags: `--subject-run <id>` and `--bead <id>` to filter by a covered
++  subject; `--trigger <name>`. `no retros found` + exit 0 when empty.
++- **`etude retro show <retro-id>`** — print the retro detail (factor the shared
++  rendering out of `printRunDetail`, plus a body dump): subjects, trigger,
++  decision, producer, and the rendered markdown body. `retro "<id>" not found` +
++  non-zero on miss; same id validation as `run show`.
++
++Phase B is the **first implementable slice**, but it is **not** zero-code reuse:
++it adds a refstore namespace, a dedicated retro writer, and a retro-namespace
++walk (see Phase B prerequisites). It is *modelled on* existing code
++(`eval.Writer` write path + `run list/show` walk), and it unblocks etude-14r's
++"legible session" view.
++
++### Phase C — generation (`etude retro generate`)
++
++```bash
++etude retro generate <scope> --subject-run <id> [--subject-run <id> ...] \
++  --generator ./retro.sh [--trigger post-bench]
++```
++
++Invokes a configured retro generator (§3) to *produce* the retro body from the
++covered runs' artifacts + gate/eval results, then captures it via the Phase B
++path. Deferred until the generator seam and a config story exist.
++
++### Reconciliation with the retrospectives.md sketch
++
++The sketch's `etude retro run/phase/gate/bench/list/show` collapses into the
++above: `run/phase/gate/bench` are **scopes/flags of `retro capture|generate`**,
++not separate verbs (consistent with `capture <stage>` and `bench <stage>` taking
++the subject as an arg). `list`/`show` survive verbatim. The sketch's
++`etude capture retro --run <id> --file retro.md` is superseded by the real
++`etude capture retro --run <id> --output retro=retro.md` (Phase A) — `--file`
++does not exist; `capture` uses `--output role=path`.
++
++## 3. Generate vs capture-only (open question #1) — resolved
++
++**Recommendation: capture-first.** `etude retro` captures externally-generated
++retros (Phase A/B) before it generates any (Phase C). Reasoning:
++
++- It mirrors the proven seam pattern. `replay.Runner` (`Run(ctx, RunRequest)
++  → RunResult`) and `eval.Judge` (`Judge(ctx, JudgeRequest) → JudgeResponse`)
++  keep the LLM/agent behind a one-method interface; production injects a real
++  runner/judge, tests inject a stub. A future **`retro.Generator`**
++  (`Generate(ctx, GenerateRequest) → GenerateResult`) follows the same shape:
++  `GenerateRequest` carries the covered runs' resolved inputs + gate/eval
++  results; `GenerateResult` returns the retro markdown + parsed fields. `generate`
++  = generator + the Phase B capture path, exactly as `bench` = `Runner` +
++  `Recorder` + `Judge` + `eval.Writer`.
++- Today retros are produced by the `retro` skill / dogfood cadence (ad hoc). The
++  durable thing worth building first is the *artifact and its provenance*, not
++  the producer. Capture works the moment the namespace exists; generation needs
++  a generator contract, prompt/runbook config, and its own evaluation question.
++- It keeps the schema honest: a captured retro records *who* produced it
++  (`Producer`), so a human-written, skill-written, or generator-written retro are
++  uniform and comparable.
++
++## 4. Triggers + workflow integration
++
++Retros are **non-gating** everywhere (capture-protocol "Retro Gates"): they never
++block `plan → implement → verify → docs → final-review`, never gate a replay, and
++never override a gate/test/eval verdict. Triggers map to *invocations* of `retro
++capture` (manual) or `retro generate` (automated, Phase C):
++
++| Trigger | Fires after | Default | Scope |
++|---|---|---|---|
++| `on_run_close` | a run/bead closes | **on** | run |
++| `on_repeated_gate_block` | same gate BLOCKs ≥ threshold | off | gate |
++| `on_blocked_state` | run blocked (auth/quota/context) | off | run |
++| `on_failed_verify` | Verify returns `fail` | off | phase (verify) |
++| `post_bench` | `etude bench` completes | off | bench/cohort |
++| `manual` | operator request | always available | any |
++
++Config block (Phase C; `.etude/workflow.yaml`), keeping the retrospectives.md
++shape:
++
++```yaml
++retros:
++  on_run_close: true
++  on_repeated_gate_block:
++    enabled: false
++    threshold: 3
++  on_failed_verify: false
++  on_blocked_state: false
++  post_bench: false
++  generator: ./retro.sh        # required only when any trigger is automated
++```
++
++Until that config and `generate` exist, triggers are **operator judgment** invoked
++via `retro capture` (the dogfood protocol's "repeated = operator judgment"). The
++config never makes a retro a precondition for advancing.
++
++## 5. Other open design questions — resolved
++
++- **Repeated-block: mandatory or opt-in?** **Opt-in**, default off
++  (`on_repeated_gate_block.enabled:false`, `threshold:3`). A repeated block is
++  already a hard signal; forcing a ceremony retro on top risks noise and turning
++  retros into a de-facto gate. Repos that want it enable it explicitly.
++- **Do retros have an evaluator?** **No, not as part of this design.** Retros are
++  explanatory artifacts, not scored work; the gate/test/eval verdict remains the
++  source of truth for pass/fail. A retro *body* could later become an eval
++  *target* (a future bead could rubric-score retro quality via the existing
++  `eval` machinery, since the retro body is a content-addressed artifact), but
++  `etude retro` ships no built-in evaluator and emits no score.
++- **Replay contamination avoidance.** Guaranteed structurally by the §1 storage
++  decision: retros live in `refs/etude/retros/*`, a namespace
++  `replay.ResolveInputs` and `bench.SelectCohort` never enumerate (they walk
++  `refs/etude/runs/*` only). A replay of stage S therefore reads exactly S's
++  original boundary inputs. A retro may *reference* covered artifacts by
++  pinned `commit`/`artifact` (pointer inputs), but that pointer is never an input
++  to any replayed stage. If a workflow ever *wants* prior retros as generation
++  context, that is an explicit opt-in input to `retro generate`, never to
++  `replay`/`bench`.
++- **Failure-mode indexing for trend analysis.** Yes, deferred to Phase B+ via the
++  optional `role:"retro-meta"` JSON sidecar artifact. The sidecar carries the
++  **full** capture-protocol structured field set (§1), including normalized
++  `failure_modes[]` and `root_causes[]` — not a reduced index-only subset. The
++  rebuildable query index (`.git/etude-index.db`, planned) can then group retros
++  by failure-mode/root-cause across runs. This is exactly the "cohort analysis"
++  the retro thesis wants `bench` to exploit (group wins/losses by retro-coded
++  root cause). Until the sidecar + index exist, indexing is manual over the
++  markdown bodies, which already carry every field.
++
++## Relationship to etude-14r and eval/bench
++
++- **etude-14r** ("retros + session activity as a first-class etude artifact") is
++  the implementation epic for this design. The natural shape it describes —
++  "capture each retro as a `retro` artifact in a run keyed to the cohort of beads
++  it covers" — is realized by the §1 `refs/etude/retros/*` cohort doc, and its
++  "narrate a session" view (beads closed → gates run → retro findings → skills
++  refined) is `etude retro list/show` (Phase B) feeding a future `etude log`.
++  The motivating scattered example (runbook commit + filed bead from a cadence
++  retro) becomes the retro doc's `Refs["follow-up"]` / `inputs` provenance.
++- **eval/bench.** The `post_bench` trigger is now real because `etude bench`
++  ships: a post-bench retro is a `--scope bench` retro whose subjects are the
++  bench's cohort runs and whose `Refs` cite the produced `eval-id`s, explaining
++  *why* a skill version won/lost across the cohort. The retro-coded root-cause
++  cohort analysis (§5 sidecar + index) is the data path for that explanation.
++  Retros reuse eval's exact provenance primitives (`ArtifactSource`-style
++  `{run_id, stage, commit, artifact}`) so the two namespaces interlink cleanly.
++
++## Phasing / scope
++
++- **Designed now (this note):** storage model, ref/manifest shape, phased CLI,
++  generate-vs-capture resolution, trigger/config shape, all open-question
++  resolutions.
++- **First implementable slice (Phase B):** `refs/etude/retros/*` namespace
++  (refstore allowlist extension) + a dedicated retro writer + `etude retro
++  capture/list/show`, reusing the `runmanifest.Manifest` *type* and artifact
++  store. No generator, no config, no index. (See Phase B prerequisites.)
++- **Deferred:** `etude retro generate` + `retro.Generator` seam (Phase C);
++  automated triggers + `retros:` config; the `retro-meta` JSON sidecar and
++  failure-mode index; any retro evaluator; `etude log` session narration.
++
++## Phase B prerequisites (storage)
++
++Phase B is **not** free reuse of the run/eval plumbing. Before
++`etude retro capture/list/show` can work, the implementer (etude-14r) must:
++
++1. **Extend the refstore namespace allowlist** to permit `refs/etude/retros/*`.
++   Today `refstore.validateRef` (`internal/refstore/store.go:~276) and
++   `validatePrefix` (`~300) hard-reject any ref outside the `runs` and `evals`
++   namespaces, so a retro write/list/resolve fails until `retrosNS` is added
++   alongside `runsNS`/`evalsNS`.
++2. **Add a dedicated retro writer** that persists via `refstore.WriteCommit`
++   directly to `refs/etude/retros/<id>` (modelled on `eval.Writer.Write`,
++   `internal/eval/result.go:~339). `runmanifest.Writer.Write` cannot be used: it
++   hardcodes `refs/etude/runs/<run-id>` (`internal/runmanifest/manifest.go:~244).
++   The writer reuses the `runmanifest.Manifest` *type* (and `Manifest.JSON` /
++   `Validate`) but owns the namespace and the artifact-file assembly, plus a
++   retro-namespace `list`/`show` walk (the `run list` walk is bound to the runs
++   namespace).
++
++## Open issues for implementation
++
++- **Multi-subject refs encoding.** Cohort subjects use **indexed** `Refs` keys
++  (`subject_run.1`, `subject_run.2`, …) because ref keys are `[A-Za-z0-9_.-]`-only
++  and a single key cannot hold a list with separators that survive that charset.
++  Whether to keep indexed keys long-term or move to a typed/structured ref
++  depends on the [typed external refs](manifest-schema-v2.md) decision; that note
++  is the revisit trigger.
++- **Pointer inputs into covered runs.** Confirm `artifactstore` pointer records
++  can reference a foreign run's content-addressed artifact by `{commit, sha}`
++  without copying bytes; if not, Phase B records subjects in `Refs` only and adds
++  pointer inputs in Phase B+.
++- **Reusing `printRunDetail`.** `retro show` wants a body dump that `run show`
++  lacks; factor the shared header/stage rendering rather than forking it.
