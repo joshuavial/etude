@@ -649,6 +649,120 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T09:38:17.513269Z"
+    },
+    {
+      "gate_id": "verify.r4",
+      "phase": "verify",
+      "round": 4,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify",
+          "artifact": "114d790729ada04ef1e0466edde32ac7ce343303301e4f87f2fff245f266ac8d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "31361471feb393ce1d520e540876341af1627bb2dd544eb33e776857c79d580e",
+            "path": "artifacts/sha256/31/31361471feb393ce1d520e540876341af1627bb2dd544eb33e776857c79d580e",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1249
+          },
+          "timestamp": "2026-08-15T09:48:16.438122Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T09:48:16.656042Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T09:48:17.700179Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add CI or hook wiring for shell suites in a follow-up, since the artifact correctly leaves that as out of scope."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "7b9c8c2189645b41e7ef9b00caee181607e0b0733ca947b5b0052def1dbf67eb",
+            "path": "artifacts/sha256/7b/7b9c8c2189645b41e7ef9b00caee181607e0b0733ca947b5b0052def1dbf67eb",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 262
+          },
+          "session": {
+            "session_id": "codex-51bf2041ae2e9db5",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "51bf2041ae2e9db5d70eb4a7b587a999292658de6d0f3ef31c2b976e375de343",
+              "path": "artifacts/sha256/51/51bf2041ae2e9db5d70eb4a7b587a999292658de6d0f3ef31c2b976e375de343",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 170
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T09:48:37.895621Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T09:48:37.895722Z"
     }
   ]
 }
