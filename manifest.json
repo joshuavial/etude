@@ -1084,6 +1084,42 @@
         "degraded_reason": "BLOCK, correct, and recorded on receipt rather than after the fact - which is the whole point, since the finding IS that verdicts were acted on without being appended. Bead .3 hit this five times and I wrote a retro about it; .4 reproduced it twice in the verify phase. The cause is structural and unchanged: the opus seat cannot be invoked as a subprocess, so no 'etude gate' run produces its attempt, and appending it is a separate manual step easiest to skip exactly when the verdict is interesting enough to act on immediately. Bead etude-4ed (verdict injection) is the real fix. The second finding is subtler and I had missed it entirely: the recorded verify PASS certifies bd2d9d94, but the optionals folded after that verdict produced ea641e95, which shipped ungated. A pass that points at a superseded revision is not a pass on what lands."
       },
       "timestamp": "2026-08-15T13:51:54Z"
+    },
+    {
+      "gate_id": "verify.r5",
+      "phase": "verify",
+      "round": 5,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "ce317bc0dc1e1b52d1c12d584e317d1ff356bc7c1d5eb73fa6df73446e06e427"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Every one of the 34 cases mints only RUN refs, so dropping 'refs/etude/retros' from check (d)'s for-each-ref leaves the suite at 34 passed, 0 failed. Unpushed retro refs are exactly the 'invisible until the worktree is gone' case the runbook cites as why (d) earns its place, so half of a hard check that gates every lane's push can be deleted silently. The verify artifact's 'each has a negative control AND a permanent regression' reads as covering this and does not."
+          ],
+          "timestamp": "2026-08-15T13:52:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, filed at the final review gate which found it missing. This is the in-harness opus verdict on the FIRST verify artifact (sha ce317bc0, stage 'verify'), the revision verify.r1 reviewed. verify.r1 recorded that seat as 'failed' because etude gate cannot invoke it as a subprocess; it was then run in-harness per the documented registry exception and returned this BLOCK, which changed the code - three mutation survivors pinned and the suite taken from 34 to 40 cases - but the verdict was never appended. The round number is the next free attempt counter, not the chronological position; reviewed_stages names the artifact actually reviewed, which is what identifies the revision. This does not reopen the phase: it records what a seat said about a superseded revision, and is filed because a BLOCK that changed the shipped work and left no durable record is the exact defect this epic exists to end."
+      },
+      "timestamp": "2026-08-15T13:52:00Z"
     }
   ]
 }
