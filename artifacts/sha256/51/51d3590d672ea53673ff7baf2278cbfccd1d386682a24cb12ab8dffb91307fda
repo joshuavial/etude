@@ -1,0 +1,3277 @@
+# Independent plan review: etude-3343
+Review the proposed contract and feasibility, not implementation minutiae. This is a PLAN gate, not shipping approval. Full plan and current relevant source follow. Do not execute development workflows or modify files. Both seats receive this identical packet.
+
+# etude-3343: bind gate verdicts to reviewed bytes and permit same-name recapture
+
+Profile dev-claude, run `etude-3343-dev-claude`. Base commit 42d3593. Audit findings A01 (P1) and A15 (P2) from etude-jhnk.
+
+## Requirements and acceptance criteria
+
+| # | Requirement | Acceptance evidence |
+| --- | --- | --- |
+| R1 | `etude gate` rejects a supplied artifact whose SHA-256 differs from the latest captured output for the stage's produced role, before any check, seat, scratch creation or ref write. | Engine test: mismatch returns error, zero check and seat invocations, run ref commit unchanged. Fresh-binary CLI reproduction of A01 fails closed. |
+| R2 | The recorded `reviewed_stages[0].artifact` digest is the digest of the bytes every seat actually reviewed. | Equal-bytes engine test passes and the recorded digest equals SHA-256 of the request artifact. |
+| R3 | The mismatch error names run, stage, role, expected and supplied digests and the recapture command shape. | Error-string assertions in the engine test and CLI reproduction output. |
+| R4 | Appending a stage under an already gated name with different output keeps the run valid; the earlier gate's digest still validates. | Manifest validation unit test with duplicate names and CLI flow capture A, gate blocked, same-name capture B, gate pass. |
+| R5 | A reviewed reference with a digest validates only when some same-named stage occurrence carries that digest as output, log or input. A digest present only on a differently named stage is rejected. Digestless references keep name-existence semantics. | Manifest validation unit tests plus JSON roundtrip with duplicate names and the old digest. |
+| R6 | Prior-attempt evidence and reviewed-ref consumers keep selecting the stage occurrence whose output matches the recorded digest, not the latest by name. | Existing `stageByReviewedRef` tests in `internal/liverun/gate_test.go` stay green; no change to that function. |
+| R7 | Docs describe the binding, the recapture path and the validation rule. | `docs/gates.md`, `docs/capture.md`, `docs/development.md` edits; `make docs-check` and `make docs-reality` pass. |
+
+## Invariants
+
+- Binding hash is `sha256.Sum256` of the raw artifact slice, lowercase hex, identical to `artifactstore.hashBytes`. No trimming, normalization or prompt-envelope bytes participate. A trailing-newline difference is a mismatch.
+- Every stage output already carries a valid SHA-256 (`validateArtifactRef` at `internal/runmanifest/manifest.go:797`), so there is no digestless output branch. The gate never skips binding.
+- The mismatch check happens after `latestStageForRole` and before tier resolution, `nextPhaseRound`, prompt build, `MkdirAll(ScratchDir)`, checks and seats. Nothing is written on mismatch.
+- The bytes hashed are the same `req.Artifact` slice passed to `buildGatePrompt`. No second read.
+- Manifest validation keeps all existing identifier and digest-format checks. Gate ordering relative to stages is unchanged: all stages are indexed before any gate is validated, so no temporal or forward-reference policy is introduced.
+- Stage names are never rewritten. No `.rN` auto-naming, no occurrence index, no sequence field, no schema version bump, no migration. Repeated identical digests under the same name remain ambiguous for producer metadata; that is a pre-existing schema limit and is out of scope.
+- The generic validator stays output/log/input aware. Only the supervised gate binds to output specifically.
+
+## Design
+
+### 1. `internal/liverun/gate_once.go`
+
+After resolving `reviewed`:
+
+```go
+supplied := hex.EncodeToString(sha256sum(req.Artifact))
+if supplied != reviewed.Output.Artifact {
+    return GateOutcome{}, fmt.Errorf("%w: run %s stage %q output role %q is %s but the supplied artifact is %s; recapture it first (etude capture %s --run %s --expect append --output %s=<artifact-path>, where <artifact-path> is the file given to gate --artifact) then rerun this gate",
+        ErrArtifactMismatch, req.RunID, reviewed.Name, req.Stage.Produces, reviewed.Output.Artifact, supplied, reviewed.Name, req.RunID, req.Stage.Produces)
+}
+```
+
+Add `var ErrArtifactMismatch = errors.New("gate artifact does not match captured output")` next to `ErrNoReviewableStage`. Imports `crypto/sha256` and `encoding/hex`. Nothing else in the function moves; the check sits at line 115, immediately after the `ErrNoReviewableStage` return. The recorded `ReviewedStages[0].Artifact` stays `reviewed.Output.Artifact`, which is now provably equal to the supplied digest.
+
+The CLI in `internal/cli/gate.go` needs no new request field. `runGateCommand` already holds `cfg.artifactPath`; wrap `ErrArtifactMismatch` there only if the placeholder text is judged unhelpful. Default: leave the CLI untouched, the engine message is already actionable. Reviewer may request the CLI substitution; it is a two-line `errors.Is` wrap.
+
+### 2. `internal/runmanifest/manifest.go`
+
+Change the validation index at line 312 from `map[string]Stage` to `map[string][]Stage`, appending every occurrence. `validateGate` takes the new type. Reference resolution:
+
+```go
+occurrences, ok := stageIndex[ref.Stage]   // missing name: unchanged error
+if ref.Artifact != "" {
+    // format check unchanged
+    found := false
+    for _, s := range occurrences { if stageHasArtifact(s, ref.Artifact) { found = true; break } }
+    if !found { return existing "not found on stage ... output or inputs" error }
+}
+```
+
+Error text keeps the existing prefix so current tests and docs stay valid; append "(any stage named ...)" only if a reviewer asks. `stageHasArtifact` is unchanged.
+
+### 3. Consumers checked, no change
+
+- `internal/liverun/gate.go:498` `stageByReviewedRef` already matches name and output digest walking backwards. Unchanged.
+- `internal/cli/run.go:410` prints refs verbatim. Unchanged.
+- `internal/cli/capture.go` `capture-gate` serializes refs and relies on `Validate`. Gains the relaxed rule for free.
+- `latestStageForRole` (engine.go:76) still picks the newest occurrence for a role, which is the intended recapture semantics: after a corrected capture the next gate reviews the newest bytes.
+
+### 4. Tests
+
+`internal/liverun/gate_once_test.go`
+
+- Introduce `const seededGateArtifact = "the artifact under review\n"` used by `seedGateRun`. Existing tests pass `[]byte("x")` in roughly twenty places (lines 169 to 996); those must switch to `[]byte(seededGateArtifact)` or they will now fail with the mismatch. Tests that assert an earlier failure (missing run, missing role, read_checkout, resolver-required errors) may keep `"x"` where the failure precedes the binding check; only the ones that expect seats or checks to run change. Docs-stage tests (`gateOnceDocsStage`) seed their own bytes and follow the same rule.
+- `TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats`: seed run, pass different bytes, assert `errors.Is(err, ErrArtifactMismatch)`, message contains run id, stage name, role, both digests and `etude capture verify --run r1 --expect append --output verify=`; check runner and seat resolver counters are zero; `ScratchDir` was not created; `Store.Resolve` returns the same commit as before.
+- Newline cases in one table test: seeded without trailing newline and supplied identical passes; seeded with newline and supplied identical passes; seeded with newline and supplied without newline rejects; and the reverse rejects.
+- `TestGateStageRecordsDigestOfReviewedBytes`: equal bytes pass and `Gates[0].ReviewedStages[0].Artifact == hex(sha256(req.Artifact))`.
+
+`internal/runmanifest/manifest_test.go`
+
+- `TestValidateAcceptsReviewedRefOnEarlierSameNameStage`: two stages named `review` with outputs A then B; gate references `review` with digest A; `Validate` passes; JSON roundtrip through `ParseJSON` preserves both stages and the digest.
+- Same-name earlier occurrence matched via input digest and via log digest both validate.
+- Digest present only on a differently named stage is rejected with the existing "not found on stage" error.
+- Digest of a nonexistent artifact and malformed digest remain rejected (extend the existing `TestValidateGateRejects` table where a case is missing).
+- Digestless reference to an existing name passes; to a missing name fails (already covered, confirm).
+
+`internal/cli/capture_test.go` (or a new `gate_test.go` in `internal/cli`)
+
+- End-to-end in-process flow using `execute(...)` with a workflow named `gated` whose stage `review` produces `review` and gates on a one-seat inline tier, and a registry seat invoking a shell script that writes `{"verdict":"block","required":["fix"]}` on the first call and `{"verdict":"go"}` afterwards (the script keys off a counter file in the temp dir). Steps: capture `review` with file A; gate blocked, ref gains gate `review.r1` citing digest A; edit the file to B; gate without recapture fails with `ErrArtifactMismatch` and the ref is unchanged; capture `review` again with `--expect append`; gate passes as `review.r2` citing digest B. Assert both stage occurrences exist with their original bytes readable from the ref and both gate digests are intact. Registry and seat-script wiring copies the pattern at `internal/cli/run_test.go:1141-1233`.
+
+`internal/liverun/gate_test.go` prior-attempt evidence: confirm an existing test selects the older occurrence by digest; add one only if none does.
+
+### 5. Documentation
+
+- `docs/gates.md` line 66 onward: state that a reviewed-stage digest must match the output, log or an input of any stage occurrence with that name, so recapturing under the same name keeps earlier gates valid. Add a short "Binding" paragraph: `etude gate` hashes the supplied file and refuses when it differs from the latest captured output for the role, with the recapture command.
+- `docs/capture.md` Capturing review gates section: one paragraph on recapturing changed bytes under the same stage name with `--expect append` and that earlier gates keep referencing the earlier occurrence by digest.
+- `docs/development.md` Capture and review: the sentence "Always recapture changed bytes before a review" gains the fact that `etude gate` enforces it.
+- `docs/plans/dogfood/supervisor-runbook.md` line 140: mark the `<phase>.r2` rename convention as optional now that same-name recapture is supported; a one-line note, not a rewrite.
+- `docs/cli/etude_gate.md` is generated. Extend the `Long` text in `internal/cli/gate.go` with one sentence on the byte binding and regenerate with `make docs`.
+- `CHANGELOG.md`: add an Unreleased entry under Fixed for A01 and A15.
+
+## Failure cases
+
+| Case | Behaviour |
+| --- | --- |
+| Supplied file differs from latest captured output | `ErrArtifactMismatch`, exit non-zero, nothing written, no seat cost. |
+| Run has the role but the latest occurrence is a different stage name | Bound to that occurrence, as today (`latestStageForRole` is role-based). |
+| Same-name recapture with identical bytes | Valid append; gate binds to the new occurrence with the same digest. Ambiguity of producer metadata is pre-existing. |
+| Historical gate cites a digest no longer on the newest same-name stage | Validates against the earlier occurrence. |
+| Historical gate cites a digest on no same-name occurrence | Rejected, unchanged behaviour. |
+| Empty artifact file | Rejected by the CLI before the engine, unchanged. |
+
+## Verification plan
+
+Recorded at `.etude/tmp/verify.md` with exact commands and output.
+
+1. Before the fix: reproduce A01 and A15 with a fresh `bin/etude` in a disposable repo (capture A, gate with B succeeds and records digest A; recapture same name fails validation). Keep the transcript as the pre-fix evidence.
+2. `go test ./internal/liverun/ ./internal/runmanifest/ ./internal/cli/` focused, then `make test`, `make lint`, `make docs`, `make docs-check`, `make docs-reality`. No shell scripts change, so `make shell-test` is not required.
+3. After the fix: same disposable-repo flow with the rebuilt binary showing the mismatch refusal, unchanged ref, same-name recapture and a passing second gate. Also `etude run show` output listing both stage occurrences and both gates.
+
+## Delegation
+
+Sonnet implements steps 1 to 5 in one worker after plan approval. Fable lead reviews the diff and runs the fresh-binary flow independently. Escalate to Opus only if the CLI end-to-end test cannot be wired with the existing `execute` harness.
+
+## Out of scope
+
+Auto `.rN` naming, attempt identity fields, A11 runner resolution for duplicate names, post-gate artifact mutation (etude-pq7), CLI path substitution in the error unless review asks for it.
+
+
+## Source: internal/liverun/gate_once.go
+```
+package liverun
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/joshuavial/etude/internal/artifactstore"
+	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/workflow"
+)
+
+// gatePromptRole is the input role under which the shared gate prompt is
+// materialized for every seat and check. Seats read it from
+// $ETUDE_INPUTS_DIR/00-gate-prompt.
+const gatePromptRole = "gate-prompt"
+
+// ErrRunNotFound is returned by GateStage when the run ref does not exist. A
+// gate attaches to work that was already recorded, so this is a hard error and
+// nothing is written.
+var ErrRunNotFound = errors.New("run not found")
+
+// ErrNoReviewableStage is returned when the run exists but carries no stage
+// producing the gated phase's role — there is nothing for the gate to review.
+var ErrNoReviewableStage = errors.New("no reviewable stage on run")
+
+// GateRequest describes one supervised gate invocation.
+//
+// Unlike runGate, there is no stage runner to re-invoke: a not-pass returns to
+// the caller, who returns it to whoever produced the artifact.
+type GateRequest struct {
+	// RunID is the run ref to gate against. It must already exist.
+	RunID string
+	// Stage is the workflow stage whose gate block drives this attempt.
+	Stage workflow.Stage
+	// Artifact is the reviewed content, inlined into the shared prompt.
+	Artifact []byte
+	// WorktreeDir is where checks execute. For a supervised gate this is the
+	// caller's repo root, NOT a pristine checkout: the work under review is
+	// uncommitted, so `make test` must see the real tree. Model seats execute from
+	// per-seat neutral repositories because supervised gates are output-only.
+	WorktreeDir string
+	// ScratchDir must NOT be at or under WorktreeDir (ExecRunner rejects that).
+	ScratchDir string
+}
+
+// GateOutcome is the result of one supervised gate attempt.
+type GateOutcome struct {
+	GateID  string
+	Round   int
+	Status  runmanifest.GateStatus
+	Attempt runmanifest.GateAttempt
+	// Commit is the new run-ref commit after the attempt was appended.
+	Commit string
+}
+
+// Passed reports whether the gate may advance. Only "pass" advances; both
+// "rerun" and "escalated" are non-pass, so a caller cannot accidentally treat a
+// seat outage as success.
+func (o GateOutcome) Passed() bool {
+	return o.Status == runmanifest.GateStatusPass
+}
+
+// GateStage runs one stage's gate against an already-recorded run and appends
+// the attempt to the run ref.
+//
+// It reuses runGateChecks/runGateSeats unchanged — this is deliberately not a
+// second seat path. The record is written through runmanifest.Writer with an
+// ExpectedOld CAS, the same call capture-gate uses, so an attempt written here
+// and one written by capture-gate are interchangeable on the run.
+func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) (GateOutcome, error) {
+	gate := req.Stage.Gate
+	if gate == nil {
+		return GateOutcome{}, fmt.Errorf("stage %q has no gate configured", req.Stage.Name)
+	}
+	if gate.ReadCheckout {
+		return GateOutcome{}, fmt.Errorf("gate on stage %q: read_checkout is supported by live run workflows only; supervised gates review an uncommitted caller tree and cannot grant reproducible pinned-checkout access", req.Stage.Name)
+	}
+	if len(gate.Checks) > 0 && e.ResolveCheck == nil {
+		return GateOutcome{}, fmt.Errorf("gate on stage %q requires ResolveCheck to be set on Engine", req.Stage.Name)
+	}
+	if (len(gate.Seats) > 0 || gate.Tier != "") && e.ResolveSeat == nil {
+		return GateOutcome{}, fmt.Errorf("gate on stage %q requires ResolveSeat to be set on Engine", req.Stage.Name)
+	}
+
+	ref := runsPrefix + req.RunID
+	commit, err := e.Store.Resolve(ctx, ref)
+	if errors.Is(err, refstore.ErrNotFound) {
+		return GateOutcome{}, fmt.Errorf("%w: %s; capture the stage first (etude capture <stage> --run %s ...)",
+			ErrRunNotFound, ref, req.RunID)
+	}
+	if err != nil {
+		return GateOutcome{}, err
+	}
+
+	manifest, priorFiles, err := readRunAt(ctx, e.Store, commit)
+	if err != nil {
+		return GateOutcome{}, err
+	}
+	if manifest.RunID != req.RunID {
+		return GateOutcome{}, fmt.Errorf("existing manifest run_id %q does not match --run %q", manifest.RunID, req.RunID)
+	}
+
+	// The gate reviews a stage that was already captured. Resolving it here (not
+	// just "the run exists") is what enforces capture-before-gate per phase.
+	reviewed, ok := latestStageForRole(manifest.Stages, req.Stage.Produces)
+	if !ok {
+		return GateOutcome{}, fmt.Errorf("%w: run %s has no stage producing role %q; capture it before gating stage %q",
+			ErrNoReviewableStage, req.RunID, req.Stage.Produces, req.Stage.Name)
+	}
+
+	// Resolve seats for the configured tier. No flag can widen or narrow this.
+	var seatNames []string
+	if gate.Tier != "" {
+		if e.Tiers == nil {
+			return GateOutcome{}, fmt.Errorf("gate on stage %q requires Tiers to be set on Engine", req.Stage.Name)
+		}
+		seats, _, found := e.Tiers(gate.Tier)
+		if !found {
+			return GateOutcome{}, fmt.Errorf("tier %q not found in registry", gate.Tier)
+		}
+		seatNames = seats
+	} else {
+		seatNames = gate.Seats
+	}
+
+	round := nextPhaseRound(req.Stage.Name, manifest.Stages, manifest.Gates)
+
+	prompt := buildGatePrompt(req.Stage, gate, seatNames, round, reviewed.Name, req.Artifact, false, reviewed.GitSHA)
+	gateInputs := []replay.RunInput{{
+		Role:      gatePromptRole,
+		MediaType: "text/markdown; charset=utf-8",
+		Content:   prompt,
+	}}
+
+	if err := os.MkdirAll(req.ScratchDir, 0o755); err != nil {
+		return GateOutcome{}, fmt.Errorf("create gate scratch: %w", err)
+	}
+
+	as := artifactstore.New()
+	checkSeats, checksPassed, _ := e.runGateChecks(ctx, req.WorktreeDir, req.ScratchDir, gate.Checks, gateInputs, as, round)
+	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round, true, nil)
+
+	syn := synthesizeVerdict(
+		checksPassed, verdicts,
+		round, gate.EffectiveMaxRounds(), gate.EffectivePassThreshold(),
+		len(seatNames),
+	)
+
+	gateID := fmt.Sprintf("%s.r%d", req.Stage.Name, round)
+	attempt := runmanifest.GateAttempt{
+		GateID:       gateID,
+		Phase:        req.Stage.Name,
+		Round:        round,
+		Tier:         tierToInt(gate.Tier),
+		Status:       syn.status,
+		ReadCheckout: false,
+		ReviewedStages: []runmanifest.ReviewedRef{{
+			Stage:    reviewed.Name,
+			Role:     req.Stage.Produces,
+			Artifact: reviewed.Output.Artifact,
+		}},
+		Seats: append(checkSeats, modelSeats...),
+		Decision: runmanifest.GateDecision{
+			EscalationReason: syn.escalationReason,
+			// A seat that fell through to a fallback still produced a real
+			// verdict, so it is not a failure — but the gate DID run degraded and
+			// that must be visible. failure_note cannot carry it (the manifest
+			// forbids one on go/block), so it belongs here.
+			DegradedReason: joinDegraded(syn.degradedReason, ladderNotes),
+		},
+		Timestamp: e.clock(),
+	}
+
+	manifest.Gates = append(manifest.Gates, attempt)
+
+	files := as.Files()
+	for path, content := range priorFiles {
+		files[path] = content
+	}
+
+	written, err := (runmanifest.Writer{Store: e.Store}).Write(ctx, manifest, files, runmanifest.WriteOptions{
+		ExpectedOld: commit,
+		Message:     fmt.Sprintf("gate: run %s gate %s", req.RunID, gateID),
+	})
+	if err != nil {
+		return GateOutcome{}, fmt.Errorf("write gate attempt %s: %w", gateID, err)
+	}
+
+	printGateOutcome(out, gateID, syn.status, attempt.Seats)
+
+	return GateOutcome{
+		GateID:  gateID,
+		Round:   round,
+		Status:  syn.status,
+		Attempt: attempt,
+		Commit:  written,
+	}, nil
+}
+
+// readRunAt loads the manifest and its artifact files from a run commit.
+func readRunAt(ctx context.Context, store refstore.Store, commit string) (runmanifest.Manifest, map[string][]byte, error) {
+	manifestBytes, err := store.ReadCommitFile(ctx, commit, "manifest.json")
+	if err != nil {
+		return runmanifest.Manifest{}, nil, err
+	}
+	manifest, err := runmanifest.ParseJSON(manifestBytes)
+	if err != nil {
+		return runmanifest.Manifest{}, nil, err
+	}
+	files := make(map[string][]byte)
+	for _, path := range runmanifest.ArtifactPaths(manifest) {
+		content, err := store.ReadCommitFile(ctx, commit, path)
+		if err != nil {
+			return runmanifest.Manifest{}, nil, err
+		}
+		files[path] = content
+	}
+	return manifest, files, nil
+}
+
+// buildGatePrompt composes the ONE text every seat receives. Seats are model
+// identities voting on an identical prompt, never role personas — so this is
+// built once and handed to all of them unmodified.
+//
+// The prompt asks for a four-line RETURN block on stdout. It deliberately does
+// NOT mention ETUDE_OUTPUT_FILE: writing the JSON envelope is the seat adapter's
+// job, so a model cannot emit a passing envelope without actually stating a
+// verdict the adapter can parse.
+func buildGatePrompt(stage workflow.Stage, gate *workflow.GateConfig, seats []string, round int, reviewedStage string, artifact []byte, readCheckout bool, gitSHA string) []byte {
+	var sb strings.Builder
+	sb.WriteString("ROLE: You are an independent reviewer seat on an etude phase gate.\n")
+	sb.WriteString("You are a model identity voting on this shared prompt, not a role persona.\n")
+	sb.WriteString("Review ONLY this message. Do not edit files; review only.\n\n")
+
+	fmt.Fprintf(&sb, "PHASE: %s\n", stage.Name)
+	fmt.Fprintf(&sb, "ROUND: %d\n", round)
+	if gate.Tier != "" {
+		fmt.Fprintf(&sb, "TIER: %s (seats: %s; every seat must return GO for the gate to pass)\n",
+			gate.Tier, strings.Join(seats, ", "))
+	}
+	sb.WriteString("\nDECISION STANDARD: return GO when the artifact can advance as-is,\n")
+	sb.WriteString("BLOCK when a required change must land first.\n")
+
+	if readCheckout {
+		sb.WriteString("\nCHECKOUT ACCESS: READ-ONLY\n")
+		fmt.Fprintf(&sb, "You may inspect a fresh disposable checkout initialized at commit %s.\n", gitSHA)
+		sb.WriteString("Do not modify it; each seat invocation receives a separate pristine checkout.\n")
+		sb.WriteString("Use checkout reads only to falsify claims made by the artifact.\n")
+	} else {
+		sb.WriteString("\nCHECKOUT ACCESS: OUTPUT-ONLY\n")
+		sb.WriteString("Do not inspect the process checkout. Only the inlined artifact and its embedded provenance are authorized evidence.\n")
+	}
+
+	sb.WriteString("\nMEASUREMENT AUTHORITY:\n")
+	sb.WriteString("Embedded provenance is AUTHORITATIVE for measurements.\n")
+	sb.WriteString("Do not re-derive arithmetic; provenance is embedded precisely so you do not.\n")
+	sb.WriteString("Checkout reads exist to falsify an artifact claim, not to recompute it.\n")
+	sb.WriteString("If checkout evidence shows the artifact wrong, return BLOCK with evidence; never silently substitute your own numbers.\n")
+
+	if abstraction := strings.TrimSpace(gate.Abstraction); abstraction != "" {
+		sb.WriteString("\nABSTRACTION LEVEL (the altitude to review at):\n")
+		sb.WriteString(abstraction)
+		sb.WriteString("\n")
+	}
+
+	fmt.Fprintf(&sb, "\nARTIFACT UNDER REVIEW (role=%s, produced by stage %s):\n", stage.Produces, reviewedStage)
+	sb.WriteString("=== BEGIN ARTIFACT ===\n")
+	sb.Write(artifact)
+	if len(artifact) > 0 && artifact[len(artifact)-1] != '\n' {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("=== END ARTIFACT ===\n")
+
+	sb.WriteString("\nRETURN (exactly four lines, nothing else):\n")
+	sb.WriteString("VERDICT: <GO|BLOCK>\n")
+	sb.WriteString("BLOCKING: <numbered blocking findings, or \"none\">\n")
+	sb.WriteString("OPTIONAL: <numbered non-blocking follow-ups, or \"none\">\n")
+	sb.WriteString("CONFIDENCE: <high|medium|low>\n")
+	return []byte(sb.String())
+}
+
+// printGateOutcome renders the synthesized verdict and every blocking seat's
+// required changes, so a supervisor can hand the feedback straight back.
+func printGateOutcome(out io.Writer, gateID string, status runmanifest.GateStatus, seats []runmanifest.SeatResult) {
+	if out == nil {
+		return
+	}
+	fmt.Fprintf(out, "gate %s: %s\n", gateID, status)
+	for _, s := range seats {
+		fmt.Fprintf(out, "  %s (%s/%s): %s\n", s.Seat, s.Provider.Name, s.Provider.Model, s.Verdict)
+		if s.FailureNote != "" {
+			fmt.Fprintf(out, "    note: %s\n", s.FailureNote)
+		}
+		for _, r := range s.Required {
+			fmt.Fprintf(out, "    required: %s\n", r)
+		}
+	}
+}
+
+// joinDegraded merges the synthesis's own degraded reason with any seat-ladder
+// fallthrough notes, so a reader sees both why the gate was degraded and which
+// seats did not answer on their primary invocation.
+func joinDegraded(synthesized string, ladderNotes []string) string {
+	parts := make([]string, 0, 1+len(ladderNotes))
+	if strings.TrimSpace(synthesized) != "" {
+		parts = append(parts, synthesized)
+	}
+	parts = append(parts, ladderNotes...)
+	return strings.Join(parts, "; ")
+}
+
+```
+
+
+## Source: internal/runmanifest/manifest.go
+```
+package runmanifest
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"path"
+	"sort"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/joshuavial/etude/internal/artifactstore"
+	"github.com/joshuavial/etude/internal/ident"
+	"github.com/joshuavial/etude/internal/refstore"
+)
+
+const manifestPath = "manifest.json"
+
+var (
+	ErrInvalidManifest      = errors.New("invalid manifest")
+	ErrInvalidArtifact      = errors.New("invalid artifact")
+	ErrMissingArtifact      = errors.New("missing artifact")
+	ErrManifestCollision    = errors.New("manifest collision")
+	ErrUnreferencedArtifact = errors.New("unreferenced artifact")
+)
+
+type Manifest struct {
+	// ManifestVersion versions the on-disk document format.
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+	ManifestVersion int
+	RunID           string
+	Workflow        string
+	WorkflowVersion string
+	Created         time.Time
+	// OccurredAt is the optional original event time for retros (when the
+	// retro's events actually happened), distinct from Created (capture time).
+	// It is zero for runs and for retros that pre-date this field.
+	// When zero it is omitted from JSON serialization.
+	OccurredAt time.Time
+	Refs       map[string]string
+	// OriginalGitSHA is the immutable checkout selected when a v4 live run
+	// starts. Caller-workspace stage GitSHA values may name later commits.
+	OriginalGitSHA string
+	Stages         []Stage
+	Gates          []GateAttempt
+	// EnvAllowlist records the env var NAMES (never values) that were
+	// configured for passthrough to live runners during this run.
+	// Absent/nil/empty all mean "no passthrough" (semantically equivalent).
+	// Values are never stored here — only the configured names for audit.
+	EnvAllowlist []string
+}
+
+// OriginalCheckout returns the commit used for hermetic execution. Version 4
+// manifests carry it explicitly; legacy manifests used stage zero for both run
+// checkout identity and stage provenance.
+func (m Manifest) OriginalCheckout() string {
+	if m.OriginalGitSHA != "" {
+		return m.OriginalGitSHA
+	}
+	if len(m.Stages) == 0 {
+		return ""
+	}
+	return m.Stages[0].GitSHA
+}
+
+// GateAttempt records one full panel re-examination of one phase gate.
+// Every rerun (BLOCK -> incorporate -> rerun) is a new GateAttempt with an
+// incremented Round; prior rounds are retained as the queryable history.
+type GateAttempt struct {
+	GateID string
+	Phase  string
+	Round  int
+	Tier   int
+	Status GateStatus
+	// ReadCheckout records that model seats were granted read access to the
+	// pinned checkout. False and absent mean output-only.
+	ReadCheckout   bool
+	ReviewedStages []ReviewedRef
+	Seats          []SeatResult
+	Decision       GateDecision
+	Timestamp      time.Time
+}
+
+// ReviewedRef ties a gate attempt to the exact stage/artifact it reviewed.
+// Artifact is optional (a gate may reference a stage by name only); when set it
+// is the same content-addressed sha the stage's Output/Input carries.
+type ReviewedRef struct {
+	Stage    string
+	Artifact string
+	Role     string
+}
+
+// SeatResult is one reviewer seat's outcome within one gate attempt.
+type SeatResult struct {
+	Seat        string
+	Harness     Harness
+	Provider    Provider
+	Skill       Skill
+	Verdict     SeatVerdict
+	Required    []string
+	Optional    []string
+	RawOutput   *ArtifactRef
+	Session     *SessionEvidence
+	FailureNote string
+	Timestamp   time.Time
+}
+
+// SessionEvidence records durable transcript/session evidence for agentic seats.
+type SessionEvidence struct {
+	SessionID          string
+	TranscriptURI      string
+	TranscriptArtifact *ArtifactRef
+	RetrievalStatus    string
+	RedactionStatus    string
+}
+
+// Provider names the model provider and model for a reviewer seat.
+type Provider struct {
+	Name  string
+	Model string
+}
+
+// GateDecision holds the aggregate decision detail of one gate attempt.
+type GateDecision struct {
+	EscalationReason string
+	DegradedReason   string
+	DeferredBeads    []string
+}
+
+// GateStatus is the aggregate status of one gate attempt.
+type GateStatus string
+
+// SeatVerdict is the outcome of one reviewer seat.
+type SeatVerdict string
+
+const (
+	GateStatusPass      GateStatus = "pass"
+	GateStatusRerun     GateStatus = "rerun"
+	GateStatusEscalated GateStatus = "escalated"
+
+	SeatVerdictGo          SeatVerdict = "go"
+	SeatVerdictBlock       SeatVerdict = "block"
+	SeatVerdictFailed      SeatVerdict = "failed"
+	SeatVerdictEmpty       SeatVerdict = "empty"
+	SeatVerdictMalfunction SeatVerdict = "malfunction"
+	SeatVerdictDisregarded SeatVerdict = "disregarded"
+
+	SessionEvidenceRetrievalImported = "imported"
+	SessionEvidenceFailed            = "failed"
+	SessionEvidenceNotApplicable     = "not_applicable"
+	SessionEvidenceRedactionPassed   = "passed"
+)
+
+// ReplayLink records the durable source identity for a produced_by:"replay" stage.
+// RunID and Stage name the source run and stage; Commit pins the immutable source
+// commit so the link remains resolvable even after future appends to the source run.
+type ReplayLink struct {
+	RunID  string
+	Stage  string
+	Commit string
+}
+
+type Stage struct {
+	Name       string
+	ProducedBy string
+	// GitSHA is the checkout SHA for a hermetic runner and the clean post-run
+	// HEAD for a caller-workspace runner.
+	GitSHA string
+	// Submodules maps populated, root-relative submodule paths to resolved OIDs.
+	Submodules map[string]string
+	// RunnerWorkspace records an explicit non-default stage runner workspace.
+	// Empty means the historical hermetic detached worktree; "caller" means
+	// the runner executed in the CLI invocation directory.
+	RunnerWorkspace string
+	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+	Skill    Skill
+	Producer Producer
+	Inputs   []ArtifactRef
+	Output   ArtifactRef
+	// Log is optional bounded stdout/stderr evidence from the stage runner.
+	Log       *ArtifactRef
+	Timestamp time.Time
+	// ReplayOf, when non-nil, identifies the source run/stage this stage was
+	// replayed from. Required when ProducedBy=="replay"; forbidden otherwise.
+	ReplayOf *ReplayLink
+}
+
+type Skill struct {
+	ID      string
+	Repo    string
+	Version string
+}
+
+// Harness identifies the agent runtime that executed a stage (e.g. claude-code).
+type Harness struct {
+	Name    string
+	Version string
+}
+
+// Producer records who produced a stage: the agent runtime (Harness), the LLM
+// (Model), and the skill (Skill). These are three of the four provenance axes;
+// the fourth — Workflow — is recorded at the top level of the manifest:
+//   - Harness: the agent runtime, e.g. "claude-code"
+//   - Model:   the LLM, e.g. "claude-opus-4-7"
+//   - Skill:   the per-stage skill identity {id, repo, version}
+//
+// Harness and Model are populated by the capture adapter (bead 1.2).
+// Empty Harness/Model values are valid for this schema bead (1.1).
+type Producer struct {
+	Harness Harness
+	Model   string
+	Skill   Skill
+	// Session, when non-nil, carries durable transcript/session evidence for
+	// agentic stage producers. Absent for deterministic and shell stages.
+	Session *SessionEvidence
+}
+
+type ArtifactRef struct {
+	Role      string
+	Artifact  string
+	Path      string
+	MediaType string
+	Storage   artifactstore.StorageType
+	Size      int64
+}
+
+type Writer struct {
+	Store refstore.Store
+}
+
+type WriteOptions struct {
+	ExpectedOld string
+	Message     string
+}
+
+func ArtifactFromManifestArtifact(a artifactstore.ManifestArtifact) ArtifactRef {
+	return ArtifactRef{
+		Role:      a.Role,
+		Artifact:  a.SHA256,
+		Path:      a.Path,
+		MediaType: a.MediaType,
+		Storage:   a.Storage,
+		Size:      a.Size,
+	}
+}
+
+func (m Manifest) Validate() error {
+	if err := validateRunID(m.RunID); err != nil {
+		return err
+	}
+	if err := validateIdentifier("workflow", m.Workflow); err != nil {
+		return err
+	}
+	if strings.TrimSpace(m.WorkflowVersion) == "" {
+		return fmt.Errorf("%w: workflow version required", ErrInvalidManifest)
+	}
+	if m.Created.IsZero() {
+		return fmt.Errorf("%w: created required", ErrInvalidManifest)
+	}
+	for key, value := range m.Refs {
+		if err := validateIdentifier("ref key", key); err != nil {
+			return err
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: ref %q value required", ErrInvalidManifest, key)
+		}
+	}
+	if len(m.Stages) == 0 {
+		return fmt.Errorf("%w: at least one stage required", ErrInvalidManifest)
+	}
+	for i, stage := range m.Stages {
+		if err := validateStage(i, stage); err != nil {
+			return err
+		}
+	}
+	hasCallerWorkspace := false
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" {
+			hasCallerWorkspace = true
+			break
+		}
+	}
+	if hasCallerWorkspace && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		return fmt.Errorf("%w: original git sha required for caller-workspace manifest", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace && !isHexOID(m.OriginalGitSHA) {
+		return fmt.Errorf("%w: original git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest)
+	}
+	if !hasCallerWorkspace && m.OriginalGitSHA != "" {
+		return fmt.Errorf("%w: original git sha requires a caller-workspace stage", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace {
+		for i, stage := range m.Stages {
+			if stage.RunnerWorkspace == "" && stage.GitSHA != m.OriginalGitSHA {
+				return fmt.Errorf("%w: stage[%d] hermetic git sha %q does not match original git sha %q", ErrInvalidManifest, i, stage.GitSHA, m.OriginalGitSHA)
+			}
+		}
+	}
+
+	// Build a stage index for referential integrity checks in gate validation.
+	stageIndex := make(map[string]Stage, len(m.Stages))
+	for _, stage := range m.Stages {
+		stageIndex[stage.Name] = stage
+	}
+
+	for _, name := range m.EnvAllowlist {
+		if !isValidEnvName(name) {
+			return fmt.Errorf("%w: env_allowlist entry %q is not a valid env var name", ErrInvalidManifest, name)
+		}
+	}
+
+	seenGateIDs := make(map[string]struct{}, len(m.Gates))
+	seenPhaseRound := make(map[string]struct{}, len(m.Gates))
+	for i, gate := range m.Gates {
+		if _, dup := seenGateIDs[gate.GateID]; dup {
+			return fmt.Errorf("%w: duplicate gate_id %q", ErrInvalidManifest, gate.GateID)
+		}
+		seenGateIDs[gate.GateID] = struct{}{}
+
+		phaseRoundKey := gate.Phase + "\x00" + fmt.Sprintf("%d", gate.Round)
+		if _, dup := seenPhaseRound[phaseRoundKey]; dup {
+			return fmt.Errorf("%w: duplicate (phase, round) (%q, %d)", ErrInvalidManifest, gate.Phase, gate.Round)
+		}
+		seenPhaseRound[phaseRoundKey] = struct{}{}
+
+		if err := validateGate(i, gate, stageIndex); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m Manifest) JSON() ([]byte, error) {
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m.toJSON()); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func ParseJSON(content []byte) (Manifest, error) {
+	var payload manifestJSON
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return Manifest{}, fmt.Errorf("%w: decode: %v", ErrInvalidManifest, err)
+	}
+	if err := ensureEOF(dec); err != nil {
+		return Manifest{}, err
+	}
+	manifest, err := payload.toManifest()
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := manifest.Validate(); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+// sessionEvidencePath returns the TranscriptArtifact path from e, or "" when
+// e is nil or has no artifact. Using this helper ensures all three artifact
+// walkers (ArtifactPaths, WriteManifestTree verify loop, referencedArtifactPaths)
+// share one place to collect per-carrier evidence paths.
+func sessionEvidencePath(e *SessionEvidence) string {
+	if e != nil && e.TranscriptArtifact != nil {
+		return e.TranscriptArtifact.Path
+	}
+	return ""
+}
+
+func ArtifactPaths(manifest Manifest) []string {
+	seen := make(map[string]struct{})
+	for _, stage := range manifest.Stages {
+		for _, input := range stage.Inputs {
+			seen[input.Path] = struct{}{}
+		}
+		seen[stage.Output.Path] = struct{}{}
+		if stage.Log != nil {
+			seen[stage.Log.Path] = struct{}{}
+		}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				seen[seat.RawOutput.Path] = struct{}{}
+			}
+			if p := sessionEvidencePath(seat.Session); p != "" {
+				seen[p] = struct{}{}
+			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
+			seen[p] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
+	return WriteManifestTree(ctx, w.Store, "refs/etude/runs/", manifest, files, refstore.WriteOptions{
+		ExpectedOld: opts.ExpectedOld,
+		Message:     opts.Message,
+	})
+}
+
+// WriteManifestTree is the shared core that validates, verifies artifacts,
+// guards against unreferenced files, encodes manifest.json, and commits to
+// refPrefix+manifest.RunID via store.WriteCommit. It is parameterized by:
+//   - refPrefix: e.g. "refs/etude/runs/" or "refs/etude/retros/"
+//   - wopts.ExpectedOld: empty string = create-only; non-empty = CAS append
+//   - wopts.Message: commit message (callers supply any default before calling)
+//
+// Both runmanifest.Writer.Write and retro.Writer.Write delegate here so the
+// validate → verify-artifacts → unreferenced-file-guard → WriteCommit sequence
+// lives in exactly one place.
+func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix string, manifest Manifest, files map[string][]byte, wopts refstore.WriteOptions) (string, error) {
+	if err := manifest.Validate(); err != nil {
+		return "", err
+	}
+	if _, ok := files[manifestPath]; ok {
+		return "", ErrManifestCollision
+	}
+
+	referenced := referencedArtifactPaths(manifest)
+	hashes := make(map[string]string, len(referenced))
+	for _, stage := range manifest.Stages {
+		for _, input := range stage.Inputs {
+			if err := verifyArtifactFile(input, files, hashes); err != nil {
+				return "", err
+			}
+		}
+		if err := verifyArtifactFile(stage.Output, files, hashes); err != nil {
+			return "", err
+		}
+		if stage.Log != nil {
+			if err := verifyArtifactFile(*stage.Log, files, hashes); err != nil {
+				return "", err
+			}
+		}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				if err := verifyArtifactFile(*seat.RawOutput, files, hashes); err != nil {
+					return "", err
+				}
+			}
+			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+				if err := verifyArtifactFile(*seat.Session.TranscriptArtifact, files, hashes); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if stage.Producer.Session != nil && stage.Producer.Session.TranscriptArtifact != nil {
+			if err := verifyArtifactFile(*stage.Producer.Session.TranscriptArtifact, files, hashes); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	out := make(map[string][]byte, len(files)+1)
+	for filePath, content := range files {
+		if _, ok := referenced[filePath]; !ok {
+			return "", fmt.Errorf("%w: %s", ErrUnreferencedArtifact, filePath)
+		}
+		out[filePath] = cloneBytes(content)
+	}
+
+	manifestBytes, err := manifest.JSON()
+	if err != nil {
+		return "", err
+	}
+	out[manifestPath] = manifestBytes
+
+	return store.WriteCommit(ctx, refPrefix+manifest.RunID, out, wopts)
+}
+
+func validateStage(index int, stage Stage) error {
+	prefix := fmt.Sprintf("stage[%d]", index)
+	if err := validateIdentifier(prefix+".stage", stage.Name); err != nil {
+		return err
+	}
+	if err := validateIdentifier(prefix+".produced_by", stage.ProducedBy); err != nil {
+		return err
+	}
+	// Bidirectional replay_of / produced_by constraint.
+	if stage.ProducedBy == "replay" && stage.ReplayOf == nil {
+		return fmt.Errorf("%w: %s produced_by \"replay\" requires replay_of", ErrInvalidManifest, prefix)
+	}
+	if stage.ReplayOf != nil && stage.ProducedBy != "replay" {
+		return fmt.Errorf("%w: %s replay_of only allowed when produced_by is \"replay\"", ErrInvalidManifest, prefix)
+	}
+	if stage.ReplayOf != nil {
+		if !IsValidRunID(stage.ReplayOf.RunID) {
+			return fmt.Errorf("%w: %s replay_of.run_id invalid", ErrInvalidManifest, prefix)
+		}
+		if err := validateIdentifier(prefix+".replay_of.stage", stage.ReplayOf.Stage); err != nil {
+			return err
+		}
+		if !isHexOID(stage.ReplayOf.Commit) {
+			return fmt.Errorf("%w: %s replay_of.commit must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix)
+		}
+	}
+	if strings.TrimSpace(stage.GitSHA) == "" {
+		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+	}
+	if stage.RunnerWorkspace != "" && !isHexOID(stage.GitSHA) {
+		return fmt.Errorf("%w: %s caller git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix)
+	}
+	for submodulePath, oid := range stage.Submodules {
+		if submodulePath == "" || submodulePath == "." || !utf8.ValidString(submodulePath) || strings.ContainsRune(submodulePath, '\x00') || path.IsAbs(submodulePath) || path.Clean(submodulePath) != submodulePath || submodulePath == ".." || strings.HasPrefix(submodulePath, "../") {
+			return fmt.Errorf("%w: %s submodule path %q must be clean and relative", ErrInvalidManifest, prefix, submodulePath)
+		}
+		if !isHexOID(oid) {
+			return fmt.Errorf("%w: %s submodule %q must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix, submodulePath)
+		}
+	}
+	if stage.RunnerWorkspace != "" && stage.RunnerWorkspace != "caller" {
+		return fmt.Errorf("%w: %s runner_workspace %q is not caller", ErrInvalidManifest, prefix, stage.RunnerWorkspace)
+	}
+	if strings.TrimSpace(stage.Skill.ID) == "" {
+		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
+	}
+	if strings.TrimSpace(stage.Skill.Repo) == "" {
+		return fmt.Errorf("%w: %s skill repo required", ErrInvalidManifest, prefix)
+	}
+	if strings.TrimSpace(stage.Skill.Version) == "" {
+		return fmt.Errorf("%w: %s skill version required", ErrInvalidManifest, prefix)
+	}
+	if stage.Timestamp.IsZero() {
+		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	for i, input := range stage.Inputs {
+		if err := validateArtifactRef(input); err != nil {
+			return fmt.Errorf("%w: %s input[%d]: %v", ErrInvalidManifest, prefix, i, err)
+		}
+	}
+	if err := validateArtifactRef(stage.Output); err != nil {
+		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
+	}
+	if stage.Log != nil {
+		if err := validateArtifactRef(*stage.Log); err != nil {
+			return fmt.Errorf("%w: %s log: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
+	if stage.Producer.Session != nil {
+		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) error {
+	prefix := fmt.Sprintf("gate[%d]", index)
+
+	if err := validateIdentifier(prefix+".gate_id", gate.GateID); err != nil {
+		return err
+	}
+	if err := validateIdentifier(prefix+".phase", gate.Phase); err != nil {
+		return err
+	}
+	if gate.Round < 1 {
+		return fmt.Errorf("%w: %s round must be >= 1", ErrInvalidManifest, prefix)
+	}
+	if gate.Tier < 0 || gate.Tier > 4 {
+		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3, 4}", ErrInvalidManifest, prefix)
+	}
+	if !isGateStatus(gate.Status) {
+		return fmt.Errorf("%w: %s status %q is not one of {pass, rerun, escalated}", ErrInvalidManifest, prefix, gate.Status)
+	}
+	if gate.Status == GateStatusEscalated && strings.TrimSpace(gate.Decision.EscalationReason) == "" {
+		return fmt.Errorf("%w: %s escalation_reason required when status is escalated", ErrInvalidManifest, prefix)
+	}
+	if len(gate.ReviewedStages) == 0 {
+		return fmt.Errorf("%w: %s at least one reviewed_stage required", ErrInvalidManifest, prefix)
+	}
+	for i, ref := range gate.ReviewedStages {
+		refPrefix := fmt.Sprintf("%s.reviewed_stages[%d]", prefix, i)
+		if err := validateIdentifier(refPrefix+".stage", ref.Stage); err != nil {
+			return err
+		}
+		stage, ok := stageIndex[ref.Stage]
+		if !ok {
+			return fmt.Errorf("%w: %s stage %q not found in manifest", ErrInvalidManifest, refPrefix, ref.Stage)
+		}
+		if ref.Role != "" {
+			if err := validateIdentifier(refPrefix+".role", ref.Role); err != nil {
+				return err
+			}
+		}
+		if ref.Artifact != "" {
+			if !validSHA256(ref.Artifact) {
+				return fmt.Errorf("%w: %s artifact must be a lowercase sha256", ErrInvalidManifest, refPrefix)
+			}
+			// Artifact must match the stage's output or one of its inputs.
+			if !stageHasArtifact(stage, ref.Artifact) {
+				return fmt.Errorf("%w: %s artifact %q not found on stage %q output or inputs", ErrInvalidManifest, refPrefix, ref.Artifact, ref.Stage)
+			}
+		}
+	}
+	if len(gate.Seats) == 0 {
+		return fmt.Errorf("%w: %s at least one seat required", ErrInvalidManifest, prefix)
+	}
+	for i, seat := range gate.Seats {
+		if err := validateSeat(prefix, i, seat); err != nil {
+			return err
+		}
+	}
+	if gate.Timestamp.IsZero() {
+		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	return nil
+}
+
+func stageHasArtifact(stage Stage, artifact string) bool {
+	if stage.Output.Artifact == artifact {
+		return true
+	}
+	if stage.Log != nil && stage.Log.Artifact == artifact {
+		return true
+	}
+	for _, input := range stage.Inputs {
+		if input.Artifact == artifact {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSeat(gatePrefix string, index int, seat SeatResult) error {
+	prefix := fmt.Sprintf("%s.seat[%d]", gatePrefix, index)
+
+	if err := validateIdentifier(prefix+".seat", seat.Seat); err != nil {
+		return err
+	}
+	if strings.TrimSpace(seat.Harness.Name) == "" {
+		return fmt.Errorf("%w: %s harness.name required", ErrInvalidManifest, prefix)
+	}
+	if err := validateProviderField(prefix, seat.Provider); err != nil {
+		return err
+	}
+	if !isSeatVerdict(seat.Verdict) {
+		return fmt.Errorf("%w: %s verdict %q is not one of {go, block, failed, empty, malfunction, disregarded}", ErrInvalidManifest, prefix, seat.Verdict)
+	}
+	// failure_note required iff verdict in {failed, empty, malfunction, disregarded}
+	// failure_note forbidden iff verdict in {go, block}
+	switch seat.Verdict {
+	case SeatVerdictFailed, SeatVerdictEmpty, SeatVerdictMalfunction, SeatVerdictDisregarded:
+		if strings.TrimSpace(seat.FailureNote) == "" {
+			return fmt.Errorf("%w: %s failure_note required for verdict %q", ErrInvalidManifest, prefix, seat.Verdict)
+		}
+	case SeatVerdictGo, SeatVerdictBlock:
+		if seat.FailureNote != "" {
+			return fmt.Errorf("%w: %s failure_note must be empty for verdict %q", ErrInvalidManifest, prefix, seat.Verdict)
+		}
+	}
+	if seat.RawOutput != nil {
+		if err := validateArtifactRef(*seat.RawOutput); err != nil {
+			return fmt.Errorf("%w: %s raw_output: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
+	if seat.Session != nil {
+		if err := validateSessionEvidence(prefix+".session", *seat.Session); err != nil {
+			return err
+		}
+	}
+	if seat.Timestamp.IsZero() {
+		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	return nil
+}
+
+func validateSessionEvidence(prefix string, evidence SessionEvidence) error {
+	if strings.TrimSpace(evidence.SessionID) == "" && strings.TrimSpace(evidence.TranscriptURI) == "" {
+		return fmt.Errorf("%w: %s requires session_id or transcript_uri", ErrInvalidManifest, prefix)
+	}
+	if evidence.SessionID != "" {
+		if err := validateFreeText(prefix+".session_id", evidence.SessionID); err != nil {
+			return err
+		}
+	}
+	if evidence.TranscriptURI != "" {
+		if err := validateFreeText(prefix+".transcript_uri", evidence.TranscriptURI); err != nil {
+			return err
+		}
+	}
+	if !isSessionEvidenceRetrievalStatus(evidence.RetrievalStatus) {
+		return fmt.Errorf("%w: %s retrieval_status %q is not one of {imported, failed, not_applicable}", ErrInvalidManifest, prefix, evidence.RetrievalStatus)
+	}
+	if !isSessionEvidenceRedactionStatus(evidence.RedactionStatus) {
+		return fmt.Errorf("%w: %s redaction_status %q is not one of {passed, failed, not_applicable}", ErrInvalidManifest, prefix, evidence.RedactionStatus)
+	}
+	if evidence.TranscriptArtifact != nil {
+		if err := validateArtifactRef(*evidence.TranscriptArtifact); err != nil {
+			return fmt.Errorf("%w: %s transcript_artifact: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
+	return nil
+}
+
+func isSessionEvidenceRetrievalStatus(status string) bool {
+	return status == SessionEvidenceRetrievalImported || status == SessionEvidenceFailed || status == SessionEvidenceNotApplicable
+}
+
+func isSessionEvidenceRedactionStatus(status string) bool {
+	return status == SessionEvidenceRedactionPassed || status == SessionEvidenceFailed || status == SessionEvidenceNotApplicable
+}
+
+func validateFreeText(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s required", ErrInvalidManifest, name)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s invalid utf-8", ErrInvalidManifest, name)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s contains control character", ErrInvalidManifest, name)
+		}
+	}
+	return nil
+}
+
+func validateProviderField(prefix string, p Provider) error {
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("%w: %s provider.name required", ErrInvalidManifest, prefix)
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		return fmt.Errorf("%w: %s provider.model required", ErrInvalidManifest, prefix)
+	}
+	for _, r := range p.Name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s provider.name contains control character", ErrInvalidManifest, prefix)
+		}
+	}
+	for _, r := range p.Model {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s provider.model contains control character", ErrInvalidManifest, prefix)
+		}
+	}
+	return nil
+}
+
+func isGateStatus(s GateStatus) bool {
+	return s == GateStatusPass || s == GateStatusRerun || s == GateStatusEscalated
+}
+
+func isSeatVerdict(v SeatVerdict) bool {
+	switch v {
+	case SeatVerdictGo, SeatVerdictBlock, SeatVerdictFailed, SeatVerdictEmpty, SeatVerdictMalfunction, SeatVerdictDisregarded:
+		return true
+	}
+	return false
+}
+
+// isHexOID reports whether s is a valid git object id: non-empty, all lowercase
+// hex characters, and exactly 40 (SHA-1) or 64 (SHA-256) characters long.
+func isHexOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateArtifactRef(artifact ArtifactRef) error {
+	if err := validateIdentifier("artifact role", artifact.Role); err != nil {
+		return err
+	}
+	if !validSHA256(artifact.Artifact) {
+		return fmt.Errorf("%w: artifact address must be lowercase sha256", ErrInvalidArtifact)
+	}
+	if err := validateFilePath(artifact.Path); err != nil {
+		return err
+	}
+	if err := validateMediaType(artifact.MediaType); err != nil {
+		return err
+	}
+	if artifact.Storage != artifactstore.StorageContent && artifact.Storage != artifactstore.StoragePointer {
+		return fmt.Errorf("%w: storage %q", ErrInvalidArtifact, artifact.Storage)
+	}
+	if artifact.Size < 0 {
+		return fmt.Errorf("%w: negative size", ErrInvalidArtifact)
+	}
+	return nil
+}
+
+func verifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes map[string]string) error {
+	content, ok := files[artifact.Path]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrMissingArtifact, artifact.Path)
+	}
+	expectedPath := expectedArtifactPath(artifact.Storage, artifact.Artifact)
+	if artifact.Path != expectedPath {
+		return fmt.Errorf("%w: path %q does not match %s", ErrInvalidArtifact, artifact.Path, artifact.Artifact)
+	}
+	actual := hashes[artifact.Path]
+	if actual == "" {
+		sum := sha256.Sum256(content)
+		actual = hex.EncodeToString(sum[:])
+		hashes[artifact.Path] = actual
+	}
+	if actual != artifact.Artifact {
+		return fmt.Errorf("%w: hash mismatch for %s", ErrInvalidArtifact, artifact.Path)
+	}
+	// Size is provenance metadata from artifactstore. For pointer artifacts it is
+	// the external object size, not the pointer-record byte length.
+	return nil
+}
+
+func expectedArtifactPath(storage artifactstore.StorageType, sum string) string {
+	switch storage {
+	case artifactstore.StorageContent:
+		return "artifacts/sha256/" + sum[:2] + "/" + sum
+	case artifactstore.StoragePointer:
+		return "artifacts/pointers/sha256/" + sum[:2] + "/" + sum + ".json"
+	default:
+		return ""
+	}
+}
+
+func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+	paths := make(map[string]struct{})
+	for _, stage := range manifest.Stages {
+		for _, input := range stage.Inputs {
+			paths[input.Path] = struct{}{}
+		}
+		paths[stage.Output.Path] = struct{}{}
+		if stage.Log != nil {
+			paths[stage.Log.Path] = struct{}{}
+		}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				paths[seat.RawOutput.Path] = struct{}{}
+			}
+			if p := sessionEvidencePath(seat.Session); p != "" {
+				paths[p] = struct{}{}
+			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
+			paths[p] = struct{}{}
+		}
+	}
+	return paths
+}
+
+// isValidEnvName reports whether name is a valid POSIX env var name:
+// [A-Za-z_][A-Za-z0-9_]* (non-empty; first char letter or underscore;
+// remaining chars letter, digit, or underscore; no = or control chars).
+func isValidEnvName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	r0 := rune(name[0])
+	if !((r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z') || r0 == '_') {
+		return false
+	}
+	for _, r := range name[1:] {
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsValidIdentifier reports whether value is a non-empty string using only
+// the [A-Za-z0-9_.-] character set.
+func IsValidIdentifier(value string) bool {
+	return ident.IsValid(value)
+}
+
+// IsValidRunID reports whether value is a valid run identifier: it must
+// satisfy IsValidIdentifier and additionally must not have a leading dot,
+// trailing dot, contain "..", consist entirely of dots, or end with ".lock".
+func IsValidRunID(value string) bool {
+	if !IsValidIdentifier(value) {
+		return false
+	}
+	return !strings.HasPrefix(value, ".") &&
+		!strings.HasSuffix(value, ".") &&
+		!strings.Contains(value, "..") &&
+		strings.Trim(value, ".") != "" &&
+		!strings.HasSuffix(value, ".lock")
+}
+
+func validateRunID(runID string) error {
+	if err := validateIdentifier("run id", runID); err != nil {
+		return err
+	}
+	if !IsValidRunID(runID) {
+		return fmt.Errorf("%w: invalid run id %q", ErrInvalidManifest, runID)
+	}
+	return nil
+}
+
+func validateIdentifier(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s required", ErrInvalidManifest, name)
+	}
+	if !IsValidIdentifier(value) {
+		return fmt.Errorf("%w: invalid %s %q", ErrInvalidManifest, name, value)
+	}
+	return nil
+}
+
+func validateMediaType(mediaType string) error {
+	if strings.TrimSpace(mediaType) == "" {
+		return fmt.Errorf("%w: media type required", ErrInvalidArtifact)
+	}
+	for _, r := range mediaType {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: invalid media type %q", ErrInvalidArtifact, mediaType)
+		}
+	}
+	return nil
+}
+
+func validateFilePath(filePath string) error {
+	if filePath == "" || !utf8.ValidString(filePath) {
+		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+	}
+	if path.IsAbs(filePath) || path.Clean(filePath) != filePath || strings.HasPrefix(filePath, "../") || strings.Contains(filePath, "/../") {
+		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+	}
+	if filePath == "." || filePath == ".." || filePath == ".git" || strings.HasPrefix(filePath, ".git/") {
+		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+	}
+	if strings.ContainsAny(filePath, "\\:,") {
+		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+	}
+	// NUL and every other control character are rejected by the IsControl scan.
+	for _, r := range filePath {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+		}
+	}
+	for _, segment := range strings.Split(filePath, "/") {
+		if segment == "" || segment == "." || segment == ".." || segment == ".git" {
+			return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+		}
+	}
+	return nil
+}
+
+func validSHA256(sum string) bool {
+	if len(sum) != sha256.Size*2 {
+		return false
+	}
+	for _, r := range sum {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneBytes(in []byte) []byte {
+	return append([]byte(nil), in...)
+}
+
+type manifestJSON struct {
+	// ManifestVersion versions the on-disk document format.
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+	ManifestVersion int    `json:"manifest_version,omitempty"`
+	RunID           string `json:"run_id"`
+	Workflow        string `json:"workflow"`
+	WorkflowVersion string `json:"workflow_version"`
+	Created         string `json:"created"`
+	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
+	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
+	// which would defeat omitempty and pollute all existing manifests.
+	OccurredAt     string            `json:"occurred_at,omitempty"`
+	Refs           map[string]string `json:"refs"`
+	OriginalGitSHA string            `json:"original_git_sha,omitempty"`
+	Stages         []stageJSON       `json:"stages"`
+	Gates          []gateJSON        `json:"gates,omitempty"`
+	// EnvAllowlist records the env var NAMES configured for passthrough (never
+	// values). Absent/null/empty all mean "no passthrough" (omitempty is correct;
+	// no manifest_version bump — additive leaf, same as occurred_at).
+	EnvAllowlist []string `json:"env_allowlist,omitempty"`
+}
+
+type gateJSON struct {
+	GateID         string            `json:"gate_id"`
+	Phase          string            `json:"phase"`
+	Round          int               `json:"round"`
+	Tier           int               `json:"tier"`
+	Status         string            `json:"status"`
+	ReadCheckout   bool              `json:"read_checkout,omitempty"`
+	ReviewedStages []reviewedRefJSON `json:"reviewed_stages"`
+	Seats          []seatResultJSON  `json:"seats"`
+	Decision       gateDecisionJSON  `json:"decision,omitempty"`
+	Timestamp      string            `json:"timestamp"`
+}
+
+type reviewedRefJSON struct {
+	Stage    string `json:"stage"`
+	Role     string `json:"role,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+}
+
+type seatResultJSON struct {
+	Seat        string        `json:"seat"`
+	Harness     harnessJSON   `json:"harness"`
+	Provider    providerJSON  `json:"provider"`
+	Skill       *skillJSON    `json:"skill,omitempty"`
+	Verdict     string        `json:"verdict"`
+	Required    []string      `json:"required,omitempty"`
+	Optional    []string      `json:"optional,omitempty"`
+	RawOutput   *artifactJSON `json:"raw_output,omitempty"`
+	Session     *sessionJSON  `json:"session,omitempty"`
+	FailureNote string        `json:"failure_note,omitempty"`
+	Timestamp   string        `json:"timestamp"`
+}
+
+type sessionJSON struct {
+	SessionID          string        `json:"session_id,omitempty"`
+	TranscriptURI      string        `json:"transcript_uri,omitempty"`
+	TranscriptArtifact *artifactJSON `json:"transcript_artifact,omitempty"`
+	RetrievalStatus    string        `json:"retrieval_status"`
+	RedactionStatus    string        `json:"redaction_status"`
+}
+
+type providerJSON struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type gateDecisionJSON struct {
+	EscalationReason string   `json:"escalation_reason,omitempty"`
+	DegradedReason   string   `json:"degraded_reason,omitempty"`
+	DeferredBeads    []string `json:"deferred_beads,omitempty"`
+}
+
+type stageJSON struct {
+	Stage           string            `json:"stage"`
+	ProducedBy      string            `json:"produced_by"`
+	GitSHA          string            `json:"git_sha"`
+	Submodules      map[string]string `json:"submodules,omitempty"`
+	RunnerWorkspace string            `json:"runner_workspace,omitempty"`
+	// Skill is present only in legacy manifests (no producer block).
+	// New manifests omit it; the skill travels inside producer.
+	Skill     *skillJSON     `json:"skill,omitempty"`
+	Producer  *producerJSON  `json:"producer,omitempty"`
+	Inputs    []artifactJSON `json:"inputs"`
+	Output    artifactJSON   `json:"output"`
+	Log       *artifactJSON  `json:"log,omitempty"`
+	Timestamp string         `json:"timestamp"`
+	ReplayOf  *replayOfJSON  `json:"replay_of,omitempty"`
+}
+
+// replayOfJSON is the wire representation of ReplayLink in the manifest JSON.
+// All three fields are required when the object is present; only the object
+// itself is omitempty so that absent replay_of is omitted from the document.
+type replayOfJSON struct {
+	RunID  string `json:"run_id"`
+	Stage  string `json:"stage"`
+	Commit string `json:"commit"`
+}
+
+type skillJSON struct {
+	ID      string `json:"id"`
+	Repo    string `json:"repo"`
+	Version string `json:"version"`
+}
+
+type harnessJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type producerJSON struct {
+	Harness *harnessJSON `json:"harness,omitempty"`
+	Model   string       `json:"model,omitempty"`
+	Skill   *skillJSON   `json:"skill,omitempty"`
+	Session *sessionJSON `json:"session,omitempty"`
+}
+
+type artifactJSON struct {
+	Role      string                    `json:"role"`
+	Artifact  string                    `json:"artifact"`
+	Path      string                    `json:"path"`
+	MediaType string                    `json:"media_type"`
+	Storage   artifactstore.StorageType `json:"storage"`
+	Size      int64                     `json:"size"`
+}
+
+func (m Manifest) toJSON() manifestJSON {
+	refs := m.Refs
+	if refs == nil {
+		refs = map[string]string{}
+	}
+	stages := make([]stageJSON, 0, len(m.Stages))
+	for _, stage := range m.Stages {
+		inputs := make([]artifactJSON, 0, len(stage.Inputs))
+		for _, input := range stage.Inputs {
+			inputs = append(inputs, input.toJSON())
+		}
+
+		// Derive the canonical skill for the producer block: Producer.Skill is
+		// authoritative; fall back to Stage.Skill when Producer.Skill is empty
+		// so the two fields stay coherent.
+		skillForProducer := stage.Producer.Skill
+		if skillForProducer.ID == "" {
+			skillForProducer = stage.Skill
+		}
+
+		// Encode the harness block only when at least Name is set (avoids emitting
+		// an empty harness object for legacy/partially-populated stages).
+		var harnessBlock *harnessJSON
+		if stage.Producer.Harness.Name != "" {
+			harnessBlock = &harnessJSON{
+				Name:    stage.Producer.Harness.Name,
+				Version: stage.Producer.Harness.Version,
+			}
+		}
+
+		producerBlock := &producerJSON{
+			Harness: harnessBlock,
+			Model:   stage.Producer.Model,
+			Skill: &skillJSON{
+				ID:      skillForProducer.ID,
+				Repo:    skillForProducer.Repo,
+				Version: skillForProducer.Version,
+			},
+		}
+		if stage.Producer.Session != nil {
+			producerBlock.Session = stage.Producer.Session.toJSON()
+		}
+
+		var replayOfBlock *replayOfJSON
+		if stage.ReplayOf != nil {
+			replayOfBlock = &replayOfJSON{
+				RunID:  stage.ReplayOf.RunID,
+				Stage:  stage.ReplayOf.Stage,
+				Commit: stage.ReplayOf.Commit,
+			}
+		}
+
+		stages = append(stages, stageJSON{
+			Stage:           stage.Name,
+			ProducedBy:      stage.ProducedBy,
+			GitSHA:          stage.GitSHA,
+			Submodules:      cloneStringMap(stage.Submodules),
+			RunnerWorkspace: stage.RunnerWorkspace,
+			// Do NOT emit top-level skill — it lives inside producer only.
+			Producer:  producerBlock,
+			Inputs:    inputs,
+			Output:    stage.Output.toJSON(),
+			Log:       artifactRefJSON(stage.Log),
+			Timestamp: formatTime(stage.Timestamp),
+			ReplayOf:  replayOfBlock,
+		})
+	}
+	version := 2
+	var gatesOut []gateJSON
+	if len(m.Gates) > 0 {
+		version = 3
+		gatesOut = make([]gateJSON, 0, len(m.Gates))
+		for _, gate := range m.Gates {
+			gatesOut = append(gatesOut, gate.toJSON())
+		}
+	}
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" || stage.Log != nil {
+			version = 4
+			break
+		}
+	}
+
+	return manifestJSON{
+		ManifestVersion: version,
+		RunID:           m.RunID,
+		Workflow:        m.Workflow,
+		WorkflowVersion: m.WorkflowVersion,
+		Created:         formatTime(m.Created),
+		OccurredAt:      formatTimeOmitZero(m.OccurredAt),
+		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
+		Stages:          stages,
+		Gates:           gatesOut,
+		EnvAllowlist:    m.EnvAllowlist,
+	}
+}
+
+func (g GateAttempt) toJSON() gateJSON {
+	refs := make([]reviewedRefJSON, 0, len(g.ReviewedStages))
+	for _, r := range g.ReviewedStages {
+		refs = append(refs, reviewedRefJSON{
+			Stage:    r.Stage,
+			Role:     r.Role,
+			Artifact: r.Artifact,
+		})
+	}
+	seats := make([]seatResultJSON, 0, len(g.Seats))
+	for _, seat := range g.Seats {
+		seats = append(seats, seat.toJSON())
+	}
+	return gateJSON{
+		GateID:         g.GateID,
+		Phase:          g.Phase,
+		Round:          g.Round,
+		Tier:           g.Tier,
+		Status:         string(g.Status),
+		ReadCheckout:   g.ReadCheckout,
+		ReviewedStages: refs,
+		Seats:          seats,
+		Decision:       g.Decision.toJSON(),
+		Timestamp:      formatTime(g.Timestamp),
+	}
+}
+
+func (s SeatResult) toJSON() seatResultJSON {
+	sj := seatResultJSON{
+		Seat: s.Seat,
+		Harness: harnessJSON{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: providerJSON{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Verdict:     string(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		FailureNote: s.FailureNote,
+		Timestamp:   formatTime(s.Timestamp),
+	}
+	if s.Skill.ID != "" {
+		sj.Skill = &skillJSON{
+			ID:      s.Skill.ID,
+			Repo:    s.Skill.Repo,
+			Version: s.Skill.Version,
+		}
+	}
+	if s.RawOutput != nil {
+		aj := s.RawOutput.toJSON()
+		sj.RawOutput = &aj
+	}
+	if s.Session != nil {
+		sj.Session = s.Session.toJSON()
+	}
+	return sj
+}
+
+func (e SessionEvidence) toJSON() *sessionJSON {
+	sj := &sessionJSON{
+		SessionID:       e.SessionID,
+		TranscriptURI:   e.TranscriptURI,
+		RetrievalStatus: e.RetrievalStatus,
+		RedactionStatus: e.RedactionStatus,
+	}
+	if e.TranscriptArtifact != nil {
+		aj := e.TranscriptArtifact.toJSON()
+		sj.TranscriptArtifact = &aj
+	}
+	return sj
+}
+
+func (d GateDecision) toJSON() gateDecisionJSON {
+	return gateDecisionJSON{
+		EscalationReason: d.EscalationReason,
+		DegradedReason:   d.DegradedReason,
+		DeferredBeads:    d.DeferredBeads,
+	}
+}
+
+func (a ArtifactRef) toJSON() artifactJSON {
+	return artifactJSON{
+		Role:      a.Role,
+		Artifact:  a.Artifact,
+		Path:      a.Path,
+		MediaType: a.MediaType,
+		Storage:   a.Storage,
+		Size:      a.Size,
+	}
+}
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// formatTimeOmitZero returns "" when t is the zero time (so that omitempty
+// drops the JSON key) and formatTime(t) otherwise. Use this for OPTIONAL time
+// fields. Do NOT use it for required fields like Created — those must always
+// serialize so decoding failures surface correctly.
+func formatTimeOmitZero(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return formatTime(t)
+}
+
+func ensureEOF(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("%w: trailing data: %v", ErrInvalidManifest, err)
+	}
+	return fmt.Errorf("%w: trailing data", ErrInvalidManifest)
+}
+
+func (m manifestJSON) toManifest() (Manifest, error) {
+	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
+	// and 4 (caller-workspace provenance and stage-log artifact refs).
+	// Reject 1 (never emitted) and any future version this binary cannot model.
+	switch m.ManifestVersion {
+	case 0, 2, 3, 4:
+		// accepted
+	default:
+		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+	}
+	if m.ManifestVersion < 4 && m.OriginalGitSHA != "" {
+		return Manifest{}, fmt.Errorf("%w: original_git_sha requires manifest_version 4", ErrInvalidManifest)
+	}
+	if m.ManifestVersion == 4 && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		hasStageLog := false
+		for _, stage := range m.Stages {
+			if stage.Log != nil {
+				hasStageLog = true
+				break
+			}
+		}
+		if !hasStageLog {
+			return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha or a stage log", ErrInvalidManifest)
+		}
+	}
+
+	created, err := parseTime("created", m.Created)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var occurredAt time.Time
+	if m.OccurredAt != "" {
+		occurredAt, err = parseTime("occurred_at", m.OccurredAt)
+		if err != nil {
+			return Manifest{}, err
+		}
+	}
+	stages := make([]Stage, 0, len(m.Stages))
+	for i, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" && m.ManifestVersion < 4 {
+			return Manifest{}, fmt.Errorf("%w: stage[%d] runner_workspace requires manifest_version 4", ErrInvalidManifest, i)
+		}
+		converted, err := stage.toStage(i)
+		if err != nil {
+			return Manifest{}, err
+		}
+		stages = append(stages, converted)
+	}
+	refs := make(map[string]string, len(m.Refs))
+	for key, value := range m.Refs {
+		refs[key] = value
+	}
+	gates := make([]GateAttempt, 0, len(m.Gates))
+	for i, g := range m.Gates {
+		gate, err := g.toGate(i)
+		if err != nil {
+			return Manifest{}, err
+		}
+		gates = append(gates, gate)
+	}
+	return Manifest{
+		ManifestVersion: m.ManifestVersion,
+		RunID:           m.RunID,
+		Workflow:        m.Workflow,
+		WorkflowVersion: m.WorkflowVersion,
+		Created:         created,
+		OccurredAt:      occurredAt,
+		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
+		Stages:          stages,
+		Gates:           gates,
+		EnvAllowlist:    m.EnvAllowlist,
+	}, nil
+}
+
+func (g gateJSON) toGate(index int) (GateAttempt, error) {
+	ts, err := parseTime(fmt.Sprintf("gate[%d].timestamp", index), g.Timestamp)
+	if err != nil {
+		return GateAttempt{}, err
+	}
+	refs := make([]ReviewedRef, 0, len(g.ReviewedStages))
+	for _, r := range g.ReviewedStages {
+		refs = append(refs, ReviewedRef{
+			Stage:    r.Stage,
+			Artifact: r.Artifact,
+			Role:     r.Role,
+		})
+	}
+	seats := make([]SeatResult, 0, len(g.Seats))
+	for i, s := range g.Seats {
+		seat, err := s.toSeatResult(index, i)
+		if err != nil {
+			return GateAttempt{}, err
+		}
+		seats = append(seats, seat)
+	}
+	return GateAttempt{
+		GateID:         g.GateID,
+		Phase:          g.Phase,
+		Round:          g.Round,
+		Tier:           g.Tier,
+		Status:         GateStatus(g.Status),
+		ReadCheckout:   g.ReadCheckout,
+		ReviewedStages: refs,
+		Seats:          seats,
+		Decision: GateDecision{
+			EscalationReason: g.Decision.EscalationReason,
+			DegradedReason:   g.Decision.DegradedReason,
+			DeferredBeads:    g.Decision.DeferredBeads,
+		},
+		Timestamp: ts,
+	}, nil
+}
+
+func (s seatResultJSON) toSeatResult(gateIndex, seatIndex int) (SeatResult, error) {
+	ts, err := parseTime(fmt.Sprintf("gate[%d].seat[%d].timestamp", gateIndex, seatIndex), s.Timestamp)
+	if err != nil {
+		return SeatResult{}, err
+	}
+	var skill Skill
+	if s.Skill != nil {
+		skill = Skill{ID: s.Skill.ID, Repo: s.Skill.Repo, Version: s.Skill.Version}
+	}
+	var rawOutput *ArtifactRef
+	if s.RawOutput != nil {
+		a := s.RawOutput.toArtifactRef()
+		rawOutput = &a
+	}
+	var session *SessionEvidence
+	if s.Session != nil {
+		session = s.Session.toSessionEvidence()
+	}
+	return SeatResult{
+		Seat: s.Seat,
+		Harness: Harness{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: Provider{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Skill:       skill,
+		Verdict:     SeatVerdict(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		RawOutput:   rawOutput,
+		Session:     session,
+		FailureNote: s.FailureNote,
+		Timestamp:   ts,
+	}, nil
+}
+
+func (s sessionJSON) toSessionEvidence() *SessionEvidence {
+	evidence := &SessionEvidence{
+		SessionID:       s.SessionID,
+		TranscriptURI:   s.TranscriptURI,
+		RetrievalStatus: s.RetrievalStatus,
+		RedactionStatus: s.RedactionStatus,
+	}
+	if s.TranscriptArtifact != nil {
+		a := s.TranscriptArtifact.toArtifactRef()
+		evidence.TranscriptArtifact = &a
+	}
+	return evidence
+}
+
+func (s stageJSON) toStage(index int) (Stage, error) {
+	timestamp, err := parseTime(fmt.Sprintf("stage[%d].timestamp", index), s.Timestamp)
+	if err != nil {
+		return Stage{}, err
+	}
+	inputs := make([]ArtifactRef, 0, len(s.Inputs))
+	for _, input := range s.Inputs {
+		inputs = append(inputs, input.toArtifactRef())
+	}
+
+	var skill Skill
+	var producer Producer
+
+	if s.Producer != nil {
+		// New manifest (manifest_version 2): producer is authoritative.
+		// Mirror producer.skill into Stage.Skill so run.go / replay keep working.
+		if s.Producer.Skill != nil {
+			skill = Skill{
+				ID:      s.Producer.Skill.ID,
+				Repo:    s.Producer.Skill.Repo,
+				Version: s.Producer.Skill.Version,
+			}
+		}
+		var harness Harness
+		if s.Producer.Harness != nil {
+			harness = Harness{
+				Name:    s.Producer.Harness.Name,
+				Version: s.Producer.Harness.Version,
+			}
+		}
+		var producerSession *SessionEvidence
+		if s.Producer.Session != nil {
+			producerSession = s.Producer.Session.toSessionEvidence()
+		}
+		producer = Producer{
+			Harness: harness,
+			Model:   s.Producer.Model,
+			Skill:   skill,
+			Session: producerSession,
+		}
+	} else if s.Skill != nil {
+		// Legacy manifest: top-level skill block only, no producer.
+		// Lift it into BOTH Stage.Skill AND Stage.Producer.Skill; Harness/Model empty.
+		skill = Skill{
+			ID:      s.Skill.ID,
+			Repo:    s.Skill.Repo,
+			Version: s.Skill.Version,
+		}
+		producer = Producer{
+			Skill: skill,
+		}
+	}
+
+	var replayOf *ReplayLink
+	if s.ReplayOf != nil {
+		replayOf = &ReplayLink{
+			RunID:  s.ReplayOf.RunID,
+			Stage:  s.ReplayOf.Stage,
+			Commit: s.ReplayOf.Commit,
+		}
+	}
+	var logRef *ArtifactRef
+	if s.Log != nil {
+		ref := s.Log.toArtifactRef()
+		logRef = &ref
+	}
+
+	return Stage{
+		Name:            s.Stage,
+		ProducedBy:      s.ProducedBy,
+		GitSHA:          s.GitSHA,
+		Submodules:      cloneStringMap(s.Submodules),
+		RunnerWorkspace: s.RunnerWorkspace,
+		Skill:           skill,
+		Producer:        producer,
+		Inputs:          inputs,
+		Output:          s.Output.toArtifactRef(),
+		Log:             logRef,
+		Timestamp:       timestamp,
+		ReplayOf:        replayOf,
+	}, nil
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func artifactRefJSON(ref *ArtifactRef) *artifactJSON {
+	if ref == nil {
+		return nil
+	}
+	encoded := ref.toJSON()
+	return &encoded
+}
+
+func (a artifactJSON) toArtifactRef() ArtifactRef {
+	return ArtifactRef{
+		Role:      a.Role,
+		Artifact:  a.Artifact,
+		Path:      a.Path,
+		MediaType: a.MediaType,
+		Storage:   a.Storage,
+		Size:      a.Size,
+	}
+}
+
+func parseTime(field, value string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: %s: %v", ErrInvalidManifest, field, err)
+	}
+	return t.UTC(), nil
+}
+
+```
+
+
+## Source: internal/cli/capture.go
+```
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/joshuavial/etude/internal/artifactmedia"
+	"github.com/joshuavial/etude/internal/artifactstore"
+	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/sessionevidence"
+	"github.com/spf13/cobra"
+)
+
+const (
+	defaultWorkflow        = "manual"
+	defaultWorkflowVersion = "manual-v1"
+	defaultProducedBy      = "original"
+	defaultSkillRepo       = "manual"
+	defaultSkillVersion    = "manual"
+
+	// expectCreate / expectAppend are the accepted --expect values. --expect
+	// declares which of the two things capture is allowed to do, so a caller
+	// that BELIEVES a run exists can say so and fail loudly when it does not,
+	// rather than silently starting a fresh manifest over the top of a run
+	// whose history has gone missing (etude-nad).
+	expectCreate = "create"
+	expectAppend = "append"
+)
+
+type captureConfig struct {
+	runID           string
+	output          []string
+	inputs          []string
+	refs            []string
+	workflow        string
+	workflowVersion string
+	producedBy      string
+	gitSHA          string
+	skillID         string
+	skillRepo       string
+	skillVersion    string
+	message         string
+	harness         string
+	harnessVersion  string
+	model           string
+	expect          string
+}
+
+func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
+	cfg := captureConfig{
+		workflow:        defaultWorkflow,
+		workflowVersion: defaultWorkflowVersion,
+		producedBy:      defaultProducedBy,
+		skillRepo:       defaultSkillRepo,
+		skillVersion:    defaultSkillVersion,
+	}
+	cmd := &cobra.Command{
+		Use:           "capture <stage>",
+		Short:         "Capture a stage artifact into an etude run",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runner := captureRunner{
+				now:    time.Now,
+				store:  refstore.New(""),
+				stdout: out,
+			}
+			return runner.run(cmd.Context(), args[0], cfg, captureFlagState{
+				workflowChanged:        cmd.Flags().Changed("workflow"),
+				workflowVersionChanged: cmd.Flags().Changed("workflow-version"),
+			})
+		},
+	}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.runID, "run", "", "run id to capture into")
+	flags.StringArrayVar(&cfg.output, "output", nil, "output artifact as role=path")
+	flags.StringArrayVar(&cfg.inputs, "input", nil, "input artifact as role=path")
+	flags.StringArrayVar(&cfg.refs, "ref", nil, "external ref as key=value")
+	flags.StringVar(&cfg.workflow, "workflow", defaultWorkflow, "workflow name")
+	flags.StringVar(&cfg.workflowVersion, "workflow-version", defaultWorkflowVersion, "workflow version")
+	flags.StringVar(&cfg.producedBy, "produced-by", defaultProducedBy, "producer identity")
+	flags.StringVar(&cfg.gitSHA, "git-sha", "", "repo git sha for this stage")
+	flags.StringVar(&cfg.skillID, "skill-id", "", "skill id")
+	flags.StringVar(&cfg.skillRepo, "skill-repo", defaultSkillRepo, "skill repo")
+	flags.StringVar(&cfg.skillVersion, "skill-version", defaultSkillVersion, "skill version")
+	flags.StringVar(&cfg.message, "message", "", "run ref commit message")
+	flags.StringVar(&cfg.harness, "harness", "", "agent runtime that executed the stage (e.g. claude-code)")
+	flags.StringVar(&cfg.harnessVersion, "harness-version", "", "version of the agent runtime")
+	flags.StringVar(&cfg.model, "model", "", "LLM model used by this stage (e.g. claude-opus-4-7)")
+	flags.StringVar(&cfg.expect, "expect", "", "require this capture to create a new run or append to an existing one: create|append (default: either)")
+	return cmd
+}
+
+type captureFlagState struct {
+	workflowChanged        bool
+	workflowVersionChanged bool
+}
+
+type captureRunner struct {
+	now    func() time.Time
+	store  refstore.Store
+	stdout io.Writer
+}
+
+func (r captureRunner) run(ctx context.Context, stageName string, cfg captureConfig, flags captureFlagState) error {
+	if err := validateCLIIdentifier("stage", stageName); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.runID) == "" {
+		return fmt.Errorf("--run is required")
+	}
+	if len(cfg.output) != 1 {
+		return fmt.Errorf("exactly one --output is required")
+	}
+	expect := strings.TrimSpace(cfg.expect)
+	if expect != "" && expect != expectCreate && expect != expectAppend {
+		return fmt.Errorf("invalid --expect %q: want %q or %q", cfg.expect, expectCreate, expectAppend)
+	}
+	refs, err := parseRefs(cfg.refs)
+	if err != nil {
+		return err
+	}
+	gitSHA := strings.TrimSpace(cfg.gitSHA)
+	if gitSHA == "" {
+		gitSHA, err = currentHEAD(ctx)
+		if err != nil {
+			return err
+		}
+	} else if err := validateGitSHA(gitSHA); err != nil {
+		return err
+	}
+	skillID := cfg.skillID
+	if strings.TrimSpace(skillID) == "" {
+		skillID = stageName
+	}
+
+	artifactStore := artifactstore.New()
+	inputs := make([]runmanifest.ArtifactRef, 0, len(cfg.inputs))
+	for _, spec := range cfg.inputs {
+		artifact, err := addFileArtifact(artifactStore, spec)
+		if err != nil {
+			return err
+		}
+		inputs = append(inputs, artifact)
+	}
+	output, err := addFileArtifact(artifactStore, cfg.output[0])
+	if err != nil {
+		return err
+	}
+
+	ref := "refs/etude/runs/" + cfg.runID
+	commit, resolveErr := r.store.Resolve(ctx, ref)
+	// A missing ref means CREATE, so an unqualified capture cannot tell a fresh
+	// run from a run whose history has vanished underneath it. --expect lets the
+	// caller state which one it meant; enforce it before writing anything.
+	switch {
+	case expect == expectAppend && errors.Is(resolveErr, refstore.ErrNotFound):
+		return fmt.Errorf("run %q not found (%s); --expect append refuses to create a new run — the run's recorded history may have been lost, so investigate before re-capturing", cfg.runID, ref)
+	case expect == expectCreate && resolveErr == nil:
+		return fmt.Errorf("run %q already exists (%s at %s); --expect create refuses to append to it", cfg.runID, ref, commit)
+	}
+	now := r.now().UTC()
+	manifest := runmanifest.Manifest{
+		RunID:           cfg.runID,
+		Workflow:        cfg.workflow,
+		WorkflowVersion: cfg.workflowVersion,
+		Created:         now,
+		Refs:            refs,
+	}
+	files := artifactStore.Files()
+	opts := runmanifest.WriteOptions{Message: cfg.message}
+	appending := false
+	if resolveErr == nil {
+		appending = true
+		existing, priorFiles, err := r.readExistingRun(ctx, commit)
+		if err != nil {
+			return err
+		}
+		if existing.RunID != cfg.runID {
+			return fmt.Errorf("existing manifest run_id %q does not match --run %q", existing.RunID, cfg.runID)
+		}
+		if flags.workflowChanged && cfg.workflow != existing.Workflow {
+			return fmt.Errorf("--workflow %q conflicts with existing workflow %q", cfg.workflow, existing.Workflow)
+		}
+		if flags.workflowVersionChanged && cfg.workflowVersion != existing.WorkflowVersion {
+			return fmt.Errorf("--workflow-version %q conflicts with existing workflow_version %q", cfg.workflowVersion, existing.WorkflowVersion)
+		}
+		manifest = existing
+		if manifest.Refs == nil {
+			manifest.Refs = make(map[string]string)
+		}
+		for key, value := range refs {
+			manifest.Refs[key] = value
+		}
+		for path, content := range priorFiles {
+			files[path] = content
+		}
+		opts.ExpectedOld = commit
+	} else if !errors.Is(resolveErr, refstore.ErrNotFound) {
+		return resolveErr
+	}
+
+	skill := runmanifest.Skill{
+		ID:      skillID,
+		Repo:    cfg.skillRepo,
+		Version: cfg.skillVersion,
+	}
+	manifest.Stages = append(manifest.Stages, runmanifest.Stage{
+		Name:       stageName,
+		ProducedBy: cfg.producedBy,
+		GitSHA:     gitSHA,
+		Skill:      skill,
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{
+				Name:    cfg.harness,
+				Version: cfg.harnessVersion,
+			},
+			Model: cfg.model,
+			Skill: skill,
+		},
+		Inputs:    inputs,
+		Output:    output,
+		Timestamp: now,
+	})
+	action := expectCreate
+	if appending {
+		action = expectAppend
+	}
+	if opts.Message == "" {
+		opts.Message = fmt.Sprintf("capture: %s run %s stage %s", action, cfg.runID, stageName)
+	}
+	written, err := (runmanifest.Writer{Store: r.store}).Write(ctx, manifest, files, opts)
+	if err != nil {
+		return err
+	}
+	// Report which of the two happened: a caller that passed no --expect can
+	// still SEE a create where it expected an append.
+	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\naction %s\n", written, ref, action)
+	return err
+}
+
+func (r captureRunner) readExistingRun(ctx context.Context, commit string) (runmanifest.Manifest, map[string][]byte, error) {
+	manifestBytes, err := r.store.ReadCommitFile(ctx, commit, "manifest.json")
+	if err != nil {
+		return runmanifest.Manifest{}, nil, err
+	}
+	manifest, err := runmanifest.ParseJSON(manifestBytes)
+	if err != nil {
+		return runmanifest.Manifest{}, nil, err
+	}
+	files := make(map[string][]byte)
+	for _, path := range runmanifest.ArtifactPaths(manifest) {
+		content, err := r.store.ReadCommitFile(ctx, commit, path)
+		if err != nil {
+			return runmanifest.Manifest{}, nil, err
+		}
+		files[path] = content
+	}
+	return manifest, files, nil
+}
+
+func addFileArtifact(store *artifactstore.Store, spec string) (runmanifest.ArtifactRef, error) {
+	role, filePath, err := splitKeyValue(spec, "artifact")
+	if err != nil {
+		return runmanifest.ArtifactRef{}, err
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return runmanifest.ArtifactRef{}, fmt.Errorf("read %s: %w", filePath, err)
+	}
+	artifact, err := store.AddContent(role, artifactmedia.Infer(filePath), content)
+	if err != nil {
+		return runmanifest.ArtifactRef{}, err
+	}
+	return runmanifest.ArtifactFromManifestArtifact(artifact), nil
+}
+
+func parseRefs(values []string) (map[string]string, error) {
+	refs := make(map[string]string, len(values))
+	for _, value := range values {
+		key, refValue, err := splitKeyValue(value, "ref")
+		if err != nil {
+			return nil, err
+		}
+		if err := validateCLIIdentifier("ref key", key); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(refValue) == "" {
+			return nil, fmt.Errorf("ref %q value is required", key)
+		}
+		refs[key] = refValue
+	}
+	return refs, nil
+}
+
+func splitKeyValue(value, name string) (string, string, error) {
+	key, rest, ok := strings.Cut(value, "=")
+	if !ok || key == "" || rest == "" {
+		return "", "", fmt.Errorf("invalid %s %q: want key=value", name, value)
+	}
+	return key, rest, nil
+}
+
+func validateCLIIdentifier(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if !runmanifest.IsValidIdentifier(value) {
+		return fmt.Errorf("invalid %s %q", name, value)
+	}
+	return nil
+}
+
+// validateGitSHA requires a user-supplied --git-sha to be a full lowercase hex
+// object id (SHA-1 = 40, SHA-256 = 64) so a recorded stage git sha is a real
+// commit id rather than arbitrary text. An empty --git-sha is resolved from HEAD
+// instead and never reaches here.
+func validateGitSHA(sha string) error {
+	if len(sha) != 40 && len(sha) != 64 {
+		return fmt.Errorf("invalid --git-sha %q: want a 40- or 64-character hex commit id", sha)
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return fmt.Errorf("invalid --git-sha %q: must be lowercase hex", sha)
+		}
+	}
+	return nil
+}
+
+func currentHEAD(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("could not resolve HEAD; run capture inside a repo with at least one commit or pass --git-sha")
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gateInputJSON is the input DTO for capture-gate. It mirrors the manifest
+// GateAttempt shape but accepts raw_output as a file path (resolved into the
+// content-addressed artifact store) rather than as an already-stored ArtifactRef.
+type gateInputJSON struct {
+	GateID         string                 `json:"gate_id"`
+	Phase          string                 `json:"phase"`
+	Round          int                    `json:"round"`
+	Tier           int                    `json:"tier"`
+	Status         string                 `json:"status"`
+	ReviewedStages []reviewedRefInputJSON `json:"reviewed_stages"`
+	Seats          []seatInputJSON        `json:"seats"`
+	Decision       gateDecisionInputJSON  `json:"decision"`
+	Timestamp      string                 `json:"timestamp"`
+}
+
+type reviewedRefInputJSON struct {
+	Stage    string `json:"stage"`
+	Artifact string `json:"artifact"`
+	Role     string `json:"role"`
+}
+
+type seatInputJSON struct {
+	Seat        string              `json:"seat"`
+	Harness     harnessInputJSON    `json:"harness"`
+	Provider    providerInputJSON   `json:"provider"`
+	Skill       *skillInputJSON     `json:"skill"`
+	Verdict     string              `json:"verdict"`
+	Required    []string            `json:"required"`
+	Optional    []string            `json:"optional"`
+	RawOutput   *rawOutputInputJSON `json:"raw_output"`
+	Session     *sessionInputJSON   `json:"session"`
+	FailureNote string              `json:"failure_note"`
+	Timestamp   string              `json:"timestamp"`
+}
+
+type harnessInputJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type providerInputJSON struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type skillInputJSON struct {
+	ID      string `json:"id"`
+	Repo    string `json:"repo"`
+	Version string `json:"version"`
+}
+
+// rawOutputInputJSON specifies a seat's raw transcript as a local file path.
+// role and media_type are optional; if media_type is empty it is inferred from the path.
+type rawOutputInputJSON struct {
+	Role      string `json:"role"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type"`
+}
+
+type sessionInputJSON struct {
+	SessionID      string `json:"session_id"`
+	TranscriptURI  string `json:"transcript_uri"`
+	TranscriptPath string `json:"transcript_path"`
+}
+
+type gateDecisionInputJSON struct {
+	EscalationReason string   `json:"escalation_reason"`
+	DegradedReason   string   `json:"degraded_reason"`
+	DeferredBeads    []string `json:"deferred_beads"`
+}
+
+type captureGateConfig struct {
+	runID    string
+	gateFile string
+}
+
+func newCaptureGateCommand(out, errOut io.Writer) *cobra.Command {
+	var cfg captureGateConfig
+	cmd := &cobra.Command{
+		Use:           "capture-gate",
+		Short:         "Append a gate reviewer record to an existing etude run",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runner := captureRunner{
+				now:    time.Now,
+				store:  refstore.New(""),
+				stdout: out,
+			}
+			return runner.runGate(cmd.Context(), cfg)
+		},
+	}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.Flags().StringVar(&cfg.runID, "run", "", "run id to append the gate record to (required)")
+	cmd.Flags().StringVar(&cfg.gateFile, "gate-file", "", "path to gate JSON file, or - to read from stdin (required)")
+	return cmd
+}
+
+func (r captureRunner) runGate(ctx context.Context, cfg captureGateConfig) error {
+	if strings.TrimSpace(cfg.runID) == "" {
+		return fmt.Errorf("--run is required")
+	}
+	if strings.TrimSpace(cfg.gateFile) == "" {
+		return fmt.Errorf("--gate-file is required")
+	}
+
+	// Read gate JSON from file or stdin.
+	var gateBytes []byte
+	var err error
+	if cfg.gateFile == "-" {
+		gateBytes, err = io.ReadAll(os.Stdin)
+	} else {
+		gateBytes, err = os.ReadFile(cfg.gateFile)
+	}
+	if err != nil {
+		return fmt.Errorf("read gate file: %w", err)
+	}
+
+	var input gateInputJSON
+	dec := json.NewDecoder(bytes.NewReader(gateBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&input); err != nil {
+		return fmt.Errorf("parse gate JSON: %w", err)
+	}
+	// Reject trailing data after the JSON object (a second token means extra content).
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("parse gate JSON: unexpected trailing data after gate object")
+		}
+		return fmt.Errorf("parse gate JSON: unexpected trailing data: %w", err)
+	}
+
+	// Resolve the existing run — a gate must attach to an existing run.
+	ref := "refs/etude/runs/" + cfg.runID
+	commit, err := r.store.Resolve(ctx, ref)
+	if errors.Is(err, refstore.ErrNotFound) {
+		return fmt.Errorf("run %q not found; a gate must attach to an existing run", cfg.runID)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing, priorFiles, err := r.readExistingRun(ctx, commit)
+	if err != nil {
+		return err
+	}
+	if existing.RunID != cfg.runID {
+		return fmt.Errorf("existing manifest run_id %q does not match --run %q", existing.RunID, cfg.runID)
+	}
+
+	// Resolve raw_output file paths into the artifact store.
+	artifactStore := artifactstore.New()
+	seats := make([]runmanifest.SeatResult, 0, len(input.Seats))
+	for _, s := range input.Seats {
+		seat, err := buildSeatResult(artifactStore, s)
+		if err != nil {
+			return err
+		}
+		seats = append(seats, seat)
+	}
+
+	// Parse gate timestamp.
+	gateTS, err := parseManifestTime("gate.timestamp", input.Timestamp)
+	if err != nil {
+		return err
+	}
+
+	// Build reviewed refs.
+	reviewedStages := make([]runmanifest.ReviewedRef, 0, len(input.ReviewedStages))
+	for _, r := range input.ReviewedStages {
+		reviewedStages = append(reviewedStages, runmanifest.ReviewedRef{
+			Stage:    r.Stage,
+			Artifact: r.Artifact,
+			Role:     r.Role,
+		})
+	}
+
+	gate := runmanifest.GateAttempt{
+		GateID:         input.GateID,
+		Phase:          input.Phase,
+		Round:          input.Round,
+		Tier:           input.Tier,
+		Status:         runmanifest.GateStatus(input.Status),
+		ReviewedStages: reviewedStages,
+		Seats:          seats,
+		Decision: runmanifest.GateDecision{
+			EscalationReason: input.Decision.EscalationReason,
+			DegradedReason:   input.Decision.DegradedReason,
+			DeferredBeads:    input.Decision.DeferredBeads,
+		},
+		Timestamp: gateTS,
+	}
+
+	// Append gate to the manifest.
+	existing.Gates = append(existing.Gates, gate)
+
+	// Merge prior files with new artifact files.
+	files := artifactStore.Files()
+	for path, content := range priorFiles {
+		files[path] = content
+	}
+
+	opts := runmanifest.WriteOptions{
+		ExpectedOld: commit,
+		Message:     fmt.Sprintf("capture-gate: append run %s gate %s", cfg.runID, input.GateID),
+	}
+	written, err := (runmanifest.Writer{Store: r.store}).Write(ctx, existing, files, opts)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\n", written, ref)
+	return err
+}
+
+func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.SeatResult, error) {
+	ts, err := parseManifestTime("seat.timestamp", s.Timestamp)
+	if err != nil {
+		return runmanifest.SeatResult{}, err
+	}
+
+	var skill runmanifest.Skill
+	if s.Skill != nil {
+		skill = runmanifest.Skill{ID: s.Skill.ID, Repo: s.Skill.Repo, Version: s.Skill.Version}
+	}
+
+	var rawOutput *runmanifest.ArtifactRef
+	if s.RawOutput != nil && s.RawOutput.Path != "" {
+		role := s.RawOutput.Role
+		if role == "" {
+			role = s.Seat + "-transcript"
+		}
+		mediaType := s.RawOutput.MediaType
+		if mediaType == "" {
+			mediaType = artifactmedia.Infer(s.RawOutput.Path)
+		}
+		content, err := sessionevidence.ReadRegularFile(s.RawOutput.Path)
+		if err != nil {
+			return runmanifest.SeatResult{}, fmt.Errorf("read raw_output %s: %w", s.RawOutput.Path, err)
+		}
+		artifact, err := store.AddContent(role, mediaType, content)
+		if err != nil {
+			return runmanifest.SeatResult{}, fmt.Errorf("add raw_output artifact: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+		rawOutput = &ref
+	}
+
+	session, err := buildSessionEvidence(store, s.Seat, s.Session)
+	if err != nil {
+		return runmanifest.SeatResult{}, err
+	}
+
+	return runmanifest.SeatResult{
+		Seat: s.Seat,
+		Harness: runmanifest.Harness{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: runmanifest.Provider{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Skill:       skill,
+		Verdict:     runmanifest.SeatVerdict(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		RawOutput:   rawOutput,
+		Session:     session,
+		FailureNote: s.FailureNote,
+		Timestamp:   ts,
+	}, nil
+}
+
+func buildSessionEvidence(store *artifactstore.Store, seat string, input *sessionInputJSON) (*runmanifest.SessionEvidence, error) {
+	if input == nil {
+		return nil, nil
+	}
+	evidence := &runmanifest.SessionEvidence{
+		SessionID:       input.SessionID,
+		TranscriptURI:   input.TranscriptURI,
+		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+	}
+	if strings.TrimSpace(input.TranscriptPath) == "" {
+		return evidence, nil
+	}
+	content, err := sessionevidence.ReadRegularFile(input.TranscriptPath)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("read transcript %s: %w", input.TranscriptPath, err)
+	}
+	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
+	if err := sessionevidence.ScanForSecrets(content); err != nil {
+		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("redaction scan transcript %s: %w", input.TranscriptPath, err)
+	}
+	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
+	artifact, err := store.AddContent(seat+"-transcript", artifactmedia.Infer(input.TranscriptPath), content)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("add transcript artifact: %w", err)
+	}
+	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+	evidence.TranscriptArtifact = &ref
+	return evidence, nil
+}
+
+// parseManifestTime parses an RFC3339Nano timestamp string used in gate input DTOs.
+func parseManifestTime(field, value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("%s is required", field)
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: %w", field, value, err)
+	}
+	return t.UTC(), nil
+}
+
+```
+
+
+## Source: internal/cli/gate.go
+```
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/joshuavial/etude/internal/liverun"
+	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/registry"
+	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/workflow"
+	"github.com/spf13/cobra"
+)
+
+// ErrGateNotPassed is returned when a gate ran to completion but did not pass.
+// The attempt IS recorded; the non-zero exit is what stops a supervisor from
+// advancing. Both "rerun" and "escalated" produce this, so a seat outage is
+// never distinguishable from success by exit code alone.
+type ErrGateNotPassed struct {
+	GateID string
+	Status runmanifest.GateStatus
+}
+
+func (e *ErrGateNotPassed) Error() string {
+	return fmt.Sprintf("gate %s did not pass: %s", e.GateID, e.Status)
+}
+
+func newGateCommand(out, errOut io.Writer) *cobra.Command {
+	var runID, stageName, artifactPath, workflowFile string
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "gate",
+		Short: "Run one stage's review gate and record the attempt on a run",
+		Long: "Resolve a stage's gate tier and abstraction from .etude/workflow.yaml, " +
+			"invoke that tier's seats from .etude/registry.yaml against one shared prompt, " +
+			"and append the gate attempt to refs/etude/runs/<run>.\n\n" +
+			"Exits 0 only when the gate passes. A blocked gate, a failing check, and a " +
+			"seat outage all exit non-zero, so a supervisor cannot advance past a gate " +
+			"that did not actually pass.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runGateCommand(cmd.Context(), out, errOut, gateConfig{
+				runID:        runID,
+				stageName:    stageName,
+				artifactPath: artifactPath,
+				workflowFile: workflowFile,
+				timeout:      timeout,
+			})
+		},
+	}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+
+	flags := cmd.Flags()
+	flags.StringVar(&runID, "run", "", "run id to gate and record the attempt on (required)")
+	flags.StringVar(&stageName, "stage", "", "workflow stage whose gate to run (required)")
+	flags.StringVar(&artifactPath, "artifact", "", "path to the artifact under review (required)")
+	flags.StringVar(&workflowFile, "workflow", "", "named workflow in .etude/workflows/ (default: .etude/workflow.yaml)")
+	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "per-seat and per-check timeout")
+	return cmd
+}
+
+type gateConfig struct {
+	runID        string
+	stageName    string
+	artifactPath string
+	workflowFile string
+	timeout      time.Duration
+}
+
+func runGateCommand(ctx context.Context, out, errOut io.Writer, cfg gateConfig) error {
+	if strings.TrimSpace(cfg.runID) == "" {
+		return fmt.Errorf("--run is required")
+	}
+	if strings.TrimSpace(cfg.stageName) == "" {
+		return fmt.Errorf("--stage is required")
+	}
+	if strings.TrimSpace(cfg.artifactPath) == "" {
+		return fmt.Errorf("--artifact is required")
+	}
+	if err := validateCLIIdentifier("run id", cfg.runID); err != nil {
+		return err
+	}
+
+	root, err := repoRoot(ctx)
+	if err != nil {
+		return err
+	}
+
+	wf, err := loadWorkflowByName(root, cfg.workflowFile)
+	if err != nil {
+		return err
+	}
+
+	stage, ok := findStage(wf, cfg.stageName)
+	if !ok {
+		return fmt.Errorf("unknown stage %q in %s; stages are: %s",
+			cfg.stageName, workflowRelPath(cfg.workflowFile), strings.Join(stageNames(wf), ", "))
+	}
+	if stage.Gate == nil {
+		return fmt.Errorf("stage %q has no gate configured in %s",
+			cfg.stageName, workflowRelPath(cfg.workflowFile))
+	}
+
+	artifact, err := os.ReadFile(cfg.artifactPath)
+	if err != nil {
+		return fmt.Errorf("read artifact: %w", err)
+	}
+	if len(artifact) == 0 {
+		return fmt.Errorf("artifact %s is empty; there is nothing to review", cfg.artifactPath)
+	}
+
+	// Registry is required here: a gate with a tier cannot resolve its seats
+	// without it, and silently gating with zero seats would be the exact
+	// failure this command exists to prevent.
+	regBytes, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+	if err != nil {
+		return fmt.Errorf("load registry: %w", err)
+	}
+	reg, err := registry.ParseYAML(regBytes)
+	if err != nil {
+		return fmt.Errorf("parse registry: %w", err)
+	}
+
+	// A seat's `invoke` names a repo-relative adapter script. exec resolves a
+	// relative program path against the CALLER's cwd, not the child's Dir, so a
+	// gate run from a subdirectory would fail every seat with a confusing
+	// "file not found" that reads as a seat outage. Anchor them to the repo root.
+	anchorSeatCommands(&reg, root)
+
+	envAllowlist := wf.EnvAllowlist
+
+	// Scratch must NOT live under the worktree (ExecRunner rejects that), and the
+	// worktree here is the repo root because a supervised gate reviews
+	// UNCOMMITTED work — `make test` has to see the real tree.
+	scratch, err := os.MkdirTemp("", "etude-gate-*")
+	if err != nil {
+		return fmt.Errorf("create gate scratch: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+
+	engine := &liverun.Engine{
+		Store: refstore.New(root),
+		ResolveCheck: func(r workflow.Runner) (liverun.CheckRunner, error) {
+			return liverun.ResolveCheckRunner(reg, r, cfg.timeout, envAllowlist)
+		},
+		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
+			return liverun.ResolveGateSeat(reg, seatName, cfg.timeout, envAllowlist)
+		},
+		// Walk the seat's full invocation ladder, so a failed primary falls through
+		// to a configured fallback instead of being recorded as a flat outage.
+		// Both commands share this: two paths resolving seats differently is the
+		// second-seat-path problem this machinery exists to avoid.
+		ResolveSeatCandidates: func(seatName string) ([]liverun.SeatCandidate, error) {
+			return liverun.ResolveGateSeatCandidates(reg, seatName, cfg.timeout, envAllowlist)
+		},
+		Tiers:        liverun.ResolveTiers(reg),
+		Root:         root,
+		EnvAllowlist: envAllowlist,
+	}
+
+	outcome, err := engine.GateStage(ctx, out, liverun.GateRequest{
+		RunID:       cfg.runID,
+		Stage:       stage,
+		Artifact:    artifact,
+		WorktreeDir: root,
+		ScratchDir:  scratch,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "recorded %s on refs/etude/runs/%s\n", outcome.GateID, cfg.runID)
+	if !outcome.Passed() {
+		fmt.Fprintf(errOut, "gate did not pass; the phase must not advance\n")
+		return &ErrGateNotPassed{GateID: outcome.GateID, Status: outcome.Status}
+	}
+	return nil
+}
+
+// loadWorkflowByName reads .etude/workflow.yaml, or .etude/workflows/<name>.yaml
+// when a named workflow is requested. There is deliberately no fallback between
+// the two, so a missing named workflow never silently reports the default.
+func loadWorkflowByName(root, workflowFile string) (workflow.Workflow, error) {
+	if strings.ContainsAny(workflowFile, `/\`) {
+		return workflow.Workflow{}, fmt.Errorf("--workflow takes a name, not a path: %q", workflowFile)
+	}
+	bytes, err := os.ReadFile(filepath.Join(root, workflowRelPath(workflowFile)))
+	if err != nil {
+		return workflow.Workflow{}, fmt.Errorf("load workflow: %w", err)
+	}
+	wf, err := workflow.ParseYAML(bytes)
+	if err != nil {
+		return workflow.Workflow{}, fmt.Errorf("parse workflow: %w", err)
+	}
+	return wf, nil
+}
+
+func workflowRelPath(workflowFile string) string {
+	if workflowFile != "" {
+		return filepath.Join(".etude", "workflows", workflowFile+".yaml")
+	}
+	return filepath.Join(".etude", "workflow.yaml")
+}
+
+func findStage(wf workflow.Workflow, name string) (workflow.Stage, bool) {
+	for _, s := range wf.Stages {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return workflow.Stage{}, false
+}
+
+func stageNames(wf workflow.Workflow) []string {
+	names := make([]string, 0, len(wf.Stages))
+	for _, s := range wf.Stages {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+// anchorSeatCommands rewrites each seat's invoke so a repo-relative program
+// path (e.g. "scripts/seat-adapter.sh") resolves against the repo root.
+//
+// Only the FIRST field is rewritten, and only when it looks like a relative path
+// (contains a separator) and exists under root. A bare command name is left
+// alone so it still resolves via PATH, and an absolute path is untouched.
+func anchorSeatCommands(reg *registry.Registry, root string) {
+	for name, seat := range reg.Seats {
+		// Anchor the primary AND every fallback independently. A seat whose
+		// primary is a bare PATH command needs no anchoring itself, but its
+		// fallbacks may still name a repo-relative script — so this must not
+		// hang off whether the primary happened to be rewritten.
+		seat.Invoke = anchorCommand(seat.Invoke, root)
+		for i, fb := range seat.InvocationFallbacks {
+			seat.InvocationFallbacks[i].Invoke = anchorCommand(fb.Invoke, root)
+		}
+		reg.Seats[name] = seat
+	}
+}
+
+// anchorCommand rewrites a repo-relative program path to an absolute one under
+// root. It leaves absolute paths, bare command names (resolved via PATH), and
+// non-command markers such as "in-harness:..." untouched.
+func anchorCommand(invoke, root string) string {
+	if strings.HasPrefix(invoke, "in-harness:") {
+		return invoke
+	}
+	fields := strings.Fields(invoke)
+	if len(fields) == 0 {
+		return invoke
+	}
+	prog := fields[0]
+	if filepath.IsAbs(prog) || !strings.ContainsRune(prog, filepath.Separator) {
+		return invoke
+	}
+	candidate := filepath.Join(root, prog)
+	if _, err := os.Stat(candidate); err != nil {
+		return invoke
+	}
+	fields[0] = candidate
+	return strings.Join(fields, " ")
+}
+
+```
+
+
+## Source: internal/artifactstore/store.go
+```
+package artifactstore
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"unicode"
+)
+
+// StorageType identifies how an artifact's content is stored.
+// The wire values are "content" and "pointer".
+type StorageType string
+
+const (
+	StorageContent StorageType = "content"
+	StoragePointer StorageType = "pointer"
+
+	pointerVersion = 1
+)
+
+var (
+	ErrInvalidRole      = errors.New("invalid role")
+	ErrInvalidMediaType = errors.New("invalid media type")
+	ErrInvalidPointer   = errors.New("invalid pointer")
+	ErrInvalidHash      = errors.New("invalid hash")
+)
+
+// Store is a single-goroutine builder for artifact files and manifest records.
+type Store struct {
+	files     map[string][]byte
+	artifacts []ManifestArtifact
+}
+
+type Pointer struct {
+	URI    string
+	SHA256 string
+	Size   *int64
+}
+
+type ManifestArtifact struct {
+	Role      string
+	MediaType string
+	Storage   StorageType
+	SHA256    string
+	Path      string
+	// Size is the raw content length for content artifacts. For pointer
+	// artifacts it is the external object size, or zero when unknown.
+	Size int64
+}
+
+type pointerRecord struct {
+	Version int    `json:"version"`
+	URI     string `json:"uri"`
+	SHA256  string `json:"sha256,omitempty"`
+	Size    *int64 `json:"size,omitempty"`
+}
+
+func New() *Store {
+	return &Store{files: make(map[string][]byte)}
+}
+
+func (s *Store) AddContent(role, mediaType string, content []byte) (ManifestArtifact, error) {
+	role, mediaType, err := validateMetadata(role, mediaType)
+	if err != nil {
+		return ManifestArtifact{}, err
+	}
+
+	sum := hashBytes(content)
+	path := contentPath(sum)
+	if _, ok := s.files[path]; !ok {
+		s.files[path] = cloneBytes(content)
+	}
+
+	artifact := ManifestArtifact{
+		Role:      role,
+		MediaType: mediaType,
+		Storage:   StorageContent,
+		SHA256:    sum,
+		Path:      path,
+		Size:      int64(len(content)),
+	}
+	s.artifacts = append(s.artifacts, artifact)
+	return artifact, nil
+}
+
+func (s *Store) AddPointer(role, mediaType string, pointer Pointer) (ManifestArtifact, error) {
+	role, mediaType, err := validateMetadata(role, mediaType)
+	if err != nil {
+		return ManifestArtifact{}, err
+	}
+
+	record, externalSize, err := normalizePointer(pointer)
+	if err != nil {
+		return ManifestArtifact{}, err
+	}
+	payload, err := canonicalPointerJSON(record)
+	if err != nil {
+		return ManifestArtifact{}, err
+	}
+
+	sum := hashBytes(payload)
+	path := pointerPath(sum)
+	if _, ok := s.files[path]; !ok {
+		s.files[path] = cloneBytes(payload)
+	}
+
+	artifact := ManifestArtifact{
+		Role:      role,
+		MediaType: mediaType,
+		Storage:   StoragePointer,
+		SHA256:    sum,
+		Path:      path,
+		Size:      externalSize,
+	}
+	s.artifacts = append(s.artifacts, artifact)
+	return artifact, nil
+}
+
+func (s *Store) Files() map[string][]byte {
+	out := make(map[string][]byte, len(s.files))
+	for path, content := range s.files {
+		out[path] = cloneBytes(content)
+	}
+	return out
+}
+
+func (s *Store) ManifestArtifacts() []ManifestArtifact {
+	return append([]ManifestArtifact(nil), s.artifacts...)
+}
+
+func validateMetadata(role, mediaType string) (string, string, error) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return "", "", ErrInvalidRole
+	}
+	for _, r := range role {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return "", "", fmt.Errorf("%w: %q", ErrInvalidRole, role)
+		}
+	}
+
+	mediaType = strings.TrimSpace(mediaType)
+	if mediaType == "" {
+		return "", "", ErrInvalidMediaType
+	}
+	for _, r := range mediaType {
+		if unicode.IsControl(r) {
+			return "", "", fmt.Errorf("%w: %q", ErrInvalidMediaType, mediaType)
+		}
+	}
+
+	return role, mediaType, nil
+}
+
+func normalizePointer(pointer Pointer) (pointerRecord, int64, error) {
+	uri := strings.TrimSpace(pointer.URI)
+	if uri == "" {
+		return pointerRecord{}, 0, ErrInvalidPointer
+	}
+	sha := strings.TrimSpace(pointer.SHA256)
+	if sha != "" && !validSHA256(sha) {
+		return pointerRecord{}, 0, fmt.Errorf("%w: %s", ErrInvalidHash, sha)
+	}
+	var size int64
+	if pointer.Size != nil {
+		if *pointer.Size < 0 {
+			return pointerRecord{}, 0, fmt.Errorf("%w: negative size", ErrInvalidPointer)
+		}
+		size = *pointer.Size
+	}
+	return pointerRecord{
+		Version: pointerVersion,
+		URI:     uri,
+		SHA256:  sha,
+		Size:    pointer.Size,
+	}, size, nil
+}
+
+func canonicalPointerJSON(record pointerRecord) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(record); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+func hashBytes(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func contentPath(sum string) string {
+	return "artifacts/sha256/" + sum[:2] + "/" + sum
+}
+
+func pointerPath(sum string) string {
+	return "artifacts/pointers/sha256/" + sum[:2] + "/" + sum + ".json"
+}
+
+func validSHA256(sum string) bool {
+	if len(sum) != sha256.Size*2 {
+		return false
+	}
+	for _, r := range sum {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneBytes(in []byte) []byte {
+	return append([]byte(nil), in...)
+}
+
+```
+
+
+## Source: stageByReviewedRef
+```go
+func stageByReviewedRef(stages []runmanifest.Stage, reviewed runmanifest.ReviewedRef) (runmanifest.Stage, int, bool) {
+	for i := len(stages) - 1; i >= 0; i-- {
+		if stages[i].Name == reviewed.Stage && stages[i].Output.Artifact == reviewed.Artifact {
+			return stages[i], i, true
+		}
+	}
+	return runmanifest.Stage{}, 0, false
+}
+```
