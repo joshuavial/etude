@@ -212,6 +212,59 @@
         "degraded_reason": "Both seats GO. The plan's premise challenge stands: the bead's stated reason for dropping checks (a) and (b) is false, nothing forces etude gate to be used, and those two checks are the only detectors of a bead closed with no run ref or a run captured but never gated. The bead text will be updated in this bead with a note, as etude-1od was. Five optionals folded, two of them substantive. First, an earlier draft dropped the bypass REPORT while keeping the allowlist FILE, but the allowlist header promises each entry is reported so exceptions stay visible and auditable - dropping it would make 3 of 9 in-scope beads exempt and invisible, and turn the header into a claim about behavior that no longer exists. The report stays as one line. Second, docs/plans/dogfood/review-gate-runbook.md:1039-1043 is a live block that both advertises the --bead mode being deleted and states verbatim the premise this plan overturns - it is where the bead's wrong premise came from - so it is now enumerated as a rewrite rather than left to the sweep. Also folded: five more cross-references from retro-meta-index and its test into the deleted file, including one citing it by line number; an explicit statement that --bead, --since, --json and --quiet are dropped with no non-test callers; and a stale sentence conceding the (b) tautology the revision had already fixed."
       },
       "timestamp": "2026-08-15T11:26:34Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "5b8092c67676fd01379ff9afbd93dfbea100b568fcdde149d3f3b1e01e4fc943"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. scripts/dogfood-completeness-audit.sh:96-104 lets a run ref with no readable manifest.json pass clean because git cat-file failure plus the Python except can produce '-1 newline -1', which matches neither case; reproduced exit 0 on a pushed run ref with no manifest, so check (b) is not a hard check.",
+            "2. scripts/dogfood-completeness-audit.sh:108-110 swallows git ls-remote origin failure with || true, so an origin/auth/network/environment failure becomes exit 1 unpushed-ref gaps instead of the promised exit 2 environment error."
+          ],
+          "timestamp": "2026-08-15T11:45:18Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Check (b) silently passes a real gap: under set -euo pipefail a failing git cat-file makes the substitution non-zero even though python already printed its sentinel, so the || echo -1 fallback appends a SECOND line and the value matches no case arm. Verified on a fixture: a run ref whose tree lacks manifest.json yields 'dogfood-audit: clean' and exit 0 with no GAP line. This is a REGRESSION, not a pre-existing hole - the replaced 902-line version reported a hard gap for exactly this input - and it is the failure class this gate is told to weigh most heavily, on a script that gates every lane's push. The adjacent case is handled correctly: a manifest that exists but is invalid JSON does emit bad-manifest and exit 1, so only the unreadable/absent-blob branch is affected. The new test has no bad-manifest coverage at all."
+          ],
+          "timestamp": "2026-08-15T11:45:18Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats BLOCK and both independently found the same fail-open, which is the strongest possible signal: a run ref with no readable manifest.json exited 0 CLEAN on what is supposed to be a hard check, on a script that gates every lane's push. Reproduced before fixing. Root cause is a pipefail interaction - a failing git cat-file makes the command substitution non-zero even though python already printed its -1 sentinel, so the '|| echo -1' fallback appends a second line and the result matches no case arm. The 902-line predecessor handled this correctly, so it was a regression introduced by this bead, and the new test had no bad-manifest coverage at all, which is why it survived author review. codex additionally found that git ls-remote failure was swallowed by '|| true', turning an unreachable origin into a repo-wide pile of unpushed-ref gaps and exit 1 rather than the promised exit 2 - which tells a blocked operator to push their refs when the real problem is their network or auth. Both fixed with regressions, and both regressions negative-controlled by reinstating the broken line and watching them fail 26/2 before restoring 28/28. Six further optionals folded, including a stale hook comment the first sweep missed and check (c) silently losing the superseded-retro skip. The opus seat ran as an in-harness sub-agent per the documented registry exception."
+      },
+      "timestamp": "2026-08-15T11:45:18Z"
     }
   ]
 }
