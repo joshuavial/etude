@@ -1,0 +1,28 @@
+# etude-ps9 final review
+
+ANCESTOR: GitHub issue #17 ask 3 requires gate reruns to receive digest-bound evidence for every prior producer attempt, completing Issue #17 together with committed o9z session/log capture.
+
+MEASUREMENT: live two- and three-attempt Engine tests verify runner inputs and committed manifest declarations; full tests, lint, race tests, and docs checks pass.
+
+BLAST RADIUS: none outside the worktree and repository. Shipping changes are limited to live-run evidence assembly, entry validation, focused tests, and the canonical run guide.
+
+## Readiness
+
+- Binding manager correction 1: nil `Producer.Session` is accepted as legitimate no-transcript and proven in focused tuple/builder tests.
+- Binding manager correction 2: both reserved prior-attempt role forms fail at `Engine.Run` entry before checkout or runner resolution, proven with zero runner calls.
+- Prior-attempt inputs carry deterministic index metadata and direct digest-bound output/log/transcript artifacts; ordinary inputs and cumulative feedback remain separate from the rebuilt bundle.
+- Exact repeated non-empty session IDs mark resumed attempts; this is detectable without a schema change and documented as non-replayable from inputs alone.
+- Transcript retrieval failure proceeds explicitly without bytes; imported transcript redaction failure stops before rerun invocation.
+- Workflow YAML validation and programmatic Engine entry both reserve the namespace.
+- `make test`, `make lint`, `go test -race ./internal/liverun`, `make docs-check`, `make docs-reality`, and `git diff --check` pass.
+- Not CLI-facing; no new command surface or manual CLI matrix is required.
+
+## Tracked non-blocking follow-ups
+
+- `etude-ojf` — live manifest proof for duplicate artifact digests.
+- `etude-l1m` — recovery policy for rejected prior transcripts.
+- `etude-j5vv` — process-resume-to-rerun log proof.
+- `etude-d1fc` — bind reviewed stage selection to artifact digest.
+- `etude-p0px` — minor aborted/escalated evidence docs clarification.
+
+Review the complete inlined diff for bead-level readiness. End with VERDICT: PASS, PASS_WITH_FOLLOWUPS, or BLOCK.
