@@ -505,6 +505,123 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T09:21:55.51073Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "9d9a4d42f7323716dd462c6b7f82599d525fb483c7863ed6c0cafbd51d8781c2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "f6fb81e41860212aa69ff1e0f0f992bcdd22c39145632a6025e5295b0ee9e08b",
+            "path": "artifacts/sha256/f6/f6fb81e41860212aa69ff1e0f0f992bcdd22c39145632a6025e5295b0ee9e08b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1252
+          },
+          "timestamp": "2026-08-15T09:37:55.838796Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T09:37:56.05168Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T09:37:57.151795Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The \"live hook\" section still contains a direct contradiction: it claims the edited `.beads/hooks/pre-push` is on the path of every push in this checkout, then later says pushes execute the main checkout's unedited hook and no push has run the edited hook."
+          ],
+          "optional": [
+            "1. Normalize the negative-control counts to the current 19-case suite, or state they were measured before the added assertion."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "aeec3ded8e67b4be8f918d95dcb14649a288abefb0026ba916c14ffc53a23aae",
+            "path": "artifacts/sha256/ae/aeec3ded8e67b4be8f918d95dcb14649a288abefb0026ba916c14ffc53a23aae",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 539
+          },
+          "session": {
+            "session_id": "codex-f601b404ee39ccb1",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "f601b404ee39ccb1c360b0ca4dd5d9eaa4a895e285b83fe2e35f7e1e8693af79",
+              "path": "artifacts/sha256/f6/f601b404ee39ccb1c360b0ca4dd5d9eaa4a895e285b83fe2e35f7e1e8693af79",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 439
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T09:38:17.512738Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T09:38:17.513269Z"
     }
   ]
 }
