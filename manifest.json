@@ -742,6 +742,48 @@
         ]
       },
       "timestamp": "2026-08-16T00:24:00Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Mark all replay-only flags consistently in the flag table.",
+            "Scope cohort-selection and caching sections explicitly to replay mode.",
+            "State that block is the positive class and explain zero-scored rows.",
+            "Declare note as an optional recognized labels field."
+          ],
+          "timestamp": "2026-08-16T00:32:38Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task; all documentation follow-ups were folded immediately.",
+        "deferred_beads": [
+          "etude-aul.6",
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:32:38Z"
     }
   ]
 }
