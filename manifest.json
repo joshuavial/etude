@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-rep",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -32,6 +32,53 @@
         "size": 3787
       },
       "timestamp": "2026-08-15T05:16:09.358772Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:19:14Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:19:14Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute: the registry opus invoke (claude -p --model opus) returns \"Not logged in\" when Claude Code is the orchestrator, and the in-harness Task sub-agent seat returned no verdict across two attempts plus a direct ping. Substitute used: agy --model \"Claude Opus 4.6 (Thinking)\", same packet, same prompt. Both seats PASSed; both independently raised the Windows TMP/TEMP follow-up, which was folded into the diff (not deferred)."
+      },
+      "timestamp": "2026-08-15T05:19:14Z"
     }
   ]
 }
