@@ -194,6 +194,76 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T02:30:28Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "ls-parsing in stage-runner.sh"
+          ],
+          "timestamp": "2026-06-30T02:18:33Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "byte-equal replay assertion",
+            "assert no review.r2 (deferred etude-aqh)"
+          ],
+          "timestamp": "2026-06-30T02:18:33Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "assert all 5 stages re-ran in replay"
+          ],
+          "timestamp": "2026-06-30T02:18:33Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-aqh"
+        ]
+      },
+      "timestamp": "2026-06-30T02:18:33Z"
     }
   ]
 }
