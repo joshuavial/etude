@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. Confirm `nextPhaseRound` yields `review.r2` when two stages share the name `review`; if it derives round from stage occurrences rather than prior gate attempts, the second gate could collide with the duplicate gate_id/(phase, round) check, so let the CLI end-to-end test assert the gate id explicitly. 2. Take the two-line `errors.Is` wrap in `runGateCommand` now so the recapture hint carries the real `--artifact` path instead of a placeholder; the cost is trivial and the message is the only thing a supervisor sees. 3. In the mismatch test, also assert that `ErrArtifactMismatch` fires before tier resolution by seeding a run with an unknown tier and checking the mismatch error wins, which pins the stated ordering invariant.
+CONFIDENCE: medium

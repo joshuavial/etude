@@ -156,6 +156,98 @@
       ],
       "decision": {},
       "timestamp": "2026-09-07T00:47:33.120513Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "45a2683c9d4e61e77d5cfbccf0b19671290432a77b0f826e635c3256b325339c"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Strengthen R2’s test by inspecting each seat’s received prompt to verify it includes the supplied artifact bytes."
+          ],
+          "raw_output": {
+            "role": "astra",
+            "artifact": "ca6fc7f7d1e2751667be88164baef1b5615a69329b8d6fd8dfa1ef4fecca877b",
+            "path": "artifacts/sha256/ca/ca6fc7f7d1e2751667be88164baef1b5615a69329b8d6fd8dfa1ef4fecca877b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 273
+          },
+          "session": {
+            "session_id": "astra-c3ae1ecabd248616",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "c3ae1ecabd2486162297e842d20c8fca851df549c6781baf17a6f25446d6b721",
+              "path": "artifacts/sha256/c3/c3ae1ecabd2486162297e842d20c8fca851df549c6781baf17a6f25446d6b721",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 175
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:49:53.181015Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Confirm `nextPhaseRound` yields `review.r2` when two stages share the name `review`; if it derives round from stage occurrences rather than prior gate attempts, the second gate could collide with the duplicate gate_id/(phase, round) check, so let the CLI end-to-end test assert the gate id explicitly. 2. Take the two-line `errors.Is` wrap in `runGateCommand` now so the recapture hint carries the real `--artifact` path instead of a placeholder; the cost is trivial and the message is the only thing a supervisor sees. 3. In the mismatch test, also assert that `ErrArtifactMismatch` fires before tier resolution by seeding a run with an unknown tier and checking the mismatch error wins, which pins the stated ordering invariant."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "96d9b2e21d6b8aab510ec731a311eaea9542753e5016a156ae09f8adb195dab3",
+            "path": "artifacts/sha256/96/96d9b2e21d6b8aab510ec731a311eaea9542753e5016a156ae09f8adb195dab3",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 880
+          },
+          "session": {
+            "session_id": "fable-f970d80b434f4d46",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "f970d80b434f4d46242dfb59bb60db4158dca0d467e4bc20215b798b5d76b141",
+              "path": "artifacts/sha256/f9/f970d80b434f4d46242dfb59bb60db4158dca0d467e4bc20215b798b5d76b141",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 790
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:50:20.193115Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T00:50:20.194598Z"
     }
   ]
 }
