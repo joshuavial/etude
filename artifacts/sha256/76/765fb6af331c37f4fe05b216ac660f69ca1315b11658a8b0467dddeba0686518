@@ -1,0 +1,6 @@
+## Final Review — etude-phase2.1 (recommendation: close)
+
+Reviewed: plan (attempt 2 + 5 amendments), implementation, verify (pass), docs (no-docs). Findings: none.
+Correctness: ResolveInputs reads bound to a single resolved commit (Resolve once -> ReadCommitFile(commit,...); no ref re-resolution => no TOCTOU); 5 sentinels (ErrInvalidRunID pre-git / ErrRunNotFound / ErrStageNotFound / ErrAmbiguousStage / ErrPointerNotMaterialized); ReadContent captures input by value + the commit OID; pointer -> typed error.
+Tests genuinely discriminate (verified): TOCTOU advances ref with DIFFERENT bytes -> asserts original bytes + Commit!=newCommit (kills a ReadFile(ref) impl); propagation via production ReadContent closure against absent path -> errors.Is(refstore.ErrNotFound). 11/11 -race PASS; vet/gofmt clean.
+Commit hygiene: exactly internal/replay/resolve.go + resolve_test.go (new package, staged by name); no debug/secrets; scheduler lock gitignored.
