@@ -1,0 +1,159 @@
+# Final review — etude-9uf.4: Shrink the completeness audit
+
+## The change
+
+12 files, **+708 / −2445**. Net −1737.
+
+| File | Before | After |
+|---|---|---|
+| `scripts/dogfood-completeness-audit.sh` | 902 | **226** |
+| `scripts/dogfood-completeness-audit_test.sh` | 1579 | **497** |
+| total | 2481 | 723 |
+
+Counts by `wc -l`. The audit keeps three hard checks — run-ref present, run has
+gates, refs pushed — plus retro cadence as a warning, and the ~40-line header
+recording why the first two survive.
+
+`.lane-done` is untracked operator state, excluded by staging every path by name.
+
+## Acceptance
+
+Revised at the plan gate, because the bead's stated premise was false: nothing
+forces `etude gate`, so the two checks the bead called "structurally true" are in
+fact the only detectors of a supervisor who skipped the model. Both seats upheld
+that, and the bead text and acceptance were updated in this bead.
+
+Against the revised text: exact line count reported; (a), (b), (d) hard and (c)
+warning; the pre-push hook's 0/1/2 contract preserved; a focused test; 2481 lines
+replaced; `make dogfood-audit` exits 0 on a clean tree where it failed before;
+`scripts/pre-push_test.sh` unchanged at 20/20.
+
+## Gate record
+
+**20 attempts across five gates; 6 passed, 14 did not** (8 `rerun`,
+6 `escalated`), and 9 recorded seat BLOCK verdicts. Counted by reading
+`refs/etude/runs/etude-9uf.4:manifest.json`, not by hand.
+
+| phase | attempts | outcomes |
+|---|---|---|
+| `plan` | 2 | pass ×1, rerun ×1 |
+| `implement` | 3 | pass ×1, rerun ×2 |
+| `verify` | 10 | escalated ×6, pass ×3, rerun ×1 |
+| `docs` | 4 | pass ×1, rerun ×3 |
+| `review` | 1 | rerun ×1 |
+
+Every `escalated` attempt is the `opus` seat having no working subprocess path
+(bead `etude-8li`) — `etude gate` failing closed on an incomplete panel, which is
+the machine behaving correctly rather than a finding.
+
+**The verify phase records three passes, and that is deliberate history rather
+than a bookkeeping oddity.** Each certified a different revision: `verify.r4`
+passed `bd2d9d94`, `verify.r7` passed `ea641e95`, and `verify.r11` passed the
+revision that ships. The first two were superseded because I folded the seat's
+optionals AFTER its verdict — which quietly turns a pass into a certificate for
+something else. The final review blocked on exactly that, twice. The last round
+was therefore frozen before the seat read it, and its three optionals were filed
+as bead `etude-le0` rather than applied. All twenty attempts are kept, including
+the superseded passes: deleting them would make the record tidier and less true.
+
+### The gate record was itself incomplete, and the final review caught it
+
+An earlier version of this artifact reported 12 attempts and claimed the count
+was "from the manifest", while its own findings table cited "verify r1" and
+"verify r2" rounds **that existed in no gate record**. Two substantive in-harness
+opus BLOCKs in the verify phase had been acted on — they changed the code, taking
+the suite from 34 to 40 to 45 cases — and never appended. Manifest-wide there
+were seven `block` verdicts and not one in a verify gate, so `etude run show`
+reported that phase as escalated/escalated/pass.
+
+Worse, the only recorded verify PASS certified artifact `bd2d9d94`, while the
+optionals folded after that verdict produced `ea641e95` — so **the revision that
+ships had never been gated**. Re-pointing the old record would have been the
+dishonest fix; the shipped revision was gated for real instead, and both seats
+passed it.
+
+This is the same defect that blocked bead `.3` five times, reproduced here after
+I wrote a retro about it. The cause is structural and unchanged: the `opus` seat
+cannot be invoked as a subprocess, so `etude gate` never produces its attempt,
+and appending it is a separate manual step — easiest to skip exactly when the
+verdict is interesting enough to act on immediately. `etude-4ed` is the real fix.
+Until it lands, no discipline I have applied has been sufficient two beads
+running.
+
+## What the gates found
+
+This bead SHRANK a safety check that sits on every lane's push path, and that is
+exactly when fail-opens get written. The gates found **eight**, plus three holes
+where a check existed but nothing tested it:
+
+| Where | Defect |
+|---|---|
+| implement r1 | a run ref with no readable `manifest.json` exited **0, clean** on a hard check — `pipefail` plus an `\|\| echo -1` fallback appending to a sentinel already printed |
+| implement r1 | `git ls-remote` failure swallowed by `\|\| true` — an unreachable origin became a pile of "unpushed" gaps and exit 1 instead of exit 2 |
+| implement r2 | a `case` with no default arm |
+| implement r2 | `gates` counted by `len()` with no type check |
+| implement r2 | `mapfile < <(python3 …)` discarding its producer's status — a truncated window read as clean |
+| implement r2 | `for-each-ref` failure making check (d) pass vacuously |
+| verify r2 | `for-each-ref` guard downgradeable to `\|\| true` with the suite green |
+| verify r2 | a python3 failure defaulting to "one gate" — every run would have recorded as gated |
+| verify r1 | **half of check (d) untested**: every case minted only run refs, so deleting `refs/etude/retros` from its sweep left 34/34 green |
+| verify r1 | the fail-closed `case` arm untested — the instance was pinned, the class was not |
+| verify r1 | `cd "$REPO_ROOT"` untested, and the test written for it could not fail |
+
+The first was found independently by both seats and reproduced before fixing. The
+902-line predecessor handled it correctly, so it was a regression this bead
+introduced — into the very check whose job is not to fail open.
+
+**The verify seat did not read the tests, it mutated the script.** That is what
+found the three coverage holes, and every pin was then verified by re-running its
+mutation. A regression never seen to fail is a guess.
+
+## What the docs gate found
+
+Four rounds, three BLOCKs, every one on the artifact claiming a file was clean
+when it was not — and twice on errors the sweep itself had introduced.
+
+Deleting a check invalidates every document that promised the guarantee, and
+correcting those documents can be wrong in **both** directions:
+
+- asserting a guarantee that is gone — `docs/retro.md` still said the sidecar
+  "**is checked by** the dogfood audit script" three sentences below a bold
+  "Nothing enforces it now";
+- past-tensing a behavior that survives — I wrote that the audit's superseded-set
+  was "the pattern used before `etude-9uf.4` shrank it" when the shrunk audit
+  still builds it, in a comment 22 lines above another comment I wrote saying it
+  still uses it.
+
+The second is harder to catch because the sentence looks appropriately humble.
+
+**Nothing mechanical in this repo detects either.** `make docs-check` and
+`make docs-reality` were green through all four rounds and neither reads prose. A
+seat reading the text is the only check there is, and that is worth knowing given
+this bead just removed a documentation-drift check as redundant.
+
+## Honest limits
+
+- **Nothing forces `etude gate`.** (a) and (b) DETECT a skipped model; they do
+  not prevent one. That gap justified keeping them and is not closed here.
+- **Check (b) counts gate ATTEMPTS, not passing verdicts.** A run whose gates all
+  BLOCKed satisfies it.
+- **Check (c) measures retro REFS, lanes write retro MARKDOWN** — `etude-3xt`.
+  It is WARN-only for that reason.
+- **The 7-key sidecar convention is now unenforced** while `retro-meta-index.sh`
+  still consumes it — `etude-k47`.
+- **Check (d) does not cover `refs/etude/evals/*`**, which `etude sync` pushes.
+  Pre-existing scope, unchanged here.
+- **Check (c)'s coverage computation is unpinned** — deletable with the suite
+  green. WARN-only, and `etude-3xt` owns what it measures.
+- **The audit needs the network**, since check (d) calls `git ls-remote`. An
+  unreachable origin is now correctly exit 2 rather than a false gap.
+
+## Ready
+
+`make test`, `make lint`, `make docs-check`, `make docs-reality`,
+`make shell-test` (all four suites), `make dogfood-audit` exit 0,
+`make dogfood-audit-test` 49/49, `make pre-push-test` 20/20.
+
+Ungated stage artifacts: none — every revision this bead produced carries a gate attempt. `etude sync` must precede the code push: check (d) will otherwise gap on this
+bead's own run ref, and the pre-push hook blocks on it. One commit, every path
+staged by name.
