@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-kb0.1",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,52 @@
         "size": 1034
       },
       "timestamp": "2026-05-27T09:49:49.057208Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T15:30:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T15:30:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only; ran 2 seats (opus+codex) for factual-accuracy stakes (gemini/pilms not seated). Both independently verified the 13-command list (root.go:36-48), deferred list, brief reconciliation lines, doc-location policy, and the docs-reality phrasing trap."
+      },
+      "timestamp": "2026-05-27T15:31:00Z"
     }
   ]
 }
