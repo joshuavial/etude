@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. `internal/liverun/gate.go` `sessionSeenBefore` scans all earlier stages including non-attempt/upstream producers, so an unrelated stage sharing a session id marks the attempt `resumed_session: true`; the accompanying test locks this in as intended, but a narrower scan over prior attempts of the same phase would match the documented "earlier attempt" wording in `docs/run.md` more precisely. 2. `frameStageLog` is bounded by `MaxStageLogBytes` via a fixed 256-byte framing allowance proven only by `TestMaximalFramedLogFitsEngineLimit`; a named constant for the framing overhead would make the engine-side `len(res.Log) > replay.MaxStageLogBytes` rejection harder to drift. 3. Stage logs are stored unscanned while transcripts are secret-scanned; `docs/run.md` documents this asymmetry and the cross-attempt persistence, but a scan (or an opt-in) would close the gap the docs currently only warn about.
+CONFIDENCE: medium

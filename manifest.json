@@ -1024,6 +1024,100 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T06:04:12.281324Z"
+    },
+    {
+      "gate_id": "implement.r14",
+      "phase": "implement",
+      "round": 14,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r13",
+          "role": "diff",
+          "artifact": "6e1e8d9d73e0a9fa505aa745299fbeffd36edead297755920053f6736c846851"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `internal/liverun/gate.go` `sessionSeenBefore` scans all earlier stages including non-attempt/upstream producers, so an unrelated stage sharing a session id marks the attempt `resumed_session: true`; the accompanying test locks this in as intended, but a narrower scan over prior attempts of the same phase would match the documented \"earlier attempt\" wording in `docs/run.md` more precisely. 2. `frameStageLog` is bounded by `MaxStageLogBytes` via a fixed 256-byte framing allowance proven only by `TestMaximalFramedLogFitsEngineLimit`; a named constant for the framing overhead would make the engine-side `len(res.Log) > replay.MaxStageLogBytes` rejection harder to drift. 3. Stage logs are stored unscanned while transcripts are secret-scanned; `docs/run.md` documents this asymmetry and the cross-attempt persistence, but a scan (or an opt-in) would close the gap the docs currently only warn about."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "85bc5951caa4b1558e40538c4917be69233d5c6d403687ce7ab7f594c43c831e",
+            "path": "artifacts/sha256/85/85bc5951caa4b1558e40538c4917be69233d5c6d403687ce7ab7f594c43c831e",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1053
+          },
+          "session": {
+            "session_id": "opus-abb78f1d923043da",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "abb78f1d923043da4df6af5825ce145582dc79272a7f2c117251778959fc0d92",
+              "path": "artifacts/sha256/ab/abb78f1d923043da4df6af5825ce145582dc79272a7f2c117251778959fc0d92",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 963
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:04:39.110473Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `internal/replay/exec_runner.go` does not actually reject invalid Unicode escape sequences in session sidecars: `readSessionSidecar` only checks raw UTF-8 before `encoding/json` decode, and Go replaces invalid UTF-16 surrogate escapes such as `\"\\ud800\"` with U+FFFD; this violates the documented requirement that invalid Unicode fail the stage rather than be accepted as session evidence."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "cd48176925efe5f906f6166d10a588ea0bd7c200a6ae48daa9c20176637feeae",
+            "path": "artifacts/sha256/cd/cd48176925efe5f906f6166d10a588ea0bd7c200a6ae48daa9c20176637feeae",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 544
+          },
+          "session": {
+            "session_id": "codex-31e7be52ed6cd4af",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "31e7be52ed6cd4af4e8054a903930cf641c5232a96046affb71fee230d2195f2",
+              "path": "artifacts/sha256/31/31e7be52ed6cd4af4e8054a903930cf641c5232a96046affb71fee230d2195f2",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 449
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:13:30.571072Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T06:13:30.572805Z"
     }
   ]
 }
