@@ -1,0 +1,8 @@
+# Verify — etude-kb0.4 (v1 release checklist)
+Docs-only (Tier 3). New top-level RELEASING.md + 1-line README ## Releasing link.
+## Checks
+- make docs-reality OK; make reconcile green; git status only RELEASING.md + README.md.
+- All green-gate commands in RELEASING.md exist (go build/test, make lint [now green via kb0.5], docs-reality, reconcile, dogfood-audit — Makefile L15/32/38/47). make build VERSION=v1.0.0 -> etude v1.0.0 (README mechanics).
+- Sync caveat (step 6) accurate vs docs/sync.md + docs/init.md (refs/etude/* don't travel with plain push/fetch; init writes the refspec; sync does explicit push/fetch).
+- No tag cut (step 5 = human action). References V1-SCOPE (scope) + README ## Releasing (mechanics), not restated. README bead-id leak "(etude-kb0.4)" removed; links RELEASING.md.
+## Result: PASS

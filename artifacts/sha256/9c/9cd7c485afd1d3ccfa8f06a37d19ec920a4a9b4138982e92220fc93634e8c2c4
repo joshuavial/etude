@@ -1,0 +1,111 @@
+## Plan
+
+**Approach:** Create a top-level `RELEASING.md` — an ordered, followable v1
+release checklist / handoff procedure that ties the kb0 phase together. It is
+the doc the existing forward-reference prose ("the v1 release checklist
+(etude-kb0.4)") in `README.md:90` and `CHANGELOG.md:26` points to. It
+REFERENCES the sibling docs rather than re-deriving them: kb0.3's README
+`## Releasing` section (`README.md:64-90`) for version MECHANICS, kb0.1's
+`docs/plans/product/V1-SCOPE.md` for what's in/out, and kb0.3's `CHANGELOG.md`
+for the release-notes heading. Add one 1-line link from the README
+`## Releasing` section to `RELEASING.md`. Docs-only (Tier 3): no code, no tag
+cut.
+
+**Doc location decision — top-level `RELEASING.md`:**
+- Docs-reality safety is the deciding factor. `scripts/docs-reality-check.sh:101`
+  scans ONLY `docs/plans/**` for stale claims ("not yet", "not built", etc.) that
+  co-occur with a shipped `etude <cmd>` token. A release checklist necessarily
+  names shipped tokens (`etude sync`, `etude init`) and describes what does NOT
+  sync. Top-level `RELEASING.md` is NOT under `docs/plans/`, so it is never
+  scanned — zero false-positive risk. (`docs/RELEASE.md` would also be outside
+  the scan, but top-level is the stronger convention signal.)
+- Convention: top-level `RELEASING.md` sits naturally beside `CHANGELOG.md` and
+  `README.md` and is a recognized "how to cut a release" location.
+- AGENTS.md (`AGENTS.md:16-29`) reserves `docs/` for per-command user-facing
+  behavior docs and `docs/plans/` for non-shipped design work. An operator
+  release procedure is neither — top-level is the cleanest fit.
+
+**kb0.3 boundary (no duplication):** kb0.3 owns version MECHANICS — how
+`--version`/ldflags work (`internal/cli/root.go:11,24,35`; `Makefile:8-10`),
+documented in README `## Releasing`. kb0.4 owns the ORDERED PROCEDURE.
+`RELEASING.md` REFERENCES the README `## Releasing` section for the ldflags
+detail and does NOT restate it; it only states the operator-facing step
+(`make build VERSION=v1.0.0`; verify `etude --version`).
+
+**Checklist structure (ordered):**
+1. Pre-flight: clean tree, on the release commit, pull latest.
+2. Green-gate (run, expect all green/exit 0):
+   - `go build ./...`
+   - `go test ./...` (equivalently `make test`)
+   - `make lint` (the lint target EXISTS — `Makefile:13-15`: `gofmt -l cmd
+     internal` must be empty + `go vet ./...`)
+   - `make docs-reality` (hand-written-doc/CLI drift guard)
+   - `make reconcile` (docs-reality + docs-check holistic gate)
+   - `make dogfood-audit` (repo dogfood completeness: run refs / gate records /
+     pushed refs — appropriate as a release gate for this dogfooded repo)
+   - State the expected green result for each.
+3. Pick version + update CHANGELOG: choose `v1.0.0`; change CHANGELOG's
+   `## [v1.0.0] — Unreleased` heading (`CHANGELOG.md:23`) to
+   `## [v1.0.0] — <release date>`; commit the CHANGELOG edit.
+4. Build the stamped binary: `make build VERSION=v1.0.0`; verify
+   `./bin/etude --version` prints `etude v1.0.0` (REFERENCE README `## Releasing`
+   for why/how — do not restate ldflags). [Verified: prints `etude v1.0.0`.]
+5. Cut the tag — HUMAN action. The doc states HOW (e.g. `git tag v1.0.0 <sha>`
+   then push the tag) but the operator performs it; kb0.4 does NOT cut the tag.
+6. Sync etude run data — the refs caveat (below) as an explicit step.
+7. Pointer to `docs/plans/product/V1-SCOPE.md` for in-scope vs deferred.
+
+**Sync/refs caveat (VERIFIED accurate):** `refs/etude/*` do NOT travel with a
+plain `git push`/`git fetch` — those move only `refs/heads/*` and `refs/tags/*`
+by default (`docs/sync.md:7-10`). `etude init` writes the fetch refspec
+`+refs/etude/*:refs/etude/*` and push refspec `refs/etude/*:refs/etude/*` into
+git config (`docs/init.md:26-31`) so a subsequent plain `git fetch` picks up the
+namespace. `etude sync` passes refspecs explicitly and works WHETHER OR NOT init
+ran (`docs/sync.md:30,127-132`). Handoff wording: "A fresh clone or CI will not
+see captured run data after a normal `git clone`/`git pull`. Either run
+`etude init` (registers the `refs/etude/*` refspec so plain fetches pick it up)
+and/or run `etude sync` (explicit push/fetch of `refs/etude/*`). See
+[docs/sync.md](docs/sync.md)."
+
+**Files:**
+- `RELEASING.md` - NEW (top-level). The ordered v1 release checklist / handoff.
+- `README.md` - add a 1-line link to `RELEASING.md` in the `## Releasing`
+  section (near `README.md:88-90`, which already forward-references the
+  checklist). Small, in-scope.
+
+**Tests:** None (docs-only). Verification is `make reconcile` staying green
+(acceptance criterion) and `make docs-reality` green — both run during Verify.
+The new top-level doc is outside `docs/plans/**`, so the stale-claim scan does
+not touch it; README/CHANGELOG links must remain valid.
+
+**Docs:** This bead IS the doc work (`RELEASING.md` + README link). No generated
+command-reference changes (no CLI surface change). No `docs/plans/**` edits.
+
+**Accuracy checks (verified):**
+- `make lint` target EXISTS — `Makefile:13-15` (`gofmt -l cmd internal` empty +
+  `go vet ./...`).
+- `etude --version` stamping works — `make build VERSION=v1.0.0` then
+  `./bin/etude --version` prints `etude v1.0.0` (confirmed by running it).
+- Sync/refs caveat accurate per `docs/sync.md` and `docs/init.md` (cited above).
+- `make dogfood-audit` is a real target (`Makefile:43-44`) and a sensible
+  release gate for this repo.
+
+**Risks:**
+- BLOCKER FOR THE GATE (pre-existing, NOT introduced here): `make lint`
+  currently FAILS. `gofmt -l cmd internal` flags `internal/cli/log.go` and
+  `internal/runmanifest/manifest.go`. The checklist's green-gate cannot pass
+  today until these are gofmt-clean (`gofmt -w`). This touches Go source, so it
+  is OUT OF SCOPE for this docs-only bead and should be its own bead/commit
+  before the actual tag is cut. The checklist doc should list `make lint` as a
+  required gate regardless; flag this so the human/next bead fixes it.
+- Otherwise low risk: additive new file + a one-line README link; reconcile
+  unaffected because the doc lives outside the scanned `docs/plans/**` tree.
+
+**Capture:**
+- inputs: bead etude-kb0.4 (`bd show`), Makefile (lint/reconcile/dogfood-audit
+  targets), README.md `## Releasing` + forward-ref, CHANGELOG.md heading +
+  forward-ref, docs/sync.md, docs/init.md, docs/plans/product/V1-SCOPE.md,
+  internal/cli/root.go (version mechanics), scripts/docs-reality-check.sh
+  (docs/plans-only scan), scripts/dogfood-completeness-audit.sh; ran
+  `make build VERSION=v1.0.0` + `./bin/etude --version` and `make lint`.
+- output: bead --design field
