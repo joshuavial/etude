@@ -1,0 +1,170 @@
+## Plan (sub-bead .1 — cohort selection ONLY; library, no CLI/replay/eval) [attempt 2]
+
+**Attempt-2 change (gate finding, incorporated):** the git_sha eligibility check is
+no longer "non-empty" — it is now SYNTACTIC OID VALIDITY. See "Eligibility predicate"
+step 2 and the new `invalid-git-sha` skip reason. Everything else the gate confirmed
+sound is unchanged.
+
+**Scope boundary:** Pure `SelectCohort` library in a NEW `internal/bench` package.
+NO CLI, NO replay execution, NO eval. It only ENUMERATES + FILTERS + ORDERS stored
+runs and reports what is eligible vs skipped. The pipeline (.2) and CLI (.4) consume
+its output. It does no git checkout and invokes no runner/judge.
+
+**Approach:** Walk `refs/etude/runs/*` exactly as `run list` does
+(internal/cli/run.go:73-94): `store.List(ctx, "refs/etude/runs")` (no trailing
+slash), strip the `refs/etude/runs/` prefix for the run id, `store.ReadFile(ctx,
+ref, "manifest.json")`, `runmanifest.ParseJSON`. For each run, find the named stage
+and test the SAME replayability predicate replay enforces. Order qualifying runs by
+`Manifest.Created` DESC, take first N. Skipped runs are recorded with a reason, never
+errored.
+
+**Signature + types (designed for .2/.4 consumers):**
+
+    package bench
+    const runsPrefix = "refs/etude/runs/"
+
+    func SelectCohort(ctx context.Context, store refstore.Store, stage string, last int) (CohortResult, error)
+
+    type CohortResult struct {
+        Stage    string         // echoed stage name
+        Selected []CohortRun    // qualifying, Created DESC, len <= last
+        Skipped  []SkippedRun   // non-qualifying, in enumeration (ref) order
+    }
+    type CohortRun struct {
+        RunID   string                  // run id (ref suffix)
+        Commit  string                  // resolved run-ref commit OID (snapshot pin)
+        Stage   runmanifest.Stage       // the matched stage (carries GitSHA, Inputs, Output, Producer)
+        Created time.Time               // manifest Created (for ordering / display)
+    }
+    type SkippedRun struct {
+        RunID  string
+        Reason SkipReason
+        Detail string   // human note, e.g. "input \"context\" is a pointer artifact"
+    }
+    type SkipReason string
+    const (
+        SkipStageMissing   SkipReason = "stage-missing"     // stage name not present
+        SkipStageAmbiguous SkipReason = "stage-ambiguous"   // stage name appears >1x
+        SkipNoGitSHA       SkipReason = "no-git-sha"         // GitSHA empty
+        SkipInvalidGitSHA  SkipReason = "invalid-git-sha"    // GitSHA non-empty but not a valid OID
+        SkipPointerInput   SkipReason = "pointer-input"      // an input Storage != content
+        SkipPointerOutput  SkipReason = "pointer-output"     // output Storage != content
+    )
+
+Rationale — CohortRun carries the whole `runmanifest.Stage` plus `Commit`: .2 needs
+exactly the inputs `replay.ResolveInputs`/`replay.go` consume (GitSHA, Inputs roles+
+storage, Output role+media-type, Producer for overrides), and `Commit` pins the
+snapshot. Re-resolving by run-id later would risk TOCTOU; passing the stage + commit
+forward keeps the cohort a consistent snapshot and lets .2 call ResolveInputs (or read
+the commit directly) without re-deciding eligibility.
+
+**Eligibility predicate (faithful to what replay can ACTUALLY replay):**
+A run qualifies iff its manifest parses AND the named stage:
+ 1. occurs exactly once (0 -> SkipStageMissing; >1 -> SkipStageAmbiguous; mirrors
+    replay.ResolveInputs case 0/default at resolve.go:102-128),
+ 2. has a SYNTACTICALLY VALID git OID in `GitSHA`: non-empty AND (len==40 OR len==64)
+    AND all lowercase hex. Empty -> SkipNoGitSHA; non-empty-but-malformed -> SkipInvalidGitSHA.
+    [ATTEMPT-2 CHANGE — was `GitSHA != ""`.] WHY two-step not one: replay's PRE-run
+    check (replay.go:121) is only `!= ""`, but the actual SHA FORMAT is enforced later
+    at worktree.Checkout -> validateSHA (worktree.go:148-158: non-empty, no leading '-',
+    40 or 64 chars, all lowercase hex -> ErrInvalidSHA). runmanifest.Validate
+    (manifest.go:276) ALSO only requires non-empty and never checks format
+    (manifest.go:302 isHexOID is applied to ReplayOf.Commit, NOT stage.GitSHA). So a
+    stored manifest CAN carry a malformed git_sha, and such a run is un-replayable (it
+    dies at checkout). SelectCohort's contract is "never hand .2 a qualified-but-
+    un-replayable run", so the predicate must validate the format here.
+ 3. every input `Storage == artifactstore.StorageContent` (pointer inputs rejected at
+    replay.go:163 ReadContent -> SkipPointerInput; first offending input named in Detail),
+ 4. output `Storage == artifactstore.StorageContent` (so .2 can read it as an eval
+    target; pointer output -> SkipPointerOutput).
+`runmanifest.Validate` already guarantees a structurally valid output ArtifactRef, so
+no "missing output" reason is needed — only the content-vs-pointer check is meaningful.
+
+NOT over-strict: a syntactically-invalid sha is NEVER replayable (worktree.Checkout's
+validateSHA rejects it before any agent runs), so skipping it only excludes runs replay
+would itself fail on. This tightens the predicate from replay's loose pre-check to what
+replay can REALLY execute.
+
+**Git-sha validity helper (decision: reimplement locally, option (a)):**
+runmanifest has an unexported `isHexOID` (manifest.go:302-304) implementing exactly
+"non-empty, all lowercase hex, 40 or 64 chars" — but it is UNEXPORTED, so bench cannot
+import it. Add a tiny package-local `isValidGitSHA(string) bool` in cohort.go (len 40 or
+64, all lowercase hex). PRECEDENT: internal/eval/result.go:342 re-implements its own
+`isHexOID` (and :355 `validSHA256`) locally rather than depending on unexported
+runmanifest helpers; worktree.go:148 validateSHA does the same. Implementer MUST NOT
+attempt to import runmanifest.isHexOID. (Leading-'-' guard is unnecessary here — bench
+does no exec; the hex+length check already excludes '-'.)
+
+**Ordering + N:**
+- Order Selected by `Created` DESC; tie-break `RunID` DESC (string compare) for
+  determinism on equal timestamps. (`run list` happens to list refname-sorted; we sort
+  explicitly so order is independent of enumeration.)
+- `last <= 0` -> ErrInvalidLast (return zero CohortResult). Caller (.4) decides default.
+- `last` larger than qualifying count -> return ALL qualifying (no error, no padding).
+- Filtering/skip classification happens over ALL runs first; truncation to `last`
+  applies only to Selected. Skipped is the full set (so .4 can report total skipped).
+
+**Errors:**
+- Zero runs in repo: `store.List` returns empty -> return empty CohortResult, nil
+  (NOT an error; matches run.go:78 "no runs found" being non-fatal; .4 decides UX).
+- Manifest fails to parse / ReadFile fails: ERROR OUT naming the run, mirroring
+  run list (run.go:88-93 `fmt.Errorf("run %q: %w", id, err)`). A corrupt store is a
+  real fault, not a skippable run.
+- Zero QUALIFYING runs (runs exist but none eligible): return empty-but-valid
+  CohortResult (Selected empty, Skipped populated), nil. The CLI bead turns this into
+  its own user-facing error; SelectCohort stays policy-free.
+- Exported sentinel: `ErrInvalidLast = errors.New("last must be positive")`.
+
+**Files:**
+- internal/bench/cohort.go - NEW: SelectCohort, the types/consts above, `isValidGitSHA`,
+  and the predicate helper (e.g. `classify(stage string, m runmanifest.Manifest)
+  (runmanifest.Stage, SkipReason, string, bool)`).
+- internal/bench/cohort_test.go - NEW: table-driven tests + local seed harness.
+
+**Tests (table-driven over synthetic manifests in a temp git repo):**
+Harness mirrors internal/replay/resolve_test.go (initRepo + git init/config, then
+`runmanifest.Writer{Store}.Write` per run, `makeManifest`/`makeStage` style builders)
+— that harness is package-private to replay, so copy the minimal helpers into the bench
+test file (set distinct `Created` via the Manifest builder; build pointer inputs/outputs
+with `Storage: artifactstore.StoragePointer`). Note makeStage uses a 40-char lowercase
+hex GitSHA (strings.Repeat("a",40)) — a VALID OID, so it doubles as the passing-sha case.
+Cases:
+ - qualifying single run selected; Stage/Commit/Created populated correctly (valid 40-hex sha).
+ - ordering: 3 runs, Created out of insertion order -> Selected is Created DESC.
+ - tie-break: two runs equal Created -> RunID DESC ordering deterministic.
+ - last truncation: 5 qualifying, last=2 -> 2 most-recent selected, rest absent from Selected.
+ - last larger than available -> all returned, no error.
+ - last <= 0 -> ErrInvalidLast.
+ - skip: missing stage / ambiguous stage / empty GitSHA (-> no-git-sha) / pointer input /
+   pointer output -> each produces the right SkipReason + Detail and is excluded from Selected.
+ - skip: MALFORMED git_sha [ATTEMPT-2] -> SkipInvalidGitSHA, NOT selected. Subcases to
+   cover the format rule: "xyz" (non-hex), 39-char hex (wrong length), and an uppercase
+   40-char hex (case rule). NOTE: such a stage is structurally valid per
+   runmanifest.Validate, so it CAN be written via Writer; build it directly with the bad
+   GitSHA. Also keep a 40-char lowercase-hex stage as the explicit PASSING case.
+ - zero runs in repo -> empty result, nil error.
+ - zero qualifying (all skipped) -> empty Selected, Skipped populated, nil error.
+ - parse error: write a junk manifest.json into a run ref -> SelectCohort errors naming the run.
+ - mixed cohort: qualifying + skipped interleaved -> only qualifying selected, all skips recorded.
+
+**Docs:** None for this slice — internal library, no user surface yet. User docs
+(docs/bench.md) land with the CLI bead (.4); root.go rootLong stays unchanged here.
+
+**Risks:** None significant. Predicate is a faithful subset of what replay can actually
+execute (no new git/runner machinery; the sha-format rule mirrors worktree.validateSHA).
+Keep the predicate in lockstep with replay+worktree so .2 never hits a "qualified-but-
+fails-to-replay" run; documented inline by referencing the replay.go / worktree.go line
+each check mirrors.
+
+**Capture:**
+- inputs: bead etude-bench-command.1 + parent etude-bench-command design; gate finding
+  (git_sha must be a syntactically valid OID); files read: internal/refstore/store.go
+  (List/ReadFile/New), internal/runmanifest/manifest.go (Manifest/Stage/ParseJSON/
+  Validate/StorageType; isHexOID applies only to ReplayOf.Commit), internal/cli/run.go
+  (enumeration + error handling), internal/replay/resolve.go + internal/cli/replay.go
+  (replayability pre-check: stage match, git_sha non-empty, content-only inputs),
+  internal/worktree/worktree.go (validateSHA — the real OID-format gate at checkout),
+  internal/eval/result.go (precedent for a package-local isHexOID/validSHA256),
+  internal/replay/resolve_test.go (seed harness), internal/artifactstore/store.go
+  (StorageContent/StoragePointer).
+- output: bead etude-bench-command.1 --design field.
