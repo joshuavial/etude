@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-9ey",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,52 @@
         "size": 557
       },
       "timestamp": "2026-05-27T10:44:31.042936Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T18:40:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T18:40:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 2 (codex+opus; gemini/pilms not seated) for a read-only dogfood script. Both GO: premise now holds (13 META=Y sidecars), dogfood-script layer preserves core's schema-agnostic posture, supersession-skip reuses the audit's logic. Both flagged exact-string recurrence = mostly singletons → present honestly (adopted)."
+      },
+      "timestamp": "2026-05-27T18:41:00Z"
     }
   ]
 }
