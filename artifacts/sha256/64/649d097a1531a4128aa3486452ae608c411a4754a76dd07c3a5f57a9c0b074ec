@@ -1,0 +1,101 @@
+# Final review — etude-9uf.3: Delete the retroactive capture path
+
+## The change
+
+15 files, +458 / −1008. Net −550 lines.
+
+Three scripts deleted (974 lines): `dogfood-capture.sh`, `dogfood-close.sh`,
+`dogfood-close_test.sh`. One file added: `scripts/pre-push_test.sh` (388), the
+extracted hook suite. Twelve files swept.
+
+`.lane-done` is untracked operator state and is excluded by staging every path
+explicitly.
+
+## Acceptance
+
+| Clause | Status |
+|---|---|
+| "The three scripts are gone" | Yes — all three `D` in `git status`. |
+| "no file in the repo references them" | Yes, on the reading the plan gate passed: no tracked file describes them as a live mechanism. Four literals survive deliberately, each naming the removing bead; all four are enumerated in the docs artifact. |
+| "make test / make lint pass" | Both green, and both were executed live by `etude gate` as the verify stage's deterministic checks. |
+
+## Coverage
+
+29 cases before (11 close-wrapper + 18 hook). 11 died with their subject; 18
+were extracted; 2 were added at the verify gate's request to pin the hook's
+reworded BLOCKED message. **20 pass, 0 fail.**
+
+Four negative controls were run and reverted, each proving a different thing:
+
+| Control | Result |
+|---|---|
+| break `refs/heads/*` classification | 5/18 fail — the suite drives the real hook |
+| hostile `bd` (exit 7) | 13/18 fail — the carried PATH shim is load-bearing |
+| blank the BLOCKED message | presence assertion fails |
+| re-add `dogfood-close.sh` to the message | absence assertion fails |
+
+The first control replaced one the plan specified that did NOT fail; the
+diagnosis (the breakage is masked by a downstream `_has_code_ref` guard) is
+recorded in the verify artifact rather than the control quietly swapped.
+
+## What the gates cost, and what they bought
+
+Eleven rounds across four gates; five did not pass.
+
+- **plan r1, r2** — self-granted exemptions to the acceptance, a test file read
+  as one suite when it is three, an extraction dependency list missing the bd
+  shim, and a verification grep anchored on `.sh` that structurally could not
+  see a live wrong pointer.
+- **verify r1, r3** — the artifact claimed the edited hook had been exercised by
+  pushes (false: `core.hooksPath` resolves to the main checkout, whose copy is
+  unedited), then, after correction, still opened by asserting the thing it
+  retracted three paragraphs later.
+- **docs r1, r2** — a replacement pointer attributing an error to `etude gate`
+  that only `capture-gate` can emit, then a hook comment claiming
+  `etude capture` / `etude gate` push refs when neither pushes anything.
+
+**Every one of the five was a false or incomplete CLAIM, not defective code.**
+That is worth stating plainly: a bead whose entire purpose is removing
+documentation that describes a mechanism the repo no longer has spent five
+rounds writing documentation that described mechanisms the repo does not have.
+The sweep was disciplined about finding stale pointers and careless about
+whether each replacement was true — which is the same failure one level down.
+Docs r2 is the sharpest instance: the original comment was stale but TRUE, and
+the rewrite made it false.
+
+Two rounds also produced work beyond corrections:
+
+- The `review-gate-runbook.md` section was stale on two counts nobody had
+  flagged — it asserted docs is not a captured stage and prescribed the
+  transport-only alias `etude-1od` had removed two beads earlier. A live
+  judgement runbook was instructing readers to do the thing this epic had just
+  eliminated.
+- Docs r2 exposed an operational gap: the BLOCKED message told an operator to
+  capture and gate, but the audit it fronts GAPs on `unpushed-ref`, so following
+  the message exactly left them still blocked. The message now names the push
+  step, and the supervisor runbook's close checklist names `etude sync` so the
+  loop closes where the message points.
+
+## Honest limits
+
+- **The edited hook is not the executing hook from here.** `core.hooksPath`
+  points at the main checkout's `.beads/hooks`; this worktree's copy becomes
+  live only once this lands and that copy is updated. Nothing detects drift
+  between them — filed as `etude-6d9`.
+- **Nothing runs the shell suites automatically.** No CI exists, and `make test`
+  is `go test ./...`. `shell-test` gives them one command, not enforcement.
+- **`make dogfood-audit` does not pass**, on pre-existing `cadence-sidecar` debt
+  bead `.4` will remove. No count is quoted: it scans a moving `--last 9`
+  window, and two earlier versions of that claim went stale before a seat could
+  check them.
+
+## Follow-ons filed
+
+`etude-8li` (P1) the opus seat's agy fallback cannot execute; `etude-6d9` (P2)
+hook drift undetectable; `etude-gxt` (P3, extended twice) `capture-protocol.md`
+references surviving bead `.2`.
+
+## Ready
+
+`make test`, `make lint`, `make docs-check`, `make docs-reality` green;
+`make pre-push-test` 20/20. One commit, all paths staged explicitly.
