@@ -1118,6 +1118,44 @@
         "degraded_reason": "LATE RECORD, filed at the final review gate, which found it missing and called it the most consequential gap. This is the in-harness opus BLOCK on the SECOND docs artifact, sha d3928647, stage 'docs.r2' - the round that produced the sharpest finding of the whole bead, that a stale-but-true pointer had been replaced with a plausible-but-false one in the repo's push gate. That finding is quoted in both the docs and review artifacts as the bead's central lesson, yet the verdict itself had no gate record: the L4 tier's single seat cannot be invoked as a subprocess, so no 'etude gate' run produced an attempt for this revision, and the in-harness verdict was acted on without being appended. A BLOCK that changed the shipped work and left no durable record is precisely the failure this epic exists to end, so it is recorded rather than merely disclosed. docs.r3 passed on a later revision (4107f079) and that pass stands."
       },
       "timestamp": "2026-08-15T10:40:11Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "649d097a1531a4128aa3486452ae608c411a4754a76dd07c3a5f57a9c0b074ec"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. 'Eleven rounds across four gates; five did not pass' is false: the manifest recorded 10 attempts of which 6 were non-passing, and the artifact's own bullet list enumerated six while the sentence said five. No reading of the record yields 11/5, and verify.r4 was not mentioned anywhere.",
+            "2. Undisclosed gap, the one that matters most for this epic: three real in-harness opus verdicts were acted on without being recorded - the verify-r1 BLOCK on artifact 8b1382a7, the verify-r2 GO on 9d9a4d42 (which made that round a genuine split rather than the one-sided round the manifest showed), and the docs-r2 BLOCK on d3928647, the round that produced this bead's sharpest finding. scripts/dogfood-completeness-audit.sh does not detect this class of gap, and 'Honest limits' did not disclose it.",
+            "3. 'Twelve files swept' is off by one: the tree has 11 modified files (3 deleted + 1 added + 11 modified = 15)."
+          ],
+          "timestamp": "2026-08-15T10:49:49Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, and the fourth of its kind on this bead. This is the in-harness opus BLOCK on the FIRST review artifact, sha 649d097a, stage 'review'. It is the verdict that found the three MISSING gate records (verify.r6, verify.r7, docs.r4) and caused them to be filed - and it was itself unrecorded, for the same reason they were: the L4 tier's single seat has no working subprocess path, so no 'etude gate' run produces an attempt, and the in-harness verdict gets acted on without being appended. The next round's seat caught that too, which is the only reason this record exists. Worth stating plainly, since this bead is about records that do not match reality: the gap was not one oversight but a systematic consequence of an un-invokable seat plus a manual bootstrap step, and it recurred immediately after being identified and supposedly fixed. Bead etude-8li covers the seat's dead invocation path; the deeper fix is that a verdict acted on but not appended should not be possible."
+      },
+      "timestamp": "2026-08-15T10:49:49Z"
     }
   ]
 }
