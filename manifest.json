@@ -789,6 +789,52 @@
         "degraded_reason": "Seats split - codex GO, opus BLOCK - so no pass, and all three opus findings were confirmed by recomputation before folding. The third is a genuinely new hole in the model and the best thing this gate produced: TWO OF FIVE gated stage artifacts on the proof run were edited after their gate passed and never re-gated. Both are benign in origin - the worker was folding the optionals the supervisor relayed back, which is what it was asked to do - and 'zero ungated stage artifacts' still holds because the run ref preserves the reviewed bytes content-addressed. But a reader opening the lane sees a document no seat reviewed, with no signal it diverged, and it happened twice in the very run offered as proof of the model. Filed etude-pq7. The first finding is the same stale-green failure the implement gate blocked on twice: I asserted make dogfood-audit was clean while it was red on this bead's OWN unpushed run ref. The second corrects 21 to 18 and matters for a reason beyond arithmetic - the three optionals that ARE machine-readable come from the attempts etude gate produced natively, so the native path already does the right thing and only the bootstrap path loses them. Four optionals also folded, including that the record shows I invoked two of the five gates from the supervisor's worktree rather than the lane, which is why etude-4qi is a live hazard rather than a theoretical one."
       },
       "timestamp": "2026-08-15T18:49:06Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "4d5924bc4c7e1a8cd83e09756b2fff6788d70819c19a64484ae452b250d85c32"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T19:00:28Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T19:00:28Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO on the corrected verify artifact (sha 4d5924bc, stage 'verify'); the deterministic checks ran live at verify.r1 and this records the completed panel. Three optionals returned and are folded into the NEXT revision rather than into the reviewed one, because folding after a verdict is what makes a pass describe something else - a defect this epic blocked on four times. The third optional is the sharpest thing said about this proof run: the worker, the in-harness opus seat and the supervisor are ALL THE SAME MODEL FAMILY, so every opus verdict here is same-model review of same-model work. codex is the only genuinely independent judgement in the panel, and on the three natively-produced attempts it was the only seat that returned a usable verdict at all. Seat diversity is supposed to be the basis of the redundancy; on this run it was half-present, which bounds the n=1 claim considerably further than 'one bead, selected for tractability'. Also folded: nothing in the run records that a separate lane existed - the only machine evidence is an incidental seat-adapter path inside three failure notes; and the bootstrap path DUPLICATES as well as omits, leaving 6 codex verdicts recorded for 3 actual invocations. Separately noted against myself: two earlier folds on this artifact were python replaces without asserts and silently did nothing, so a claim of 'folded' was carried in a gate record while the text was unchanged. Every fold in the next revision is asserted."
+      },
+      "timestamp": "2026-08-15T19:00:28Z"
     }
   ]
 }
