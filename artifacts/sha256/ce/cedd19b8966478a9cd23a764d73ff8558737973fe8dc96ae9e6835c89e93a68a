@@ -1,0 +1,32 @@
+# Cadence retro — scaffold and registry contract cohort
+
+## Retro summary
+
+The cohort shipped the MkDocs site, aligned the default workflow scaffold with the dogfood loop, and corrected the committed reviewer registry. All three completed with passing gates. The recurring weakness was contract duplication: generated defaults, committed configuration, docs, and runtime exceptions could drift independently.
+
+## What went wrong
+
+- The MkDocs navigation omitted generated CLI pages and strict mode remained deferred to `etude-ajs`.
+- Default workflow documentation required targeted cleanup after the scaffold changed.
+- Registry hardening fixed the checked-in YAML, but the Opus Claude-orchestrator fallback remained only a comment and `registry.Default()` still regenerated older seat settings.
+
+## Root causes
+
+- Generated defaults and checked-in examples were maintained as separate authorities without an equality regression.
+- A runtime-relevant harness exception was represented as prose rather than schema.
+- Documentation and navigation checks detected drift late, after implementation.
+
+## What worked well
+
+- Named follow-up beads kept each commit narrow while preserving optional findings.
+- Diff-based gates caught the registry/default mismatch before a live gate consumer depended on it.
+- Built artifacts and docs-reality checks exposed the relevant generated surfaces.
+
+## Recommended changes
+
+- Complete `etude-pqv`: carry canonical seat settings into `registry.Default()`, represent the Opus orchestration exception as machine-readable data, and add regeneration regression coverage. This is high leverage and already tracked.
+- Complete `etude-ajs` for strict MkDocs navigation coverage. This remains a separate tracked docs change.
+
+## Highest-leverage next step
+
+Implement and land `etude-pqv` before the live `etude gate` consumer, preserving the registry as one executable contract rather than a mixture of data and comments.

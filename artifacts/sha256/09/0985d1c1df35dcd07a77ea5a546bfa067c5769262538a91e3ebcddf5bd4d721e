@@ -1,0 +1,27 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-06-30",
+  "failure_modes": [
+    "mkdocs-navigation-incomplete",
+    "default-workflow-doc-drift",
+    "registry-runtime-exception-comment-only",
+    "registry-default-regeneration-drift"
+  ],
+  "root_causes": [
+    "generated defaults and committed examples were separate authorities without an equality regression",
+    "runtime-relevant harness exception represented as prose instead of schema",
+    "documentation and navigation drift detected after implementation"
+  ],
+  "follow_up_beads": [
+    "etude-ajs",
+    "etude-pqv"
+  ],
+  "decisions": [
+    "registry exceptions consumed at runtime must be machine-readable",
+    "default registry regeneration must preserve canonical checked-in seat behavior"
+  ],
+  "durable_changes": [
+    "etude-pqv tracks machine-readable orchestration fallback and regeneration-safe defaults",
+    "etude-ajs tracks strict MkDocs navigation coverage"
+  ]
+}
