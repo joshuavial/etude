@@ -1,0 +1,44 @@
+# etude-pqv verify gate
+
+ROLE: Review the VERIFY phase for etude-pqv against its accepted behavior and scope.
+
+ANCESTOR: etude-pqv (P3, urgent dependency of etude-9uf) replaces an observed nested-Claude HTTP 401 comment-only exception with an executable registry contract and ensures `etude init --force` does not regenerate stale seat behavior.
+
+MEASUREMENT: before this change the checked-in registry differed from `registry.Default()` across four seats/settings, and `claude -p` is observed to return 401 when Claude Code is the outer orchestrator.
+
+BLAST RADIUS: none: repository and private `/tmp` verification repo only. No external writes, installs, shared-state mutation, or forbidden 9uf-owned files.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: single-process parse, encode, and ordered candidate enumeration. No new concurrent writer.
+
+DURABILITY CLASS: Git-tracked registry YAML and compiled scaffold defaults are durable. Enumeration is read-only and consumer retry is outside this bead.
+
+COMPLETENESS ENUMERATION: registry schema, validation, strict decode, encode, defaults, checked-in registry, ordered enumeration, legacy omission, exact golden, migration equality, CLI regeneration, generated docs, and hand-written docs reality were all checked.
+
+TRUST BOUNDARY: registry YAML remains trusted operator-authored configuration parsed with unknown-field rejection. The engine does not use ambient environment to infer an orchestrator.
+
+## Verification evidence
+
+- `make build`: PASS; built `bin/etude` from this worktree.
+- Manual CLI check in a fresh private Git repository: `bin/etude init`, followed by `bin/etude init --force`, both exited 0. The registry SHA-256 remained `f2aaa8761a3c6eea2908aed3d3300a0e51288d70c8cf28cf507fb83f331be7c8` across regeneration. The generated registry contained ordered `invocation_fallbacks` with harness `agy`, invoke `agy --model opus --print`, and mode `inline`. The expected `refs/etude/*` fetch refspec was also installed. The private temp repository was moved to Trash after the check.
+- `make test`: PASS across every package, including `internal/liverun` and `internal/cli`.
+- `make lint`: PASS (`gofmt -l` empty and `go vet ./...` green).
+- `make docs`: PASS; generated 24 command docs with no tracked generated-doc diff.
+- `make docs-check`: PASS.
+- `make docs-reality`: PASS; 14 commands matched shipped docs.
+- `git diff --check`: PASS.
+- Forbidden-scope audit: `git status --short` contains only `.etude/registry.yaml`, `docs/init.md`, `internal/cli/migration_test.go`, `internal/registry/example_test.go`, `internal/registry/registry.go`, and `internal/registry/registry_test.go`.
+
+## CLI surface classification
+
+CLI-facing: no command or flag changed, but the generated `.etude/registry.yaml` payload of `etude init --force` changed. The built-binary fresh-init and force-regeneration check above exercises that behavior directly.
+
+## Follow-ups folded from Implement
+
+- The requested full repository test suite ran and passed.
+- The legacy byte-stability fixture retains the former `mode` and tier `name` fields while proving the optional fallback key remains absent.
+
+## Decision proof
+
+The registry exposes primary-plus-fallback candidates through `Seat.Invocations()`. Neither validation nor enumeration inspects ambient environment variables or chooses a candidate automatically. The canonical Opus fallback is executable by the arriving CLI consumer, while retry policy and selected-harness evidence remain consumer responsibilities.

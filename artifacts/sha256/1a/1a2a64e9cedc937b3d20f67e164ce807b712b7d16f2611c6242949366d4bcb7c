@@ -1,0 +1,49 @@
+# etude-pqv final review
+
+ROLE: Perform FINAL REVIEW of the complete etude-pqv diff and verification record.
+
+ANCESTOR: etude-pqv (P3, urgent dependency of etude-9uf) replaces the observed Opus nested-Claude 401 comment-only exception with an executable machine contract and prevents canonical `etude init --force` regeneration from restoring stale seat behavior.
+
+MEASUREMENT: the checked-in registry previously diverged from `registry.Default()` across four seats/settings, and nested `claude -p` is observed to return HTTP 401 under a Claude Code orchestrator.
+
+BLAST RADIUS: none outside the repository and a trashed private verification repo. Six tracked files change. No forbidden 9uf-owned files, host config, installs, or shared state are touched.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: single-process parse/encode/enumeration, with no ambient orchestrator inference or concurrent writer.
+
+DURABILITY CLASS: Git-tracked configuration and compiled defaults are durable; candidate enumeration is pure. Retry/delivery semantics belong to the etude-9uf consumer.
+
+COMPLETENESS ENUMERATION: `Seat`, `SeatInvocation`, `Validate`, `Invocations`, strict decode, encode, `Default`, checked-in registry, exact golden, fallback parse/order/validation/round-trip/legacy tests, migration equality, examples, shipped schema docs, built-binary init regeneration, repository tests/lint, generated docs, and docs reality.
+
+TRUST BOUNDARY: trusted operator-authored registry YAML parsed with KnownFields. Candidate selection is limited to explicit ordered data; environment variables are not used as an orchestrator identity.
+
+## Final behavior
+
+- `Seat.Invocations()` exposes the primary candidate followed by ordered complete harness fallbacks.
+- A missing fallback mode inherits the primary seat mode without mutating configuration.
+- The canonical Opus CLI fallback is `agy --model opus --print` and its harness identity is `agy`.
+- The engine explicitly does not auto-detect the outer orchestrator. The consumer owns retry policy and records the actual candidate.
+- Legacy registries omit the optional field and remain byte-stable.
+- `registry.Default()` is semantically equal to the checked-in registry, so canonical force regeneration preserves executable settings even when comments are lost.
+
+## Final evidence
+
+- `make test`: PASS for all packages.
+- `make lint`: PASS.
+- `make build`: PASS.
+- Built-binary `etude init` then `etude init --force` in a fresh Git repo: both PASS, identical registry SHA-256, expected fallback and refspec present.
+- `make docs`, `make docs-check`, and `make docs-reality`: PASS; no generated CLI docs changed.
+- After docs follow-ups, `go test -count=1 ./internal/registry ./internal/cli`, `make docs-check`, `make docs-reality`, and `git diff --check`: PASS.
+- Forbidden-scope audit: only the six declared tracked paths are modified.
+
+## Gate follow-ups
+
+- Folded implementation full-suite and legacy-fixture requests.
+- Folded docs wording and fallback-mode inheritance requests.
+- Filed `etude-kcd` for the packet builder's Go-test extractor false negative.
+- `etude-9uf` remains the named live consumer and will enumerate this API.
+
+## Review focus
+
+Confirm there is no unresolved acceptance gap, hidden default-regeneration regression, unsupported consumer claim, or forbidden-scope change. Any BLOCK must include concrete input to wrong output.

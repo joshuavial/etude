@@ -1,0 +1,65 @@
+# etude-pqv plan — machine-readable seat exceptions and regeneration safety
+
+ROLE: Review the PLAN phase for etude-pqv.
+
+ANCESTOR: etude-pqv (P3, urgent dependency of etude-9uf) — replace the observed Opus nested-Claude 401 comment-only exception and prevent `etude init --force` from regenerating stale seat behavior. MEASUREMENT: the committed registry currently differs semantically from `registry.Default()` in four seats/settings, and the known nested `claude -p` path returns HTTP 401 under a Claude Code orchestrator.
+
+BLAST RADIUS: none: worktree and repo only. The plan changes the registry schema/default/scaffold, focused registry and init migration tests, and shipped registry documentation. It does not edit the 9uf-owned gate implementation, dogfood plans/scripts, or host configuration.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: single-process parsing and ordered caller-directed retry. No concurrent mutation or ambient-orchestrator discovery is introduced.
+
+DURABILITY CLASS: committed Git configuration and compiled defaults are durable; candidate enumeration is read-only and each candidate is attempted at most once per gate round. There is no delivery queue or generation identity.
+
+COMPLETENESS ENUMERATION: the complete schema/default surface is `Seat`, `SeatInvocation`, validation, YAML decode, YAML encode, `Default()`, the checked-in registry, shipped registry docs, and semantic-equality regressions. The candidate-enumeration helper is a single-site API; engine call sites are intentionally not changed in this bead. `model_fallbacks` remains an ordered set of alternate model identifiers within the primary harness; `invocation_fallbacks` is the complete ordered set of alternate harness invocations.
+
+TRUST BOUNDARY: `.etude/registry.yaml` is trusted operator-authored configuration parsed with unknown-field rejection. A consumer may retry only the explicit ordered candidates returned by the registry; ambient environment variables are untrusted input for selecting candidates and are never consulted.
+
+## Decision on item (1)
+
+The live-run engine will NOT auto-detect or mechanize the Claude-orchestrator exception. The engine is an external process with no authenticated in-harness Task primitive, and ambient environment is not a trustworthy orchestrator identity (this Codex session itself carries both Codex and Claude-related variables). Auto-detection could silently select the wrong harness and misreport producer/session metadata. Retry policy and gate-round accounting remain the gate consumer's responsibility.
+
+Instead, make the exception explicit and machine-actionable as an ordered invocation fallback at the registry/consumer boundary:
+
+- Add `Seat.InvocationFallbacks []SeatInvocation`, encoded as `invocation_fallbacks`.
+- `SeatInvocation` carries the alternate `harness`, `invoke`, and optional `mode`.
+- Add `Seat.Invocations() []SeatInvocation`, which returns the primary invocation followed by configured fallbacks in order. Consumers such as the arriving `etude gate` command attempt each candidate at most once under their existing retry/round policy.
+- The canonical Opus fallback uses the already-approved executable substitute `agy --model opus --print`, with harness `agy`. This gives a CLI consumer an executable fallback after `claude -p` fails; the existing review skill may continue selecting the stronger authenticated in-harness Task path before invoking a CLI candidate when that primitive exists.
+- `model_fallbacks` is not an existing solution to the measured failure: it carries model identifiers only and cannot change the unavailable `claude` harness. The two fallback lists have distinct, documented roles.
+
+This is deliberately explicit ordered fallback data, not engine heuristics. The decision and rationale will also be appended to the bead notes so the etude-9uf worker has an authoritative answer.
+
+## Regeneration-safe default
+
+- Carry every current machine-relevant `.etude/registry.yaml` setting into `registry.Default()`: the `dev` seat required by the default workflow runner, codex xhigh/read-only invocation and fallback list, Gemini project-env unsets/skip-trust invocation and fallback list, tier `use` prose, plus the structured Opus invocation fallback.
+- Replace the comment-only exception in `.etude/registry.yaml` with `invocation_fallbacks`. Comments may still explain intent, but no required behavior depends on comment preservation.
+- Add a semantic equality regression between parsed `.etude/registry.yaml` and `registry.Default()`. This makes future scaffold drift fail tests and proves `etude init --force` regeneration preserves effective settings even though YAML comments are not round-tripped.
+
+## Validation and compatibility
+
+- Require non-empty `harness` and `invoke` for every invocation fallback; `mode` remains free text in this bead because closed-set mode validation belongs to etude-zdl.
+- Unknown fallback fields remain rejected through yaml.v3 KnownFields.
+- Existing registries without `invocation_fallbacks` remain valid and round-trip unchanged.
+
+## Planned regressions
+
+Planned regression: TestParseYAMLInvocationFallbacks parses all fallback fields and returns primary-then-fallback ordering.
+
+Planned regression: TestValidateRejectsInvalidInvocationFallback covers missing harness/invoke.
+
+Planned regression: TestRegistryInvocationFallbackRoundTrip proves encode/parse stability and legacy omission.
+
+Planned regression: TestMigrationRegistryMatchesDefault proves the checked-in registry is semantically identical to the scaffold default.
+
+Planned regression: TestDefaultYAMLContainsCanonicalSeatSettings independently pins literal Opus fallback and codex/Gemini/dev settings that force regeneration previously lost.
+
+## Docs impact plan
+
+- Check and update `docs/init.md`, the shipped registry schema guide, for `invocation_fallbacks`, ordered consumer retry, its distinction from `model_fallbacks`, and regen-safe scaffold behavior.
+- Check `docs/run.md`; update only if its live-run resolution wording would otherwise imply engine auto-detection.
+- Run `make docs`, `make docs-reality`, `make test`, and `make lint`. No CLI command/flag is added, so generated CLI docs should have zero diff.
+
+## Scope fence
+
+Do not edit `docs/plans/dogfood/**`, `.etude/loop.local.md`, `scripts/dogfood-*.sh`, `internal/liverun/gate.go`, or any `internal/cli/gate.go`. Do not implement etude-zdl's mode validation, YAML node-encode propagation, or identifier-helper dedup in this commit.
