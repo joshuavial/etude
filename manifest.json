@@ -310,6 +310,69 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T05:20:12Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "agy",
+            "version": "Gemini 3.1 Pro High"
+          },
+          "provider": {
+            "name": "google",
+            "model": "Gemini 3.1 Pro (High)"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:29:10Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep the human-readable Opus exception comment until etude-9uf consumes Invocations",
+            "Ensure the consumer records the selected fallback harness metadata"
+          ],
+          "timestamp": "2026-08-15T05:31:20Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep canonical-setting expectations independent and literal"
+          ],
+          "timestamp": "2026-08-15T05:29:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T05:31:20Z"
     }
   ]
 }
