@@ -1,0 +1,139 @@
+## Plan
+
+**Approach:** Implement a concrete `ExecRunner` in internal/replay that satisfies
+the phase2.3 `Runner` interface (post-1.3 producer seam) by invoking a configured
+external command headlessly. It materializes inputs to the scratch dir, runs the
+command with cwd=worktree conveying I/O locations via env vars, reads the output
+file back, and returns a RunResult. The runner is LLM-agnostic: it takes a concrete
+command spec (`Command []string`); the `--runner` flag / `etude.skill_runner` config
+resolution is deferred to etude-replay-command. Mirrors the established exec hygiene
+from internal/refstore/store.go (gitBytes, store.go:359-371: exec.CommandContext,
+cmd.Dir, cmd.Env, separate stdout/stderr buffers, error wrapped with command +
+strings.TrimSpace(stderr)) and internal/worktree/worktree.go (gitCmd,
+worktree.go:127-136): NO shell, separate buffers, errors wrapped with command +
+trimmed stderr. Exec contract REPRODUCED in a throwaway (success reads
+$ETUDE_INPUTS_DIR + cwd-relative file and writes $ETUDE_OUTPUT_FILE; non-zero exit
+wraps `exit status N` + stderr; missing output file -> distinct clear error).
+Containment check REPRODUCED via filepath.Rel (handles the `/tmp/wt-other` prefix
+trap and `..` normalization that naive HasPrefix misses).
+
+**Post-1.3 alignment note (the only thing that went stale):** bead 1.3 (commit
+afbbf41) changed the seam so RunRequest/RunResult carry `runmanifest.Producer`
+(Harness/Model/Skill — runner.go:46, runner.go:58), NOT a bare `runmanifest.Skill`.
+StubRunner already echoes req.Producer and exposes ProducerOverride
+(runner.go:101-103, 88-89), and there is NO Skill-typed field anywhere in
+runner.go. This plan tracks that: ExecRunner echoes req.Producer; no Skill-typed
+field is introduced or reintroduced.
+
+**Decisions:**
+1. COMMAND SOURCE — ExecRunner takes a concrete command spec at construction
+   (`Command []string`, Command[0]=binary, rest=fixed args). Flag/config
+   resolution (`--runner`, `etude.skill_runner`) is etude-replay-command's job.
+   Justification: smallest surface; this bead owns only runner mechanics; the
+   repo has no config library (init.go reads git-config via subprocess), so
+   config plumbing belongs with the cobra command, not the runner.
+2. I/O CONTRACT — env vars (reproduced as working): cwd = req.WorktreeDir;
+   ETUDE_INPUTS_DIR = <ScratchDir>/inputs; ETUDE_OUTPUT_FILE = <ScratchDir>/output.
+   Strict env: minimal base (PATH only) + the two ETUDE_* vars (no leak of host
+   env into the skill). Inputs materialized to <ScratchDir>/inputs/<NN>-<role>
+   with NN = %02d slice index (per phase2.3 doc convention). Command receives
+   NO shell (argv exec). stdout is captured for diagnostics but is NOT the
+   output — output is always the file (mirrors a tool that writes a file).
+3. ERROR TAXONOMY — sentinel errors:
+   - ErrRunnerNotConfigured: empty Command.
+   - ErrInvalidScratchDir / ErrInvalidWorktreeDir: empty, non-absolute,
+     missing, or ScratchDir inside WorktreeDir (collision invariant).
+   - ErrRunnerFailed: non-zero exit; wraps command + `exit status N` + trimmed stderr.
+   - ErrOutputMissing: command exited 0 but <ScratchDir>/output absent/unreadable.
+
+**Run() steps:**
+1. Validate Command non-empty; validate WorktreeDir + ScratchDir (absolute,
+   exist, are dirs); validate ScratchDir NOT at/under WorktreeDir (filepath.Rel
+   containment, reproduced).
+2. MkdirAll <ScratchDir>/inputs; write each req.Inputs[i].Content to
+   <ScratchDir>/inputs/<NN>-<role> (NN = %02d index). Content is already
+   fully-materialized bytes (RunInput contract); runner never inspects storage.
+3. exec.CommandContext(ctx, Command[0], Command[1:]...); cmd.Dir=WorktreeDir;
+   strict env + ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE; capture stdout/stderr.
+4. On non-zero exit -> ErrRunnerFailed (cmd + stderr). On success read
+   <ScratchDir>/output -> RunResult.Output (missing -> ErrOutputMissing).
+5. Result boundary: ExecRunner.Run sets RunResult.Producer = req.Producer (the
+   exec runner echoes the requested producer; it does NOT discover a different
+   harness/model/skill in this bead). ExecRunner could LATER override
+   RunResult.Producer with a discovered skill version/model — out of scope here;
+   echo req.Producer for now. Then RunResult.MediaType defaults to
+   req.OutputMediaType when empty. The MediaType default ONLY is centralized in a
+   small shared helper applyResultDefaults(req, RunResult) extracted from
+   runner.go (currently inline at runner.go:122-124) and used by BOTH ExecRunner
+   and StubRunner so the fallback cannot drift. applyResultDefaults handles the
+   MediaType default ONLY — it does NOT touch Producer and introduces NO
+   Skill-typed field; the Producer echo happens in each Run before/around calling
+   it (StubRunner already echoes req.Producer at runner.go:101-103, ExecRunner
+   sets RunResult.Producer = req.Producer). Refactor StubRunner.Run to call the
+   helper for the MediaType default.
+
+**Files:**
+- internal/replay/exec_runner.go - new; ExecRunner struct (Command []string),
+  Run(), input materialization, env build, containment + dir validation,
+  sentinel errors, RunResult.Producer = req.Producer echo,
+  var _ Runner = (*ExecRunner)(nil).
+- internal/replay/runner.go - modify; extract applyResultDefaults(req, RunResult)
+  helper (MediaType "" -> OutputMediaType ONLY; no Producer/Skill handling) from
+  the inline default at runner.go:122-124 and have StubRunner.Run use it
+  (centralize the fallback at the result boundary; Producer echo stays in Run).
+- internal/replay/exec_runner_test.go - new; table/unit tests with a scripted
+  fake command (sh script written to t.TempDir, chmod 0755).
+
+**Tests:** (Tier 1 / high-stakes: shells out + does FS materialization;
+behavior REPRODUCED, not asserted from memory.)
+- input materialization writes <ScratchDir>/inputs/<NN>-<role> with right
+  bytes + index padding (verify on disk, multiple inputs incl. index >= 10).
+- command runs with cwd=WorktreeDir: fake script reads a cwd-relative marker
+  file and folds it into output (proves cwd).
+- command sees ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE: fake script reads an input
+  via the env var and writes via the env var; output read back into RunResult.
+- non-zero exit -> ErrRunnerFailed; error string contains trimmed stderr + exit status.
+- exit 0 but no output file -> ErrOutputMissing.
+- MediaType default: runner leaves it empty -> result gets req.OutputMediaType
+  (asserts applyResultDefaults wiring); output is file bytes only so the default
+  always applies.
+- RunResult.Producer == req.Producer (full producer echo: Harness/Model/Skill all
+  carried through unchanged), asserting the post-1.3 seam.
+- validation: empty Command -> ErrRunnerNotConfigured; relative/missing
+  WorktreeDir or ScratchDir -> invalid-dir error; ScratchDir inside WorktreeDir
+  -> rejected (incl. the prefix-trap sibling /wt-other is ACCEPTED).
+- real t.TempDir() for ScratchDir + a separate fake worktree dir (sibling).
+- skip on Windows or guard script tests with sh availability (build a tiny
+  helper that writes an executable sh script; runtime.GOOS guard).
+
+**Docs:** None yet. No CLI/user-facing surface lands in this bead (ExecRunner is
+internal wiring); the replay command + its docs are the next bead
+(etude-replay-command). The I/O + env-var contract is documented in code
+(doc comments on ExecRunner / Run) so etude-replay-command can rely on it.
+Confirmed: no user docs to update here.
+
+**Risks:**
+- Exec env-var contract is provisional — the real claude/Agent-SDK adapter may
+  need richer signalling (multiple outputs, structured result). Mitigation:
+  single output file + env vars is the minimal reproduced contract; documented
+  as the v1 contract; RunResult.Producer override (discovered skill version/model)
+  is a future hook, echo req.Producer for now.
+- Cross-platform: sh-script tests are POSIX. Mitigation: guard with runtime.GOOS
+  and write the script via os.WriteFile + chmod (no shell invocation in prod code).
+- Otherwise low — mirrors two established, tested exec call sites.
+
+**Capture:**
+- inputs: bead etude-phase2.4 (desc + acceptance), internal/replay/runner.go
+  (post-1.3 Runner/RunRequest/RunResult/RunInput contract: Producer seam at
+  runner.go:46/58, StubRunner Producer echo + ProducerOverride at
+  runner.go:88-103, inline MediaType default at runner.go:122-124),
+  internal/runmanifest/manifest.go (Producer{Harness,Model,Skill} at
+  manifest.go:81-85), internal/replay/resolve.go (ResolvedInput/materialization
+  boundary), internal/replay/runner_test.go (test style),
+  internal/refstore/store.go (gitBytes exec hygiene, store.go:359-371),
+  internal/worktree/worktree.go (gitCmd exec hygiene, worktree.go:127-136),
+  internal/cli/init.go (config = git-config via subprocess, no config lib),
+  docs/plans/product/BRIEF.md section 8 (skill-runner risk: configurable, no
+  hardcoded LLM); reproduced exec + containment behavior in throwaway programs.
+- output: bead --design field
+
