@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-roadmap.2.4",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,88 @@
         "size": 2017
       },
       "timestamp": "2026-05-25T16:25:51.511295Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "backfilling old run != AC#4 new-run",
+            "test ref-mutating push script in throwaway repo first",
+            "verify local append before push"
+          ],
+          "timestamp": "2026-05-26T01:00:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T01:01:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "verdict mapping must require failure_note for malfunction/disregarded"
+          ],
+          "timestamp": "2026-05-26T01:02:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang; LM Studio backend healthy",
+          "timestamp": "2026-05-26T01:03:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms reproducible 0-CPU hang; resolved on rerun"
+      },
+      "timestamp": "2026-05-26T01:05:00Z"
     }
   ]
 }
