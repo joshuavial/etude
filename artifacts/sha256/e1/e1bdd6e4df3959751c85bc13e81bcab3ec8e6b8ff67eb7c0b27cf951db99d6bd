@@ -1,0 +1,7 @@
+# Verify — etude-kig (extract shared retro subject-validation + ref-parsing helpers)
+Result: PASS. Pure refactor, zero behavior change. Medium-risk → 3-seat gate.
+- go build ./... clean; go test ./... fully green (all 3 seats ran it). go vet/gofmt clean.
+- ORDER-PRESERVED (verified by all seats via HEAD-vs-working diff): capture run() = scope -> '--file required' -> validateSubjectsResolveSHA -> body -> meta -> parseAndCheckRefs -> build; generate run() = scope -> validateSubjectsResolveSHA -> parseAndCheckRefs -> generator. No check crossed a boundary — capture's --file stays before subjects, body/meta stay between git-sha and refs. Error precedence unchanged.
+- BYTE-IDENTICAL: validateSubjectsResolveSHA reproduces the removed inline {subject-presence + IsValidRunID + git-sha trim/HEAD/validate} exactly (same error strings); parseAndCheckRefs = parseRefs then checkReservedRefs at each existing call point.
+- Coverage gap closed (codex plan note): added 'invalid --subject-run id' case (bad/id -> fails IsValidRunID) to TestRetroCaptureValidationErrors — genuinely exercises the new helper. All pre-existing retro capture/generate tests pass unchanged.
+Scope: internal/cli/retro.go + retro_test.go only. No docs (internal refactor). Net behavior-identical dedup.

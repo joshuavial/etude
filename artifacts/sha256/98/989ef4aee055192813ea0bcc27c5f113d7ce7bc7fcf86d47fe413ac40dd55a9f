@@ -1,0 +1,14 @@
+RECOMMENDATION: EXTRACT (NARROWED to the order-preserving shared blocks; the audit's '~50 lines ~80% identical' overstates the SAFELY-extractable region).
+
+PREMISE-CHECK (read both run() in full): retroCaptureRunner.run (retro.go:455) and retroGenerateRunner.run (retro.go:813) share these checks BYTE-IDENTICAL: scope-validation, subject-presence (scope!=workflow), subject-id validation (IsValidRunID), git-sha resolution (trim/currentHEAD/validateGitSHA), parseRefs+checkReservedRefs. BUT capture INTERLEAVES path-specific checks: '--file is required' sits BETWEEN scope and subject-presence (462-464), and body+meta reads sit BETWEEN git-sha and parseRefs (490-515). Generate has no such interleaving (scope->subjects->gitsha->parseRefs->generator).
+
+CONSEQUENCE: extracting one big {scope+subjects+gitsha+parseRefs} helper would REORDER capture's --file check + parseRefs relative to subjects/gitsha/body — changing error PRECEDENCE when multiple inputs are bad (a real behavior change; tests may assert which error wins). So do NOT do the wide extraction.
+
+SAFE NARROWED EXTRACTION (order-preserving in BOTH runners):
+1. Helper A: validateSubjectsResolveSHA(ctx, scope string, subjectRuns []string, gitSHA string) (string, error) — does {subject-presence check + per-subject IsValidRunID + git-sha resolve}, returning the resolved gitSHA. This block is CONTIGUOUS and in the SAME relative position in both (capture 466-488, generate 819-841), so replacing it with one call preserves order exactly: capture stays scope->--file->[A]->body->meta->parseRefs; generate stays scope->[A]->parseRefs->generator. Error strings preserved verbatim ('--subject-run is required for scope %q (at least one)', 'invalid --subject-run %q: must be a valid run id', git-sha errors).
+2. Helper B (optional): parseAndCheckRefs(refs []string) ([]ref, error) wrapping {parseRefs + checkReservedRefs} — called at EACH runner's existing point (capture 517, generate 843), so order preserved. Marginal (6 lines) but removes a 2nd dup.
+KEEP INLINE (extracting would reorder): scope-validation (1 line; capture has --file between scope and subjects), capture's --file check, capture's body+meta reads, generate's generator/materialize block.
+
+BEHAVIOR-IDENTICAL guarantee: every error string + the ORDER of checks unchanged in both runners. Covered by existing retro_test.go capture + generate tests (invalid-scope, --subject-run-required, invalid-subject-run, git-sha, etc.). Verify go test ./internal/cli green.
+
+FILE SCOPE: internal/cli/retro.go only (helpers + the two call-site replacements). Maybe retro_test.go if a direct helper unit test is wanted (not required — covered by the runner tests). 1-bead=1-commit. No docs (internal refactor).

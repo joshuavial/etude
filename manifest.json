@@ -1,0 +1,164 @@
+{
+  "manifest_version": 2,
+  "run_id": "etude-kig",
+  "workflow": "default",
+  "workflow_version": "v1",
+  "created": "2026-05-26T21:16:44.539305Z",
+  "refs": {
+    "bead": "etude-kig"
+  },
+  "stages": [
+    {
+      "stage": "plan",
+      "produced_by": "original",
+      "git_sha": "f744af841ff17efc97787ca6243694a19414e4d8",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-planner",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "task",
+          "artifact": "d08919b2f292745bb8c6947834ba546de97a745a1f1c2cd82c9b66e1ca841555",
+          "path": "artifacts/sha256/d0/d08919b2f292745bb8c6947834ba546de97a745a1f1c2cd82c9b66e1ca841555",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 3518
+        }
+      ],
+      "output": {
+        "role": "plan",
+        "artifact": "989ef4aee055192813ea0bcc27c5f113d7ce7bc7fcf86d47fe413ac40dd55a9f",
+        "path": "artifacts/sha256/98/989ef4aee055192813ea0bcc27c5f113d7ce7bc7fcf86d47fe413ac40dd55a9f",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 2734
+      },
+      "timestamp": "2026-05-26T21:16:44.539305Z"
+    },
+    {
+      "stage": "implement",
+      "produced_by": "original",
+      "git_sha": "f744af841ff17efc97787ca6243694a19414e4d8",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-sonnet-4-6",
+        "skill": {
+          "id": "dev-coder",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "plan",
+          "artifact": "989ef4aee055192813ea0bcc27c5f113d7ce7bc7fcf86d47fe413ac40dd55a9f",
+          "path": "artifacts/sha256/98/989ef4aee055192813ea0bcc27c5f113d7ce7bc7fcf86d47fe413ac40dd55a9f",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 2734
+        }
+      ],
+      "output": {
+        "role": "diff",
+        "artifact": "252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+        "path": "artifacts/sha256/25/252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+        "media_type": "text/x-diff; charset=utf-8",
+        "storage": "content",
+        "size": 5674
+      },
+      "timestamp": "2026-05-26T21:16:44.539305Z"
+    },
+    {
+      "stage": "verify",
+      "produced_by": "original",
+      "git_sha": "f744af841ff17efc97787ca6243694a19414e4d8",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-qa",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "diff",
+          "artifact": "252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+          "path": "artifacts/sha256/25/252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+          "media_type": "text/x-diff; charset=utf-8",
+          "storage": "content",
+          "size": 5674
+        }
+      ],
+      "output": {
+        "role": "verify",
+        "artifact": "e1bdd6e4df3959751c85bc13e81bcab3ec8e6b8ff67eb7c0b27cf951db99d6bd",
+        "path": "artifacts/sha256/e1/e1bdd6e4df3959751c85bc13e81bcab3ec8e6b8ff67eb7c0b27cf951db99d6bd",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 1284
+      },
+      "timestamp": "2026-05-26T21:16:44.539305Z"
+    },
+    {
+      "stage": "review",
+      "produced_by": "original",
+      "git_sha": "f744af841ff17efc97787ca6243694a19414e4d8",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-pr-reviewer",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "diff",
+          "artifact": "252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+          "path": "artifacts/sha256/25/252322d5ee78e1ecc369259761d3270fd6425b6e68b4bf41152d17b788391c6a",
+          "media_type": "text/x-diff; charset=utf-8",
+          "storage": "content",
+          "size": 5674
+        },
+        {
+          "role": "verify",
+          "artifact": "e1bdd6e4df3959751c85bc13e81bcab3ec8e6b8ff67eb7c0b27cf951db99d6bd",
+          "path": "artifacts/sha256/e1/e1bdd6e4df3959751c85bc13e81bcab3ec8e6b8ff67eb7c0b27cf951db99d6bd",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 1284
+        }
+      ],
+      "output": {
+        "role": "review",
+        "artifact": "646da95311ee8f6c89c2a93e5a19f60e8722fd598acf6ce6dc2a856f14169f12",
+        "path": "artifacts/sha256/64/646da95311ee8f6c89c2a93e5a19f60e8722fd598acf6ce6dc2a856f14169f12",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 1611
+      },
+      "timestamp": "2026-05-26T21:16:44.539305Z"
+    }
+  ]
+}
