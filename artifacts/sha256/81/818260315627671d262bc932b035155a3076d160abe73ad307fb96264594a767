@@ -1,0 +1,9 @@
+## Verify — etude-88o (status: pass, recommend proceed to Docs)
+
+Automated tests: go test ./... -count=1 -race ok (all packages, race clean); go vet ./... exit 0; gofmt -l cmd internal clean. Reserved-role subtests (first/second stage x task/repo-state) pass.
+
+Manual (built-binary): go install ./cmd/etude, then etude init in throwaway repo -> exit 0, scaffolds .etude/workflow.yaml + rubrics, ParseYAML self-check passes. Default() uses no reserved produces so the new guard never fires on the real CLI path; no regression. Confirmed only CLI workflow-parse path is init's Default().YAML()->ParseYAML self-check; no CLI parses user workflow.yaml (Phase 1).
+
+QA findings: guard correct + minimal (workflow.go:118-123); coverage genuine (cases regress if guard removed; focused test asserts errors.Is + "reserved" substring); no regressions; clear comment + doc-comment update.
+
+Risk: backward-compat tightening (produces: task|repo-state now rejected) — intentional; no user-facing CLI surface today.
