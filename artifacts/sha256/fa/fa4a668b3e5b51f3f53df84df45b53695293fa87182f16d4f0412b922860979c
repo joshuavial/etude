@@ -1,0 +1,5 @@
+# etude-5dr.6 plan
+
+Close three reachable caller-guard edge cases discovered at the parent implementation gate cap: require post-run HEAD to peel to a commit, snapshot `info/exclude` so a runner cannot hide new untracked files, and require every caller commit to descend from the original or preceding caller commit so original checkout A remains reachable through the producing branch. Add seam-specific regressions proving each failure occurs before a run ref is published. Re-run full automated checks and the complete built-binary QA matrix before updating PR #22.
+
+Round-one corrections extend the same mechanism: snapshot `info/grafts` so ancestry overlays cannot falsify `merge-base`, and compare the raw untracked path set before and after the runner without applying ignore rules so an external `core.excludesFile` target cannot hide a new path. Existing ignored paths remain allowed and content changes to them remain the caller's responsibility.
