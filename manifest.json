@@ -456,6 +456,41 @@
         "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
       },
       "timestamp": "2026-06-07T09:40:04Z"
+    },
+    {
+      "gate_id": "final-review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Clarify the wrong-method sentinel in TestGateEvaluatorValidation."
+          ],
+          "timestamp": "2026-06-07T09:44:17Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
+      },
+      "timestamp": "2026-06-07T09:44:17Z"
     }
   ]
 }
