@@ -265,6 +265,59 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T04:25:36Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "block",
+          "required": [
+            "--force regression: legacy is silent on all refspec output under force; plan emits a skip-note under force+absent+!remoteChanged. Gate all refspec output on !force; strengthen TestInitForceMissingDefaultOriginSucceeds to assert skip-note absent",
+            "dry-run --force count divergence: dry-run reports would-configure 2 ignoring force, but force configures 0",
+            "dry-run create/skip count needs read-only os.Stat per write path; add dry-run-with-existing-files test"
+          ],
+          "timestamp": "2026-06-07T04:29:50Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "dry-run cannot compute create/skip buckets without running write actions or preview metadata",
+            "API mismatch: apply must receive force to call run(force)",
+            "pin whether dry-run lines reflect actual outcome (create vs skip) consistent with summary"
+          ],
+          "timestamp": "2026-06-07T04:29:50Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T04:29:50Z"
     }
   ]
 }
