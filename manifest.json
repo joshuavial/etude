@@ -324,6 +324,120 @@
         "degraded_reason": "Both seats GO on the worker lane's implement diff (+341/-15 across internal/cli/retro.go and its test). etude gate ran the panel live and recorded implement.r1 as escalated on the opus subprocess gap (bead etude-8li); the seat was run in-harness on the identical frozen packet and this attempt records the completed panel, appended BEFORE the verdict was acted on. The opus seat verified the implementation against the APPROVED plan specifically - the ordering the plan committed to (repo root resolved before the ref write, retro_file set before the manifest is built, markdown written only after the ref commit succeeds) - and confirmed the plan-gate optional to file a follow-on bead for the ref-to-markdown asymmetry was honoured by the worker. Four optionals returned, all real and none blocking: writeNewFile can leave a partial file if the write fails after an O_EXCL create succeeds, and the create-only rule then blocks the retry; the reserved-key error message points at a dedicated flag that does not exist for this key; assembleAndWriteRetro derives the landing root from cwd while the ref store is passed in, which is consistent in production but couples them silently; and the docs phase still owes three sentences the artifact already acknowledges. Handed back to the worker verbatim rather than folded by the supervisor."
       },
       "timestamp": "2026-08-15T16:32:23Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "e0f8f46356cdab20d81e48cd14382c72cef8383d4238d08989b6b8042eba8ff2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "6c4127d5fa2266c5aaaeb82aa44a7a8538e32739e17acb0ddcd14f0b5496cce8",
+            "path": "artifacts/sha256/6c/6c4127d5fa2266c5aaaeb82aa44a7a8538e32739e17acb0ddcd14f0b5496cce8",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1233
+          },
+          "timestamp": "2026-08-15T16:44:13.391715Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T16:44:13.659381Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/lane-3xt/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T16:44:15.091433Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Tighten the artifact wording: it says \"all five regressions\" and \"every path from a shell\" despite listing six regressions and not manually driving `retro generate`."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "3e26943b69844475df2bedc3da29fb62e1a6e8d9f4061128b99fffa1785b2c9c",
+            "path": "artifacts/sha256/3e/3e26943b69844475df2bedc3da29fb62e1a6e8d9f4061128b99fffa1785b2c9c",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 319
+          },
+          "session": {
+            "session_id": "codex-8d9d617abc089434",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "8d9d617abc089434684f27375be71cbbb2d3db79295fd24b7c6840dab8c9f60c",
+              "path": "artifacts/sha256/8d/8d9d617abc089434684f27375be71cbbb2d3db79295fd24b7c6840dab8c9f60c",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 223
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T16:44:35.190395Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T16:44:35.190551Z"
     }
   ]
 }
