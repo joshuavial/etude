@@ -838,6 +838,47 @@
         ]
       },
       "timestamp": "2026-08-16T00:32:38Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Declare the optional verified labels field and the findings object shape.",
+            "Clarify that runner is replay-only while judge is shared by both modes.",
+            "Distinguish caller-relative data-file paths from scratch-directory executable paths."
+          ],
+          "timestamp": "2026-08-16T00:36:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task; its remaining documentation follow-ups were folded.",
+        "deferred_beads": [
+          "etude-aul.6",
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:36:00Z"
     }
   ]
 }
