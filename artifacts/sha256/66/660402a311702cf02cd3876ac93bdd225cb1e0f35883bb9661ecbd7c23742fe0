@@ -1,0 +1,7 @@
+## Final Review — etude-phase2.2 (recommendation: close)
+
+Reviewed: plan (attempt 3 + 2 BLOCK rounds on git-semantics), implementation, verify (pass + discrimination proof), docs (no-docs). Findings: none.
+Safety/correctness: validateSHA full-hex; resolvedOID==sha invariant (no moving-ref checkout — only the exact recorded commit OID); worktree add --detach -- with captured OID; cleanup remove->RemoveAll->prune (prune last) + idempotent; Close->Cleanup. gitCmd mirrors refstore (no shell, -C root, strict env).
+Tests discriminate: leak tests assert (snapshot-diff) + proven via disabling production RemoveAll; add-failure path covered; 64-hex (invariant) + 40-hex (ErrSHANotFound) moving-ref regressions.
+Gates re-run green: go test ./... -race ok; vet clean; gofmt clean.
+Commit hygiene: exactly internal/worktree/worktree.go + worktree_test.go (new package, staged by name); no debug/secrets; scheduler lock gitignored.
