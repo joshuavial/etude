@@ -1,0 +1,163 @@
+# Verify — etude-9uf.4
+
+## Acceptance, clause by clause
+
+The acceptance was revised at the plan gate, because the bead's original premise
+for dropping two checks was false. Against the revised text:
+
+| Clause | Status |
+|---|---|
+| "One small script — report its exact line count" | `scripts/dogfood-completeness-audit.sh`, **223 lines** by `grep -c ''`, from 902. Roughly 40 are the header recording why (a) and (b) survive. |
+| "enforces run-ref-present, gated-run-has-gates and refs-pushed as hard checks" | Yes — each has a negative control AND a permanent regression. |
+| "and retro-cadence as a warning" | Yes — pinned by a case asserting exit 0 while the WARN prints. |
+| "preserves the pre-push hook's 0/1/2 exit contract" | Yes — 0 clean, 1 gaps, 2 usage/environment. Five test cases cover exit 2 alone. |
+| "has a focused test" | `dogfood-completeness-audit_test.sh`, **473 lines / 45 cases**, from 1579. |
+| "the 2481 lines it replaces are deleted" | 902 + 1579 = 2481 replaced by 223 + 473 = 696. |
+| "make dogfood-audit exits 0 on a clean tree" | Yes. **It exited non-zero before this bead**, on the `cadence-sidecar` gaps check (f) raised. |
+| "scripts/pre-push_test.sh stays 20/20" | Yes. |
+
+## Checks
+
+| Check | Result |
+|---|---|
+| `make dogfood-audit` | exit 0, clean — **once this bead's own run ref is pushed.** Before that push it correctly exits 1 on `[unpushed-ref] refs/etude/runs/etude-9uf.4 … is AHEAD of origin`, which is check (d) working on the live repo. Quoting a bare "exit 0" would be a claim about when the command was run, not about the code. |
+| `make dogfood-audit-test` | GREEN — 49 passed, 0 failed |
+| `make pre-push-test` | GREEN — 20 passed, 0 failed |
+| `make retro-index-test` | GREEN |
+| `make shell-test` | GREEN (all four suites) |
+| `make test` / `make lint` | GREEN |
+| `make docs-check` / `make docs-reality` | GREEN |
+| `bash -n` on every edited shell file | clean |
+| audit run from a subdirectory | byte-identical output to running from the root (it now `cd`s to its own repo root). Same caveat as the row above: the exit code depends on whether this bead's own run ref is pushed at the moment it runs. |
+
+## What the three implement rounds actually bought
+
+Every non-passing round found a **fail-open on the push path** — a case where the
+audit reported clean on something it was supposed to catch. That is worth stating
+plainly, because this bead's job was to *shrink* a safety check, and shrinking a
+safety check is exactly when fail-opens get written.
+
+| Round | Fail-open |
+|---|---|
+| r1 | a run ref with no readable `manifest.json` exited **0, clean**, on a hard check — a `pipefail` interaction where `\|\| echo -1` appended a second line to a sentinel that had already been printed |
+| r1 | `git ls-remote` failure swallowed by `\|\| true`, turning an unreachable origin into a repo-wide pile of "unpushed" gaps and exit 1 instead of exit 2 |
+| r2 | a `case` with no default arm, so any unexpected value passed |
+| r2 | `gates` counted with `len()` and no type check, so `{"gates":"xx"}` passed |
+| r2 | `mapfile < <(python3 …)` discarding the producer's exit status, so a truncated window read as clean |
+| r2 | `for-each-ref` failure making check (d) pass vacuously |
+
+The first was found independently by both seats and reproduced before fixing. The
+902-line predecessor handled it correctly, so it was a regression this bead
+introduced — and the new test had **no** bad-manifest coverage at all, which is
+why it survived my own review. Three of the r2 four were inherited from the
+predecessor; inherited is not acceptable in a rewrite whose subject is a check
+that must not fail open.
+
+## Negative controls
+
+Each targets a branch whose breakage is observable in the assertion being
+watched — the lesson from bead `.3`, where a control aimed at a masked branch
+proved nothing. Run and reverted:
+
+| Control | Result |
+|---|---|
+| local `refs/etude/runs/*` absent from origin | exit 1, `[unpushed-ref]` |
+| same tree, no gap | exit 0 — so the above is attributable |
+| closed bead with no run ref | exit 1, `[missing-run]` |
+| run ref with zero gates | exit 1, `[gateless-run]` |
+| **run ref with no `manifest.json`** | exit 1, `[bad-manifest]` — this is the r1 fail-open |
+| 3 uncovered beads, hard checks clean | exit 0 **with** `WARN [cadence-overdue]` |
+| unknown flag / `--last 0` / malformed bd output | exit 2 |
+| unreachable origin | exit 2, and no `unpushed-ref` lines |
+| origin advanced from a separate clone | `[diverged-ref]`, and no "push it" instruction |
+
+**The r1 regression was itself negative-controlled**: reinstating the exact
+broken line made the suite report 26 passed / 2 failed; restoring returned 28/28
+(now 34/34). A regression that has never been seen to fail is a guess.
+
+## Coverage holes the verify gate found, and how they were closed
+
+The verify gate did not take the test count on faith; it MUTATED the script and
+watched what the suite did. Three mutations survived:
+
+| Mutation | Before | After |
+|---|---|---|
+| drop `refs/etude/retros` from check (d)'s ref sweep | 34/34 green | **2 fail** |
+| delete the fail-closed catch-all `case` arm | 34/34 green | **1 fail** |
+| replace `cd "$REPO_ROOT"` with `:` | 34/34 green | **1 fail** |
+
+The first was blocking and is the sharpest. Every one of the 34 cases minted only
+RUN refs, so **half of a hard check could be deleted with the suite fully green**
+— and unpushed retro refs are precisely the "invisible until the worktree is
+gone" case that justifies check (d) existing. My artifact had claimed each hard
+check "has a negative control AND a permanent regression"; for half of (d) that
+was false.
+
+The other two are the same lesson one level up: I had pinned the round-1
+fail-open's *instance* (a missing `manifest.json`) but not its *class* (any
+unexpected value reaching a `case` with no default). The catch-all's own comment
+said it existed to prevent that class, and nothing tested it. It is now pinned by
+a `python3` shim that emits the exact two-line value the original bug produced.
+
+The `cd "$REPO_ROOT"` test also had to be rewritten to be meaningful: running
+from a SUBDIRECTORY proves nothing, because git walks up and finds the same repo
+either way. The real probe runs from inside a DIFFERENT git repo carrying its own
+unpushed etude ref, and asserts the audit stays clean and never names it.
+
+**Every claim in the table above was produced by running the mutation, not by
+reasoning about it.**
+
+### Round 2: a full mutation sweep, and two more survivors
+
+The seat then mutated all 90 executable lines plus 12 targeted semantic
+mutations. Exactly two mutants survived, both on subprocess-error branches —
+the same fail-open family, and asymmetric, because the `git ls-remote` sibling
+WAS pinned:
+
+| Mutation | Before | After |
+|---|---|---|
+| `git for-each-ref … \|\| exit 2` → `\|\| true` (check (d) passes vacuously) | 40/40 green | **2 fail** |
+| `\|\| n_gates=-1` → `\|\| n_gates=1` (a python3 failure reads as "one gate") | 43/43 green | **2 fail** |
+
+Both are now reached the same way the suite already reaches `bd`: a shim on
+PATH, invoking the real binary by ABSOLUTE path so it cannot recurse. 45 cases.
+
+The second is the more instructive: it means that had python3 been missing or
+broken, every run would have been recorded as gated. A sentinel is only
+fail-closed if the failure path actually reaches it.
+
+## Known limitations, disclosed
+
+- **Check (c) measures retro REFS while lanes write retro MARKDOWN.** It is
+  WARN-only for that reason: a ratchet firing on the wrong evidence trains people
+  to bypass it. Filed as `etude-3xt`.
+- **Nothing enforces the 7-key retro-meta sidecar any more.** Check (f) was its
+  only enforcement, and `scripts/retro-meta-index.sh` still consumes those
+  sidecars, so its coverage now degrades silently. Filed as `etude-k47`;
+  `docs/retro.md` and `retro-ledger.md` both say so outright rather than implying
+  the guard still exists.
+- **Nothing forces `etude gate` to be used.** Checks (a) and (b) DETECT a
+  supervisor who skipped the model; they do not prevent it. That gap is what
+  justified keeping them, and it is not closed by this bead.
+- **Check (g), retro subject consistency, was also removed and has no follow-up
+  bead**, unlike check (f) which has `etude-k47`. That is deliberate: (g) checked
+  that a retro's title id-list matched its manifest refs — bookkeeping about
+  bookkeeping, with no consumer downstream. Named here because the other dropped
+  check got a bead and a reader would reasonably ask why this one did not.
+- **Check (b) counts gate ATTEMPTS, not passing verdicts.** A run whose only
+  gates BLOCKed satisfies it. That is pre-existing behavior and arguably correct
+  for a completeness audit — it asks "was this gated?", not "did it pass?" — but
+  it narrows the claim that (a) and (b) detect a supervisor who skipped the
+  model: they detect one who never gated, not one who gated and ignored the
+  result.
+- **Check (d) sweeps `refs/etude/{runs,retros}` only**, while `etude sync`
+  pushes all of `refs/etude/*`. Unpushed `refs/etude/evals/*` (the bench cache)
+  are therefore undetected. Identical to the 902-line predecessor's scope, so
+  pre-existing rather than introduced here, but it is a real edge of the check.
+- **Check (c)'s coverage computation is entirely unpinned** — its supersedes-set,
+  `trigger` filter and `subject_run.*` collection are all deletable with the
+  suite green. It is WARN-only and cannot change the exit code, and `etude-3xt`
+  already owns what it measures, so this is disclosed rather than closed.
+- **`make dogfood-audit` still depends on network reachability**, since check (d)
+  calls `git ls-remote`. An unreachable origin is now correctly an exit 2 rather
+  than a false gap, but it does mean the audit cannot run fully offline.
