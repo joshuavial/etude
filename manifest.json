@@ -192,6 +192,37 @@
         "degraded_reason": "Tier 3 docs-only: single Opus seat reviewed kb0.2+kb0.3 plans together. GO — version flow verified against root.go/Makefile; CHANGELOG Unreleased/no-tag; README Releasing section boundary vs kb0.2 non-colliding; kb0.3/kb0.4 mechanics-vs-checklist boundary clear."
       },
       "timestamp": "2026-05-27T16:21:30Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T17:00:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single Opus seat. GO — README version-flow citations correct (root.go:11/24/35, Makefile:3/8-10), make build VERSION=v1.0.0 -> etude v1.0.0 holds; CHANGELOG 13 command families match cobra Short + V1-SCOPE, Unreleased, deferred-list matches; additive scope, docs-reality+reconcile green, kb0.4 ref prose."
+      },
+      "timestamp": "2026-05-27T17:01:00Z"
     }
   ]
 }
