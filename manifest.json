@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-2pc.2",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,41 @@
         "size": 1686
       },
       "timestamp": "2026-06-30T00:19:48.10144Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "cosmetic line-wrap in etude-review SKILL.md (fixed)"
+          ],
+          "timestamp": "2026-06-30T00:16:28Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T00:16:28Z"
     }
   ]
 }
