@@ -1,0 +1,73 @@
+## Plan
+
+**Approach:** Add an OPTIONAL second structured artifact (role:retro-meta, application/json) to the retro write path, carrying the FULL capture-protocol field set as JSON so retros are machine-indexable without re-parsing prose. The sidecar attaches as a SECOND STAGE in the existing retro manifest — option (A) below. When no meta is supplied, the manifest is byte-for-byte today's single-stage shape (backward compatible with q87/n0t retros).
+
+### Artifact-attachment model: OPTION A (two-stage retro manifest) — CHOSEN
+
+The retro manifest gains a 2nd stage named retro-meta whose single Output is the JSON artifact, alongside the existing retro stage (markdown body). Justification, verified against source:
+- runmanifest.Stage.Output is a single ArtifactRef (manifest.go:137); there is no Outputs slice. So a 2nd output cannot live on one stage. But the manifest already holds a []Stage and Validate() only requires len(Stages) >= 1 (manifest.go:221) — it does NOT cap at 1.
+- The shared write path already iterates ALL stages: WriteManifestTree verifies every stage.Output (manifest.go:341-350); referencedArtifactPaths (635-651) and ArtifactPaths (291-312) collect outputs from every stage. So a 2nd stage with its own content-addressed Output artifact is handled with ZERO change to Stage/Manifest/Validate/the writer/readers.
+- Each retro-meta stage passes validateStage unchanged: it gets Name=retro-meta, ProducedBy=retro, the same GitSHA/Skill/Producer/Timestamp as the retro stage, empty Inputs, and Output = the JSON artifact (role retro-meta, application/json, StorageContent). Valid ArtifactRef.
+- Option B (Stage.Outputs []ArtifactRef / aux-outputs) is a GLOBAL schema change touching runs/evals/retros + Validate/verifyArtifactFile/referencedArtifactPaths + every reader (run show, gc, reindex, replay, bench) + capture's single-output rule. Rejected: A achieves the goal with no schema change.
+- Option C (Refs key=value, or embedding JSON in the markdown body) is rejected: Refs values are unhashed strings with no content-address/verify, losing the provenance the design demands (§5: 'never the source of truth' but still a content-addressed artifact); embedding in markdown reintroduces the prose-parsing the sidecar exists to avoid.
+
+Backward compat: capture/generate WITHOUT --meta-file emit exactly today's single retro stage. printRetroDetail (cli/retro.go:347) and list read Stages[0] + Refs, so old retros (and new no-meta retros) parse/validate/render identically. The existing internal/retro writer test asserting len(Stages)==1 uses a test-local single-stage helper and stays valid (the 2nd stage is assembled in the CLI layer, not the writer).
+
+### Field source decision: OPTIONAL --meta-file on capture; generate populates from GenerateResult
+
+- capture: add OPTIONAL --meta-file <path|-> flag. Operator authors the JSON sidecar explicitly (simplest, honest — same model as --file for the body). When absent, no retro-meta stage is written. Do NOT parse structured fields out of the markdown body (fragile — rejected). Validate the supplied bytes are well-formed JSON before storing; store verbatim (content-addressed).
+- generate: extend retro.GenerateResult with an OPTIONAL Meta []byte (application/json). When the generator returns Meta, generate writes the sidecar; when empty, no sidecar. Generators that don't emit meta keep working (StubGenerator/ExecGenerator unchanged by default).
+- Wiring: assembleAndWriteRetro gains a metaContent []byte param. When non-empty: artifactStoreInst.AddContent('retro-meta','application/json',metaContent) -> ArtifactRef; append a 2nd Stage{Name:'retro-meta',ProducedBy:'retro',Output:metaRef,...same provenance...}. Files() already returns both artifacts.
+
+### retro-meta JSON schema (grounded in capture-protocol.md Retro Capture)
+
+The COMPLETE field set (not a subset). Top-level JSON object:
+- scope, trigger, attempt, bead (and beads[] for cohorts)
+- related_stage, related_gate_attempts[], related_commits[]
+- inputs[]
+- summary, summary_not_needed (bool), timeline[] (key events)
+- failure_modes[] (each {category, evidence})
+- root_causes[] (each {kind: process|skill|tool|context|planning, detail})
+- worked_well[]
+- recommendations[] (each {change, target})
+- follow_up[] (refs: beads/PRs/docs/skills)
+- decision (accepted|deferred|superseded|informational)
+- envelope (the standard capture envelope fields)
+This bead does NOT enforce a strict schema validator beyond well-formed JSON — operator/generator owns field completeness per capture-protocol. (A strict validator can be a later bead if needed.)
+
+### Failure-mode / root-cause index: scoped to fields-within-meta
+
+The retro-meta JSON carries failure_modes[] and root_causes[] as part of its complete field set — sufficient for this bead. A SEPARATE cross-retro aggregated index artifact/command is heavier and DEFERRED to a named follow-up bead. The design §5 explicitly frames the cross-retro grouping as a job for the rebuildable .git/etude-index.db (planned, not this bead).
+
+### Slice (1 bead = 1 commit) — CORE only
+
+IN: sidecar artifact on the write path (assembleAndWriteRetro 2nd stage) + capture --meta-file (optional) + generate populates from GenerateResult.Meta (optional) + tests + a no-meta backward-compat path.
+DEFERRED to named follow-up beads:
+- Read-side meta rendering: retro show prints the retro-meta JSON / a structured view; retro list adds failure-mode columns. (follow-up: 'retro show/list render retro-meta sidecar')
+- Cross-retro failure-mode/root-cause aggregated index/command. (follow-up: 'cross-retro failure-mode index')
+
+**Files:**
+- internal/cli/retro.go - add --meta-file flag to retroCaptureConfig + capture cmd; read/validate JSON; thread metaContent through retroWriteParams -> assembleAndWriteRetro; in assembleAndWriteRetro, when metaContent non-empty add retro-meta artifact + append 2nd Stage; in generate.run pass genResult.Meta as metaContent.
+- internal/retro/generator.go - add optional Meta []byte (+ note MediaType) to GenerateResult; StubGenerator gains optional CannedMeta for tests.
+- internal/retro/exec_generator.go - allow the exec generator to surface a meta sidecar if the script emits one (optional; default empty = no behavior change). Confirm exact protocol while implementing; keep no-meta the default.
+
+**Tests:**
+- internal/cli/retro_test.go: capture WITH --meta-file -> manifest has 2 stages (retro + retro-meta), both Output artifacts present + content-stable + readable from the ref; retro-meta media_type == application/json.
+- capture WITHOUT --meta-file -> exactly 1 stage (unchanged), no retro-meta. (backward compat)
+- capture with malformed --meta-file JSON -> clear error, nothing written.
+- generate with a StubGenerator returning Meta -> 2-stage manifest; generate without Meta -> 1 stage.
+- An existing single-stage retro (today's shape) still ParseJSON/Validate/render via retro show.
+
+**Docs:**
+- This is PLANNED behavior already documented in docs/plans/product/etude-retro-command.md §1 (Optional retro-meta sidecar) + §5; mark it shipped there once Verify passes, and add the retro-meta JSON field shape. No user-facing shipped docs exist for etude retro yet, so no shipped-doc update; if a command reference is generated, regenerate it. Do not promote planning text into shipped docs.
+
+**Risks:**
+- Low. Option A uses the existing schema; the only assumption being relaxed (Stages count) is already supported by Validate (>=1). Read-side code uses Stages[0]/Refs so it is unaffected by a 2nd stage.
+- Watch: ensure the retro-meta stage Output passes validateArtifactRef (valid role identifier 'retro-meta' is [A-Za-z0-9_.-] OK; media_type non-control OK) and that the unreferenced-file guard sees both artifacts (it iterates all stages — confirmed).
+- exec_generator meta protocol: keep optional/no-op by default to avoid changing existing generator behavior.
+
+**Gate tier:** Tier 1. Touches the retro write path + manifest CONTENT (a new stage + a new role:retro-meta artifact) + the artifact-attachment model. Even option A (chosen) mutates the write path and introduces a new role; per the bead and dogfood convention that is Tier 1.
+
+**Capture:**
+- inputs: bead etude-2ku description; docs/plans/product/etude-retro-command.md (§1,§5); docs/plans/dogfood/capture-protocol.md (Retro Capture); internal/retro/retro.go; internal/retro/generator.go; internal/cli/retro.go; internal/runmanifest/manifest.go; internal/artifactstore/store.go; internal/retro/retro_test.go
+- output: bead --design field
