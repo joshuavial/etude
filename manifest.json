@@ -356,6 +356,95 @@
       ],
       "decision": {},
       "timestamp": "2026-09-07T00:50:20.194598Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "bfec92f90a0e2900591f8d49caf6edeb0b4bad94d6f1ce0f04248f43863120ca"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "astra",
+            "artifact": "2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "path": "artifacts/sha256/29/2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "astra-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T01:14:43.541547Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Wrap ErrArtifactMismatch in runGateCommand to substitute cfg.artifactPath for the `<artifact-path>` placeholder (two-line errors.Is wrap). 2. Validation error text and the ReviewedRef comment say \"output or inputs\" while stageHasArtifact also matches logs; align the wording. 3. The writeGatedWorkflowFiles comment claims the counter file lets the test observe exact seat invocation counts, but TestGateRejectsMismatchThenAcceptsSameNameRecapture never reads the counter; either assert it after the mismatch step or trim the comment."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "63a2fd2b8a833c0e18857c57968120145e86c0cc1c431870736d4c1123adf75d",
+            "path": "artifacts/sha256/63/63a2fd2b8a833c0e18857c57968120145e86c0cc1c431870736d4c1123adf75d",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 685
+          },
+          "session": {
+            "session_id": "fable-377e900792542acd",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "377e900792542acdf5627194aa38d1340a84bda7c52619347f8e66d04ab2a2fd",
+              "path": "artifacts/sha256/37/377e900792542acdf5627194aa38d1340a84bda7c52619347f8e66d04ab2a2fd",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 591
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T01:15:05.732821Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T01:15:05.736391Z"
     }
   ]
 }

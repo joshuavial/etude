@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. Wrap ErrArtifactMismatch in runGateCommand to substitute cfg.artifactPath for the `<artifact-path>` placeholder (two-line errors.Is wrap). 2. Validation error text and the ReviewedRef comment say "output or inputs" while stageHasArtifact also matches logs; align the wording. 3. The writeGatedWorkflowFiles comment claims the counter file lets the test observe exact seat invocation counts, but TestGateRejectsMismatchThenAcceptsSameNameRecapture never reads the counter; either assert it after the mismatch step or trim the comment.
+CONFIDENCE: high
