@@ -1,0 +1,404 @@
+diff --git a/.claude/agents/dev-planner.md b/.claude/agents/dev-planner.md
+index f0786dd..f55101d 100644
+--- a/.claude/agents/dev-planner.md
++++ b/.claude/agents/dev-planner.md
+@@ -6,6 +6,27 @@ model: opus
+ 
+ # Dev Planner Agent
+ 
++## Named development profiles take precedence
++
++When working under `dev-claude` or `dev-codex` (including this repo's default),
++read `docs/development.md` and the selected `.etude/workflows/<profile>.yaml`
++first. Follow that current contract instead of the historical per-phase gate
++sequence below. Read relevant technical docs before planning, maintain docs with
++code, and supply verification evidence for the actual revision.
++
++The host selects the worker model from the profile; the legacy model/defaults
++below do not override that assignment. The worker produces artifacts and reports
++concrete blockers. The supervisor owns capture and the selected independent
++gates: only high-risk designs require plan review, and final review depth follows
++consequence. Do not ask for or run an approval gate at every phase. Capture comes
++before reviewing the captured bytes. Use the explicit bead/run mapping when one
++exists; do not assume the run ID equals the bead ID.
++
++For these profiles, continue with the current development contract and treat the
++remaining material only as reference where it agrees. Do not resume the legacy
++five-gate loop.
++
++
+ You create implementation plans for beads.
+ 
+ ## Your Purpose
+diff --git a/.claude/skills/dev-workflow/SKILL.md b/.claude/skills/dev-workflow/SKILL.md
+index f2bd1a6..ce6a227 100644
+--- a/.claude/skills/dev-workflow/SKILL.md
++++ b/.claude/skills/dev-workflow/SKILL.md
+@@ -5,6 +5,27 @@ description: Work on a bead through Plan, Implement, Verify, Docs, and Final Rev
+ 
+ # Dev Workflow
+ 
++## Named development profiles take precedence
++
++When working under `dev-claude` or `dev-codex` (including this repo's default),
++read `docs/development.md` and the selected `.etude/workflows/<profile>.yaml`
++first. Follow that current contract instead of the historical per-phase gate
++sequence below. Read relevant technical docs before planning, maintain docs with
++code, and supply verification evidence for the actual revision.
++
++The host selects the worker model from the profile; the legacy model/defaults
++below do not override that assignment. The worker produces artifacts and reports
++concrete blockers. The supervisor owns capture and the selected independent
++gates: only high-risk designs require plan review, and final review depth follows
++consequence. Do not ask for or run an approval gate at every phase. Capture comes
++before reviewing the captured bytes. Use the explicit bead/run mapping when one
++exists; do not assume the run ID equals the bead ID.
++
++For these profiles, continue with the current development contract and treat the
++remaining material only as reference where it agrees. Do not resume the legacy
++five-gate loop.
++
++
+ Structured development for commit-sized work:
+ 
+ `PLAN -> IMPLEMENT -> VERIFY -> DOCS -> FINAL REVIEW -> commit/close`
+diff --git a/AGENTS.md b/AGENTS.md
+index 7b91f29..c93e1ec 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -38,9 +38,11 @@ implemented.
+ The current product brief is planning material, so it lives at
+ `docs/plans/product/BRIEF.md`.
+ 
+-## Dogfood Session Boot
+-
+-When starting after a context clear or on a new ticket, read
+-`docs/plans/dogfood/README.md` after `bd prime`. Its Session Boot section is
+-the current entry point for the dogfood workflow, including the review-gate
+-process and next-bead flow.
++## Development session boot
++
++After `bd prime`, read `docs/development.md`, the current contract for
++`dev-claude` and `dev-codex`. Read relevant technical docs before planning;
++ship accurate technical documentation alongside code. Historical dogfood plans
++and generic loop skills do not override this repo's current proportional review
++and independent QA policy. In worktrees, verify access to the canonical beads
++store before claiming work.
+diff --git a/docs/README.md b/docs/README.md
+index 3a59d07..4311c22 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -33,3 +33,5 @@ The current implemented state is summarized in the top-level
+ The storage and manifest packages that exist today are Go APIs internal to this
+ module. The top-level README mentions them as implementation status; user-facing
+ command docs cover the implemented CLI only.
++
++- [Developing Etude](development.md): dev-claude/dev-codex, technical docs, QA and proportional review.
+diff --git a/docs/development.md b/docs/development.md
+new file mode 100644
+index 0000000..c57c8dc
+--- /dev/null
++++ b/docs/development.md
+@@ -0,0 +1,163 @@
++# Developing Etude
++
++This is the current development contract for this repository. It supersedes the
++five mandatory phase gates in the historical dogfood runbooks and the generic
++`etude-loop` instructions wherever they conflict. Both profiles use the same
++acceptance criteria, documentation obligations and quality bar.
++
++## Choose a profile and a bounded task
++
++Use `dev-claude` for a Claude-led lane or `dev-codex` for a Codex-led lane. The
++executable profiles are `.etude/workflows/dev-claude.yaml` and
++`.etude/workflows/dev-codex.yaml`; `.etude/workflow.yaml` defaults to dev-codex.
++Review model identities and invocations live in `.etude/registry.yaml`.
++
++| Responsibility | dev-claude | dev-codex |
++| --- | --- | --- |
++| Scope, risk classification, difficult decisions | Fable 5.1 | Astra |
++| Bounded implementation, tests and docs | Sonnet | Terra |
++| More demanding implementation | Opus | Sol |
++| Architectural uncertainty or persistent failure | Fable 5.1 | Astra |
++| Routine independent final review | Sol | Sonnet |
++| Consequential final review and high-risk plan review | Fresh Astra + Fable | Fresh Astra + Fable |
++
++The host selects and launches actual workers; these assignments are policy, not
++engine-managed model routing. Use inexpensive context gathering only when it
++provides a useful independent task. Keep one worker through code, tests and docs.
++Difficulty selects the worker; the consequence of an error selects review depth.
++Record the model that actually ran, including any explicit substitution.
++
++Track work in beads. In an isolated Git worktree, use the main checkout's beads
++store instead of initializing another database. The launcher may write the
++canonical `.beads` path to ignored `.beads/redirect`; verify `bd show <bead>`
++works before assigning work. `bd prime` alone does not verify database health.
++Keep one bead's changes in one commit, with separate worktrees for parallel lanes.
++
++## Read documentation before planning
++
++Read relevant guides in `docs/`, the affected component's technical explanation,
++contracts, tests and source. Check important documentation claims against the
++implementation. Distinguish stale docs from a code defect before choosing which
++to change. Plans belong in `docs/plans/` or captured run artifacts, not shipped
++usage documentation.
++
++The plan identifies acceptance criteria, invariants, affected components, failure
++cases, documentation updates and a verification method for each requirement.
++High-risk designs (storage integrity, authorization, lifecycle, destructive or
++broad compatibility changes) get an independent Astra/Fable plan gate. Routine
++plans need no model gate. A consequential but understood fix can proceed directly
++to implementation with a strong final gate.
++
++## Implement code, tests and technical docs together
++
++Maintain technical documentation in the same delivery as code: changed contracts,
++component responsibilities, data flow, failure/recovery behavior, configuration
++and significant design decisions. Include usage examples for observable changes.
++Generated command references supplement maintained explanations.
++
++Every change needs a documentation assessment. If it restores already-documented
++behavior, record the relevant paths and why no edit is necessary. Never defer
++necessary docs merely to ship code. Update or mark affected planning notes as
++superseded when behavior ships. Do not turn a focused fix into documenting the
++whole repository.
++
++## Independent QA and verification
++
++The implementer adds meaningful regression tests and runs checks. Demonstrate the
++reported failure before the fix where practical. A fresh QA worker inspects the
++requirements, actual code/docs and test coverage, rather than accepting the
++implementer's summary. QA may add focused tests; production fixes return to the
++implementation worker and invalidate affected evidence. A routine final reviewer
++may also perform QA if its report distinguishes the independent assessment.
++
++| Check | When required |
++| --- | --- |
++| `make test` and `make lint` | Code changes |
++| `make shell-test` | Shell scripts, hooks or process changes; this suite is separate from Go tests |
++| `make docs-check` | CLI/reference changes and final integration |
++| `make docs-reality` | Changed documentation claims and final integration |
++| `go test -race ./...` or affected packages | Concurrency/lifecycle changes |
++| Fresh binary in temporary realistic repositories | Git, CLI, artifact or subprocess behavior changes |
++
++Build with `make build`, and exercise `bin/etude` by its absolute path. Do not
++replace the installed binary unless installation itself is under test. Check
++exit status, output, filesystem/ref effects and failure/recovery behavior. For
++security boundaries, actually attempt both allowed and denied operations.
++
++Capture one verification record for the exact evaluated revision/artifact:
++acceptance criterion to evidence; commands, environment and results; realistic
++product exercises; docs updated or unchanged rationale; independent QA findings;
++and status `pass`, `fail` or `blocked`. Missing evidence is not a pass. Later
++changes require rerunning affected checks; integration checks cover interactions
++between independently verified lanes. A configured check is not evidence it ran.
++
++## Capture and review
++
++These profiles support **externally supervised capture/gate workflows**. They
++intentionally have no stage runner bindings: `etude run` is not an autonomous
++implementation driver for them. The supervisor launches workers and checks,
++captures their outputs, and invokes only the selected gates. Conditional risk
++routing and delivery completeness are supervisor responsibilities, not native
++engine enforcement.
++
++Capture plan, implementation (`diff`), verification (`verify`) and documentation
++(`docs-diff`) artifacts for every task. A docs artifact can carry a justified
++unchanged-docs assessment. Then capture a final **review packet**, not a prior
++reviewer's verdict. It contains requirements, plan, exact revision and diff,
++relevant full source/contracts, documentation and independent QA evidence. Both
++reviewers receive the same complete packet in fresh contexts. Claude reviewers
++have tools disabled, so a path without its contents is not sufficient evidence.
++Codex reviewers also have a read-only sandbox; config `mode` alone is not an
++access-control mechanism.
++
++Example commands, using an existing plan file and a new named run:
++
++```sh
++bin/etude capture plan --run etude-3343-dev-claude \
++  --workflow dev-claude --output plan=.etude/tmp/etude-3343/plan.md
++bin/etude gate --run etude-3343-dev-claude --workflow dev-claude \
++  --stage plan --artifact .etude/tmp/etude-3343/plan.md --timeout 20m
++```
++
++Run the plan gate only for high-risk designs. For the final gate, choose exactly
++one of `review` (consequential, L2) or `routine-review` (routine, L3 for dev-claude,
++L4 for dev-codex), capturing the matching output role before gating it. Supply
++`--harness`, `--model` and `--git-sha` when capturing actual agent work. Always
++recapture changed bytes before a review, preserving earlier attempts.
++
++Every configured gate explicitly requires `pass_threshold: 1`. L2 means both
++Astra and Fable must pass. Auth failures, timeout, missing tools or truncated
++output leave review incomplete. Require concrete blockers with a trigger,
++consequence and evidence; optional suggestions can be deferred with a reason.
++Investigate disagreements with source or a reproduction. After two unsuccessful
++substantive revision rounds, surface the unresolved issue rather than polling for
++approval. `max_rounds: 3` bounds engine-managed attempts; the supervisor also
++bounds separately invoked gate attempts.
++
++Reviewer-only environment names are declared on registry seats. At execution,
++Etude combines those names with the workflow allowlist **only for review seats**,
++including invocation fallbacks. The same named seat used as a stage/check does
++not receive reviewer-only variables. Names must be valid, unique and non-reserved;
++credential values are resolved at runtime and are never configuration values.
++The workflow permits HOME for normal tooling; it does not share Claude OAuth or
++Codex profile variables with project commands. This narrows environment exposure;
++it is not an operating-system credential vault or isolation from all home files.
++
++## Finish and monitor
++
++Ship only when acceptance criteria, relevant checks, technical documentation and
++the selected independent review are complete. The supervisor inspects actual
++logs, exit status, captured identities and run records, repairs process failures
++within scope, and never synthesizes a passing verdict.
++
++`.etude/run-map.tsv` maps a bead to its active run when a new profile needs a new
++run identity. An explicit mapping overrides the legacy run named after the bead.
++The completeness audit checks that mapped run exists and has gate attempts, and
++that metadata refs are pushed. It does not prove phase completeness or passing
++verdicts; the supervisor must check those before closing work. Existing unmapped
++beads retain the legacy lookup. Record the run mapping in bead notes as well.
++
++Sync metadata with `etude sync`, push the branch explicitly, and sync beads with
++`bd dolt push`. The historical cadence-retro warning remains useful feedback,
++not an extra model gate. Review recurring process faults and update the relevant
++repo instructions or shared skill rather than repeating a workaround silently.
+diff --git a/docs/gates.md b/docs/gates.md
+index 81507c9..af4dda1 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -370,3 +370,20 @@ degraded-gate policy), see
+   [`run show`](cli/etude_run_show.md) — generated per-command flag reference.
+ - [Gate reviewer record schema](plans/product/gate-reviewer-record-schema.md) —
+   the full data model and validation rules.
++
++## Reviewer-only authentication environment
++
++A registry seat may declare `env_allowlist` containing environment variable
++names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
++resolver combines these names with the workflow allowlist for that seat's
++primary and fallback subprocesses. Values come from the calling environment at
++execution time; do not put credential values in YAML or captured artifacts.
++
++Seat-only names are not applied when resolving a stage runner or a deterministic
++check, even when it references the same registry seat by name. Invalid names,
++duplicates, PATH and Etude's input/output/session control variables are rejected.
++This controls environment inheritance, not access to credentials elsewhere on
++the filesystem. Configure actual harness tool restrictions separately.
++
++For this repository's development profiles and delivery requirements, see
++[Developing Etude](development.md).
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index 31c005b..6be2748 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -3,30 +3,18 @@
+ These notes describe how this repo is using planned `etude` concepts while the
+ product is still being built. They are not shipped user-facing behavior.
+ 
+-A bead is worked by a **worker lane** and advanced by a **supervisor** who runs
+-each phase gate with a command. Start at the
+-[Supervisor runbook](supervisor-runbook.md) — it owns the operational loop and
+-is the specification for `etude gate`.
+-
+ ## Session Boot
+ 
+-After a context clear or when starting a new ticket:
++Run `bd prime`, then read [Developing Etude](../../development.md). That is the
++current operational contract for `dev-claude` and `dev-codex`, including
++model delegation, documentation-driven planning, independent QA and proportional
++review gates. Verify the actual bead database is accessible, inspect the bead's
++mapped run and continue its recorded work.
+ 
+-1. Run `bd prime`.
+-2. Run `bd ready` and pick the next unblocked bead.
+-3. Inspect recent runs with `etude run list` and `etude run show <bead>` — the
+-   run refs under `refs/etude/runs/*` carry each bead's stages and its gate
+-   reviewer records, so recover what shipped and how it was reviewed from there,
+-   not only from `bd`.
+-4. Read the [Supervisor runbook](supervisor-runbook.md).
+-5. Read the [Review gate runbook](review-gate-runbook.md) for how to judge an
+-   artifact, and [Verify phase design](verify-phase-design.md) for the workflow
+-   shape.
+-6. Work the bead through `plan -> implement -> verify -> docs -> final review`,
+-   running the per-phase loop from the supervisor runbook at every boundary.
+-7. After a gate passes and optional improvements are folded in or deferred to a
+-   named bead, continue to the next phase without waiting for another prompt
+-   unless blocked.
++The documents below are historical design and retrospective material. Their
++five-per-phase gate requirements are superseded by the current development
++contract. Capture/gate storage contracts remain useful background, but do not
++restart the old approval loop.
+ 
+ ## Index
+ 
+diff --git a/docs/plans/dogfood/docs-checklist.md b/docs/plans/dogfood/docs-checklist.md
+index 39405e0..0671f8a 100644
+--- a/docs/plans/dogfood/docs-checklist.md
++++ b/docs/plans/dogfood/docs-checklist.md
+@@ -1,5 +1,9 @@
+ # Docs Freshness Checklist
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: dogfood process note. This checklist keeps shipped docs accurate while
+ most `etude` behavior is still planned.
+ 
+diff --git a/docs/plans/dogfood/review-gate-process.md b/docs/plans/dogfood/review-gate-process.md
+index 4cdba93..04f43c5 100644
+--- a/docs/plans/dogfood/review-gate-process.md
++++ b/docs/plans/dogfood/review-gate-process.md
+@@ -1,5 +1,9 @@
+ # Review Gate Process
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This defines the gate policy to use while building
+ `etude`.
+ 
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index b998fb8..78e5fa7 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -1,5 +1,9 @@
+ # Review Gate Runbook
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This is the judgement reference for the phase gate whose
+ policy is defined in [Review Gate Process](review-gate-process.md).
+ 
+diff --git a/docs/plans/dogfood/supervisor-runbook.md b/docs/plans/dogfood/supervisor-runbook.md
+index c1e2d2b..cddc278 100644
+--- a/docs/plans/dogfood/supervisor-runbook.md
++++ b/docs/plans/dogfood/supervisor-runbook.md
+@@ -1,5 +1,9 @@
+ # Supervisor Runbook
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This describes how a bead is worked while `etude` is
+ still being built. It is not shipped user-facing behavior.
+ 
+diff --git a/docs/plans/dogfood/verify-phase-design.md b/docs/plans/dogfood/verify-phase-design.md
+index a9e81c4..0da0f8e 100644
+--- a/docs/plans/dogfood/verify-phase-design.md
++++ b/docs/plans/dogfood/verify-phase-design.md
+@@ -1,5 +1,9 @@
+ # Verify Phase Design
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This defines the intended Verify phase boundary for the
+ dogfood workflow before any external skill files are changed.
+ 
