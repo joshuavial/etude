@@ -1,0 +1,58 @@
+# Cadence retro (2026-05-27) — retro-quality phase: convention, event-time, consistency
+
+Cohort: etude-8hq.3 (define + require cadence retro-meta sidecars), etude-8hq.2
+(add original event time to retro artifacts), etude-8hq.8 (repair + guard retro
+subject consistency). Beads 3–5 of phase etude-8hq.
+
+## Trigger
+3-ticket cadence, flagged mechanically by `dogfood-completeness-audit.sh` check (c)
+cadence-overdue. This is the FIRST post-cutoff cadence retro, so it carries a 7-key
+retro-meta sidecar (the etude-8hq.3 convention) — dogfooding the very mechanism this
+cohort built and proving check (f) passes on a compliant new cadence retro.
+
+## What went well (preserve)
+- **The multi-round plan gate earned its keep, repeatedly.** etude-8hq.3 took FOUR
+  plan rounds, each catching a real, escalating defect: (r1) schema omitted the
+  mandated `durable_changes` + WARN-only didn't satisfy "REQUIRE"; (r2) a
+  date-granular cutoff was ambiguous against full timestamps; (r3) LEXICAL comparison
+  of fractional-second ISO timestamps breaks at the boundary (`...00.000001Z` sorts
+  before `...00Z`). etude-8hq.2 caught a 1-BLOCK/2-GO where codex was right (the log
+  render hid capture time). None of these would have been caught by tests alone.
+- **Adversarial seats that DRY-RAN the logic** (8hq.8: the planner + Opus both
+  re-implemented the title parser over the live 17-ref corpus) caught a false-positive
+  (`(2026-05-25/26)` → bogus `etude-26`) before it shipped. Empirical gate review >
+  reasoned gate review.
+- **Premise-check / not-a-vote-count (runbook P3, added in B17) paid off**: 8hq.2's
+  lone verified-true BLOCK was adopted over a 2-GO majority.
+
+## What went wrong / was caught late
+- **The cutoff×supersede cross-bead interaction (8hq.8) was missed by the plan AND
+  all three plan-gate seats** — caught only when the real `make dogfood-audit` ran on
+  the actual re-captured ref. Superseding the pre-cutoff B16 minted a NEW ref with a
+  post-cutoff `created`, which check (f) (from 8hq.3) hard-requires carry a sidecar →
+  the sidecar-less supersede produced a hard GAP. The fixture tests + plan review all
+  passed; only running the real mechanical gate on the real artifact surfaced it.
+- **Timestamp-comparison footgun** (8hq.3 r3): lexical string comparison of ISO
+  timestamps is unsafe with fractional seconds + RFC3339Nano trailing-zero trimming.
+  Parse to instants.
+
+## Root cause
+Plan review and fixture tests reason about the bead's OWN new mechanism in isolation.
+A bead that CREATES or MUTATES an artifact (backfill, supersede, re-capture) interacts
+with ALL the OTHER active mechanical gates — and those interactions are invisible to
+both fixture tests (which seed only the new check's inputs) and plan review (which
+reasons about the new feature). The only thing that catches them is running the real,
+composed gate on the real (or realistic) artifact.
+
+## Durable changes landed
+- etude-8hq.3: 7-key cadence retro-meta sidecar convention + check (f) (datetime-parse
+  cutoff) + docs/retro.md.
+- etude-8hq.2: optional `occurred_at` manifest field + `--occurred-at` + log EVENT
+  column / effective-time sort (capture time never dropped).
+- etude-8hq.8: check (g) subject-consistency guard + B16 annotation.
+- THIS retro: a new "verify-the-verification for artifact-creating beads" note added to
+  the review-gate runbook (run the real composed audit on the real artifact before
+  declaring a data-repair/backfill/supersede plan sound).
+
+## Decision
+informational — process retro; the durable changes are implemented.

@@ -1,0 +1,27 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-27",
+  "failure_modes": [
+    "cross-bead mechanical-gate interaction (supersede minting a post-cutoff ref that a different shipped check hard-gates) missed by plan + all 3 plan-gate seats; caught only by running the real audit",
+    "lexical comparison of fractional-second ISO timestamps breaks at the cutoff boundary"
+  ],
+  "root_causes": [
+    "plan review + fixture tests reason about the bead's OWN new mechanism in isolation; artifact-creating beads interact with ALL active mechanical gates, which is invisible to fixture seeds and plan reasoning"
+  ],
+  "follow_up_beads": [
+    "etude-8hq.5 (re-capture B16 + backfill 16 sidecars supersession-aware; remove the B16 allowlist entry)",
+    "etude-8hq.6 (role-based review gate)",
+    "etude-8hq.7 (executable checklists)"
+  ],
+  "decisions": [
+    "8hq.3 enforcement is dogfood-layer only (etude core stays schema-free per etude-2ku)",
+    "8hq.2 keeps capture time always visible (TIMESTAMP column) and adds EVENT column; sort by effective time",
+    "8hq.8 B16 repaired by annotation (allowlist + ledger), not supersede; full supersede+sidecar deferred to 8hq.5"
+  ],
+  "durable_changes": [
+    "7-key cadence retro-meta sidecar convention + check (f) datetime-parse cutoff (8hq.3)",
+    "optional occurred_at manifest field + --occurred-at + log EVENT column (8hq.2)",
+    "check (g) subject-consistency guard + B16 annotation (8hq.8)",
+    "review-gate runbook note: verify-the-verification for artifact-creating beads (run the real composed audit on the real artifact)"
+  ]
+}
