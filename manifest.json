@@ -356,6 +356,73 @@
         ]
       },
       "timestamp": "2026-06-29T23:04:13Z"
+    },
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-29T22:27:48Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "seat error→verdict mapping",
+            "Provider split-/ fallback",
+            "seat Timeout/MaxOutputBytes",
+            "DegradedReason on any non-usable seat",
+            "AC1 version-3 round-trip"
+          ],
+          "timestamp": "2026-06-29T22:27:48Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "resolver-error as failed/blocked",
+            "document L4/inline→Tier 0"
+          ],
+          "timestamp": "2026-06-29T22:27:48Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-29T22:27:48Z"
     }
   ]
 }
