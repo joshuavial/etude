@@ -308,6 +308,81 @@
         "degraded_reason": "pilms 0-CPU hang all session; active seats reviewed"
       },
       "timestamp": "2026-05-26T10:03:14Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "log"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.133.0"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "--subject filter matched a retro by its own retro id; spec says retros match only by subject_run/bead"
+          ],
+          "timestamp": "2026-05-26T10:04:29Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T10:04:39Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T10:04:49Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang all session; known artifact, seat skipped",
+          "timestamp": "2026-05-26T10:04:59Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms 0-CPU hang all session; active seats reviewed"
+      },
+      "timestamp": "2026-05-26T10:05:14Z"
     }
   ]
 }
