@@ -1241,6 +1241,39 @@
         "degraded_reason": "BLOCK, and the most consequential finding of this bead. My bin/etude was built at 15:37 and 17d0ab5 - the commit landing the fallback ladder - landed at 16:11, so EVERY escalation this epic measured was produced by a pre-ladder binary. The binary contained neither ladder marker and no run ref in the repo carried one. The measurements are real; the mechanism I had documented as their explanation was not, and I had also asserted the gate 'finds no other exec-able candidate' when registry.yaml declares an exec-able agy rung in the very stanza I was citing. Rather than correct prose to a mechanism I still had not observed, I rebuilt and ran a real gate: docs.r6 on this run records CANDIDATE_FAILED harness=claude-code, then IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent, then CANDIDATE_FAILED harness=agy. All three rungs walk. The conclusion survives - every gate escalates for a Claude Code supervisor - but for a different reason than documented: not because the ladder is unwalked but because its last exec-able rung is dead (etude-8li). Both docs now say that, the runbook warns to rebuild bin/etude first since a stale binary silently gives the old flat-outage behaviour, and it notes that repairing etude-8li means a supervisor must check WHICH harness filled the opus seat rather than assuming. The lesson recorded in the artifact: I documented a mechanism from reading code and a bead id, measured an outcome consistent with it, and was wrong about the causal link for four rounds. Only running it settled that. Four optionals folded, including a pqv/5f6 attribution split and a grep -A3 in the drift snippet that does not reach the stage's own output hash."
       },
       "timestamp": "2026-08-15T20:00:20Z"
+    },
+    {
+      "gate_id": "docs.r7",
+      "phase": "docs",
+      "round": 7,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r7",
+          "role": "docs-diff",
+          "artifact": "421218f7039f6c2387472ff4bc0bac11e0733cb05515bb273ff16d4b97b894c7"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T20:10:21Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Docs PASSES at round 5 of the seat's review. Five rounds, and each BLOCK found something the previous fix had got wrong - a rare and useful shape: r1 measurements attributed to the wrong run; r2 the correction to that misattribution was itself misattributed, plus the gap detector had an unstated false-positive mode; r3 the rewritten seat-exception paragraph conditioned its one operative instruction on a bead already CLOSED, and the same stale claim lived in a second cross-linked file; r4 the supervisor's own bin/etude predated the fallback ladder, so every escalation this epic measured came from a pre-ladder binary and the documented mechanism had never been observed - fixed by rebuilding and RUNNING a gate rather than editing prose; r5 the false-positive discriminator I proposed was itself wrong, because nextPhaseRound maxes over stage names too, so 'is there a stage of that name' dismisses all four holes including the three real ones. The working separator - a later attempt reviewing an OLD stage - is now in both the runbook and etude-a1i. A wrong discriminator is worse than none: it turns a check into a rubber stamp. Five more optionals folded, including make build named explicitly, and two narrative staleness nits of exactly the class this bead is about."
+      },
+      "timestamp": "2026-08-15T20:10:21Z"
     }
   ]
 }
