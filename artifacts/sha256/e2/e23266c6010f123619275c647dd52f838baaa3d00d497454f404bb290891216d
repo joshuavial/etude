@@ -1,0 +1,7 @@
+# Verify — etude-712 (gen-docs TestDriftGuard exhaustive)
+Status: PASS (inline). Test-only/dev-tooling change.
+- go test ./... green (15 pkgs); go test -v ./cmd/gen-docs all pass incl TestDriftGuard + TestCheckDriftFailureModes/{happy-path,committed-missing,committed-orphan,byte-stale}.
+- make lint OK; make docs-check OK (docs/cli unchanged — 17 generated == 17 committed byte-identical).
+- Implement-gate Opus seat live-mutation-tested checkDrift: MISSING (delete -> error), STALE (byte change -> error, true bytes.Equal), ORPHAN (stray etude_bogus.md -> error), stray README.md -> no false positive.
+- Exhaustiveness win: guard now covers all 17 pages incl etude_retro.md/etude_retro_capture.md/etude_capture-gate.md that the old 14-entry expectedCommands silently omitted.
+- Scope: only cmd/gen-docs/main_test.go.
