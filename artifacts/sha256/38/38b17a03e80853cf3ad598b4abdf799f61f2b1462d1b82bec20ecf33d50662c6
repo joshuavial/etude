@@ -1,0 +1,2260 @@
+commit 64def8e2716818c7e13f16fa2328ed0115778c0c
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 07:25:37 2026 +0800
+
+    add live gate execution with checks, weighted seats, rerun and tier escalation
+
+diff --git a/docs/gates.md b/docs/gates.md
+index d5ccaaa..ad94a6e 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -160,6 +160,62 @@ guessed. The strict parser will backfill runs whose notes use the canonical
+ format going forward, and honestly declines the rest. Capturing gates live with
+ `etude capture-gate` (per the dogfood conventions) is the reliable path.
+ 
++## Live gate execution
++
++During a live `etude run`, the engine executes gate blocks automatically —
++no manual `etude capture-gate` call is needed. See [Runs](run.md#gate-execution)
++for the full live execution semantics (check/seat invocation, synthesis,
++rerun, escalate). This section documents the **seat output envelope** contract
++that seat runners must satisfy when invoked by the live engine.
++
++### Seat output envelope
++
++A seat runner writes a JSON object to `ETUDE_OUTPUT_FILE`:
++
++```json
++{"verdict":"go","required":[],"optional":[]}
++```
++
++Fields:
++
++| Field | Type | Description |
++|---|---|---|
++| `verdict` | `"go"` or `"block"` | The seat's vote |
++| `required` | array of strings | Required changes; meaningful on block |
++| `optional` | array of strings | Suggestions; meaningful on go |
++
++The envelope is parsed strictly. A runner that exits 0 but writes no file, an
++empty file, or non-JSON content is recorded as `empty` or `malfunction` and
++excluded from the vote. A runner that exits nonzero is recorded as `failed`
++regardless of output. All three carry a `failure_note` in the stored
++`SeatResult` (see the capture-gate record schema above).
++
++**Check runners** do not write an output envelope. Their verdict is the
++process exit code: 0 = pass, nonzero = hard BLOCK. A check that cannot
++launch, times out, or exits nonzero is always a hard veto, independent of seat
++votes.
++
++### Synthesis and the stored record
++
++After synthesis the engine writes the gate attempt directly to the run
++manifest (same CAS path as stage captures). The stored `GateAttempt` follows
++the same schema used by `etude capture-gate` (see above), with these
++live-specific characteristics:
++
++- `gate_id` is `"<phase>.r<round>"` where round is 1-based and monotonically
++  increases across reruns and tier changes.
++- Check seats appear as `SeatResult` entries with `harness.name="exec"` and
++  `provider.name="deterministic"`.
++- `decision.degraded_reason` is set whenever any seat is non-usable (failed,
++  empty, or malfunction) — even when the gate still passes — so the audit
++  record reflects a degraded panel.
++- `decision.escalation_reason` is required when `status="escalated"`.
++- A run that carries any gate attempts is stored as `manifest_version` 3.
++
++For the dogfood operational checklist (manual reviewer seats, runbook format,
++degraded-gate policy), see
++[Review Gate Runbook](plans/dogfood/review-gate-runbook.md).
++
+ ## See also
+ 
+ - [Manual Capture](capture.md) and [Runs](run.md) — capturing stages and
+diff --git a/docs/plans/product/live-execution.md b/docs/plans/product/live-execution.md
+index a1bf85b..cfd33d8 100644
+--- a/docs/plans/product/live-execution.md
++++ b/docs/plans/product/live-execution.md
+@@ -1,9 +1,9 @@
+ # Live execution (`etude run`) — design
+ 
+ Status: mixed. §1 (live workflow orchestration) is **implemented** as of bead
+-etude-xin. §2 (live gate execution) and §3 (scoped secret passthrough) remain
+-**planned**. Durable failed-stage status capture (decision 6 below) is
+-deferred to bead etude-dp7.
++etude-xin. §2 (live gate execution) is **implemented** as of bead etude-04i.
++§3 (scoped secret passthrough) remains **planned**. Durable failed-stage
++status capture (decision 6 below) is deferred to bead etude-dp7.
+ 
+ Today etude supports both capture-and-replay and live orchestration: it records
+ runs, `etude replay <run-id> <stage>` re-runs a single recorded stage, and
+@@ -98,8 +98,8 @@ What is implemented:
+   run.
+ - On a stage failure (non-zero/timeout) outside a gate: stop and leave the
+   partial run. Resume later with `etude run --resume <id>` from the frontier
+-  (first stage not yet captured). Gate blocks in the workflow schema are
+-  read but treated as a no-op (deferred to etude-04i).
++  (first stage not yet captured). Gate blocks in workflow stages are executed
++  during the run (see §2).
+ - Forward replay: `etude replay <run-id>` (1 arg) re-runs all stages in order
+   in a single evolving worktree using recorded (content-addressed) inputs.
+   `etude replay <run-id> <stage>` (2 args) retains the original single-stage
+@@ -121,11 +121,11 @@ stages; failure is surfaced via nonzero exit and stderr only.
+ 
+ ## 2. Live gate execution
+ 
+-**Planned (etude-04i).** Gate execution during a live run is not yet built.
+-`etude capture-gate` records reviewer verdicts after the fact (capture-only).
+-Gate blocks in a workflow stage schema are read but treated as a no-op.
++**Implemented (etude-04i).** Gate blocks in workflow stages are now executed
++during live runs. See [docs/run.md](../run.md#gate-execution) for user-facing
++documentation.
+ 
+-**Planned:** gate execution during a live run that:
++What is implemented:
+ 
+ - A gate is attached to the stage it guards (`stage.gate`), with two seat kinds:
+   - **checks** — deterministic runners (tests/build/lint); any failure is a hard
+@@ -141,13 +141,14 @@ Gate blocks in a workflow stage schema are read but treated as a no-op.
+ - Drives the loop: `rerun` re-runs the guarded stage with seat feedback and
+   increments the round (`<stage>.r<round>`); `escalated` advances the tier
+   (stronger / more seats, or human).
+-- Calls `capture-gate` for the executed outcome automatically.
++- Records each gate attempt automatically through the existing `capture-gate`
++  path (no CLI subprocess; the engine writes directly to the manifest).
+ 
+ Gate config lives on the stage (`checks`, `seats`/`tier`, `pass_threshold`,
+ `max_rounds`, `abstraction`); seat/tier *definitions* live in the shared
+ registry (the former `gates.yaml`).
+ 
+-### Acceptance criteria
++### Acceptance criteria (met)
+ 
+ - A workflow stage with a gate runs its checks + seats live and records a gate
+   attempt with the synthesized verdict.
+diff --git a/docs/run.md b/docs/run.md
+index ff19278..febea46 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -190,6 +190,57 @@ characters other than letters, digits, `-`, `_`, and `.`.
+ Reserved workflow names `show` and `list` are rejected with a clear error
+ because they are shadowed by the `run` subcommands.
+ 
++### Gate execution
++
++When a workflow stage carries a `gate` block, the engine runs it after the
++stage completes, before advancing to the next stage.
++
++A gate has two seat kinds:
++
++- **checks** — deterministic runners (scripts, lint, tests). The runner is
++  invoked through the external-runner contract (`ETUDE_INPUTS_DIR`,
++  `ETUDE_OUTPUT_FILE`). Exit 0 passes; any nonzero exit, launch failure, or
++  timeout is a hard BLOCK — no threshold applies, and even a unanimous seat
++  `go` cannot override a failing check.
++- **seats** — model/variant runners that write a verdict JSON envelope to
++  `ETUDE_OUTPUT_FILE`:
++
++  ```json
++  {"verdict":"go","required":[],"optional":[]}
++  ```
++
++  `verdict` is `"go"` or `"block"`. `required` lists required changes on a
++  block; `optional` lists suggestions on a go. Seats that cannot launch, time
++  out, produce no output, or produce non-JSON output are recorded as
++  `failed`/`empty`/`malfunction` and excluded from the vote count.
++
++**Synthesis** is fail-closed:
++
++1. Any failing check → not a pass (skip seat vote).
++2. Checks-only gate (no seats), all checks pass → **pass**.
++3. Usable seat count (valid envelope received) < min(2, configured seats) →
++   **escalated** (insufficient usable seats; escalation_reason recorded).
++4. `goCount / usableCount >= pass_threshold` (default 1.0) → **pass**;
++   otherwise not a pass.
++5. Not-pass with rounds remaining → **rerun**; rounds exhausted → **escalated**.
++
++On **rerun**: the engine builds a `gate-feedback` artifact (failed check
++details + blocking seats' `required[]`) and re-runs the guarded stage with
++that artifact appended to its inputs (role `gate-feedback`). The re-run stage
++is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
++against its output.
++
++On **escalated**: the engine advances the tier ladder toward L1 (strongest)
++and re-runs the gate against the latest stage output at the stronger tier. If
++no stronger tier exists (already at L1, or the gate used inline seats with no
++tier ladder), the run halts with a `GateEscalationError` — the partial run is
++valid, inspectable via `etude run show`, and resumable.
++
++Each gate attempt is recorded automatically as a `GateAttempt` in the run
++manifest (`manifest_version` 3); gate attempts appear after stages in
++`etude run show`. No separate `etude capture-gate` call is required for live
++runs.
++
+ ### Forward replay
+ 
+ Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
+@@ -211,9 +262,6 @@ stage "<name>" failed: <error>
+ resume with: etude run <workflow> --resume <id>
+ ```
+ 
+-A stage that carries a `gate` block logs `gate "<name>" deferred to etude-04i`
+-and runs without gate evaluation; live gate execution is not yet wired.
+-
+ To continue from where the run stopped:
+ 
+ ```bash
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index b4a94a3..8e6e24e 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -107,7 +107,14 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
+ 	engine := &liverun.Engine{
+ 		Store:         refstore.New(root),
+ 		ResolveRunner: resolveRunner,
+-		Root:          root,
++		ResolveCheck: func(r workflow.Runner) (liverun.CheckRunner, error) {
++			return liverun.ResolveCheckRunner(reg, r, timeout)
++		},
++		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
++			return liverun.ResolveGateSeat(reg, seatName, timeout)
++		},
++		Tiers: liverun.ResolveTiers(reg),
++		Root:  root,
+ 	}
+ 
+ 	opts := liverun.RunOptions{
+@@ -125,6 +132,10 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
+ 			// by the root command from the returned err (avoid a double print).
+ 			fmt.Fprintf(errOut, "resume with: etude run %s --resume %s\n", workflowName, stageErr.RunID)
+ 		}
++		var gateEscErr *liverun.GateEscalationError
++		if errors.As(err, &gateEscErr) {
++			fmt.Fprintf(errOut, "gate escalation: resume with: etude run %s --resume %s\n", workflowName, gateEscErr.RunID)
++		}
+ 		return err
+ 	}
+ 	return nil
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 12cb157..4b0ce72 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -62,6 +62,18 @@ type Engine struct {
+ 	// ResolveRunner returns a runner for the given stage.
+ 	// Tests inject a StubRunner; production code resolves from workflow/registry config.
+ 	ResolveRunner func(stage workflow.Stage) (replay.Runner, error)
++	// ResolveCheck resolves a CheckRunner for a gate check.
++	// Required when any stage has a gate with checks configured.
++	// Tests inject a stub; production wires from registry.
++	ResolveCheck func(r workflow.Runner) (CheckRunner, error)
++	// ResolveSeat resolves a seat runner and its provider/harness metadata.
++	// Required when any stage has a gate with seats or a tier configured.
++	// Tests inject a stub returning canned envelope JSON.
++	ResolveSeat func(seatName string) (replay.Runner, SeatMeta, error)
++	// Tiers returns the seat names and next-stronger tier name for a given
++	// registry tier name. Returns ok=false when the tier is not found.
++	// Required when any stage has a gate with a Tier configured.
++	Tiers func(tierName string) (seats []string, nextStronger string, ok bool)
+ 	// Root is the repository root directory used for worktree checkout and HEAD resolution.
+ 	Root string
+ 	// Now returns the current time. Defaults to time.Now when nil.
+@@ -242,14 +254,13 @@ func (e *Engine) executeStages(
+ 	completedStages := make([]runmanifest.Stage, len(preCompleted), len(wf.Stages))
+ 	copy(completedStages, preCompleted)
+ 
++	// gateAttempts accumulates across all gates in this run so each
++	// subsequent manifest write carries the full history.
++	var gateAttempts []runmanifest.GateAttempt
++
+ 	for i, stage := range wf.Stages[frontier:] {
+ 		stageIdx := frontier + i
+ 
+-		// Gate block is a NO-OP in this bead (etude-04i executes gates).
+-		if stage.Gate != nil {
+-			fmt.Fprintf(out, "gate %q deferred to etude-04i\n", stage.Name)
+-		}
+-
+ 		// Build inputs from chain.
+ 		var inputRefs []runmanifest.ArtifactRef
+ 		var runInputs []replay.RunInput
+@@ -273,86 +284,143 @@ func (e *Engine) executeStages(
+ 			})
+ 		}
+ 
+-		runner, err := e.ResolveRunner(stage)
+-		if err != nil {
+-			return &StageError{StageName: stage.Name, RunID: runID, Err: err}
+-		}
+-
+-		stageSkill := runmanifest.Skill{
+-			ID:      stage.Skill,
+-			Repo:    "manual",
+-			Version: "manual",
+-		}
+-		producer := runmanifest.Producer{Skill: stageSkill}
+-
+ 		// Per-stage scratch subdir avoids output file collision between stages.
+ 		stageScratch := fmt.Sprintf("%s/stage%02d", scratch, stageIdx)
+ 		if err := os.MkdirAll(stageScratch, 0o755); err != nil {
+ 			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("mkdir stage scratch: %w", err)}
+ 		}
+ 
+-		res, err := runner.Run(ctx, replay.RunRequest{
+-			WorktreeDir:     worktreeDir,
+-			ScratchDir:      stageScratch,
+-			Inputs:          runInputs,
+-			OutputRole:      stage.Produces,
+-			OutputMediaType: "application/octet-stream",
+-			Producer:        producer,
+-		})
++		outputRef, outputContent, newStages, newCommit, err := e.runAndCaptureStage(
++			ctx, out, runID, gitSHA, created, wf,
++			stage, stage.Name, inputRefs, runInputs,
++			stageScratch, as, completedStages, gateAttempts, prevCommit, worktreeDir,
++		)
+ 		if err != nil {
+ 			return &StageError{StageName: stage.Name, RunID: runID, Err: err}
+ 		}
++		completedStages = newStages
++		prevCommit = newCommit
++		chain[stage.Produces] = roleArtifact{ref: outputRef, content: outputContent}
+ 
+-		outputMediaType := res.MediaType
+-		if outputMediaType == "" {
+-			outputMediaType = "application/octet-stream"
+-		}
+-		outputArtifact, err := as.AddContent(stage.Produces, outputMediaType, res.Output)
+-		if err != nil {
+-			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("store output: %w", err)}
+-		}
+-		outputRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
+-		chain[stage.Produces] = roleArtifact{ref: outputRef, content: res.Output}
+-
+-		completedStages = append(completedStages, runmanifest.Stage{
+-			Name:       stage.Name,
+-			ProducedBy: "original",
+-			GitSHA:     gitSHA,
+-			Skill:      stageSkill,
+-			Producer:   producer,
+-			Inputs:     inputRefs,
+-			Output:     outputRef,
+-			Timestamp:  e.clock(),
+-		})
+-
+-		manifest := runmanifest.Manifest{
+-			RunID:           runID,
+-			Workflow:        wf.Name,
+-			WorkflowVersion: wf.Name + "-v1",
+-			Created:         created,
+-			Refs:            map[string]string{},
+-			Stages:          completedStages,
+-		}
+-
+-		newCommit, err := runmanifest.WriteManifestTree(
+-			ctx, e.Store, runsPrefix, manifest,
+-			filesForManifest(manifest, as),
+-			refstore.WriteOptions{
+-				ExpectedOld: prevCommit,
+-				Message:     fmt.Sprintf("live run %s: stage %s", runID, stage.Name),
+-			},
+-		)
+-		if err != nil {
+-			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("write manifest: %w", err)}
++		// Execute the gate when configured.
++		if stage.Gate != nil {
++			allAttempts, updatedStages, newCommit2, finalOutputRef, finalOutputContent, gateErr := e.runGate(
++				ctx, out, runID, gitSHA, created, wf,
++				stage, stageIdx, inputRefs, runInputs,
++				as, completedStages, gateAttempts, prevCommit,
++				outputRef, outputContent, worktreeDir, scratch,
++			)
++			if gateErr != nil {
++				return gateErr // GateEscalationError or infra error
++			}
++			gateAttempts = allAttempts
++			completedStages = updatedStages
++			prevCommit = newCommit2
++			chain[stage.Produces] = roleArtifact{ref: finalOutputRef, content: finalOutputContent}
+ 		}
+-		prevCommit = newCommit
+-		fmt.Fprintf(out, "captured %s\n", newCommit)
+ 	}
+ 
+ 	fmt.Fprintf(out, "ref %s%s\n", runsPrefix, runID)
+ 	return nil
+ }
+ 
++// runAndCaptureStage executes a single stage run: resolves the runner,
++// invokes it, stores the output artifact, appends the Stage record to
++// completedStages, and writes an incremental CAS manifest commit.
++//
++// stageName may differ from stage.Name for gate-rerun stages (e.g. "plan.r2").
++// scratchSubDir must be pre-created by the caller.
++// gateAttempts are included in the manifest write for consistency.
++//
++// Returns the output ArtifactRef, output bytes, updated completedStages slice,
++// new CAS commit OID, and any error.
++func (e *Engine) runAndCaptureStage(
++	ctx context.Context,
++	out io.Writer,
++	runID, gitSHA string,
++	created time.Time,
++	wf workflow.Workflow,
++	stage workflow.Stage,
++	stageName string,
++	inputRefs []runmanifest.ArtifactRef,
++	runInputs []replay.RunInput,
++	scratchSubDir string,
++	as *artifactstore.Store,
++	completedStages []runmanifest.Stage,
++	gateAttempts []runmanifest.GateAttempt,
++	prevCommit string,
++	worktreeDir string,
++) (outputRef runmanifest.ArtifactRef, outputContent []byte, newCompletedStages []runmanifest.Stage, newCommit string, returnErr error) {
++	runner, err := e.ResolveRunner(stage)
++	if err != nil {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++	}
++
++	stageSkill := runmanifest.Skill{
++		ID:      stage.Skill,
++		Repo:    "manual",
++		Version: "manual",
++	}
++	producer := runmanifest.Producer{Skill: stageSkill}
++
++	res, err := runner.Run(ctx, replay.RunRequest{
++		WorktreeDir:     worktreeDir,
++		ScratchDir:      scratchSubDir,
++		Inputs:          runInputs,
++		OutputRole:      stage.Produces,
++		OutputMediaType: "application/octet-stream",
++		Producer:        producer,
++	})
++	if err != nil {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++	}
++
++	outputMediaType := res.MediaType
++	if outputMediaType == "" {
++		outputMediaType = "application/octet-stream"
++	}
++	outputArtifact, err := as.AddContent(stage.Produces, outputMediaType, res.Output)
++	if err != nil {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store output: %w", err)
++	}
++	outRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
++
++	newStages := append(append([]runmanifest.Stage(nil), completedStages...), runmanifest.Stage{
++		Name:       stageName,
++		ProducedBy: "original",
++		GitSHA:     gitSHA,
++		Skill:      stageSkill,
++		Producer:   producer,
++		Inputs:     inputRefs,
++		Output:     outRef,
++		Timestamp:  e.clock(),
++	})
++
++	manifest := runmanifest.Manifest{
++		RunID:           runID,
++		Workflow:        wf.Name,
++		WorkflowVersion: wf.Name + "-v1",
++		Created:         created,
++		Refs:            map[string]string{},
++		Stages:          newStages,
++		Gates:           gateAttempts,
++	}
++
++	newCommit, err = runmanifest.WriteManifestTree(
++		ctx, e.Store, runsPrefix, manifest,
++		filesForManifest(manifest, as),
++		refstore.WriteOptions{
++			ExpectedOld: prevCommit,
++			Message:     fmt.Sprintf("live run %s: stage %s", runID, stageName),
++		},
++	)
++	if err != nil {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("write manifest: %w", err)
++	}
++	fmt.Fprintf(out, "captured %s\n", newCommit)
++	return outRef, res.Output, newStages, newCommit, nil
++}
++
+ // filesForManifest returns only the artifact files referenced by the manifest.
+ // WriteManifestTree rejects any unreferenced files, so we must not pass extras.
+ func filesForManifest(manifest runmanifest.Manifest, as *artifactstore.Store) map[string][]byte {
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+new file mode 100644
+index 0000000..7785b29
+--- /dev/null
++++ b/internal/liverun/gate.go
+@@ -0,0 +1,722 @@
++package liverun
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/replay"
++	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/workflow"
++)
++
++// GateEscalationError is returned when a gate exhausts all tiers with no
++// stronger tier to escalate to. The partial run is still valid and inspectable.
++type GateEscalationError struct {
++	Phase  string
++	RunID  string
++	Reason string
++}
++
++func (e *GateEscalationError) Error() string {
++	return fmt.Sprintf("gate %q: terminal escalation: %s (run %s; resume with: etude run <workflow> --resume %s)", e.Phase, e.Reason, e.RunID, e.RunID)
++}
++
++// SeatMeta holds the harness and provider metadata for a named registry seat.
++// ProviderName and Model are pre-split from the registry Seat.Provider field.
++type SeatMeta struct {
++	HarnessName  string // e.g. "claude-code"
++	ProviderName string // e.g. "anthropic" (before "/" in seat.Provider)
++	Model        string // e.g. "claude-opus" (after "/" in seat.Provider)
++}
++
++// CheckRunner executes a deterministic gate check. Unlike replay.Runner, the
++// exit code IS the verdict: 0 = pass, nonzero or launch/timeout failure = block.
++// Checks never require an output file.
++type CheckRunner interface {
++	RunCheck(ctx context.Context, req replay.RunRequest) (passed bool, rawOutput []byte, detail string)
++}
++
++// seatEnvelope is the JSON structure written to ETUDE_OUTPUT_FILE by a model
++// seat runner.
++type seatEnvelope struct {
++	Verdict  string   `json:"verdict"`
++	Required []string `json:"required,omitempty"`
++	Optional []string `json:"optional,omitempty"`
++}
++
++// execCheckRunner implements CheckRunner using an external command. It
++// materializes inputs and sets the strict env (PATH, ETUDE_INPUTS_DIR,
++// ETUDE_OUTPUT_FILE) identically to replay.ExecRunner, but interprets exit
++// code as the verdict and never requires an output file.
++type execCheckRunner struct {
++	command []string
++	timeout time.Duration
++}
++
++// compile-time interface satisfaction.
++var _ CheckRunner = (*execCheckRunner)(nil)
++
++// checkWaitDelay mirrors replay.runnerWaitDelay.
++const checkWaitDelay = 10 * time.Second
++
++// RunCheck materializes inputs, invokes the command, and interprets exit code.
++// Exit 0 = pass; nonzero, launch failure, or timeout = block (fail-closed).
++func (r *execCheckRunner) RunCheck(ctx context.Context, req replay.RunRequest) (passed bool, rawOutput []byte, detail string) {
++	if len(r.command) == 0 {
++		return false, nil, "check runner: no command configured"
++	}
++
++	resolvedWorktree, err := resolveGateDir(req.WorktreeDir)
++	if err != nil {
++		return false, nil, fmt.Sprintf("check runner: invalid worktree dir: %v", err)
++	}
++	resolvedScratch, err := resolveGateDir(req.ScratchDir)
++	if err != nil {
++		return false, nil, fmt.Sprintf("check runner: invalid scratch dir: %v", err)
++	}
++
++	// Materialize inputs under <ScratchDir>/inputs/<NN>-<role>.
++	outputPath := filepath.Join(resolvedScratch, "output")
++	inputsDir := filepath.Join(resolvedScratch, "inputs")
++	_ = os.Remove(outputPath)
++	if err := os.RemoveAll(inputsDir); err != nil {
++		return false, nil, fmt.Sprintf("check runner: remove inputs: %v", err)
++	}
++	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
++		return false, nil, fmt.Sprintf("check runner: mkdir inputs: %v", err)
++	}
++	for i, inp := range req.Inputs {
++		name := fmt.Sprintf("%02d-%s", i, inp.Role)
++		p := filepath.Join(inputsDir, name)
++		if err := os.WriteFile(p, inp.Content, 0o644); err != nil {
++			return false, nil, fmt.Sprintf("check runner: write input %s: %v", name, err)
++		}
++	}
++
++	if r.timeout > 0 {
++		var cancel context.CancelFunc
++		ctx, cancel = context.WithTimeout(ctx, r.timeout)
++		defer cancel()
++	}
++
++	env := []string{
++		"PATH=" + os.Getenv("PATH"),
++		"ETUDE_INPUTS_DIR=" + inputsDir,
++		"ETUDE_OUTPUT_FILE=" + outputPath,
++	}
++
++	var stdoutBuf, stderrBuf bytes.Buffer
++	cmd := exec.CommandContext(ctx, r.command[0], r.command[1:]...)
++	cmd.Dir = resolvedWorktree
++	cmd.Env = env
++	cmd.Stdout = &stdoutBuf
++	cmd.Stderr = &stderrBuf
++	cmd.WaitDelay = checkWaitDelay
++
++	runErr := cmd.Run()
++	combined := append(append([]byte(nil), stdoutBuf.Bytes()...), stderrBuf.Bytes()...)
++
++	if ctx.Err() != nil {
++		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++			return false, combined, fmt.Sprintf("check timed out after %v", r.timeout)
++		}
++		return false, combined, "check runner: context cancelled"
++	}
++
++	if runErr != nil {
++		var exitErr *exec.ExitError
++		if errors.As(runErr, &exitErr) {
++			note := fmt.Sprintf("exit %d", exitErr.ExitCode())
++			if s := strings.TrimSpace(stderrBuf.String()); s != "" {
++				if len(s) > 200 {
++					s = s[:200] + "..."
++				}
++				note += ": " + s
++			}
++			return false, combined, note
++		}
++		return false, combined, fmt.Sprintf("check runner: launch failed: %v", runErr)
++	}
++	return true, combined, ""
++}
++
++// resolveGateDir validates a path is non-empty, absolute, exists as a
++// directory, and returns its symlink-resolved form.
++func resolveGateDir(path string) (string, error) {
++	if path == "" {
++		return "", fmt.Errorf("path is empty")
++	}
++	if !filepath.IsAbs(path) {
++		return "", fmt.Errorf("path %q is not absolute", path)
++	}
++	fi, err := os.Stat(path)
++	if err != nil {
++		return "", fmt.Errorf("stat %q: %w", path, err)
++	}
++	if !fi.IsDir() {
++		return "", fmt.Errorf("%q is not a directory", path)
++	}
++	resolved, err := filepath.EvalSymlinks(path)
++	if err != nil {
++		return "", fmt.Errorf("eval symlinks %q: %w", path, err)
++	}
++	return resolved, nil
++}
++
++// tierToInt maps a registry tier name to the manifest integer.
++// L1→1, L2→2, L3→3; all others (L4, inline, unknown) → 0.
++// The manifest requires Tier ∈ {0,1,2,3}; L4 and inline share 0 (lossy but
++// valid; escalation uses tier NAMES not this integer).
++func tierToInt(name string) int {
++	if len(name) == 2 && name[0] == 'L' {
++		switch name[1] {
++		case '1':
++			return 1
++		case '2':
++			return 2
++		case '3':
++			return 3
++		}
++	}
++	return 0
++}
++
++// splitProvider splits "provider/model" into (providerName, model). If the
++// string contains no "/", BOTH fields are set to the whole string so that
++// validateProviderField (which requires both non-empty) is satisfied.
++func splitProvider(s string) (providerName, model string) {
++	idx := strings.IndexByte(s, '/')
++	if idx < 0 {
++		return s, s
++	}
++	return s[:idx], s[idx+1:]
++}
++
++// synthesisResult holds the output of the D4 fail-closed synthesis algorithm.
++type synthesisResult struct {
++	status           runmanifest.GateStatus
++	escalationReason string
++	degradedReason   string
++}
++
++// synthesizeVerdict applies the D4 fail-closed algorithm:
++//
++//  1. If any check failed → not-pass (step 5).
++//  2. If expectedSeats == 0 → PASS (checks-only gate).
++//  3. If usable < min(2, expectedSeats) → ESCALATED (seat outage, skip rerun).
++//  4. If goCount/usable >= passThreshold → PASS.
++//  5. Not-pass: tierRound < maxRounds → RERUN; else → ESCALATED.
++func synthesizeVerdict(
++	checksPassed []bool,
++	seatVerdicts []runmanifest.SeatVerdict,
++	tierRound, maxRounds int,
++	passThreshold float64,
++	expectedSeats int,
++) synthesisResult {
++	checkFailed := false
++	for _, p := range checksPassed {
++		if !p {
++			checkFailed = true
++			break
++		}
++	}
++
++	usable, goCount, anyNonUsable := 0, 0, false
++	for _, v := range seatVerdicts {
++		switch v {
++		case runmanifest.SeatVerdictGo:
++			usable++
++			goCount++
++		case runmanifest.SeatVerdictBlock:
++			usable++
++		default:
++			anyNonUsable = true
++		}
++	}
++
++	degraded := ""
++	if anyNonUsable {
++		degraded = "one or more seats produced non-usable results"
++	}
++
++	if checkFailed {
++		return notPassDecision(tierRound, maxRounds, degraded)
++	}
++	if expectedSeats == 0 {
++		return synthesisResult{status: runmanifest.GateStatusPass, degradedReason: degraded}
++	}
++
++	minUsable := 2
++	if expectedSeats < 2 {
++		minUsable = expectedSeats
++	}
++	if usable < minUsable {
++		return synthesisResult{
++			status:           runmanifest.GateStatusEscalated,
++			escalationReason: fmt.Sprintf("insufficient usable seats: got %d need %d", usable, minUsable),
++			degradedReason:   degraded,
++		}
++	}
++
++	if float64(goCount)/float64(usable) >= passThreshold {
++		return synthesisResult{status: runmanifest.GateStatusPass, degradedReason: degraded}
++	}
++	return notPassDecision(tierRound, maxRounds, degraded)
++}
++
++func notPassDecision(tierRound, maxRounds int, degraded string) synthesisResult {
++	if tierRound < maxRounds {
++		return synthesisResult{status: runmanifest.GateStatusRerun, degradedReason: degraded}
++	}
++	return synthesisResult{
++		status:           runmanifest.GateStatusEscalated,
++		escalationReason: fmt.Sprintf("max rounds %d exhausted", maxRounds),
++		degradedReason:   degraded,
++	}
++}
++
++// buildGateFeedback constructs a markdown artifact that summarizes what blocks.
++func buildGateFeedback(checkBlocks []string, seatBlockRequired map[string][]string) []byte {
++	var sb strings.Builder
++	sb.WriteString("# Gate Feedback\n\n")
++	if len(checkBlocks) > 0 {
++		sb.WriteString("## Failing Checks\n\n")
++		for _, b := range checkBlocks {
++			sb.WriteString("- ")
++			sb.WriteString(b)
++			sb.WriteString("\n")
++		}
++		sb.WriteString("\n")
++	}
++	for seatName, required := range seatBlockRequired {
++		if len(required) == 0 {
++			continue
++		}
++		sb.WriteString("## Seat ")
++		sb.WriteString(seatName)
++		sb.WriteString(" Required Changes\n\n")
++		for _, r := range required {
++			sb.WriteString("- ")
++			sb.WriteString(r)
++			sb.WriteString("\n")
++		}
++		sb.WriteString("\n")
++	}
++	return []byte(sb.String())
++}
++
++// storeRawOutput adds raw bytes to the artifact store and returns the artifact.
++// Returns nil when content is empty (no artifact stored).
++func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artifactstore.ManifestArtifact {
++	if len(content) == 0 {
++		return nil
++	}
++	art, err := as.AddContent(role, "application/octet-stream", content)
++	if err != nil {
++		return nil
++	}
++	return &art
++}
++
++// classifySeatOutput maps a runner result + error to a seat verdict and, on
++// success, parses the JSON envelope. Implements the D3/D4 mapping:
++//
++//   - ErrOutputMissing → empty
++//   - ErrRunnerFailed / launch failure → failed
++//   - DeadlineExceeded → failed (timeout note)
++//   - success, zero bytes → malfunction (empty-but-present file)
++//   - success, non-JSON or bad verdict → malfunction
++//   - success, valid envelope → go / block
++func classifySeatOutput(res replay.RunResult, runErr error) (runmanifest.SeatVerdict, string, *seatEnvelope) {
++	if runErr != nil {
++		if errors.Is(runErr, context.DeadlineExceeded) {
++			return runmanifest.SeatVerdictFailed, fmt.Sprintf("seat timed out: %v", runErr), nil
++		}
++		if errors.Is(runErr, replay.ErrOutputMissing) {
++			return runmanifest.SeatVerdictEmpty, fmt.Sprintf("no output produced: %v", runErr), nil
++		}
++		return runmanifest.SeatVerdictFailed, fmt.Sprintf("runner failed: %v", runErr), nil
++	}
++	if len(res.Output) == 0 {
++		return runmanifest.SeatVerdictMalfunction, "seat produced empty output file (expected JSON verdict envelope)", nil
++	}
++	var env seatEnvelope
++	if err := json.Unmarshal(res.Output, &env); err != nil {
++		return runmanifest.SeatVerdictMalfunction, fmt.Sprintf("invalid JSON envelope: %v", err), nil
++	}
++	switch env.Verdict {
++	case "go":
++		return runmanifest.SeatVerdictGo, "", &env
++	case "block":
++		return runmanifest.SeatVerdictBlock, "", &env
++	default:
++		return runmanifest.SeatVerdictMalfunction, fmt.Sprintf("unknown verdict %q in envelope", env.Verdict), nil
++	}
++}
++
++// runGateChecks runs all configured checks. Returns SeatResults for the
++// manifest, a bool slice (true=passed) for synthesis, and string details of
++// failing checks for gate-feedback.
++func (e *Engine) runGateChecks(
++	ctx context.Context,
++	worktreeDir, scratch string,
++	checks []workflow.Runner,
++	gateInputs []replay.RunInput,
++	as *artifactstore.Store,
++	globalRound int,
++) (seatResults []runmanifest.SeatResult, checksPassed []bool, blockDetails []string) {
++	for i, check := range checks {
++		checkScratch := filepath.Join(scratch, fmt.Sprintf("gate-r%d-check%d", globalRound, i))
++		_ = os.MkdirAll(checkScratch, 0o755)
++
++		runnerName := check.Command
++		if check.Name != "" {
++			runnerName = check.Name
++		}
++		if runnerName == "" {
++			runnerName = "command"
++		}
++
++		var (
++			passed    bool
++			raw       []byte
++			detail    string
++			resolveOK = true
++		)
++		cr, resolveErr := e.ResolveCheck(check)
++		if resolveErr != nil {
++			resolveOK = false
++			detail = fmt.Sprintf("resolve check runner: %v", resolveErr)
++		} else {
++			req := replay.RunRequest{
++				WorktreeDir:     worktreeDir,
++				ScratchDir:      checkScratch,
++				Inputs:          gateInputs,
++				OutputRole:      "check-output",
++				OutputMediaType: "application/octet-stream",
++			}
++			passed, raw, detail = cr.RunCheck(ctx, req)
++		}
++
++		rawArt := storeRawOutput(as, fmt.Sprintf("check-%d", i), raw)
++		var rawRef *runmanifest.ArtifactRef
++		if rawArt != nil {
++			ref := runmanifest.ArtifactFromManifestArtifact(*rawArt)
++			rawRef = &ref
++		}
++
++		sr := runmanifest.SeatResult{
++			Seat:      fmt.Sprintf("check.%d", i),
++			Harness:   runmanifest.Harness{Name: "exec"},
++			Provider:  runmanifest.Provider{Name: "deterministic", Model: runnerName},
++			RawOutput: rawRef,
++			Timestamp: e.clock(),
++		}
++
++		if resolveOK && passed {
++			sr.Verdict = runmanifest.SeatVerdictGo
++		} else {
++			sr.Verdict = runmanifest.SeatVerdictBlock
++			if detail != "" {
++				sr.Required = []string{detail}
++			}
++			blockDetails = append(blockDetails, detail)
++		}
++
++		seatResults = append(seatResults, sr)
++		checksPassed = append(checksPassed, resolveOK && passed)
++	}
++	return seatResults, checksPassed, blockDetails
++}
++
++// runGateSeats runs all configured model seats. Returns SeatResults for the
++// manifest, verdicts for synthesis, and a map of seatName → required[] for
++// blocking seats (used to build gate-feedback).
++func (e *Engine) runGateSeats(
++	ctx context.Context,
++	worktreeDir, scratch string,
++	seatNames []string,
++	gateInputs []replay.RunInput,
++	as *artifactstore.Store,
++	globalRound int,
++) (seatResults []runmanifest.SeatResult, verdicts []runmanifest.SeatVerdict, blockRequired map[string][]string) {
++	blockRequired = make(map[string][]string)
++
++	for i, seatName := range seatNames {
++		seatScratch := filepath.Join(scratch, fmt.Sprintf("gate-r%d-seat%d", globalRound, i))
++		_ = os.MkdirAll(seatScratch, 0o755)
++
++		runner, meta, resolveErr := e.ResolveSeat(seatName)
++		if resolveErr != nil {
++			note := fmt.Sprintf("resolve seat %q: %v", seatName, resolveErr)
++			// Use seatName as both provider.name and provider.model (fallback).
++			n, m := splitProvider(seatName)
++			seatResults = append(seatResults, runmanifest.SeatResult{
++				Seat:        seatName,
++				Harness:     runmanifest.Harness{Name: "exec"},
++				Provider:    runmanifest.Provider{Name: n, Model: m},
++				Verdict:     runmanifest.SeatVerdictFailed,
++				FailureNote: note,
++				Timestamp:   e.clock(),
++			})
++			verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
++			continue
++		}
++
++		req := replay.RunRequest{
++			WorktreeDir:     worktreeDir,
++			ScratchDir:      seatScratch,
++			Inputs:          gateInputs,
++			OutputRole:      "seat-output",
++			OutputMediaType: "application/json",
++		}
++
++		res, runErr := runner.Run(ctx, req)
++		verdict, failureNote, env := classifySeatOutput(res, runErr)
++
++		rawArt := storeRawOutput(as, seatName, res.Output)
++		var rawRef *runmanifest.ArtifactRef
++		if rawArt != nil {
++			ref := runmanifest.ArtifactFromManifestArtifact(*rawArt)
++			rawRef = &ref
++		}
++
++		sr := runmanifest.SeatResult{
++			Seat:        seatName,
++			Harness:     runmanifest.Harness{Name: meta.HarnessName},
++			Provider:    runmanifest.Provider{Name: meta.ProviderName, Model: meta.Model},
++			Verdict:     verdict,
++			FailureNote: failureNote,
++			RawOutput:   rawRef,
++			Timestamp:   e.clock(),
++		}
++		if env != nil {
++			sr.Required = env.Required
++			sr.Optional = env.Optional
++		}
++		if verdict == runmanifest.SeatVerdictBlock && env != nil {
++			blockRequired[seatName] = env.Required
++		}
++
++		seatResults = append(seatResults, sr)
++		verdicts = append(verdicts, verdict)
++	}
++	return seatResults, verdicts, blockRequired
++}
++
++// runGate executes the full gate drive loop for a guarded stage output:
++// checks → seats → synthesize → rerun/escalate. Each attempt is written to
++// the CAS manifest via the engine's existing write path.
++//
++// Returns:
++//   - allGateAttempts: existingGateAttempts + new attempts from this gate
++//   - updatedStages:   completedStages extended with any rerun stages
++//   - newCommit:       latest CAS commit OID after the last attempt write
++//   - finalOutputRef/Content: output from the last stage run (original or rerun)
++//   - error: nil on pass; GateEscalationError on terminal; infra errors otherwise
++func (e *Engine) runGate(
++	ctx context.Context,
++	out io.Writer,
++	runID, gitSHA string,
++	created time.Time,
++	wf workflow.Workflow,
++	stage workflow.Stage,
++	stageIdx int,
++	baseInputRefs []runmanifest.ArtifactRef,
++	baseRunInputs []replay.RunInput,
++	as *artifactstore.Store,
++	completedStages []runmanifest.Stage,
++	existingGateAttempts []runmanifest.GateAttempt,
++	prevCommit string,
++	initialOutputRef runmanifest.ArtifactRef,
++	initialOutputContent []byte,
++	worktreeDir, scratch string,
++) (allGateAttempts []runmanifest.GateAttempt, updatedStages []runmanifest.Stage, newCommit string, finalOutputRef runmanifest.ArtifactRef, finalOutputContent []byte, returnErr error) {
++	gate := stage.Gate
++
++	// Validate resolver availability once before the loop.
++	if len(gate.Checks) > 0 && e.ResolveCheck == nil {
++		return nil, completedStages, prevCommit, initialOutputRef, initialOutputContent,
++			fmt.Errorf("gate on stage %q requires ResolveCheck to be set on Engine", stage.Name)
++	}
++	if (len(gate.Seats) > 0 || gate.Tier != "") && e.ResolveSeat == nil {
++		return nil, completedStages, prevCommit, initialOutputRef, initialOutputContent,
++			fmt.Errorf("gate on stage %q requires ResolveSeat to be set on Engine", stage.Name)
++	}
++	if gate.Tier != "" && e.Tiers == nil {
++		return nil, completedStages, prevCommit, initialOutputRef, initialOutputContent,
++			fmt.Errorf("gate on stage %q requires Tiers to be set on Engine", stage.Name)
++	}
++
++	// Mutable loop state.
++	currentTierName := gate.Tier
++	globalRound := 1
++	tierRound := 1
++	reviewedStageName := stage.Name
++	reviewedOutputRef := initialOutputRef
++	reviewedOutputContent := initialOutputContent
++	// inputRefs/runInputs grow each RERUN as gate-feedback is appended.
++	inputRefs := append([]runmanifest.ArtifactRef(nil), baseInputRefs...)
++	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
++
++	thisAttempts := make([]runmanifest.GateAttempt, 0)
++
++	for {
++		// Resolve seats and next-stronger tier for this iteration.
++		var seatNames []string
++		var nextStronger string
++		if currentTierName != "" {
++			seats, next, ok := e.Tiers(currentTierName)
++			if !ok {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++					fmt.Errorf("tier %q not found", currentTierName)
++			}
++			seatNames = seats
++			nextStronger = next
++		} else {
++			// Inline seats: no escalation ladder.
++			seatNames = gate.Seats
++			nextStronger = ""
++		}
++
++		// The stage output this gate round is reviewing.
++		gateInputs := []replay.RunInput{
++			{
++				Role:      stage.Produces,
++				MediaType: reviewedOutputRef.MediaType,
++				Content:   reviewedOutputContent,
++			},
++		}
++
++		// Run checks then seats.
++		checkSeatResults, checksPassed, checkBlocks := e.runGateChecks(
++			ctx, worktreeDir, scratch, gate.Checks, gateInputs, as, globalRound,
++		)
++		modelSeatResults, seatVerdicts, seatBlockRequired := e.runGateSeats(
++			ctx, worktreeDir, scratch, seatNames, gateInputs, as, globalRound,
++		)
++
++		// Synthesize verdict.
++		syn := synthesizeVerdict(
++			checksPassed, seatVerdicts,
++			tierRound, gate.EffectiveMaxRounds(), gate.EffectivePassThreshold(),
++			len(seatNames),
++		)
++
++		// Build and record the gate attempt.
++		gateID := fmt.Sprintf("%s.r%d", stage.Name, globalRound)
++		allSeats := append(checkSeatResults, modelSeatResults...)
++		attempt := runmanifest.GateAttempt{
++			GateID: gateID,
++			Phase:  stage.Name,
++			Round:  globalRound,
++			Tier:   tierToInt(currentTierName),
++			Status: syn.status,
++			ReviewedStages: []runmanifest.ReviewedRef{
++				{
++					Stage:    reviewedStageName,
++					Role:     stage.Produces,
++					Artifact: reviewedOutputRef.Artifact,
++				},
++			},
++			Seats: allSeats,
++			Decision: runmanifest.GateDecision{
++				EscalationReason: syn.escalationReason,
++				DegradedReason:   syn.degradedReason,
++			},
++			Timestamp: e.clock(),
++		}
++		thisAttempts = append(thisAttempts, attempt)
++		allAttempts := append(append([]runmanifest.GateAttempt(nil), existingGateAttempts...), thisAttempts...)
++
++		// Write CAS commit for this gate attempt.
++		manifest := runmanifest.Manifest{
++			RunID:           runID,
++			Workflow:        wf.Name,
++			WorkflowVersion: wf.Name + "-v1",
++			Created:         created,
++			Refs:            map[string]string{},
++			Stages:          completedStages,
++			Gates:           allAttempts,
++		}
++		newCommit2, err := runmanifest.WriteManifestTree(
++			ctx, e.Store, runsPrefix, manifest,
++			filesForManifest(manifest, as),
++			refstore.WriteOptions{
++				ExpectedOld: prevCommit,
++				Message:     fmt.Sprintf("live run %s: gate %s", runID, gateID),
++			},
++		)
++		if err != nil {
++			return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++				fmt.Errorf("write gate attempt %s: %w", gateID, err)
++		}
++		prevCommit = newCommit2
++		fmt.Fprintf(out, "captured gate %s status=%s\n", gateID, syn.status)
++
++		switch syn.status {
++		case runmanifest.GateStatusPass:
++			return allAttempts, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent, nil
++
++		case runmanifest.GateStatusRerun:
++			feedbackBytes := buildGateFeedback(checkBlocks, seatBlockRequired)
++			feedbackArt, err := as.AddContent("gate-feedback", "text/markdown; charset=utf-8", feedbackBytes)
++			if err != nil {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++					fmt.Errorf("store gate feedback: %w", err)
++			}
++			feedbackRef := runmanifest.ArtifactFromManifestArtifact(feedbackArt)
++			inputRefs = append(inputRefs, feedbackRef)
++			runInputs = append(runInputs, replay.RunInput{
++				Role:      "gate-feedback",
++				MediaType: "text/markdown; charset=utf-8",
++				Content:   feedbackBytes,
++			})
++
++			globalRound++
++			tierRound++
++
++			rerunName := fmt.Sprintf("%s.r%d", stage.Name, globalRound)
++			rerunScratch := fmt.Sprintf("%s/stage%02d-r%d", scratch, stageIdx, globalRound)
++			if err := os.MkdirAll(rerunScratch, 0o755); err != nil {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++					fmt.Errorf("mkdir rerun scratch: %w", err)
++			}
++
++			newOutputRef, newOutputContent, newStages, newCommit3, err := e.runAndCaptureStage(
++				ctx, out, runID, gitSHA, created, wf,
++				stage, rerunName, inputRefs, runInputs,
++				rerunScratch, as, completedStages, allAttempts, prevCommit, worktreeDir,
++			)
++			if err != nil {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++					fmt.Errorf("rerun stage %s: %w", rerunName, err)
++			}
++			completedStages = newStages
++			prevCommit = newCommit3
++			reviewedOutputRef = newOutputRef
++			reviewedOutputContent = newOutputContent
++			reviewedStageName = rerunName
++
++		case runmanifest.GateStatusEscalated:
++			if nextStronger == "" {
++				return allAttempts, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
++					&GateEscalationError{Phase: stage.Name, RunID: runID, Reason: syn.escalationReason}
++			}
++			currentTierName = nextStronger
++			globalRound++
++			tierRound = 1
++		}
++	}
++}
+diff --git a/internal/liverun/gate_test.go b/internal/liverun/gate_test.go
+new file mode 100644
+index 0000000..f1a1769
+--- /dev/null
++++ b/internal/liverun/gate_test.go
+@@ -0,0 +1,954 @@
++package liverun
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/replay"
++	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/workflow"
++)
++
++// ---------------------------------------------------------------------------
++// Stub helpers for gate tests
++// ---------------------------------------------------------------------------
++
++// stubCheckRunner is a test double for CheckRunner.
++type stubCheckRunner struct {
++	passed    bool
++	rawOutput []byte
++	detail    string
++}
++
++func (s *stubCheckRunner) RunCheck(_ context.Context, _ replay.RunRequest) (bool, []byte, string) {
++	return s.passed, s.rawOutput, s.detail
++}
++
++// envelopeJSON encodes a seatEnvelope to JSON bytes.
++func envelopeJSON(verdict string, required []string) []byte {
++	env := seatEnvelope{Verdict: verdict, Required: required}
++	b, _ := json.Marshal(env)
++	return b
++}
++
++// stubSeats is a call-indexed seat stub: each call index returns the next
++// entry from the responses slice (wraps at end).
++type stubSeats struct {
++	responses [][]byte // each entry: canned envelope JSON or nil for error
++	call      int
++}
++
++func (s *stubSeats) runner() replay.Runner {
++	idx := s.call
++	s.call++
++	var resp []byte
++	if len(s.responses) > 0 {
++		resp = s.responses[idx%len(s.responses)]
++	}
++	return &replay.StubRunner{CannedOutput: resp, CannedMediaType: "application/json"}
++}
++
++// fixedTiers returns a Tiers function for the given ladder map.
++// ladder maps tier name → (seats, nextStronger).
++func fixedTiers(ladder map[string][2]interface{}) func(string) ([]string, string, bool) {
++	return func(name string) ([]string, string, bool) {
++		v, ok := ladder[name]
++		if !ok {
++			return nil, "", false
++		}
++		seats := v[0].([]string)
++		next, _ := v[1].(string)
++		return seats, next, true
++	}
++}
++
++// gateTestEngine returns an Engine wired with stub resolvers for gate testing.
++// checkPassed: outcome for all checks.
++// seatResponses: cyclic list of seat envelope responses (in order of invocation).
++// tierLadder: tier name → (seats, nextStronger).
++func gateTestEngine(
++	repo string,
++	resolveStage func(workflow.Stage) (replay.Runner, error),
++	checkPassed bool,
++	seatResponses [][]byte,
++	tierLadder map[string][2]interface{},
++) (*Engine, *stubSeats) {
++	ss := &stubSeats{responses: seatResponses}
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: resolveStage,
++		ResolveCheck: func(r workflow.Runner) (CheckRunner, error) {
++			detail := ""
++			if !checkPassed {
++				detail = "check failed"
++			}
++			return &stubCheckRunner{passed: checkPassed, rawOutput: []byte("check output"), detail: detail}, nil
++		},
++		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{
++				HarnessName:  "stub-harness",
++				ProviderName: "stub-provider",
++				Model:        "stub-model",
++			}, nil
++		},
++		Tiers: fixedTiers(tierLadder),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	return e, ss
++}
++
++// gatedWorkflow returns a 1-stage workflow where the single stage has a gate.
++func gatedWorkflow(gate *workflow.GateConfig) workflow.Workflow {
++	return workflow.Workflow{
++		Name: "mywf",
++		Stages: []workflow.Stage{
++			{
++				Name:     "plan",
++				Skill:    "sk",
++				Produces: "plan",
++				Inputs:   []string{"task"},
++				Gate:     gate,
++			},
++		},
++	}
++}
++
++// maxRoundsPtr returns a pointer to n for use in GateConfig.MaxRounds.
++func maxRoundsPtr(n int) *int { return &n }
++
++// passThresholdPtr returns a pointer to f for use in GateConfig.PassThreshold.
++func passThresholdPtr(f float64) *float64 { return &f }
++
++// ---------------------------------------------------------------------------
++// AC1: records a GateAttempt with the synthesized verdict; manifest_version==3;
++//      JSON round-trip with gates.
++// ---------------------------------------------------------------------------
++
++func TestGateAC1_RecordsGateAttempt(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	// 1 check (pass) + 2 go seats → PASS on round 1.
++	goEnv := envelopeJSON("go", nil)
++	e, _ := gateTestEngine(repo,
++		stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan output"), CannedMediaType: "text/plain; charset=utf-8"}),
++		true,                   // check passes
++		[][]byte{goEnv, goEnv}, // two go seats
++		map[string][2]interface{}{
++			"L2": {[]string{"seatA", "seatB"}, "L1"},
++		},
++	)
++
++	wf := gatedWorkflow(&workflow.GateConfig{
++		Checks: []workflow.Runner{{Command: "true"}},
++		Tier:   "L2",
++	})
++
++	runID := "mywf-20260101T000000Z-gateac01"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	m := readLiveManifest(t, repo, runID)
++
++	// manifest_version == 3 because gates are present.
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON(): %v", err)
++	}
++	var doc struct {
++		ManifestVersion int `json:"manifest_version"`
++	}
++	if err := json.Unmarshal(raw, &doc); err != nil {
++		t.Fatalf("unmarshal manifest_version: %v", err)
++	}
++	if doc.ManifestVersion != 3 {
++		t.Errorf("manifest_version = %d, want 3", doc.ManifestVersion)
++	}
++
++	// ParseJSON round-trip must succeed.
++	m2, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON round-trip: %v", err)
++	}
++	if len(m2.Gates) != 1 {
++		t.Fatalf("round-trip gates = %d, want 1", len(m2.Gates))
++	}
++
++	// Check the gate attempt.
++	if len(m.Gates) != 1 {
++		t.Fatalf("gates = %d, want 1", len(m.Gates))
++	}
++	g := m.Gates[0]
++	if g.GateID != "plan.r1" {
++		t.Errorf("gate_id = %q, want plan.r1", g.GateID)
++	}
++	if g.Phase != "plan" {
++		t.Errorf("phase = %q, want plan", g.Phase)
++	}
++	if g.Round != 1 {
++		t.Errorf("round = %d, want 1", g.Round)
++	}
++	if g.Tier != 2 { // L2 → 2
++		t.Errorf("tier = %d, want 2", g.Tier)
++	}
++	if g.Status != runmanifest.GateStatusPass {
++		t.Errorf("status = %q, want pass", g.Status)
++	}
++
++	// reviewed_stages must bind the plan stage output.
++	if len(g.ReviewedStages) != 1 {
++		t.Fatalf("reviewed_stages = %d, want 1", len(g.ReviewedStages))
++	}
++	rs := g.ReviewedStages[0]
++	if rs.Stage != "plan" {
++		t.Errorf("reviewed stage = %q, want plan", rs.Stage)
++	}
++	if rs.Role != "plan" {
++		t.Errorf("reviewed role = %q, want plan", rs.Role)
++	}
++	if rs.Artifact != m.Stages[0].Output.Artifact {
++		t.Errorf("reviewed artifact mismatch: got %q, want %q", rs.Artifact, m.Stages[0].Output.Artifact)
++	}
++
++	// Seats: check.0, seatA, seatB.
++	if len(g.Seats) != 3 {
++		t.Fatalf("seats = %d, want 3", len(g.Seats))
++	}
++	checkSeat := g.Seats[0]
++	if checkSeat.Seat != "check.0" {
++		t.Errorf("seat[0].seat = %q, want check.0", checkSeat.Seat)
++	}
++	if checkSeat.Verdict != runmanifest.SeatVerdictGo {
++		t.Errorf("seat[0].verdict = %q, want go", checkSeat.Verdict)
++	}
++	if checkSeat.Provider.Name != "deterministic" {
++		t.Errorf("seat[0].provider.name = %q, want deterministic", checkSeat.Provider.Name)
++	}
++	for _, s := range g.Seats[1:] {
++		if s.Verdict != runmanifest.SeatVerdictGo {
++			t.Errorf("seat %q verdict = %q, want go", s.Seat, s.Verdict)
++		}
++		if s.Provider.Name != "stub-provider" {
++			t.Errorf("seat %q provider.name = %q, want stub-provider", s.Seat, s.Provider.Name)
++		}
++		if s.Provider.Model != "stub-model" {
++			t.Errorf("seat %q provider.model = %q, want stub-model", s.Seat, s.Provider.Model)
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// AC2: failing check hard-blocks regardless of seat votes.
++// ---------------------------------------------------------------------------
++
++func TestGateAC2_FailingCheckHardBlocks(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	// Check fails; 2 go seats — gate must NOT pass.
++	// With max_rounds=1, should end up ESCALATED (no stronger tier → error).
++	goEnv := envelopeJSON("go", nil)
++	e, _ := gateTestEngine(repo,
++		stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan output"), CannedMediaType: "text/plain; charset=utf-8"}),
++		false, // check FAILS
++		[][]byte{goEnv, goEnv},
++		map[string][2]interface{}{
++			"L1": {[]string{"seatA", "seatB"}, ""}, // L1 = top tier, no stronger
++		},
++	)
++
++	one := 1
++	wf := gatedWorkflow(&workflow.GateConfig{
++		Checks:    []workflow.Runner{{Command: "false"}},
++		Tier:      "L1",
++		MaxRounds: &one,
++	})
++
++	runID := "mywf-20260101T000000Z-gateac02"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	// Must escalate because check failed and max_rounds=1.
++	var gateEscErr *GateEscalationError
++	if !errors.As(err, &gateEscErr) {
++		t.Fatalf("expected GateEscalationError, got: %v", err)
++	}
++	if gateEscErr.Phase != "plan" {
++		t.Errorf("phase = %q, want plan", gateEscErr.Phase)
++	}
++
++	// The partial run is inspectable.
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Gates) != 1 {
++		t.Fatalf("gates = %d, want 1", len(m.Gates))
++	}
++	g := m.Gates[0]
++	if g.Status != runmanifest.GateStatusEscalated {
++		t.Errorf("status = %q, want escalated", g.Status)
++	}
++
++	// The failing check must be recorded as block (not go).
++	checkSeat := g.Seats[0]
++	if checkSeat.Seat != "check.0" {
++		t.Errorf("seat[0].seat = %q, want check.0", checkSeat.Seat)
++	}
++	if checkSeat.Verdict != runmanifest.SeatVerdictBlock {
++		t.Errorf("check seat verdict = %q, want block", checkSeat.Verdict)
++	}
++	// Both seats voted go but gate still didn't pass.
++	for _, s := range g.Seats[1:] {
++		if s.Verdict != runmanifest.SeatVerdictGo {
++			t.Errorf("seat %q verdict = %q, want go despite check failure", s.Seat, s.Verdict)
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// AC3: rerun re-executes stage with gate-feedback in its inputs + round bump.
++// ---------------------------------------------------------------------------
++
++func TestGateAC3_RerunWithFeedback(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	// Round 1: seats block → RERUN.
++	// Round 2: seats go → PASS.
++	blockEnv := envelopeJSON("block", []string{"fix the plan"})
++	goEnv := envelopeJSON("go", nil)
++
++	// Seat stub returns block on first 2 calls (round 1: 2 seats), go on next 2 (round 2).
++	seatResponses := [][]byte{blockEnv, blockEnv, goEnv, goEnv}
++
++	// Stage runner: 1st call = original; 2nd call = rerun (must see gate-feedback input).
++	stageCallCount := 0
++	var rerunSawFeedback bool
++	resolveStage := func(stage workflow.Stage) (replay.Runner, error) {
++		call := stageCallCount
++		stageCallCount++
++		if call == 0 {
++			return &replay.StubRunner{CannedOutput: []byte("plan v1"), CannedMediaType: "text/plain; charset=utf-8"}, nil
++		}
++		// Rerun: return a runner that inspects inputs.
++		return &feedbackCheckRunner{
++			output:      []byte("plan v2"),
++			mediaType:   "text/plain; charset=utf-8",
++			sawFeedback: &rerunSawFeedback,
++		}, nil
++	}
++
++	ss := &stubSeats{responses: seatResponses}
++	two := 2
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: resolveStage,
++		ResolveCheck: func(r workflow.Runner) (CheckRunner, error) {
++			return &stubCheckRunner{passed: true}, nil
++		},
++		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{
++			"L2": {[]string{"seatA", "seatB"}, "L1"},
++		}),
++		Root: repo,
++		Now:  fixedClock(),
++	}
++	_ = e.ResolveCheck // ensure ResolveCheck is set; checks are configured but pass
++
++	wf := gatedWorkflow(&workflow.GateConfig{
++		Tier:      "L2",
++		MaxRounds: &two,
++	})
++
++	runID := "mywf-20260101T000000Z-gateac03"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	if !rerunSawFeedback {
++		t.Error("rerun stage runner did not receive gate-feedback input")
++	}
++
++	m := readLiveManifest(t, repo, runID)
++
++	// Two gate attempts: r1 rerun, r2 pass.
++	if len(m.Gates) != 2 {
++		t.Fatalf("gates = %d, want 2", len(m.Gates))
++	}
++	if m.Gates[0].Status != runmanifest.GateStatusRerun {
++		t.Errorf("gate[0].status = %q, want rerun", m.Gates[0].Status)
++	}
++	if m.Gates[1].Status != runmanifest.GateStatusPass {
++		t.Errorf("gate[1].status = %q, want pass", m.Gates[1].Status)
++	}
++
++	// Round numbers must match.
++	if m.Gates[0].Round != 1 {
++		t.Errorf("gate[0].round = %d, want 1", m.Gates[0].Round)
++	}
++	if m.Gates[1].Round != 2 {
++		t.Errorf("gate[1].round = %d, want 2", m.Gates[1].Round)
++	}
++
++	// A second Stage named "plan.r2" must exist with gate-feedback in its Inputs.
++	foundRerunStage := false
++	for _, s := range m.Stages {
++		if s.Name == "plan.r2" {
++			foundRerunStage = true
++			hasFeedback := false
++			for _, inp := range s.Inputs {
++				if inp.Role == "gate-feedback" {
++					hasFeedback = true
++					break
++				}
++			}
++			if !hasFeedback {
++				t.Error("plan.r2 stage has no gate-feedback input")
++			}
++			// chain role unchanged: output role is still "plan".
++			if s.Output.Role != "plan" {
++				t.Errorf("plan.r2 output role = %q, want plan", s.Output.Role)
++			}
++		}
++	}
++	if !foundRerunStage {
++		t.Errorf("no stage named plan.r2 found in manifest stages: %v",
++			func() []string {
++				names := make([]string, 0, len(m.Stages))
++				for _, s := range m.Stages {
++					names = append(names, s.Name)
++				}
++				return names
++			}())
++	}
++
++	// Gate r2 reviewed_stages must reference plan.r2 (not the original plan).
++	if m.Gates[1].ReviewedStages[0].Stage != "plan.r2" {
++		t.Errorf("gate[1] reviewed stage = %q, want plan.r2", m.Gates[1].ReviewedStages[0].Stage)
++	}
++}
++
++// feedbackCheckRunner is a replay.Runner that records whether it received a
++// gate-feedback input.
++type feedbackCheckRunner struct {
++	output      []byte
++	mediaType   string
++	sawFeedback *bool
++}
++
++func (r *feedbackCheckRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	for _, inp := range req.Inputs {
++		if inp.Role == "gate-feedback" {
++			*r.sawFeedback = true
++			break
++		}
++	}
++	return replay.RunResult{Output: r.output, MediaType: r.mediaType, Producer: req.Producer}, nil
++}
++
++// ---------------------------------------------------------------------------
++// AC4: escalation advances tier; terminal escalation → GateEscalationError.
++// ---------------------------------------------------------------------------
++
++func TestGateAC4_EscalationAdvancesTier(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	// L3: single seat blocks → ESCALATED (max_rounds=1).
++	// L2: two seats go → PASS.
++	blockEnv := envelopeJSON("block", []string{"needs work"})
++	goEnv := envelopeJSON("go", nil)
++
++	// Responses: 1 block (L3 round 1), 2 go (L2 round 2).
++	ss := &stubSeats{responses: [][]byte{blockEnv, goEnv, goEnv}}
++	one := 1
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++		ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{
++			"L3": {[]string{"seatA"}, "L2"},
++			"L2": {[]string{"seatB", "seatC"}, "L1"},
++		}),
++		Root: repo,
++		Now:  fixedClock(),
++	}
++
++	wf := gatedWorkflow(&workflow.GateConfig{
++		Tier:      "L3",
++		MaxRounds: &one,
++	})
++
++	runID := "mywf-20260101T000000Z-gateac04a"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Gates) != 2 {
++		t.Fatalf("gates = %d, want 2", len(m.Gates))
++	}
++
++	// First attempt: L3 (tier=3), escalated.
++	g0 := m.Gates[0]
++	if g0.Tier != 3 {
++		t.Errorf("gate[0].tier = %d, want 3", g0.Tier)
++	}
++	if g0.Status != runmanifest.GateStatusEscalated {
++		t.Errorf("gate[0].status = %q, want escalated", g0.Status)
++	}
++	if g0.Decision.EscalationReason == "" {
++		t.Error("gate[0].escalation_reason must not be empty")
++	}
++
++	// Second attempt: L2 (tier=2), pass.
++	g1 := m.Gates[1]
++	if g1.Tier != 2 {
++		t.Errorf("gate[1].tier = %d, want 2", g1.Tier)
++	}
++	if g1.Status != runmanifest.GateStatusPass {
++		t.Errorf("gate[1].status = %q, want pass", g1.Status)
++	}
++
++	// Rounds are monotonically increasing.
++	if g0.Round >= g1.Round {
++		t.Errorf("rounds not monotonic: gate[0].round=%d gate[1].round=%d", g0.Round, g1.Round)
++	}
++}
++
++func TestGateAC4_TerminalEscalation(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	// L1 is the top tier (no stronger). Seat blocks → ESCALATED → GateEscalationError.
++	blockEnv := envelopeJSON("block", []string{"still blocked"})
++	ss := &stubSeats{responses: [][]byte{blockEnv, blockEnv}}
++	one := 1
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++		ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{
++			"L1": {[]string{"seatA", "seatB"}, ""}, // top: no stronger
++		}),
++		Root: repo,
++		Now:  fixedClock(),
++	}
++
++	wf := gatedWorkflow(&workflow.GateConfig{
++		Tier:      "L1",
++		MaxRounds: &one,
++	})
++
++	runID := "mywf-20260101T000000Z-gateac04b"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++
++	var gateEscErr *GateEscalationError
++	if !errors.As(err, &gateEscErr) {
++		t.Fatalf("expected GateEscalationError, got: %v", err)
++	}
++	if gateEscErr.Phase != "plan" {
++		t.Errorf("phase = %q, want plan", gateEscErr.Phase)
++	}
++	if gateEscErr.RunID != runID {
++		t.Errorf("run_id = %q, want %q", gateEscErr.RunID, runID)
++	}
++
++	// Partial run must be valid and inspectable.
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Stages) == 0 {
++		t.Error("partial run has no stages")
++	}
++	if len(m.Gates) != 1 {
++		t.Fatalf("partial run gates = %d, want 1 (the escalated attempt)", len(m.Gates))
++	}
++	if m.Gates[0].Status != runmanifest.GateStatusEscalated {
++		t.Errorf("gate status = %q, want escalated", m.Gates[0].Status)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// AC5: fail-closed cases.
++// ---------------------------------------------------------------------------
++
++func TestGateAC5_FailClosed(t *testing.T) {
++	t.Run("errored-seat-escalates", func(t *testing.T) {
++		// 2 seats, one errors (Err set) → usable=1 < min(2,2) → ESCALATED immediately.
++		repo := initTestRepo(t)
++		sha := headSHA(t, repo)
++
++		goEnv := envelopeJSON("go", nil)
++		callCount := 0
++		one := 1
++		e := &Engine{
++			Store:         refstore.New(repo),
++			ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++			ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++			ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++				callCount++
++				meta := SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}
++				if callCount == 1 {
++					return &replay.StubRunner{Err: errors.New("seat error")}, meta, nil
++				}
++				return &replay.StubRunner{CannedOutput: goEnv, CannedMediaType: "application/json"}, meta, nil
++			},
++			Tiers: fixedTiers(map[string][2]interface{}{
++				"L1": {[]string{"seatA", "seatB"}, ""}, // top: no stronger
++			}),
++			Root: repo,
++			Now:  fixedClock(),
++		}
++
++		wf := gatedWorkflow(&workflow.GateConfig{
++			Tier:      "L1",
++			MaxRounds: &one,
++		})
++
++		runID := "mywf-20260101T000000Z-gateac05a"
++		err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++			TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++		})
++
++		var gateEscErr *GateEscalationError
++		if !errors.As(err, &gateEscErr) {
++			t.Fatalf("expected GateEscalationError (insufficient usable), got: %v", err)
++		}
++
++		m := readLiveManifest(t, repo, runID)
++		if len(m.Gates) != 1 {
++			t.Fatalf("gates = %d, want 1", len(m.Gates))
++		}
++		g := m.Gates[0]
++		if g.Status != runmanifest.GateStatusEscalated {
++			t.Errorf("status = %q, want escalated", g.Status)
++		}
++		// Find the errored seat and verify it's failed with a failure_note.
++		foundFailed := false
++		for _, s := range g.Seats {
++			if s.Verdict == runmanifest.SeatVerdictFailed {
++				foundFailed = true
++				if s.FailureNote == "" {
++					t.Error("errored seat has no failure_note")
++				}
++			}
++		}
++		if !foundFailed {
++			t.Error("no failed seat found in gate seats")
++		}
++	})
++
++	t.Run("malformed-envelope-malfunction", func(t *testing.T) {
++		// Seat returns non-JSON → malfunction.
++		repo := initTestRepo(t)
++		sha := headSHA(t, repo)
++
++		// Two malfunction seats → usable=0 < min(2,2) → ESCALATED.
++		one := 1
++		e := &Engine{
++			Store:         refstore.New(repo),
++			ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++			ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++			ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++				meta := SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}
++				return &replay.StubRunner{CannedOutput: []byte("not json"), CannedMediaType: "text/plain"}, meta, nil
++			},
++			Tiers: fixedTiers(map[string][2]interface{}{
++				"L1": {[]string{"seatA", "seatB"}, ""},
++			}),
++			Root: repo,
++			Now:  fixedClock(),
++		}
++
++		wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
++		runID := "mywf-20260101T000000Z-gateac05b"
++		err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++			TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++		})
++
++		var gateEscErr *GateEscalationError
++		if !errors.As(err, &gateEscErr) {
++			t.Fatalf("expected GateEscalationError, got: %v", err)
++		}
++		m := readLiveManifest(t, repo, runID)
++		for _, s := range m.Gates[0].Seats {
++			if s.Verdict != runmanifest.SeatVerdictMalfunction {
++				t.Errorf("seat %q verdict = %q, want malfunction", s.Seat, s.Verdict)
++			}
++			if s.FailureNote == "" {
++				t.Errorf("seat %q has no failure_note for malfunction", s.Seat)
++			}
++		}
++	})
++
++	t.Run("threshold-0.5-two-go-one-block-passes", func(t *testing.T) {
++		// 3 seats, pass_threshold=0.5, 2 go + 1 block → 0.67 >= 0.5 → PASS.
++		repo := initTestRepo(t)
++		sha := headSHA(t, repo)
++
++		goEnv := envelopeJSON("go", nil)
++		blockEnv := envelopeJSON("block", []string{"fix it"})
++		ss := &stubSeats{responses: [][]byte{goEnv, goEnv, blockEnv}}
++		pt := 0.5
++		e := &Engine{
++			Store:         refstore.New(repo),
++			ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++			ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++			ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++				return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++			},
++			Tiers: fixedTiers(map[string][2]interface{}{
++				"L3": {[]string{"seatA", "seatB", "seatC"}, "L2"},
++			}),
++			Root: repo,
++			Now:  fixedClock(),
++		}
++
++		wf := gatedWorkflow(&workflow.GateConfig{Tier: "L3", PassThreshold: &pt})
++		runID := "mywf-20260101T000000Z-gateac05c1"
++		err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++			TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++		})
++		if err != nil {
++			t.Fatalf("expected pass with threshold 0.5 (2go/1block), got: %v", err)
++		}
++		m := readLiveManifest(t, repo, runID)
++		if m.Gates[0].Status != runmanifest.GateStatusPass {
++			t.Errorf("status = %q, want pass", m.Gates[0].Status)
++		}
++	})
++
++	t.Run("threshold-1.0-two-go-one-block-reruns", func(t *testing.T) {
++		// Same seats but threshold=1.0 → 0.67 < 1.0 → not pass.
++		// With max_rounds=1 → ESCALATED (top tier L3 → L2 not in map → terminal).
++		repo := initTestRepo(t)
++		sha := headSHA(t, repo)
++
++		goEnv := envelopeJSON("go", nil)
++		blockEnv := envelopeJSON("block", []string{"fix it"})
++		ss := &stubSeats{responses: [][]byte{goEnv, goEnv, blockEnv}}
++		pt := 1.0
++		one := 1
++		e := &Engine{
++			Store:         refstore.New(repo),
++			ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++			ResolveCheck:  func(r workflow.Runner) (CheckRunner, error) { return &stubCheckRunner{passed: true}, nil },
++			ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
++				return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++			},
++			Tiers: fixedTiers(map[string][2]interface{}{
++				// Only L3 in map; no L2 → nextStronger = "" → terminal on escalate.
++				"L3": {[]string{"seatA", "seatB", "seatC"}, ""},
++			}),
++			Root: repo,
++			Now:  fixedClock(),
++		}
++
++		wf := gatedWorkflow(&workflow.GateConfig{Tier: "L3", PassThreshold: &pt, MaxRounds: &one})
++		runID := "mywf-20260101T000000Z-gateac05c2"
++		err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++			TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++		})
++		var gateEscErr *GateEscalationError
++		if !errors.As(err, &gateEscErr) {
++			t.Fatalf("expected GateEscalationError with threshold 1.0 (2go/1block), got: %v", err)
++		}
++	})
++
++	t.Run("checks-only-gate-passes", func(t *testing.T) {
++		// No seats, only a passing check → PASS (checks-only gate).
++		repo := initTestRepo(t)
++		sha := headSHA(t, repo)
++
++		e := &Engine{
++			Store:         refstore.New(repo),
++			ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
++			ResolveCheck: func(r workflow.Runner) (CheckRunner, error) {
++				return &stubCheckRunner{passed: true}, nil
++			},
++			// ResolveSeat / Tiers not set: no seats in this gate.
++			Root: repo,
++			Now:  fixedClock(),
++		}
++
++		wf := gatedWorkflow(&workflow.GateConfig{
++			Checks: []workflow.Runner{{Command: "true"}},
++		})
++		runID := "mywf-20260101T000000Z-gateac05d"
++		err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++			TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++		})
++		if err != nil {
++			t.Fatalf("checks-only gate: expected pass, got: %v", err)
++		}
++		m := readLiveManifest(t, repo, runID)
++		if len(m.Gates) != 1 {
++			t.Fatalf("gates = %d, want 1", len(m.Gates))
++		}
++		if m.Gates[0].Status != runmanifest.GateStatusPass {
++			t.Errorf("status = %q, want pass", m.Gates[0].Status)
++		}
++	})
++}
++
++// ---------------------------------------------------------------------------
++// Unit tests for synthesis and helpers
++// ---------------------------------------------------------------------------
++
++func TestSynthesizeVerdict(t *testing.T) {
++	tests := []struct {
++		name           string
++		checksPassed   []bool
++		seatVerdicts   []runmanifest.SeatVerdict
++		tierRound      int
++		maxRounds      int
++		passThreshold  float64
++		expectedSeats  int
++		wantStatus     runmanifest.GateStatus
++		wantEscalation bool
++	}{
++		{
++			name:         "all-checks-pass-no-seats",
++			checksPassed: []bool{true},
++			seatVerdicts: nil,
++			tierRound:    1, maxRounds: 3, passThreshold: 1.0, expectedSeats: 0,
++			wantStatus: runmanifest.GateStatusPass,
++		},
++		{
++			name:         "check-fails-rerun",
++			checksPassed: []bool{false},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictGo},
++			tierRound:    1, maxRounds: 3, passThreshold: 1.0, expectedSeats: 1,
++			wantStatus: runmanifest.GateStatusRerun,
++		},
++		{
++			name:         "check-fails-max-rounds-escalates",
++			checksPassed: []bool{false},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictGo},
++			tierRound:    3, maxRounds: 3, passThreshold: 1.0, expectedSeats: 1,
++			wantStatus: runmanifest.GateStatusEscalated, wantEscalation: true,
++		},
++		{
++			name:         "insufficient-usable-escalates",
++			checksPassed: []bool{true},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictFailed, runmanifest.SeatVerdictGo},
++			tierRound:    1, maxRounds: 3, passThreshold: 1.0, expectedSeats: 2,
++			wantStatus: runmanifest.GateStatusEscalated, wantEscalation: true,
++		},
++		{
++			name:         "single-seat-one-usable-passes",
++			checksPassed: []bool{true},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictGo},
++			tierRound:    1, maxRounds: 3, passThreshold: 1.0, expectedSeats: 1,
++			wantStatus: runmanifest.GateStatusPass,
++		},
++		{
++			name:         "threshold-met-passes",
++			checksPassed: []bool{true},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictGo, runmanifest.SeatVerdictBlock},
++			tierRound:    1, maxRounds: 3, passThreshold: 0.5, expectedSeats: 2,
++			wantStatus: runmanifest.GateStatusPass,
++		},
++		{
++			name:         "threshold-not-met-reruns",
++			checksPassed: []bool{true},
++			seatVerdicts: []runmanifest.SeatVerdict{runmanifest.SeatVerdictBlock, runmanifest.SeatVerdictBlock},
++			tierRound:    1, maxRounds: 3, passThreshold: 1.0, expectedSeats: 2,
++			wantStatus: runmanifest.GateStatusRerun,
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			syn := synthesizeVerdict(tc.checksPassed, tc.seatVerdicts, tc.tierRound, tc.maxRounds, tc.passThreshold, tc.expectedSeats)
++			if syn.status != tc.wantStatus {
++				t.Errorf("status = %q, want %q", syn.status, tc.wantStatus)
++			}
++			if tc.wantEscalation && syn.escalationReason == "" {
++				t.Error("escalation_reason must not be empty for escalated status")
++			}
++		})
++	}
++}
++
++func TestTierToInt(t *testing.T) {
++	tests := []struct {
++		name string
++		want int
++	}{
++		{"L1", 1}, {"L2", 2}, {"L3", 3},
++		{"L4", 0}, {"", 0}, {"inline", 0}, {"L", 0}, {"L10", 0},
++	}
++	for _, tc := range tests {
++		if got := tierToInt(tc.name); got != tc.want {
++			t.Errorf("tierToInt(%q) = %d, want %d", tc.name, got, tc.want)
++		}
++	}
++}
++
++func TestSplitProvider(t *testing.T) {
++	tests := []struct{ s, name, model string }{
++		{"anthropic/claude-opus", "anthropic", "claude-opus"},
++		{"openai/gpt-5", "openai", "gpt-5"},
++		{"singlename", "singlename", "singlename"},
++		{"a/b/c", "a", "b/c"}, // split on FIRST slash only
++	}
++	for _, tc := range tests {
++		n, m := splitProvider(tc.s)
++		if n != tc.name || m != tc.model {
++			t.Errorf("splitProvider(%q) = (%q, %q), want (%q, %q)", tc.s, n, m, tc.name, tc.model)
++		}
++	}
++}
++
++// noopWriter returns an io.Writer that discards all output.
++func noopWriter() *nopW { return &nopW{} }
++
++type nopW struct{}
++
++func (*nopW) Write(p []byte) (int, error) { return len(p), nil }
++
++// Ensure noopWriter is used as io.Writer.
++var _ interface{ Write([]byte) (int, error) } = (*nopW)(nil)
++
++// Compile-time check that fixedClock is available (defined in engine_test.go).
++var _ = fixedClock
++
++// Compile-time check that time is imported (used in SeatResult.Timestamp).
++var _ = time.Now
+diff --git a/internal/liverun/resolve.go b/internal/liverun/resolve.go
+index 2fc5a6e..f232434 100644
+--- a/internal/liverun/resolve.go
++++ b/internal/liverun/resolve.go
+@@ -5,6 +5,7 @@ import (
+ 	"crypto/rand"
+ 	"encoding/hex"
+ 	"fmt"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -54,6 +55,73 @@ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workf
+ 	}, nil
+ }
+ 
++// ResolveCheckRunner returns a CheckRunner for the given gate check runner config.
++// Inline Command runners are wrapped in execCheckRunner; Name runners are looked
++// up in the registry seats map to get the Invoke command.
++func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.Duration) (CheckRunner, error) {
++	var cmd string
++	if r.Command != "" {
++		cmd = r.Command
++	} else {
++		seat, ok := reg.Seats[r.Name]
++		if !ok {
++			return nil, fmt.Errorf("check runner name %q not found in registry", r.Name)
++		}
++		cmd = seat.Invoke
++	}
++	return &execCheckRunner{
++		command: strings.Fields(cmd),
++		timeout: timeout,
++	}, nil
++}
++
++// ResolveGateSeat returns a replay.Runner and SeatMeta for a named seat.
++// The runner is an ExecRunner built from the seat's Invoke command with
++// Timeout and MaxOutputBytes set (matching buildRunnerFactory).
++// SeatMeta carries the split provider name and model from Seat.Provider.
++func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration) (replay.Runner, SeatMeta, error) {
++	seat, ok := reg.Seats[seatName]
++	if !ok {
++		return nil, SeatMeta{}, fmt.Errorf("seat %q not found in registry", seatName)
++	}
++	providerName, model := splitProvider(seat.Provider)
++	meta := SeatMeta{
++		HarnessName:  seat.Harness,
++		ProviderName: providerName,
++		Model:        model,
++	}
++	runner := &replay.ExecRunner{
++		Command:        strings.Fields(seat.Invoke),
++		Timeout:        timeout,
++		MaxOutputBytes: 64 << 20,
++	}
++	return runner, meta, nil
++}
++
++// ResolveTiers returns a Tiers function that resolves tier seat lists and
++// next-stronger tier names from the registry. The tier ladder is ordered by
++// numeric suffix toward L1 (strongest): L3 → L2 → L1.
++func ResolveTiers(reg registry.Registry) func(string) ([]string, string, bool) {
++	return func(name string) ([]string, string, bool) {
++		tier, ok := reg.Tiers[name]
++		if !ok {
++			return nil, "", false
++		}
++		// Compute next stronger tier by decrementing the numeric suffix.
++		nextStronger := ""
++		if len(name) >= 2 && name[0] == 'L' {
++			n, err := strconv.Atoi(name[1:])
++			if err == nil && n > 1 {
++				candidate := fmt.Sprintf("L%d", n-1)
++				if _, exists := reg.Tiers[candidate]; exists {
++					nextStronger = candidate
++				}
++			}
++		}
++		return tier.Seats, nextStronger, true
++	}
++}
++
+ // DeriveFrontier returns the index of the first workflow stage whose Produces role
+ // is absent from the manifest's completed stages. Returns len(wf.Stages) when complete.
+ func DeriveFrontier(wf workflow.Workflow, manifest runmanifest.Manifest) int {

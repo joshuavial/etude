@@ -1,0 +1,209 @@
+◐ etude-04i · Live gate execution: deterministic checks (hard veto) + model seats (weighted), rerun/escalate, auto capture-gate   [● P1 · IN_PROGRESS]
+Owner: joshuavial · Type: feature
+Created: 2026-06-29 · Updated: 2026-06-29
+
+DESCRIPTION
+Execute gates during live runs (today capture-gate only records). A gate is attached to the guarded stage and has two seat kinds: CHECKS (deterministic runners; any failure = hard BLOCK, no threshold) and SEATS (model votes; weighted pass_threshold), each a runner invocation. Synthesize pass|rerun|escalated fail-closed (reuse etude-loop synthesis: any failed check blocks; <2 usable seats fails closed; errored seats skipped). rerun re-runs the guarded stage with feedback + bumps round (<stage>.r<round>); escalated climbs the tier. Auto-calls capture-gate. Reads gate config from the stage; seat/tier defs from the shared registry. Design: docs/plans/product/live-execution.md S2.
+
+DESIGN
+## Plan — etude-04i: Live gate execution
+
+### Goal
+Replace the no-op gate block in the live engine (engine.go:248-251, `gate %q deferred to etude-04i`) with real gate execution. After a guarded stage produces its output, fan that output across the gate's CHECKS (deterministic, hard veto) and SEATS (model votes, weighted threshold), synthesize a fail-closed verdict `pass | rerun | escalated` reusing the etude-loop / dogfood-runbook semantics, drive the loop (rerun re-runs the stage with feedback + bumps the round; escalated advances the registry tier ladder), and record each executed attempt as a `runmanifest.GateAttempt` appended to the run manifest via the SAME CAS manifest-write path the engine already uses for stages (manifest_version flips to 3 automatically on serialization, manifest.go:932-940).
+
+### BUILD vs DEFER (P2 premise check) — BUILD
+Premise holds; every dependency is landed and stable:
+- The `gate` block + accessors exist (workflow.go:50-88, GateConfig, EffectivePassThreshold/EffectiveMaxRounds) — etude-2pc.1.
+- The registry resolves seat name -> invoke + provider/harness and tier -> seat list (registry.go:32-57; Default L1-L4 at :200-205) — etude-2pc.1.
+- GateAttempt/SeatResult/GateDecision exist, validate, round-trip (manifest.go:56-102, validateGate:426, validateSeat:500, toJSON:955); capture-gate proves the manifest write with seat raw outputs (capture.go:417-531; referencedArtifactPaths includes seat.RawOutput, manifest.go:648-654).
+- The live engine walks stages, chains roles, captures incrementally on a CAS ref in one evolving worktree (engine.go:229-354) — etude-xin.
+Real consumer exists (etude-2pc.2 depends on this); the no-op is the explicit gap. Build.
+
+### Approach — committed decisions (one each)
+
+D1. Where the gate hooks in. In executeStages, AFTER the guarded stage's output is stored, chained, and captured as its own incremental CAS commit, run the gate as a bounded loop. Each GateAttempt is appended to manifest.Gates and written as its own incremental CAS commit via runmanifest.WriteManifestTree (same call the stage capture uses, engine.go:337), advancing prevCommit. This IS the "auto capture-gate" path: reuse the manifest writer + its validateGate/validateSeat, NOT a CLI subprocess (the engine holds the live CAS chain; shelling `etude capture-gate` mid-run would race the engine's own writes). The per-stage execute body (build inputs -> resolve runner -> run -> store output -> append Stage -> write manifest) is factored into a helper runAndCaptureStage so the rerun loop can re-invoke it.
+
+D2. Check verdict = exit code. A check is a runner invocation behind the ETUDE_* contract; its process exit code is the verdict: exit 0 = pass, any nonzero = BLOCK (verified empirically: Go os/exec returns *exec.ExitError, ExitCode()==N, for nonzero and nil for 0). A check that cannot launch / times out is ALSO a BLOCK (any check failure is a hard veto, fail-closed). Checks need a distinct executor from replay.ExecRunner because ExecRunner treats nonzero exit as ErrRunnerFailed and requires an output file (ErrOutputMissing, exec_runner.go:158-167) — both wrong for checks, where nonzero is the normal signal and no output file is expected. New liverun check executor follows the SAME strict env (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) and inputs materialization as ExecRunner (exec_runner.go:113-136) but interprets exit code and never requires output. ExecRunner left untouched (heavily tested; lower regression risk than refactoring its contract).
+
+### Plan-gate round 1 (folded optionals — all GO, no required changes)
+gemini GO, codex GO, opus GO. Folded: (a) explicit seat ExecRunner error→verdict mapping (D3); (b) Provider split-on-"/" fallback so a slashless registry seat can't abort the manifest write (D7); (c) Timeout + MaxOutputBytes on the seat ExecRunner mirroring buildRunnerFactory (D8); (d) DegradedReason set whenever any seat is non-usable even if the gate still passes (D7); (e) explicit resolver-error handling as failed/blocked (D8, codex); (f) document the lossy L4/inline→Tier 0 mapping (D6, codex); (g) AC1 test asserts manifest_version==3 + ParseJSON round-trip with gates (test plan).
+
+D3. Seat verdict + feedback = JSON envelope on ETUDE_OUTPUT_FILE. A seat is a runner invocation that writes to ETUDE_OUTPUT_FILE a JSON object: {"verdict":"go"|"block","required":[...],"optional":[...]}. Seats reuse replay.ExecRunner verbatim (output bytes parsed by the gate). Chosen over a first-line GO/BLOCK token because: (a) unambiguous, avoids the substring/Contains collision class (runbook defect #4); (b) maps 1:1 onto SeatResult.Required/Optional regardless of verdict; (c) round-trips deterministically for hermetic test runners. Parse failures map to errored seats (see D4). Real-LLM seat wrappers conforming to this envelope are etude-2pc.2's concern (scope-fenced out).
+
+D4. Synthesis (fail-closed) -> pass | rerun | escalated. Per round, reusing the runbook Degraded Gate Policy:
+1. Run all checks. checkFailed = ANY check did not exit 0 (or failed to run).
+2. Run all configured seats (inline Seats or resolved Tier seats). Per seat: launch/timeout error -> verdict `failed` (failure_note), skipped; ran with no/empty output -> `empty` (failure_note), skipped; output not valid envelope JSON -> `malfunction` (failure_note), skipped; valid envelope -> `go`/`block`, USABLE. expected = configured seat count; usable = go/block count.
+   Explicit seat error→verdict mapping (opus): `errors.Is(err, replay.ErrOutputMissing)` → `empty`; `ErrRunnerFailed`/launch failure → `failed`; `context.DeadlineExceeded` → `failed` (timeout note); an empty-but-PRESENT output file (success, zero bytes) → `malfunction` (not `empty`); non-JSON/invalid-envelope output → `malfunction`. All carry failure_note (validateSeat satisfied). This makes every bucket deterministically reachable.
+3. Decision: if checkFailed -> NOT pass (block), go (5). Else if expected==0 (checks-only) -> PASS. Else if usable < min(2,expected) -> fail closed -> ESCALATED (escalation_reason "insufficient usable seats: got U need F"); rerunning the STAGE cannot fix a seat outage, so escalate. min(2,expected) keeps the literal "<2 usable fails closed" for the normal >=2-seat gate while still supporting a deliberately single-seat tier (L4) — stated/justified per runbook "commit to one approach". Else weighted go-fraction: registry Seat has no per-seat weight field, so weights are uniform (1.0), fraction = goCount/usableCount; if fraction >= EffectivePassThreshold() (default 1.0) -> PASS; else block, go (5).
+4. (PASS handled above.)
+5. Not-pass (checkFailed or seats blocked): if tierRound < EffectiveMaxRounds() -> RERUN; else -> ESCALATED (escalation_reason "max rounds N exhausted"). Each attempt recorded as a GateAttempt with this status BEFORE driving.
+
+D5. Rerun mechanics. On RERUN: build a gate-feedback artifact (markdown: failed-check details + each blocking seat's required[]), then re-invoke runAndCaptureStage for the guarded stage with that artifact appended both to runner inputs (materialized ETUDE_INPUTS_DIR/NN-gate-feedback) and to the new manifest Stage.Inputs (captured/auditable). The re-run stage is captured with Name = "<stage>.r<round>" (round >= 2), Output.Role unchanged (= Produces, so chain + DeriveFrontier unaffected), ProducedBy="original". Global round (monotonic, for gate_id uniqueness) and tierRound (resets per tier, gates the max_rounds budget) both increment; re-run the gate at the SAME tier. Unique stage names avoid a manifest pitfall: stage names are NOT required unique and stageIndex is last-wins (manifest.go:235-238), so reusing "plan" each round would make an earlier gate's reviewed_stages.artifact sha no longer match the overwritten last stage entry and fail validateGate/stageHasArtifact (manifest.go:464-471). Re-running in the single evolving worktree re-executes in current tree state (per etude-xin); stage idempotency is the runner's responsibility (risk noted).
+
+D6. Escalate mechanics. On ESCALATED: record the attempt, then advance the registry tier ladder. Ordering is by numeric suffix toward L1 (strongest): "L2" -> "L1" (parse digit, decrement, look up "L"+(n-1) in reg.Tiers). If a stronger tier exists: switch tier, round++, tierRound=1, re-run the GATE (NOT the stage) against the unchanged latest output (new GateAttempt referencing the same stage). If no stronger tier (already L1, or the gate used inline Seats with no ladder): TERMINAL — capture the escalated attempt, then halt with a new liverun.GateEscalationError (carries RunID for resume/human hint, like StageError), leaving a valid partial run. Bounded: <= tiers x max_rounds attempts; round monotonic => gate_ids and (phase,round) stay unique (manifest.go:241-252).
+
+D7. Capture — GateAttempt + SeatResult field coverage. Per attempt build a runmanifest.GateAttempt:
+- GateID = "<phase>.r<round>"; Phase = base stage name; Round = global round (>=1); Tier = tierToInt(name) where L1->1,L2->2,L3->3 else 0 (inline/L4 -> 0; validateGate requires 0-3, manifest.go:438); Status = synthesized.
+- ReviewedStages = [{Stage: reviewed stage name, Role: Produces, Artifact: output sha}] (round 1 -> "<stage>"; round >=2 after a rerun -> "<stage>.r<n>").
+- Seats = checks THEN model seats, each a SeatResult:
+  * check: Seat="check.<i>", Harness.Name="exec", Provider.Name="deterministic", Provider.Model=<runner name or "command">, Verdict=go|block, Required=[detail] on block, RawOutput=stored stdout/stderr detail artifact.
+  * model seat: Seat=<registry seat key>, Harness.Name=<Seat.Harness>, Provider.Name/Model = split Seat.Provider on first "/" (e.g. "anthropic/claude-opus" -> "anthropic","claude-opus"). FALLBACK (opus): if Seat.Provider has NO "/", set Provider.Name=Provider.Model=whole string (registry only requires Provider non-empty, but validateProviderField requires BOTH Name AND Model non-empty, manifest.go:542-544 — a slashless seat would otherwise abort the gate capture). Verdict from envelope, Required/Optional from envelope, FailureNote for failed/empty/malfunction (required+forbidden rules, manifest.go:515-526), RawOutput = stored verdict-JSON transcript. Skill left zero (optional; no skill identity for a seat invocation).
+  * Timestamp = engine clock per seat.
+- Decision: EscalationReason set on escalated (required, manifest.go:444); DegradedReason set WHENEVER any seat is non-usable (failed/empty/malfunction) even if the gate still PASSES (opus — so the audit record reflects a degraded panel, e.g. pass_threshold 0.5 with one errored seat that still meets quorum); DeferredBeads empty (engine does not produce them).
+- Timestamp = engine clock. Seat RawOutput artifacts added to the engine artifactstore and included in the manifest write (referencedArtifactPaths covers them, manifest.go:648-654).
+
+D8. Engine seam / wiring. Add injected resolvers to liverun.Engine mirroring the existing ResolveRunner func pattern (keeps tests hermetic, no LLM):
+- ResolveCheck func(workflow.Runner) (CheckRunner, error) — prod builds the exec check executor from a registry name (-> Seat.Invoke) or inline Command; tests inject a stub returning canned pass/fail.
+- ResolveSeat func(seatName string) (replay.Runner, SeatMeta, error) — prod builds replay.ExecRunner from reg.Seats[name].Invoke + SeatMeta (harness/provider/model), setting Timeout + MaxOutputBytes (64MB) mirroring buildRunnerFactory so seat output is bounded like stage output (opus); tests inject replay.StubRunner (CannedOutput = envelope JSON; Err = errored seat). A resolver ERROR (unknown seat / bad config) maps to a non-usable seat (`failed` + failure_note), NOT a panic/abort (codex).
+- Tiers func(name string) (seats []string, nextStronger string, ok bool) — prod reads reg.Tiers; tests inject a fixed ladder.
+internal/cli/run.go (runWorkflow:68, buildRunnerFactory:135) wires these from the already-loaded reg. No new CLI flags (gate execution is automatic) => no generated docs/cli regeneration.
+
+### Files
+- internal/liverun/gate.go — NEW. Gate executor: per-stage gate drive loop, synthesize(...) (D4), check/seat invocation + envelope parse (D3), SeatResult construction (D7), tier ladder + tierToInt (D6), GateEscalationError, SeatMeta, exec CheckRunner impl + a stub interface for tests.
+- internal/liverun/engine.go — MODIFY. Replace the no-op (lines 248-251); factor runAndCaptureStage; call the gate loop after stage capture; thread rerun stage-naming/feedback + escalation halt; add the new Engine resolver fields.
+- internal/liverun/resolve.go — MODIFY. Add ResolveCheckRunner, ResolveGateSeat (name -> ExecRunner + SeatMeta), tier-ladder helpers built from registry.Registry, alongside ResolveStageRunner.
+- internal/cli/run.go — MODIFY. Build + inject the three gate resolvers from reg into liverun.Engine; surface GateEscalationError (resume/human hint) like StageError (run.go:122-128).
+- Tests: internal/liverun/gate_test.go (NEW); additions to internal/liverun/engine_test.go.
+
+### Validation
+- make lint (gofmt -l + go vet), go build ./..., go test ./... (gofmt drift does not fail go test).
+- GOOS=windows GOARCH=amd64 go build ./... and GOOS=linux (no new syscall/platform symbols expected; bead touches exec — confirm clean).
+- Manifest round-trip: a run with gates round-trips JSON() -> ParseJSON intact with manifest_version==3 (defect #5; pattern at manifest_test.go:1129).
+- Built-binary smoke: tiny .etude/workflow.yaml + registry.yaml with a script check + script seats; etude run then etude run show shows the gate attempt(s).
+
+### Test plan (hermetic, deterministic — stub check + seat runners, NO real LLM)
+All via injected ResolveCheck/ResolveSeat/Tiers stubs returning canned verdicts; assert against the written manifest (ParseJSON of the run ref).
+- AC1 records a GateAttempt with the synthesized verdict: one stage+gate, passing check + 2 go seats -> run succeeds; manifest has one GateAttempt, Status==pass, gate_id "<phase>.r1", seats=[check.0,seatA,seatB] with right verdicts/provider/harness, reviewed_stages binds the output sha. ALSO assert the run with gates serializes manifest_version==3 and round-trips JSON()->ParseJSON intact (opus — defect #5 exercised by a hermetic test, not just smoke).
+- AC2 failing check hard-blocks over passing seats: check exits nonzero, 2 go seats, max_rounds=1 -> status NOT pass (rerun->escalated at max_rounds); the failing check recorded `block`; gate did not pass despite unanimous seat go.
+- AC3 rerun re-executes stage with feedback + bumps round: round 1 seats block (max_rounds>=2); stub stage runner asserts it received input role gate-feedback containing the blocking required[]; round 2 seats go. Assert two GateAttempts (r1 rerun, r2 pass), a second Stage named "<stage>.r2" with feedback in its Inputs, chain role unchanged.
+- AC4 escalate advances tier: gate at tier L3 (single stub seat blocks) max_rounds=1 -> r1 escalated; ladder L3->L2 (two stub go seats) -> r2 at L2 passes. Assert attempt1 Tier==3 status==escalated with escalation_reason, attempt2 Tier==2 status==pass; round monotonic. Plus terminal case: top tier L1 still blocks -> GateEscalationError, partial run valid (run show works, escalated recorded).
+- AC5 fail-closed: (a) 2 seats, one Err (errored) -> usable=1 < min(2,2) -> escalated; errored seat recorded `failed`+failure_note, skipped. (b) malformed-envelope seat -> `malfunction`, skipped. (c) threshold: 3 seats, pass_threshold 0.5, 2 go/1 block -> 0.67>=0.5 -> pass; same with pass_threshold 1.0 -> 0.67<1.0 -> rerun/escalated. (d) checks-only gate (no seats), check passes -> pass (no <2 fail-closed).
+
+### Docs blast radius
+- docs/plans/product/live-execution.md — flip §2 status Planned -> Implemented (lines 3-6, 122-157), matching how §1 was marked after etude-xin.
+- docs/run.md — add a live-gate-execution section: checks (exit-code, hard veto), seats (JSON envelope, weighted threshold), synthesis verdicts, rerun (feedback input + <stage>.r<round>), escalate (tier ladder, terminal halt), auto gate capture (manifest_version 3).
+- docs/gates.md — document the seat output envelope + live synthesis semantics (cross-link the runbook); confirm no contradiction with the capture-gate record schema.
+- Generated CLI docs: NONE — no new/changed etude run flags, so make docs regenerates nothing (verify with make docs + git status before finalizing; defect #6).
+- No README command-inventory change (no new command).
+
+### Risks
+- Loop complexity (rerun x tier escalation) is the largest surface; bounded by tiers x max_rounds with a monotonic round, isolated in one tested synthesize + drive function.
+- Rerun in an evolving worktree re-executes a possibly-mutated tree; non-idempotent stage runners (e.g. implement) could double-apply. Consistent with the etude-xin single-worktree decision; documented, not solved here.
+- Tier int vs registry L-tier mismatch (manifest Tier is 0-3; registry L1-L4): L4/inline -> Tier 0. Lossy but valid; escalation uses tier NAMES not the int. Documented.
+- Literal "<2 usable" implemented as min(2,expected) to not break a single-seat tier; deviation stated/justified up front.
+- Scope fence: gate EXECUTION only. NOT migrating the dev workflow (etude-2pc.2), NOT changing secret/env passthrough (etude-3a2); tier/seat DEFINITIONS come from the etude-2pc.1 registry unchanged.
+
+### Capture
+- inputs: bead etude-04i description + ACs; docs/plans/product/live-execution.md §2; engine.go + resolve.go (liverun); workflow.go (GateConfig); registry.go; capture.go (runGate/buildSeatResult); manifest.go (GateAttempt/SeatResult/GateDecision/validateGate/validateSeat/toJSON/referencedArtifactPaths); exec_runner.go + runner.go (replay contract, StubRunner); run.go (CLI wiring); review-gate-runbook.md (synthesis/fail-closed/degraded semantics, P1/defect#5/#6); empirical os/exec exit-code reproduction.
+- output: bead --design field
+
+
+
+NOTES
+Plan gate attempt 1 (Tier 1): GO unanimous (gemini, opus, codex). Folded optionals into plan: seat error→verdict mapping, Provider split-/ fallback, seat Timeout/MaxOutputBytes, DegradedReason on any non-usable seat, resolver-error→failed, L4/inline→Tier 0 doc, AC1 version-3 round-trip. result: pass
+Implement gate: attempt 1 (codex GO, opus GO, gemini BLOCK — DISPROVEN: claimed manifest_version not set to 3, but it's computed in toJSON:932-935 + asserted by passing TestGateAC1; no code change). Reran gemini with evidence → GO. attempt 2 PASS (Tier 1 unanimous). Optionals deferred to etude-j93.
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes: none new in Verify (impl already shipped internal/liverun/gate_test.go covering AC1-AC5; reviewed, not modified)
+- commands:
+  - go test -count=1 ./internal/liverun/... ./internal/cli/... ./internal/runmanifest/... ./internal/replay/... => ok (all 4 packages)
+  - make lint (gofmt -l cmd internal + go vet ./...) => clean
+  - GOOS=windows/amd64 go build ./... => OK; GOOS=linux/amd64 go build ./... => OK
+  - make docs => zero generated-doc diff (no new flags); make docs-reality => OK (14 commands match)
+- result: PASS
+
+AC-to-test map (all passing):
+- AC1 GateAttempt + manifest_version==3 round-trip: TestGateAC1_RecordsGateAttempt (asserts gate_id plan.r1, tier=2, status=pass, seats check.0/seatA/seatB, reviewed-stage sha binding, JSON()->ParseJSON round-trip, manifest_version==3)
+- AC2 failing check hard-blocks over go seats: TestGateAC2_FailingCheckHardBlocks (check block, 2 seats go, gate escalated not pass)
+- AC3 rerun + round bump + feedback: TestGateAC3_RerunWithFeedback (r1 rerun -> r2 pass, plan.r2 stage with gate-feedback input, reviewed-stage rebinds to plan.r2)
+- AC4 escalate tier + terminal: TestGateAC4_EscalationAdvancesTier (L3 tier3 escalated -> L2 tier2 pass, monotonic rounds) + TestGateAC4_TerminalEscalation (top tier -> GateEscalationError, partial run valid)
+- AC5 fail-closed: TestGateAC5_FailClosed/{errored-seat-escalates, malformed-envelope-malfunction, threshold-0.5..passes, threshold-1.0..reruns, checks-only-gate-passes}; plus TestSynthesizeVerdict, TestTierToInt, TestSplitProvider unit tables
+
+Manual tests:
+- required: yes (gate execution is new live behavior surfaced via etude run / run show)
+- reason: browser-not-applicable but CLI live behavior; ran built bin/etude in a throwaway git repo with deterministic inline-command checks + script seats (no LLM)
+- result: PASS
+  - Scenario A (pass): passing check + 2 go seats (tier L2) -> run exit 0; run show records gate plan.r1 status=pass, check.0 verdict=go (provider deterministic), seats goA/goB verdict=go with provider split anthropic/claude-opus + openai/gpt-5, raw_output stored.
+  - Scenario B (failing check hard-block): check exits 3 + 2 go seats, max_rounds=1, tier L1 (no stronger) -> exit 1 GateEscalationError with resume hint; run show records plan.r1 status=escalated, check.0 verdict=block with required 'exit 3: deterministic check failed: lint error', both model seats go yet gate did NOT pass. Confirms hard veto.
+  - Scenario C (rerun): counter-driven seats block round1 then go round2, max_rounds=2 -> exit 0; two gate attempts (plan.r1 rerun, plan.r2 pass), a second stage plan.r2 carrying a gate-feedback markdown input (each blocking seat's required[]), rerun output proves feedback materialized as input, gate r2 reviewed plan.r2, rounds monotonic.
+  - Binary-written manifest.json: manifest_version=3, gates=[rerun,pass]. Cleaned up temp dir.
+
+QA findings:
+- correctness: matches the approved plan D1-D8. Check exit-code-as-verdict, seat JSON-envelope verdicts, fail-closed synthesis, rerun feedback + <stage>.r<round> naming, tier ladder escalation + terminal GateEscalationError, auto manifest capture via the same CAS write path, manifest_version flips to 3 — all verified by both hermetic tests and the built binary.
+- coverage: all 5 ACs mapped to passing tests; synthesis + helpers have unit tables; the version-3 round-trip is exercised hermetically (not just smoke). Adequate.
+- regressions: none. ExecRunner left untouched; cross-compile clean; full targeted suites green; generated docs unchanged.
+- code quality: gofmt/vet clean; clear separation (gate.go executor, resolve.go resolvers, engine.go seam); resolver errors map to non-usable seats rather than panics.
+- risks: (1) non-idempotent rerun in the single evolving worktree — documented, deferred (consistent with etude-xin). (2) L4/inline -> Tier 0 lossy mapping — documented. (3) Hardening items (cap check output, friendly empty-gate error, propagate storeRawOutput errors, deterministic feedback map ordering) tracked in etude-j93. None block Verify.
+
+Cleanliness note (not a defect, not gate-blocking): the working tree carries stray untracked files NOT part of this bead — gate-impl-04i-gemini2.txt (implement-phase scratch), _ai/research/, mkdorequirements; also pre-existing edits to .gitignore + docs/README.md + docs/plans/README.md + docs/replay.md. These should be excluded from the etude-04i commit. The bead's actual diff is internal/{cli/run.go, liverun/engine.go, liverun/resolve.go} + new internal/liverun/{gate.go, gate_test.go}.
+
+Capture:
+- inputs: approved plan (--design) + Implement artifact (NOTES) + working-tree diff
+- output: this append-only Verify note
+Verify gate attempt 1 (Tier 1): GO unanimous (gemini, opus, codex). Full suite green; AC-to-test map complete (no gaps); built-binary A/B/C scenarios pass; manifest_version=3 round-trip + AC2 hard-block proven hermetically. Optionals deferred to etude-j93.
+## Docs
+
+Changed: yes
+Files:
+- docs/plans/product/live-execution.md
+- docs/run.md
+- docs/gates.md
+
+Rationale:
+- docs/plans/product/live-execution.md: flipped §2 status header from 'Planned → Implemented (etude-04i)'; changed §2 opening paragraph from Planned to Implemented; changed '**Planned:** gate execution …' to 'What is implemented:'; updated last bullet to describe actual capture path (no CLI subprocess); changed 'Acceptance criteria' to 'Acceptance criteria (met)'.
+- docs/run.md: added '### Gate execution' subsection under Live run describing checks (exit-code hard veto), seats (JSON envelope contract), synthesis verdicts (pass/rerun/escalated with numbered rules), rerun mechanics (gate-feedback input, stage.r<round> naming), escalate mechanics (tier ladder, GateEscalationError), and auto-capture (manifest_version 3, visible in run show); removed 2-line stale paragraph stating gates were deferred to etude-04i.
+- docs/gates.md: added '## Live gate execution' section with seat output envelope schema (JSON + field table), check runner contract (exit-code only), parse-failure verdict mapping (empty/malfunction/failed), synthesis and stored record characteristics (gate_id, check SeatResult fields, degraded_reason, escalation_reason, manifest_version 3), and cross-link to Review Gate Runbook.
+
+Policy check:
+- policy applied: inferred from existing docs layout (hand-written guides in docs/*.md, planning docs in docs/plans/**); no repo docs policy file present
+- shipped docs describe implemented behavior only
+- planning material (§3 secrets, etude-dp7 deferred work) remains under docs/plans/product/live-execution.md as planned
+- generated references (docs/cli/**) are separate from hand-written guides; make docs produced no changes (no new CLI flags)
+- generated output was updated through the repo workflow (make docs); no diff produced
+
+Capture:
+- inputs: Verify artifact, bead design, make docs (no change), make docs-reality (green)
+- output: docs diff above (3 files)
+Docs gate attempt 1 (Tier 3, single Opus): BLOCK — 2 doc-accuracy bugs: live-execution.md §1 stale 'gate no-op deferred to etude-04i' bullet (contradicts §2 implemented); gates.md:191 'schema below' should be 'above'. Both fixed. result: rerun required
+Docs gate attempt 2 (Tier 3, single Opus): GO. Both fixes verified; no remaining gate no-op/deferred contradictions; §3 secrets still Planned; make docs zero diff + docs-reality green. result: pass
+
+ACCEPTANCE CRITERIA
+a stage with a gate runs its checks + seats live and records a gate attempt with the synthesized verdict; a failing deterministic check hard-blocks regardless of seat votes; rerun re-executes the guarded stage with feedback + increments the round; escalated advances the tier; fail-closed matches etude-loop guarantees.
+
+LABELS: phase:review
+
+PARENT
+  ↑ ○ etude-2pc: (EPIC) Live execution: drive and gate workflows, not just replay ● P1
+
+DEPENDS ON
+  → ✓ etude-2pc.1: Schema + registry foundation: per-stage runner + gate blocks, shared seat/runner registry ● P1
+  → ✓ etude-xin: Live workflow orchestration (etude run): walk an arbitrary stage graph live, capture by construction ● P1
+
+BLOCKS
+  ← ○ etude-2pc.2: Migrate dev workflow to the new schema and retire gates.yaml ● P1
+  ← ○ etude-j93: Gate-exec hardening: cap check output, friendly empty-gate error, propagate storeRawOutput errors, deterministic feedback ordering, surface degraded on stdout ● P3
+
+COMMENTS
+  2026-06-29 23:24 joshuavial
+    ## Final Review
+    
+    Recommendation: close (GO)
+    
+    Reviewed: plan (--design D1-D8), implementation diff, Verify artifact, Docs artifact, final working-tree diff.
+    
+    Re-confirmed green (my own run): go test -count=1 ./internal/liverun/... ./internal/cli/... => ok; make lint => clean; make docs => zero docs/cli diff; make docs-reality => OK (14 commands).
+    
+    Coherence vs plan: no drift. checkFailed precedes seat threshold (AC2 hard veto); fail-closed buckets complete in classifySeatOutput (timeout/missing->failed/empty, zero-byte+bad-JSON->malfunction); usable<min(2,expected)->escalated; checks-only->pass. Bounded loop: globalRound monotonic => unique gate_ids + unique rerun stage names (D5 last-wins pitfall avoided); rerun feeds gate-feedback as stage input; escalate walks tier ladder, terminal -> GateEscalationError (valid partial run, CLI resume hint). manifest_version 3 round-trip exercised by TestGateAC1. CAS writes all ExpectedOld-guarded, sequential prevCommit advance; WorkflowVersion/created consistent across stage and gate write paths.
+    
+    Docs review: policy inferred from repo layout (hand-written docs/*.md, planning under docs/plans/**); user-facing live-gate behavior documented in run.md + gates.md; live-execution.md S2 flipped Planned->Implemented; S3 secrets remains Planned; generated docs/cli unchanged (no new flags). Pass.
+    
+    Findings: none blocking.
+    
+    Commit readiness: one atomic commit. IN-SCOPE (8): internal/{cli/run.go, liverun/engine.go, liverun/resolve.go, liverun/gate.go[new], liverun/gate_test.go[new]}, docs/{run.md, gates.md, plans/product/live-execution.md}. EXCLUDE from this commit (pre-existing/unrelated): .gitignore, docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt. No stray scratch files remain (gate-impl-*.txt cleared). Minor: engine_test.go not modified (plan listed it tentatively); gate_test.go fully covers AC1-AC5 — not a blocker.
+    
+    Capture: inputs all phase artifacts + final diff; output this note.
+

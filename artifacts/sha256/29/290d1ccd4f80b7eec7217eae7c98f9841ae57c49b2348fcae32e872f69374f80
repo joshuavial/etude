@@ -1,0 +1,30 @@
+# Verify artifact — etude-04i (live gate execution)
+
+**Status: pass. Recommendation: proceed to Docs.**
+
+## Automated (all green)
+- `go test -count=1 ./internal/liverun/... ./internal/cli/... ./internal/runmanifest/... ./internal/replay/...` → ok (4 packages)
+- `make lint` (gofmt + go vet) → clean
+- `GOOS=windows` + `GOOS=linux` amd64 build → both OK
+- `make docs` → ZERO generated-doc diff (no new flags); `make docs-reality` → OK (14 commands)
+
+## AC-to-test map (all passing)
+- AC1 — TestGateAC1_RecordsGateAttempt: gate_id plan.r1, tier=2, status=pass, seats check.0/seatA/seatB, reviewed-stage sha binding, manifest_version==3 + JSON()→ParseJSON round-trip.
+- AC2 — TestGateAC2_FailingCheckHardBlocks: check block, 2 seats go, gate does not pass.
+- AC3 — TestGateAC3_RerunWithFeedback: r1 rerun → r2 pass, plan.r2 stage with gate-feedback input, reviewed-stage rebinds.
+- AC4 — TestGateAC4_EscalationAdvancesTier (L3→L2, monotonic rounds) + TestGateAC4_TerminalEscalation (top tier → GateEscalationError, partial run valid).
+- AC5 — TestGateAC5_FailClosed 5 subtests (errored→escalate, malformed→malfunction, threshold 0.5 pass / 1.0 not-pass, checks-only pass) + TestSynthesizeVerdict/TestTierToInt/TestSplitProvider.
+
+## Manual test (built bin/etude, throwaway git repo, deterministic inline checks + script seats, no LLM): PASS
+- A (pass): passing check + 2 go seats (L2) → exit 0; run show records plan.r1 status=pass, check.0 verdict=go (provider deterministic), seats with provider split, raw_output stored.
+- B (failing check hard-block): check exit 3 + 2 go seats, max_rounds=1, L1 → exit 1 GateEscalationError + resume hint; plan.r1 status=escalated, check.0 verdict=block, both model seats go yet gate did NOT pass.
+- C (rerun): counter-driven seats block r1 then go r2, max_rounds=2 → exit 0; two attempts (plan.r1 rerun, plan.r2 pass), second plan.r2 stage carrying gate-feedback markdown input (blocking seats' required[]), rerun output proves feedback materialized as input, gate r2 reviews plan.r2, rounds monotonic. Binary manifest.json: manifest_version=3, gates=[rerun,pass].
+
+## QA findings
+Matches approved plan (D1-D8). Fail-closed verified by hermetic tests AND the binary. No regressions (ExecRunner untouched, cross-compile clean, docs unchanged). Resolver errors degrade to non-usable seats, not panics.
+
+## Risks / deferred
+None gate-blocking. Documented: non-idempotent rerun in single evolving worktree (etude-xin decision); lossy L4/inline→Tier 0; hardening items → etude-j93.
+
+## Cleanliness
+Stray scratch file gate-impl-04i-gemini2.txt (accidentally written to repo root during the gate flow) REMOVED. Bead diff = internal/cli/run.go, internal/liverun/{engine,resolve}.go, internal/liverun/{gate,gate_test}.go (new). Pre-existing mkdocs files excluded from commit.

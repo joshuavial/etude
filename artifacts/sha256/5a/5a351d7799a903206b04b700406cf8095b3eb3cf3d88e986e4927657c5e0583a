@@ -1,0 +1,18 @@
+# Final Review artifact — etude-04i (live gate execution)
+**Verdict: GO. Commit scope clean. Ready to close.** Commit 64def8e2716818c7e13f16fa2328ed0115778c0c.
+
+## Scope
+In-scope staged (8): internal/cli/run.go, internal/liverun/{engine,resolve,gate,gate_test}.go, docs/run.md, docs/gates.md, docs/plans/product/live-execution.md. Pre-existing mkdocs files NOT staged; no stray scratch files.
+
+## Confirmed (independently re-run green)
+- go test ./internal/liverun/... ./internal/cli/... PASS; make lint clean; make docs zero docs/cli diff; make docs-reality OK (14 commands).
+- Adversarial sweep clean: AC2 check-fail short-circuits before seat threshold; AC5 classifySeatOutput covers every bucket + usable<min(2,expected)→escalated + checks-only→pass; validateSeat failure_note rules honored; globalRound monotonic → unique gate_ids + <stage>.r<round>; manifest_version==3 round-trip (TestGateAC1); CAS writes ExpectedOld-guarded (no race); JSON envelope avoids Contains/substring class.
+
+## Gate history
+- Plan: r1 PASS (Tier 1 unanimous).
+- Implement: r1 (codex GO, opus GO, gemini BLOCK — DISPROVEN version-flip claim; no code change), r2 PASS after evidence reroll (Tier 1 unanimous).
+- Verify: r1 PASS (Tier 1 unanimous; built-binary A/B/C scenarios).
+- Docs: r1 BLOCK (2 doc-accuracy bugs), r2 PASS (Tier 3 single Opus).
+- Final Review: r1 PASS (Tier 3 single Opus / dev-pr-reviewer).
+
+## Deferred (non-blocking) → etude-j93 (gate-exec hardening).
