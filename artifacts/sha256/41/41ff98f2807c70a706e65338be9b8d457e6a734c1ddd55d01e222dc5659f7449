@@ -1,0 +1,52 @@
+○ etude-cr2 · Consider typed artifact storage discriminator   [● P4 · OPEN]
+Owner: joshuavial · Type: task
+Created: 2026-05-21 · Updated: 2026-05-24
+
+DESCRIPTION
+Follow-up from etude-artifact-store final review: consider replacing ManifestArtifact.Storage string with a small custom type (for example StorageType) to let Go catch invalid storage discriminator assignments inside the internal artifactstore package. This is non-blocking type-safety polish.
+
+DESIGN
+## Plan
+
+**Approach:** Replace the untyped `Storage string` discriminator with `type StorageType string` defined in internal/artifactstore (the package that owns the StorageContent/StoragePointer constants), and promote those two constants to that type. The field lives in TWO structs (artifactstore.ManifestArtifact.Storage and runmanifest.ArtifactRef.Storage) plus runmanifest's internal artifactJSON wire struct; all three adopt StorageType so the compiler catches invalid discriminator assignments across both packages. The JSON wire format stays the strings content/pointer.
+
+VERIFIED EMPIRICALLY (scratch test, since removed): a struct with `Storage StorageType json:"storage"` marshals byte-identically to the current string form for both values ({"storage":"content"} and {"storage":"pointer"}), and an existing on-disk {"storage":"pointer"} unmarshals cleanly into the typed field. So stored manifests round-trip unchanged. Also confirmed an untyped string literal ("remote") remains assignable to a StorageType field, so the existing bad-storage validation test compiles unchanged. DisallowUnknownFields is unaffected (it gates unknown JSON keys, not field types); the existing validateArtifactRef switch on the discriminator is preserved exactly (no tightening — bead does not imply it).
+
+**Files:**
+- internal/artifactstore/store.go - add `type StorageType string`; retype the two consts to StorageContent StorageType = "content" / StoragePointer StorageType = "pointer"; change ManifestArtifact.Storage to StorageType (assignments at AddContent/AddPointer already use the consts, so unchanged)
+- internal/runmanifest/manifest.go - change ArtifactRef.Storage and artifactJSON.Storage to artifactstore.StorageType; the validation compare (line 256), expectedArtifactPath switch (line 288-297), and the three toJSON/toArtifactRef/ArtifactFromManifestArtifact assignments work unchanged once the types line up
+- internal/cli/run.go - no change needed: storage=%s printf with StorageType prints content/pointer identically (verify go vet stays clean; use %s)
+
+**Tests:**
+- Add a focused marshal/round-trip test in internal/runmanifest/manifest_test.go locking the wire strings ("storage": "content"/"pointer") — the existing inline golden test (lines 58-103) and TestParseJSONRoundTrips already cover this; extend/keep them green
+- Existing tests already use the typed consts (store_test.go, manifest_test.go lines 271/534/546) so they compile as-is; the bad-storage case (line 242, literal "remote") and ExampleStore_AddContent (prints `content`) remain valid
+- Run full suite + go vet; confirm artifactstore example_test golden output ("content") unchanged
+
+**Docs:** None. docs/run.md (lines 75-76) and the sample output document storage as content/pointer — displayed values are unchanged. capture.md does not show the discriminator. No generated command reference touches it.
+
+**Risks:** Low. Wire format is empirically proven identical (string-backed named type marshals to same bytes). Only risk is a missed call site that assigns a raw string to a typed field in another package — grep covered internal/cli, internal/artifactstore, internal/runmanifest; build passes today.
+
+**Capture:**
+- inputs: bead etude-cr2 description + parent etude-artifact-store; internal/artifactstore/store.go, internal/runmanifest/manifest.go, internal/cli/run.go; test files store_test.go/manifest_test.go/example_test.go; docs/run.md, docs/capture.md; empirical scratch serialization test (removed)
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: BLOCK (2 GO / 2 BLOCK)
+- Gemini Pro: GO; pi/pilms: GO — but both MISSED a real compile error.
+- Claude Opus: BLOCK; GPT-5.5 xhigh (codex): BLOCK — same required change:
+  expectedArtifactPath(storage, sum string) (manifest.go:288, called L270 with artifact.Storage) will NOT compile once ArtifactRef.Storage is StorageType. Required: retype the first param to artifactstore.StorageType.
+- Disputed factual point settled EMPIRICALLY (throwaway go build): an untyped string literal (manifest_test.go:242 'Storage = "remote"') STAYS assignable to a StorageType field and compiles unchanged (pilms's claim that it errors is wrong; Opus/plan correct). A StorageType value passed to a string PARAMETER is a compile error (confirms the expectedArtifactPath BLOCK).
+
+## PLAN AMENDMENT (incorporated for gate attempt 2)
+Add to runmanifest/manifest.go changes: retype expectedArtifactPath's first parameter from 'string' to 'artifactstore.StorageType' (L288). The switch cases (StorageContent/StoragePointer) then compare like-typed; the L270 call type-checks. manifest_test.go:242 needs NO change (untyped literal stays assignable). Implementer must run 'go build ./... && go test ./... -race' to confirm.
+## Plan gate (attempt 2) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (full throwaway build of amended plan — all sites covered, serialization unchanged); pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Amendment (expectedArtifactPath param retype) incorporated and verified. 
+Optional folded into Implement: add a ParseJSON bad-storage fixture covering an unknown storage value after JSON unmarshal (decode/validate rejection).
+
+LABELS: phase:plan
+
+DEPENDS ON
+  → ✓ etude-artifact-store: Implement content-addressed artifact store ● P1
+
