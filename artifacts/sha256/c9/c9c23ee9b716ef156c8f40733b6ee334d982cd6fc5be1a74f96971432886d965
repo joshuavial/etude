@@ -1,0 +1,51 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Inputs:
+- bead: etude-aul.3 - bench-gate: labels + win-rate/confusion-matrix scoring
+- implementation artifact: internal/bench/gate_labels.go, gate_score.go, gate_labels_test.go, gate_score_test.go
+- approved plan: bd design field for etude-aul.3
+- implement gate evidence: tmp/gates-aul.3/implement.r1.json through implement.r4.json
+- unrelated dirty state: .gitignore, .claude/skills/etude-review, .etude/gates.yaml, tmp
+
+Automated tests:
+- changes: new explicit-label parser tests, resolver/progression-proxy tests, verdict-polarity tests, and gate scoring/confusion-matrix tests
+- state: dirty/uncommitted, scoped to this bead except unrelated files listed above
+- commands:
+  - gofmt -w internal/bench/gate_labels.go internal/bench/gate_score.go internal/bench/gate_labels_test.go internal/bench/gate_score_test.go: PASS
+  - go test -count=1 ./internal/bench/...: PASS
+  - make build: PASS
+  - make lint: PASS
+  - make test: PASS
+  - make docs-reality: PASS
+  - make dogfood-audit: PASS
+- result: pass; no verification failures observed
+
+Manual tests:
+- required: no
+- reason: this bead adds internal scoring/model code only. It does not add a runnable CLI command or user-facing workflow. etude bench --gate CLI wiring is a later bead.
+- result: not applicable
+
+Docs:
+- changed: no user-facing docs
+- result: no docs change required for this internal package surface. User-facing labels-file and reporting docs belong with the CLI behavior bead.
+
+QA findings:
+- correctness: pass. Explicit labels parse strictly; resolver prefers explicit labels; proxy labels encode the circularity warning; gate verdict polarity is tested; scoring computes TP/FN/FP/TN and rates by variant.
+- coverage: pass. Tests cover parser rejection paths, proxy inference and consistency errors, unlabeled predictions, warning deduplication, key/label mismatch, zero-rate behavior, and all confusion buckets.
+- regressions: pass. Existing pairwise `Aggregate` was not changed, and gate scoring lives in separate files.
+- risks: no material risk blocks progress. The progression proxy remains intentionally weak and is surfaced with warning metadata.
+
+Provenance:
+- verify artifact created at: 2026-06-07T10:16:13Z
+- runner: Codex
+- approval surface: local file tmp/gates-aul.3/verify-artifact.md
+
+Review gate:
+- required: yes
+- phase: verify
+- tier: L2
+- attempt: 1
+- result: pending

@@ -1,0 +1,177 @@
+## Plan
+
+**Approach:**
+Add a small internal gate-label and scoring layer in `internal/bench` that can be
+used by the future `etude bench --gate` CLI without wiring the CLI in this bead.
+The layer scores gate verdicts against either explicit labels or the weak
+round-progression proxy from `Fixture.Label`. It reports a confusion matrix and
+variant win rate while carrying a loud warning whenever proxy labels are used.
+
+This bead does **not** run gate judges, persist new eval results, read beads/Dolt,
+add prompt variants, or change `etude bench` CLI behavior. `aul.4` owns the CLI
+orchestration and rendering.
+
+1. Add a gate verdict/label model under `internal/bench`.
+   - Define `GateVerdict` with values `go` and `block`.
+   - Define `GateLabelSource` with at least `explicit` and `progression-proxy`.
+   - Define `GateLabel`:
+     - `Expected GateVerdict`: the verdict a calibrated gate should return.
+     - `Source GateLabelSource`.
+     - `Verified bool`: explicit labels can be marked verified; progression proxy
+       labels are always unverified.
+     - optional `Note`.
+   - Define a stable `GateLabelKey` matching a fixture by `run_id`, `stage`, and
+     `round`.
+   - Add `GateVerdictFromPassed(*bool)` or equivalent helper so a gate
+     `Score.Passed`/`EvalResult` can be converted to `go`/`block` without
+     duplicating boolean polarity. `Passed=true` is `go`; `Passed=false` is
+     `block`; nil is invalid.
+
+2. Support explicit labels as a structured JSON file format, but only as an
+   internal parser in this bead.
+   - File shape:
+     ```json
+     {
+       "version": 1,
+       "labels": [
+         {
+           "run_id": "etude-aul.2",
+           "stage": "plan",
+           "round": 1,
+           "expected": "block",
+           "verified": true,
+           "note": "plan missed rubric/pairwise passed-field regression"
+         }
+       ]
+     }
+     ```
+   - Implement `ParseGateLabelsJSON([]byte) (GateLabelSet, error)`.
+   - Validation:
+     - unknown top-level fields reject;
+     - `version` must be 1;
+     - `labels` must be present;
+     - `run_id` and `stage` use the existing eval/result identifier constraints
+       where practical, or local equivalents if those helpers are not exported;
+     - `round` must be positive;
+     - `expected` must be `go` or `block`;
+     - duplicate keys reject;
+     - `note` may be empty.
+   - No YAML/CSV and no CLI flag parsing in this bead.
+
+3. Resolve labels for fixtures with explicit labels preferred over the proxy.
+   - Add `GateLabelResolver` or equivalent:
+     - `Explicit GateLabelSet`
+     - `UseProgressionProxy bool`
+   - `Resolve(f Fixture) (GateLabel, bool, error)`:
+     - if an explicit label exists for `(RunID, Stage, Round)`, return it;
+     - otherwise, if proxy is disabled or `Fixture.Label` is zero-valued, return
+       `ok=false`;
+     - otherwise infer from `Fixture.Label` and `Fixture.Provenance.Round`.
+   - Progression proxy inference:
+     - if `Label.Status == pass` and `FinalRound > 0`:
+       - `Provenance.Round == FinalRound` => expected `go` (clean final round);
+       - `Provenance.Round < FinalRound` => expected `block` (blocked earlier
+         round);
+       - `Provenance.Round > FinalRound` => error or unlabeled; choose error so
+         inconsistent fixture provenance is visible.
+     - if `Label.Status == rerun` or `escalated` and `Provenance.Round > 0`,
+       expected `block`.
+     - zero/unknown status returns `ok=false`.
+   - Every proxy-derived label sets `Source=progression-proxy`, `Verified=false`,
+     and attaches/deduplicates a warning:
+     "progression proxy is circular: a gate that over-blocks can score well
+     against its own historical blocks; prefer verified explicit labels."
+
+4. Add scoring and confusion-matrix aggregation.
+   - Define `GateScoredCell` / `GatePrediction` with:
+     - `Variant string`
+     - fixture provenance or label key
+     - `Expected GateVerdict`
+     - `Predicted GateVerdict`
+     - `LabelSource`
+     - `Verified bool`
+   - Define `GateConfusionMatrix`:
+     - `TruePositive`: expected block, predicted block (caught issue)
+     - `FalseNegative`: expected block, predicted go (missed issue)
+     - `FalsePositive`: expected go, predicted block (over-blocked clean artifact)
+     - `TrueNegative`: expected go, predicted go (accepted clean artifact)
+   - Define `GateVariantReport`:
+     - `Variant`
+     - `Total`, `Scored`, `Unlabeled`
+     - confusion matrix
+     - `WinRate` / accuracy = `(TP + TN) / Scored`
+     - `CatchRate` = `TP / (TP + FN)` when denominator > 0, else 0
+     - `AvoidOverblockRate` = `TN / (TN + FP)` when denominator > 0, else 0
+     - `Warnings []string`
+   - Add `ScoreGatePredictions(predictions []GatePrediction)` or equivalent,
+     grouping by variant and preserving per-cell details for later CLI reporting.
+   - When `Scored == 0`, rates are 0 and not NaN; the future CLI can decide
+     whether that is an error.
+
+5. Keep existing bench replay aggregation separate.
+   - Do not alter `Aggregate` for pairwise replay win-rate.
+   - Gate scoring lives in separate files, e.g. `internal/bench/gate_labels.go`
+     and `internal/bench/gate_score.go`, to avoid inverting the pairwise A/B
+     semantics.
+
+**Files:**
+- `internal/bench/gate_labels.go` - label key/model, explicit JSON parser,
+  resolver, progression-proxy inference, circularity warning.
+- `internal/bench/gate_score.go` - gate prediction/cell types, confusion matrix,
+  per-variant scoring rates.
+- `internal/bench/gate_labels_test.go` - parser, duplicate/invalid labels,
+  explicit-over-proxy precedence, proxy inference, circularity warning.
+- `internal/bench/gate_score_test.go` - confusion matrix, rates, grouping,
+  unlabeled/zero-score guards, no-NaN behavior.
+- Possibly `internal/bench/gate_verdict.go` if separating verdict helpers makes
+  the code clearer.
+
+**Tests:**
+- Explicit labels:
+  - valid JSON parses into lookup keys;
+  - unknown top-level field rejects;
+  - unsupported version rejects;
+  - missing labels rejects;
+  - duplicate `(run_id, stage, round)` rejects;
+  - invalid expected verdict rejects;
+  - non-positive round rejects.
+- Resolver:
+  - explicit label wins over proxy;
+  - proxy disabled yields unlabeled when no explicit label exists;
+  - zero LabelHint yields unlabeled;
+  - final pass round resolves expected `go`;
+  - earlier round before final pass resolves expected `block`;
+  - rerun/escalated resolves expected `block`;
+  - provenance round greater than final round rejects;
+  - proxy labels include the circularity warning and `Verified=false`.
+- Scoring:
+  - each confusion-matrix bucket is counted correctly;
+  - mixed variant reports are grouped by variant;
+  - win rate, catch rate, and avoid-overblock rate are correct;
+  - unlabeled cells are counted but not scored;
+  - no scored cells yields zero rates, not NaN;
+  - a prediction converted from `Score.Passed` preserves gate polarity
+    (`Passed=true` => predicted `go`, false => `block`).
+
+**Docs:**
+- No shipped docs in this bead. This is internal scoring/model code only.
+- User-facing `etude bench --gate`, labels-file path, warning presentation, and
+  output formatting docs land with `etude-aul.4` when the CLI behavior ships.
+- Code comments should document the proxy circularity warning and verdict polarity.
+
+**Risks:**
+- Circular proxy labels can reward over-blocking. Mitigate by making proxy source
+  and warning first-class report fields, and by letting explicit labels override.
+- Boolean polarity can invert easily (`Passed=true` is GO, not BLOCK). Mitigate
+  with a single conversion helper and tests.
+- Pairwise win-rate orientation differs from gate accuracy. Mitigate by keeping
+  gate scoring separate from `Aggregate`.
+- Current `RunRefsSource` only yields final captured artifacts; per-round
+  scoring depends on a future optional beads/Dolt adapter. This scorer still
+  supports per-round fixtures via `Provenance.Round` and `LabelHint.FinalRound`.
+
+**Capture:**
+- inputs: bead `etude-aul.3`; epic `etude-aul` design; closed `etude-aul.1`
+  corpus model; closed `etude-aul.2` GateEvaluator; `internal/bench/aggregate.go`;
+  `internal/bench/run.go`; `internal/eval/gateevaluator.go`.
+- output: bead design field.

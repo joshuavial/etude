@@ -1,0 +1,64 @@
+## Final Review
+
+Status: pass
+Recommendation: close bead after dogfood-close capture, scoped commit, and push
+
+Bead:
+- etude-aul.3 - bench-gate: labels + win-rate/confusion-matrix scoring
+
+Scoped implementation files:
+- internal/bench/gate_labels.go
+- internal/bench/gate_score.go
+- internal/bench/gate_labels_test.go
+- internal/bench/gate_score_test.go
+
+Out-of-scope dirty files to avoid committing with this bead:
+- .gitignore
+- .claude/skills/etude-review/
+- .etude/gates.yaml
+- tmp/ scratch files except gate/capture artifacts used by dogfood-close
+
+Plan conformance:
+- pass. Adds internal gate verdict, explicit label parser, label resolver, progression-proxy inference, and scoring/report types.
+- pass. Explicit labels win over proxy labels, and proxy labels carry circularity warning metadata.
+- pass. Gate verdict polarity is centralized and tested: `Passed=true` maps to `go`, false maps to `block`.
+- pass. Confusion matrix and rates are grouped by variant and separate from existing pairwise `Aggregate`.
+- pass. No CLI wiring, prompt execution, eval persistence, or shipped docs were added.
+
+Gate history:
+- plan.r1: pass, L2
+- implement.r1: rerun required, L3, missing rerun/escalated Round > FinalRound validation
+- implement.r2: rerun required, L3, missing FinalRound=0 rejection for rerun/escalated proxy hints
+- implement.r3: pass, L3, optional proxy verified invariant suggested
+- implement.r4: pass, L3, final artifact
+- verify.r1: pass, L2
+- docs.r1: pass, L4 recorded as schema tier 3
+
+Verification:
+- go test -count=1 ./internal/bench/...: PASS
+- make build: PASS
+- make lint: PASS
+- make test: PASS
+- make docs-reality: PASS
+- make dogfood-audit: PASS
+
+Docs:
+- no shipped-doc changes required. This bead does not ship `etude bench --gate` CLI behavior, labels-file flags, or report output.
+- user-facing labels/scoring docs remain deferred to the CLI behavior bead.
+
+Close readiness:
+- ready to run scripts/dogfood-close.sh after this final gate passes.
+- ready for scoped commit of only the four internal/bench files listed above.
+- unrelated dirty files remain excluded from the bead commit.
+
+Provenance:
+- final review artifact created at: 2026-06-07T10:20:21Z
+- runner: Codex
+- approval surface: local file tmp/gates-aul.3/final-review-artifact.md
+
+Review gate:
+- required: yes
+- phase: review
+- tier: L4
+- attempt: 1
+- result: pending
