@@ -1,0 +1,17 @@
+✓ etude-aqh · Harden generality-test assertions: byte-equal forward-replay output + assert no review.r2; fix ls-parsing in stage-runner.sh   [● P3 · CLOSED]
+Owner: joshuavial · Assignee: joshuavial · Type: task
+Created: 2026-06-30 · Updated: 2026-08-15
+Close reason: hardened research replay assertions and stage-runner iteration; single L4 gate passed; 6887d18
+
+DESIGN
+From etude-2pc.3 implement gate (opus+codex+gemini optionals, non-blocking): (1) forward-replay assertions (TestRunWorkflowResearch AC4 + walkthrough) only check non-empty output; assert replay output byte-equals the original 'toned' artifact to lock determinism. (2) smoke test could assert no 'review.r2' substring to pin the round-1 invariant from the binary side. (3) stage-runner.sh parses ls (for f in $(ls ...)); safe here but use a glob/find for robustness. Test/example-only.
+
+DEPENDS ON
+  → ✓ etude-2pc.3: Generality test: run a second (research-style) workflow live ● P3
+
+COMMENTS
+  2026-08-15 05:11 joshuavial
+    Fast-lane plan: strengthen the existing generality regressions to require byte-equal forward replay and absence of review.r2, replace ls word-splitting in the stage-runner example with robust file iteration, then run targeted checks plus make test and make lint before one L4 review gate.
+  2026-08-15 05:24 joshuavial
+    Review gate attempt 1 (L4, single fast-lane seat): Claude Opus PASS_WITH_FOLLOWUPS; no blockers. Confirmed walkthrough fail-closed via set -euo pipefail; retained the explicit toned suffix assertion; deferred optional diagnostics and run-show format decoupling to etude-64z. Packet .etude/tmp/etude-aqh-review-packet.md sha256 9747d49da5e27cfdeea0dd0c1f68ac65de5572d0f667b8b7c2c499a0a8d148d8. make test and make lint pass.
+

@@ -1,0 +1,136 @@
+commit 6887d18f1cc8e97b37ff843b085d5b75dcf084da
+Author: joshuavial <git@codewithjv.com>
+Date:   Sat Aug 15 13:25:05 2026 +0800
+
+    harden research replay assertions
+
+diff --git a/examples/research/stage-runner.sh b/examples/research/stage-runner.sh
+index 8d5440f..d97eb60 100755
+--- a/examples/research/stage-runner.sh
++++ b/examples/research/stage-runner.sh
+@@ -14,6 +14,7 @@
+ #   ETUDE_OUTPUT_FILE  — file to write stage output to
+ 
+ : > "$ETUDE_OUTPUT_FILE"
+-for f in $(ls "$ETUDE_INPUTS_DIR" | sort); do
+-    cat "$ETUDE_INPUTS_DIR/$f" >> "$ETUDE_OUTPUT_FILE"
++for f in "$ETUDE_INPUTS_DIR"/*; do
++    [ -f "$f" ] || continue
++    cat "$f" >> "$ETUDE_OUTPUT_FILE"
+ done
+diff --git a/examples/research/walkthrough.sh b/examples/research/walkthrough.sh
+index e4f18c0..47bc6f3 100755
+--- a/examples/research/walkthrough.sh
++++ b/examples/research/walkthrough.sh
+@@ -168,7 +168,29 @@ echo "==> captured run: $RUN_ID"
+ # ---------------------------------------------------------------------------
+ echo ""
+ echo "==> Step 2: etude run show $RUN_ID"
+-"$ETUDE" run show "$RUN_ID"
++SHOW_OUT="$("$ETUDE" run show "$RUN_ID")"
++echo "$SHOW_OUT"
++
++# Read the original stage artifacts back from the captured run ref. Forward
++# replay prints each stage output sequentially, so their concatenation is the
++# exact byte-for-byte expected replay stream.
++EXPECTED_REPLAY="$WORK/expected-replay.out"
++: > "$EXPECTED_REPLAY"
++printf '%s\n' "$SHOW_OUT" | awk '/^  output: / { for (i = 1; i <= NF; i++) if ($i ~ /^path=/) { sub(/^path=/, "", $i); print $i } }' |
++while IFS= read -r artifact_path; do
++    git -C "$WORK" show "refs/etude/runs/$RUN_ID:$artifact_path" >> "$EXPECTED_REPLAY"
++done
++TONED_PATH="$(printf '%s\n' "$SHOW_OUT" | awk '
++    /^stage: / { stage = $2 }
++    stage == "tone-police" && /^  output: / {
++        for (i = 1; i <= NF; i++) if ($i ~ /^path=/) {
++            sub(/^path=/, "", $i)
++            print $i
++            exit
++        }
++    }
++')"
++git -C "$WORK" show "refs/etude/runs/$RUN_ID:$TONED_PATH" > "$WORK/original-toned.out"
+ 
+ # ---------------------------------------------------------------------------
+ # Step 3: forward replay — re-execute all 5 stages with the same recorded
+@@ -178,7 +200,12 @@ echo "==> Step 2: etude run show $RUN_ID"
+ echo ""
+ echo "==> Step 3: etude replay $RUN_ID (forward — all 5 stages)"
+ echo "    replay output:"
+-"$ETUDE" replay "$RUN_ID"
++"$ETUDE" replay "$RUN_ID" > "$WORK/replay.out"
++cat "$WORK/replay.out"
++cmp "$EXPECTED_REPLAY" "$WORK/replay.out"
++TONED_BYTES="$(wc -c < "$WORK/original-toned.out" | tr -d ' ')"
++tail -c "$TONED_BYTES" "$WORK/replay.out" | cmp "$WORK/original-toned.out" -
++echo "    replay bytes match the original stage artifacts (including toned)"
+ 
+ # ---------------------------------------------------------------------------
+ # Done.
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 768289e..87ef58a 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -1263,16 +1263,36 @@ func TestRunWorkflowResearch(t *testing.T) {
+ 		t.Errorf("registry-resolved approver seat not found in gate attempt; seats=%v", g.Seats)
+ 	}
+ 
+-	// AC4: forward replay re-executes all 5 stages without error.
++	// AC4: forward replay re-executes all 5 stages byte-identically.
+ 	// etude replay <runID> (1-arg forward replay) uses .etude/workflow.yaml
+ 	// and .etude/registry.yaml to resolve runners for each stage name.
+ 	replayOut, replaySderr, replayErr := execute("replay", runID)
+ 	if replayErr != nil {
+ 		t.Fatalf("etude replay returned error: %v\nstderr: %s\nstdout: %s", replayErr, replaySderr, replayOut)
+ 	}
+-	// Forward replay output is the concatenated output of all 5 stages.
+-	if len(replayOut) == 0 {
+-		t.Error("forward replay produced no output")
++	// Forward replay stdout is every stage output in manifest order. Compare it
++	// with the original content-addressed artifacts, including the final toned
++	// artifact, rather than merely checking that some bytes were produced.
++	store := refstore.New(repo)
++	runRef := "refs/etude/runs/" + runID
++	var wantReplay []byte
++	for _, stage := range m.Stages {
++		original, err := store.ReadFile(context.Background(), runRef, stage.Output.Path)
++		if err != nil {
++			t.Fatalf("read original %s artifact: %v", stage.Output.Role, err)
++		}
++		wantReplay = append(wantReplay, original...)
++	}
++	if !bytes.Equal([]byte(replayOut), wantReplay) {
++		t.Errorf("forward replay output differs from original stage artifacts")
++	}
++
++	toned, err := store.ReadFile(context.Background(), runRef, m.Stages[len(m.Stages)-1].Output.Path)
++	if err != nil {
++		t.Fatalf("read original toned artifact: %v", err)
++	}
++	if !bytes.HasSuffix([]byte(replayOut), toned) {
++		t.Errorf("forward-replayed toned output differs from original toned artifact")
+ 	}
+ }
+ 
+diff --git a/internal/example/research_example_test.go b/internal/example/research_example_test.go
+index b03ba1e..cfb4ee7 100644
+--- a/internal/example/research_example_test.go
++++ b/internal/example/research_example_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
++	"strings"
+ 	"testing"
+ 	"time"
+ )
+@@ -81,6 +82,9 @@ func TestResearchWalkthroughSmokeTest(t *testing.T) {
+ 	// The review gate must pass on round 1 (folded optional: catches silent RERUN regression).
+ 	assertContains(t, outStr, "captured gate review.r1 status=pass",
+ 		"live run must print gate pass line")
++	if strings.Contains(outStr, "review.r2") {
++		t.Error("live run must not advance the review gate beyond round 1")
++	}
+ 
+ 	// The run show output must include the gate pass status.
+ 	assertContains(t, outStr, "status:   pass", "run show must show gate status=pass")

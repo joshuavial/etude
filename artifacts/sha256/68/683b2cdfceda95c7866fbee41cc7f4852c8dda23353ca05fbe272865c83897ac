@@ -1,0 +1,19 @@
+# Verify — etude-aqh
+
+Status: pass
+Recommendation: land after the single fast-lane review gate.
+
+Automated and runtime evidence:
+- Focused TestRunWorkflowResearch: pass.
+- Focused TestResearchWalkthroughSmokeTest with freshly built binary: pass.
+- Standalone examples/research/walkthrough.sh: pass; exact original-artifact and toned-byte comparisons pass.
+- sh -n stage-runner.sh and bash -n walkthrough.sh: pass.
+- git diff --check: pass.
+- make lint: pass.
+- make test: pass. An initial parallel-package run transiently observed another package's global etude-worktree temp directory; the worktree test passed in isolation and the exact make test rerun passed fully.
+
+CLI-facing classification: no CLI surface or behavior change. The real freshly built CLI was nevertheless exercised end-to-end.
+
+Docs impact: checked examples/research/README.md, docs/run.md, README.md, and docs/README.md; no changes needed because documented behavior remains accurate and only its proof is strengthened.
+
+Unresolved material risks: none.
