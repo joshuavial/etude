@@ -1,0 +1,8 @@
+## Final Review — etude-cr2 (recommendation: close)
+
+Reviewed: plan (attempt 2), implementation diff, verify (pass, byte-level wire check), docs (no-docs). Findings: none.
+Wire-format preservation: StorageType is a plain named string type with NO custom MarshalJSON/UnmarshalJSON; json:"storage" tag unchanged; golden + round-trip tests + real ref bytes all byte-identical.
+Compile completeness: all discriminator sites typed consistently (incl. expectedArtifactPath param); build/vet/gofmt/-race tests green.
+Validation preserved; TestParseJSONRejectsUnknownStorageValue locks decode-time rejection (errors.Is ErrInvalidManifest).
+Commit hygiene: exactly internal/artifactstore/store.go, internal/runmanifest/manifest.go, internal/runmanifest/manifest_test.go (staged by name); .claude/scheduled_tasks.lock excluded; no secrets/debug.
+Gate history: attempt-1 was 3 GO / 1 BLOCK (codex flagged files-not-yet-staged, a wrap-up-timing artifact); staged + reran -> attempt-2 4/4 GO.
