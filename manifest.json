@@ -272,6 +272,54 @@
       ],
       "decision": {},
       "timestamp": "2026-06-05T06:15:00Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "agy"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-05T06:22:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "status always-exits-0 claim softened",
+            "skip list adds -h and bare etude",
+            "threshold-required wording clarified to optional/default-3"
+          ],
+          "timestamp": "2026-06-05T06:22:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-05T06:22:00Z"
     }
   ]
 }
