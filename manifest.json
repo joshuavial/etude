@@ -542,6 +542,41 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T05:11:20Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "confirm workflow self-check wording",
+            "cross-ref --remote error vs dry-run tolerance",
+            "note apply vs dry-run examples mirror same scenario"
+          ],
+          "timestamp": "2026-06-07T05:13:33Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T05:13:33Z"
     }
   ]
 }
