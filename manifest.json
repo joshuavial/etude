@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-kb0.3",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,39 @@
         "size": 344
       },
       "timestamp": "2026-05-27T10:04:46.901879Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T16:20:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single Opus seat reviewed kb0.2+kb0.3 plans together. GO — version flow verified against root.go/Makefile; CHANGELOG Unreleased/no-tag; README Releasing section boundary vs kb0.2 non-colliding; kb0.3/kb0.4 mechanics-vs-checklist boundary clear."
+      },
+      "timestamp": "2026-05-27T16:21:30Z"
     }
   ]
 }
