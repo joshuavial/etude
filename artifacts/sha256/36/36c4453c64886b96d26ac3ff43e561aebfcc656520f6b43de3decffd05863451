@@ -1,0 +1,38 @@
+# etude-ldf verification
+
+Verified the final round-cap implementation in `/Users/jv/projects/etude/.worktrees/lane-ldf` on 2026-08-16.
+
+## Automated checks
+
+- `make docs` — PASS; generated 26 command reference pages, including `docs/cli/etude_doctor.md`.
+- `make test` — PASS; all Go packages green, including the full doctor integration suite.
+- `make lint` — PASS; `gofmt -l cmd internal` empty and `go vet ./...` green.
+- `make docs-check` — PASS; generated reference output matches the worktree.
+- `GOOS=windows GOARCH=amd64 go build ./cmd/etude` — PASS; the generated cross-build binary was removed afterward.
+- `git diff --check` — PASS.
+
+Focused doctor regressions exercise dangerous and broad/partial fetch mappings, negative exclusions, per-kind/name-preserving push coverage, both safe mirror layouts, mirror-push sync suppression, malformed and whitespace-bearing refspecs, effective rewritten/multiple/relative push endpoints, unpushed/behind/unknown refs, URL controls and helper schemes, bounded advertisements, strict config cross-resolution, rubric containment and symlink escape, referenced scripts, `env`/adapter reviewer resolution, effective PATH/cwd/search permissions, literal shell remediation, Git argv allowlisting, side-effect-free credential/SSH environments, and a whole-repository before/after snapshot.
+
+## Installed-binary scenarios
+
+Installed only below `.etude/tmp/etude-ldf/bin` with:
+
+`GOBIN=$PWD/.etude/tmp/etude-ldf/bin make install`
+
+The exact installed binary was driven against a throwaway Git repository and local bare remote. Observed:
+
+- healthy current `etude init` setup: exit 0 and OK fetch/push/mirror/config/path findings;
+- dangerous authoritative fetch mapping: non-zero;
+- missing push mapping: non-zero;
+- missing authored rubric: non-zero with human-authorship requirement;
+- broken workflow-to-registry seat reference: non-zero;
+- missing real reviewer binaries behind the adapter: WARN/PROXY behavior without false OK or non-zero;
+- local-only run ref: WARN with exact `etude sync --remote 'origin'`;
+- unreachable remote: non-zero with the side-effect-free-probe limitation stated;
+- repository status, config bytes, and refs before/after a healthy doctor run: identical.
+
+The built binary was also run in this live linked worktree. It correctly reported the real local-only `etude-ldf` run ref when present and did not mutate the worktree or shared refs.
+
+## Round-cap decision
+
+Implementation gate rounds 1–3 are captured. The cap exposed a real incompatibility between arbitrary authenticated SSH/credential configuration and an absolute “never mutate host state” contract. Blocker `etude-7h3o` tracks a future authenticated mechanism. This bead preserves the read-only promise: the current remote probe disables credential helpers and arbitrary SSH config, supports side-effect-free endpoints, and fails closed with precise human guidance when it cannot verify a private/custom endpoint.
