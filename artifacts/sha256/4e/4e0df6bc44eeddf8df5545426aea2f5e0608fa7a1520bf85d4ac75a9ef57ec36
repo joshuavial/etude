@@ -1,0 +1,20 @@
+### B8. Cadence retro (2026-05-26) — post etude-14r (q87/8t4/n0t)
+- **Trigger/scope:** 3-ticket cadence after shipping the whole retro feature
+  (etude-q87 capture/storage, etude-8t4 list/show, etude-n0t generate+seam), all
+  Tier-1/Tier-2 gated.
+- **Findings/changes:** added a "Recurring Defect Classes (implement gate)" section
+  to `review-gate-runbook.md` capturing two patterns the implement gates caught
+  repeatedly: (1) **reserve every command-generated Refs/manifest key against
+  `--ref` override** — the `--ref` spoof/override class recurred (q87
+  subject_run/scope; n0t reintroduced it via an unreserved `generator` provenance
+  key); (2) **the in-harness repo-aware reviewer seat must do adversarial +
+  spec-completeness review, not just "it works"** — it GO'd 4 times on defects the
+  spec-focused inlined seats (codex/gemini) correctly BLOCKED (the two `--ref`
+  holes, `retro show` dropping gate/bench/eval/custom metadata, `resolveSubjectStage`
+  silently picking one stage of a multi-stage run). Concrete evidence the multi-seat
+  gate is load-bearing.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect
+  Classes"). Counter reset.
+- **Follow-up beads:** etude-712 (make gen-docs `TestDriftGuard` expectedCommands
+  exhaustive — a related guard-completeness gap surfaced during etude-8t4).
+
