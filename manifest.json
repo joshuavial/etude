@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-3a2",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,42 @@
         "size": 2159
       },
       "timestamp": "2026-06-30T01:42:17.132504Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "env-allowlist header wording (fixed)",
+            "§3/run.md prose duplication"
+          ],
+          "timestamp": "2026-06-30T01:38:07Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T01:38:07Z"
     }
   ]
 }
