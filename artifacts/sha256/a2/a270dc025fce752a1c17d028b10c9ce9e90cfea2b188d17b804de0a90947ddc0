@@ -1,0 +1,17 @@
+diff --git a/internal/cli/sync.go b/internal/cli/sync.go
+index 232d62a..2bbd3cf 100644
+--- a/internal/cli/sync.go
++++ b/internal/cli/sync.go
+@@ -136,11 +136,10 @@ func (r syncRunner) fetch(ctx context.Context, root, remote string) error {
+ 		if classifyErr != nil {
+ 			return classifyErr
+ 		}
++		// fetchBangAbort always carries a non-nil error and is returned by the guard above; no case needed here.
+ 		switch result {
+ 		case fetchBangRealFailure:
+ 			return fmt.Errorf("fetch failed: %s", strings.TrimSpace(stderrStr))
+-		case fetchBangAbort:
+-			return fmt.Errorf("fetch aborted: cannot classify ref %s", bl.ref)
+ 		case fetchBangBenign:
+ 			benignRefs = append(benignRefs, bl.ref)
+ 		}

@@ -1,0 +1,78 @@
+## Plan
+
+**Approach:** Behavior-preserving dead-code removal in internal/cli/sync.go fetch().
+Verified by reading the actual code: classifyFetchBang returns fetchBangAbort ONLY
+at L242/L244/L248, and ALL THREE carry a non-nil error. fetchBangRealFailure (L218,
+L231) and fetchBangBenign (L237) always return nil error. In fetch() the call site
+(L135-138) does 'result, classifyErr := classifyFetchBang(...); if classifyErr != nil
+{ return classifyErr }' BEFORE the switch, so the 'case fetchBangAbort:' arm (L142-143)
+is provably unreachable: abort always implies non-nil classifyErr, which already
+returned the richer error (incl. merge-base stderr from etude-zcq). No path exists
+where fetchBangAbort reaches the switch with a nil error, so the bead premise holds.
+Delete the dead case arm only; leave the reachable fetchBangRealFailure and
+fetchBangBenign arms and all error messages untouched.
+
+**Files:**
+- internal/cli/sync.go - delete unreachable 'case fetchBangAbort:' arm (L142-143) from
+  the switch in fetch(). Keep fetchBangRealFailure (L140-141) and fetchBangBenign
+  (L144-145) arms unchanged. The fetchBangAbort const (L164) and its three return
+  sites in classifyFetchBang (L242/L244/L248) STAY — they are live and tested. Switch
+  needs no default (Go does not require exhaustiveness; the two reachable results are
+  covered, and an impossible value falls through harmlessly as before).
+
+**Tests:**
+- No new test warranted (dead-code removal, behavior identical).
+- Existing tests must stay green: TestClassifyFetchBangAbortSurfacesStderr already
+  covers the abort path at the classify level (asserts fetchBangAbort + non-nil error
+  carrying merge-base stderr), proving abort always has a non-nil error.
+  TestSyncLockInducedRejectedFF covers fetch() returning the classify error first.
+  Run: go build ./... && go test ./internal/cli/.
+
+**Docs:**
+- None. Internal dead-code removal with no user-facing or behavior change.
+  Confirmed docs/sync.md (L107 generic 'stuck ref lock aborts the sync') does NOT
+  reference the removed error string or the switch arm. No command reference affected.
+
+**Risks:** None - removed branch is provably unreachable and untested at the fetch()
+level; reachable behavior and all error messages are unchanged. Touches git-plumbing
+but the control-flow claim was reproduced by reading the actual code, not assumed.
+
+**Capture:**
+- inputs: bead etude-nbv description, internal/cli/sync.go (fetch + classifyFetchBang),
+  internal/cli/sync_test.go (TestClassifyFetchBangAbortSurfacesStderr,
+  TestSyncLockInducedRejectedFF), docs/sync.md
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (traced all 3 abort returns non-nil + fetch() returns classifyErr before switch => arm genuinely dead); pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Tier rationale: touches git-plumbing code (sync.go). Behavior-preserving dead-code removal.
+Optional folded into Implement (opus): add a one-line comment near the switch noting fetchBangAbort always returns non-nil and is handled by the classifyErr guard above, so nobody re-adds the dead arm.
+## Implement
+
+**Implemented:**
+- Deleted the unreachable `case fetchBangAbort:` arm (2 lines) from the `switch result` in `fetch()` in `internal/cli/sync.go`
+- Added a one-line comment above the switch noting that `fetchBangAbort` always carries a non-nil error and is handled by the `if classifyErr != nil { return classifyErr }` guard above, so no case is needed
+
+**Checks run:**
+- `go build ./...`: pass
+- `gofmt -l cmd internal`: pass (empty output)
+- `go vet ./...`: pass
+- `go test ./internal/cli/ -count=1`: pass (ok 9.002s)
+- `go test ./... -count=1`: pass (all packages ok)
+
+**Changed files:**
+- internal/cli/sync.go
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (gate-approved 4/4 GO) and Plan gate notes
+- output: working tree diff (2 lines deleted, 1 comment added) and bead notes
+## Implement gate (attempt 1 -> 2) — Tier 1 four-seat: PASS 4/4 GO (attempt 2)
+- Attempt 1: 3 GO (Gemini, Opus, pilms — code correct) / 1 codex BLOCK whose ONLY required change was excluding the untracked .claude/scheduled_tasks.lock (a recurring process artifact, code confirmed correct).
+- ROOT-CAUSE FIX (2nd occurrence of this codex lock-file block, per runbook recurring-flake rule): gitignored the transient scheduler files (.claude/scheduled_tasks.lock/.json) in a separate hygiene commit 9f17ebd. git status now clean except the bead diff.
+- Attempt 2 (clean tree): Gemini GO; Claude Opus GO (re-traced return matrix, behavior-preserving); pi/pilms GO; GPT-5.5 xhigh (codex) GO.
+File: internal/cli/sync.go (delete dead case fetchBangAbort arm + guard comment). All tests green; behavior identical.
+
