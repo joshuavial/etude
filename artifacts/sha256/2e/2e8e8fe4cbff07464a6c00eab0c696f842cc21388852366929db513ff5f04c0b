@@ -1,0 +1,188 @@
+## Plan
+
+**Approach:** Add ONE new compact doc `docs/plans/dogfood/checklists.md` that is
+the single operational index for the three high-frequency flows — Session Boot,
+Gate Execution, Close. Each flow is a short numbered list where every active step
+is either a COMMAND (already mechanized) or a one-line check, and each step links
+to the runbook/capture-protocol/lens section that holds its rationale. The three
+long docs (README, review-gate-runbook, capture-protocol) keep all their prose as
+rationale/reference and gain a single 1-2 line pointer at the top sending the
+operator to the relevant checklist for the active steps. The checklist REFERENCES
+mechanisms and sections; it does NOT copy their content (copies drift). This is
+the literal acceptance: "Session Boot, gate execution, and close protocol EACH
+point to a short checklist or command."
+
+**Form decision (+ rationale):** ONE new `checklists.md`, cross-linked from all
+three docs — NOT in-place blocks. Rationale:
+- The acceptance wants "the long runbook is no longer the ONLY operational
+  source." A single checklists doc IS that second, compact operational source;
+  in-place blocks would just re-thicken the same long docs the retro (§3) flagged
+  as overloaded.
+- The three flows span three different files (boot=README, gate=runbook,
+  close=capture-protocol + dogfood-close.sh). A single index lets an operator
+  open ONE page to run any flow instead of hunting three docs. After a context
+  clear, Session Boot can say "open checklists.md" — one entry point.
+- It keeps the no-duplication contract clean: the checklist is an INDEX of
+  commands+links, and each rule still has exactly one authoritative home (the
+  script, the make target, the runbook lens section, the capture-protocol
+  section). The doc explicitly states "this page is an index; rationale lives at
+  the linked section."
+- Cost: one extra cross-link to maintain per doc. Mitigated by keeping the
+  pointer to a single line and pointing each checklist STEP at a section anchor
+  (drift shows up as a dead anchor, not silent wrongness).
+
+**The 3 flow checklists (active-step lists + the command/section each points at):**
+
+*Session Boot (8 active steps)* — source of truth: README.md "Session Boot"
+(README.md:6-25). Active steps:
+1. `bd prime` (verified real) — boot context.
+2. `bd ready` — pick next unblocked bead.
+3. `etude run list` / `etude run show <run-id>` (verified real) — recover what
+   shipped + how it was reviewed from `refs/etude/runs/*`.
+4. Read this index + [Review gate runbook] + [Verify phase design] (links).
+5. Confirm phase labels on the claimed bead (-> capture-protocol "Checklist /
+   At the start of a bead", capture-protocol.md:455-459).
+6. Record starting git SHA + dirty state (-> capture envelope, capture-protocol.md:94-129).
+7. Work bead through `plan -> implement -> verify -> docs -> final-review`.
+8. At each phase gate run the Gate checklist (link), and at close run the Close
+   checklist (link).
+   RATIONALE that stays in README: the prose narration of why each boot step
+   exists, the full Dogfood Scripts table, and the doc index.
+
+*Gate Execution (7 active steps)* — source of truth: review-gate-runbook.md;
+LEVERAGES the 8hq.6 lens layer, does NOT recreate it. Active steps:
+1. Pick tier (Tier 1 full / Tier 2 two-seat / Tier 3 single) -> Gate Weight
+   (runbook.md:61-103). One-line: "highest-risk surface; when unsure go heavier;
+   escalate to Tier 1 if shipped behavior/schema/storage in scope."
+2. Apply ALL FOUR review LENSES per seat -> the 8hq.6 "Reviewer Roles (review
+   lenses)" section (runbook.md:13-59). POINTER ONLY — the four lenses + their
+   evidence requirements are NOT restated here (8hq.6 owns them).
+3. Collect exact current artifacts for the prompt -> Gate Inputs (runbook.md:105-131).
+4. Dispatch seats with the per-seat invocation pattern (codex diff-only/<~700
+   lines; gemini inlined no-tools; Opus in-harness Task; pilms `--tools
+   read,grep,find,ls,bash`) -> Invocation + In-harness Claude rule + Example
+   launch pattern (runbook.md:133-285). Snapshot changed files to /tmp with
+   `cp --parents` before dispatch (one-line check pointing at runbook.md:146-161).
+5. Classify result; empirically reproduce disputed BLOCKs -> Result
+   Classification (runbook.md:406-461) + Degraded Gate Policy (runbook.md:462-506).
+6. Record prose gate note -> Recording Results (runbook.md:932-966).
+7. Capture STRUCTURED gate record: `scripts/dogfood-gate-capture.sh <bead-id>
+   <gate.json>` (verified real) / `etude capture-gate` -> Structured capture
+   (runbook.md:967+). One-line: structured record is the durable source of truth.
+   RATIONALE that stays in runbook: the 7 Recurring Defect Classes
+   (runbook.md:603-786), Plan-Phase Discipline P1-P4 (runbook.md:787-904),
+   Epic-Close Gate (runbook.md:905-931), Scope Discipline (runbook.md:566-602),
+   all per-seat caveats and the lens definitions themselves.
+
+*Close (6 active steps)* — source of truth: capture-protocol.md "At bead close" +
+"Dogfood Close Gate". The high-frequency rule here is ALREADY one command.
+Active steps:
+1. TERMINAL close (one command, runs capture + gate records + completeness audit):
+   `scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file>
+   [gate-dir]` (verified real). Bead is NOT complete until it exits 0.
+2. `git status` — confirm tree.
+3. Commit + push repository changes (the pre-push hook is the hard backstop —
+   `.beads/hooks/pre-push`, capture-protocol.md:553-575).
+4. `bd dolt push` — push bead storage.
+5. Routine completeness sweep before code pushes: `make dogfood-audit` (verified
+   real; `--last 9`). One-line: must be clean before the pre-push hook will let a
+   code push land.
+6. Exceptional/non-code bead: add to `scripts/dogfood-completeness-allow.txt`
+   with a written reason (-> Allowlist, capture-protocol.md:637-660).
+   RATIONALE that stays in capture-protocol: the full dogfood-close.sh contract +
+   orchestration order, BLOCK-vs-WARN table, the audit checks (a)-(g), pre-push
+   classification logic, capture envelope/attempt rules, retro capture rules.
+
+**No-duplication cross-link structure (ONE source of truth per rule):**
+- `checklists.md` is declared an INDEX: "Each step links to its authoritative
+  section/command; rationale lives there, not here." No lens definitions, no
+  contract bodies, no audit-check descriptions are copied in.
+- Each of the 3 long docs gets a single pointer line at the top of its relevant
+  section: README "Session Boot" -> checklists.md#session-boot;
+  review-gate-runbook Purpose -> checklists.md#gate-execution; capture-protocol
+  "At bead close" -> checklists.md#close. Bidirectional links so each is
+  discoverable from the other.
+- Add checklists.md to the README doc index list (README.md:27-53) so it is
+  listed alongside the other dogfood docs.
+- Drift control: checklist steps point at SECTION ANCHORS, and mechanized rules
+  point at the COMMAND name (the script/make target is the source of truth, not a
+  prose restatement) — so the only thing that can rot is a link, which surfaces
+  as a dead anchor rather than a silently-stale duplicate rule.
+
+**Verified-commands-exist list (every command/file the checklist names is real):**
+- `bd prime`, `bd ready` — confirmed in `bd --help`.
+- `etude run list`, `etude run show` — confirmed in `etude run --help`.
+- `scripts/dogfood-close.sh` — exists.
+- `scripts/dogfood-gate-capture.sh` — exists.
+- `scripts/dogfood-completeness-audit.sh` — exists.
+- `etude capture-gate` — shipped (capture-protocol.md states SHIPPED; runbook
+  Structured-capture section).
+- `make dogfood-audit` — Makefile:47.
+- `make docs-reality` (Makefile:32), `make docs-check` (Makefile:25),
+  `make reconcile` (Makefile:38) — referenced only as RATIONALE pointers, real.
+- `.beads/hooks/pre-push` — exists (the hard code-push gate).
+- `scripts/dogfood-completeness-allow.txt` — referenced via the Allowlist section.
+- `bd dolt push` — existing close step in capture-protocol.
+- No aspirational command is named. `etude import` / automated retros stay
+  described as PLANNED in the existing prose and are NOT put on any checklist.
+
+**Relationship to 8hq.6 (boundary):** 8hq.6 (CLOSED) already created the compact
+"Reviewer Roles (review lenses)" section (runbook.md:13-59) — the four lenses +
+evidence requirements + seat-to-lens mapping. That section IS the active gate
+checklist for the LENS layer. 8hq.7's Gate Execution checklist step 2 POINTS at
+that section and does NOT restate the lenses (no duplication, no drift). 8hq.7
+adds the surrounding OPERATIONAL spine (tier choice -> lenses -> inputs ->
+dispatch -> classify -> record prose -> record structured), where the lens step
+is one link into 8hq.6's section. 8hq.6 = the lens taxonomy (authoritative
+source); 8hq.7 = the compact index that references it. No edits to the lens
+section itself.
+
+**Scope / files (docs-only, Tier 3):**
+- `docs/plans/dogfood/checklists.md` — NEW. The three flow checklists + the
+  "this is an index" preamble.
+- `docs/plans/dogfood/README.md` — add 1 pointer line in "Session Boot" and add
+  checklists.md to the doc index list.
+- `docs/plans/dogfood/review-gate-runbook.md` — add 1 pointer line in/under
+  Purpose to checklists.md#gate-execution. NO change to the lens section or any
+  rationale.
+- `docs/plans/dogfood/capture-protocol.md` — add 1 pointer line at "At bead
+  close" to checklists.md#close.
+- NOT touched: any Go file, any `scripts/*.sh`, the audit checks (a)-(g),
+  generated `docs/cli/*`, the Makefile. No `make docs`/`reconcile` trigger
+  (non-generated planning notes).
+
+**Tests:** none — docs-only planning notes, no code path. Verify by re-reading to
+confirm: (a) all 3 flows each point to a checklist/command (acceptance);
+(b) every named command exists (list above); (c) the checklist COPIES no rule
+body — it links to sections/commands; (d) mechanized rules point at the command
+(close=dogfood-close.sh, audit=make dogfood-audit, gate-record=dogfood-gate-capture.sh,
+lenses=8hq.6 section) rather than restating them; (e) no PLANNED behavior
+(etude import, auto-retros) appears as a step; (f) all section anchors resolve.
+Gate is Tier 3 (docs/planning-only, single-seat) per Gate Weight; the Docs/Reality
+lens checks no doc claims unshipped behavior.
+
+**Docs:** this bead IS the docs change (a dogfood planning note). No shipped
+user-facing doc or generated CLI reference is affected (content lives under
+docs/plans/dogfood/, not docs/cli/*). No docs-reality/reconcile impact.
+
+**Risks:**
+- Bloat / re-thickening — the goal is LESS load, so checklists.md must stay an
+  index of commands+links (target: each flow ~6-8 short lines, no rationale).
+  Mitigation: explicit "index, not reference" preamble; the Docs/Reality lens on
+  its own acceptance checks it stayed compact.
+- Cross-link drift — anchors could rot if a section is later renamed. Mitigation:
+  point mechanized steps at COMMAND names (stable) and prose steps at section
+  anchors; a dead anchor is visibly broken, unlike a silently-stale copy.
+- Duplication temptation — easy to "just paste" the lenses or the close contract.
+  Hard rule in the plan: reference 8hq.6's section + the script, never copy.
+
+**Capture:**
+- inputs: bd show etude-8hq.7 / .6 (design+notes) / 8hq (epic);
+  docs/plans/dogfood/README.md (full); docs/plans/dogfood/capture-protocol.md
+  (full); docs/plans/dogfood/review-gate-runbook.md (headings + lens section
+  :1-130, Invocation :133-293, Recording/Structured :932-976);
+  docs/plans/dogfood/wide-retro-analysis.md §3 (:74-82) + §4 (:84-97);
+  Makefile:22-52 (docs/docs-check/docs-reality/reconcile/dogfood-audit targets);
+  command-existence checks: `bd --help`, `etude run --help`, `ls scripts/*.sh`,
+  `ls scripts/retro-meta-cadence.example.json`.
+- output: bead etude-8hq.7 --design field

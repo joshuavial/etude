@@ -1,0 +1,30 @@
+# Verify — etude-8hq.7 (compress dogfood runbook into executable checklists)
+
+Docs-only bead (Tier 3). No Go/script/Makefile/generated-doc change.
+
+## What landed
+- NEW `docs/plans/dogfood/checklists.md`: a compact command+link INDEX for the 3
+  high-frequency flows — Session Boot (8 steps), Gate Execution (7), Close (6). Every
+  step is a COMMAND or a one-line check + a LINK to the authoritative section. Copies
+  NO rule body (one source of truth per rule; drift surfaces as a dead anchor).
+- One-line pointers added to README.md (Session Boot + doc index), review-gate-runbook.md
+  (under Purpose), capture-protocol.md (At bead close). The 8hq.6 lens section is LINKED
+  from Gate step 2, not restated.
+
+## Checks
+- All 13 section anchors verified to resolve to real headings (GitHub slug match):
+  runbook #reviewer-roles-review-lenses / #gate-weight / #gate-inputs / #invocation /
+  #result-classification / #recording-results / #structured-capture-etude-capture-gate;
+  capture-protocol #checklist / #capture-envelope / #dogfood-close-gate /
+  #beadshookspre-push-enforcement / #allowlist; README #session-boot.
+- All referenced commands exist (bd prime/ready, etude run list/show, dogfood-close.sh,
+  dogfood-gate-capture.sh, capture-gate, make dogfood-audit, bd dolt push, pre-push hook,
+  dogfood-completeness-allow.txt). NO aspirational command (etude import / auto-retros
+  absent).
+- `make docs-reality` → OK. `git status` → only the 1 new doc + 3 pointer edits.
+
+## Result: PASS
+Plan gate (Tier 3, opus): GO. Implement gate (Tier 3, opus): GO — no rule body copied
+(the duplication/drift risk), anchors resolve, commands real, scope clean. This
+completes the wide-retro §3 "runbook is a dense memory palace" remediation: the runbook
+keeps the rationale; checklists.md is the compact operational index.
