@@ -1,0 +1,178 @@
+# Verify — etude-3xt
+
+**Verdict: PASS.** `make test` and `make lint` are green in this worktree, all
+five regressions are confirmed red without the change, and the built binary was
+driven through every path from a shell.
+
+Diff under verification: `internal/cli/retro.go` (+160/-15),
+`internal/cli/retro_test.go` (+219). No other files.
+
+## Deterministic checks — what was actually run, here
+
+Run in `/Users/jv/projects/etude/.worktrees/lane-3xt`, on the final diff (i.e.
+after the implement-gate folds below):
+
+```
+$ make lint
+test -z "$(gofmt -l cmd internal)"
+go vet ./...
+                                        → exit 0, no output
+$ make test
+go test ./...
+ok  github.com/joshuavial/etude/internal/cli   64.859s
+… all 20 packages ok, cmd/etude has no test files
+                                        → exit 0
+```
+
+**What failed first.** Two things failed during implement and were fixed before
+this artifact, both mine:
+
+1. `TestRetroLandingIsCreateOnly` failed on its first run with
+   `invalid manifest: stage[0] skill repo required` — the test called
+   `assembleAndWriteRetro` directly and omitted `skillRepo`/`skillVersion`, which
+   the CLI layer normally supplies as flag defaults. That is a defect in the
+   test's fixture, not in the code under test; fixed by passing
+   `defaultSkillRepo` / `defaultSkillVersion`, and the test then failed for its
+   intended reason (no clobber refusal) until the implementation landed.
+2. Nothing else. No production code failed a check, and no assertion was loosened
+   at any point.
+
+Two additional checks the repo ships, run because this bead touches a CLI
+surface. Neither is a verify-gate check; both are clean, which is evidence for
+the docs phase rather than a substitute for it:
+
+```
+$ make docs-check     → generated 25 command docs, diff clean, exit 0
+$ make docs-reality   → docs-reality: OK — 15 commands; docs match the shipped CLI
+```
+
+They pass because the change adds no flag and no help text — it adds an output
+line and a manifest key, which is exactly what the docs phase still owes prose
+for.
+
+## Do the regressions fail without the change? — how this was confirmed
+
+Not asserted: measured, twice (once at implement, once on the final diff after
+the folds). Method — copy `internal/cli/retro.go` to a backup, then apply
+exactly three neutering edits by script and nothing else:
+
+- `refsMap["retro_file"] = retroFile` → `_ = retroFile`
+- `if landPath != "" {` → `if false && landPath != "" {`
+
+Test files untouched. Result on the final diff:
+
+```
+--- FAIL: TestRetroCaptureStdinFile
+    stdin retro body not landed under .etude/retros: stat …/retro-run-r1-….md: no such file or directory
+--- FAIL: TestRetroCaptureLandsMarkdownUnderEtudeRetros
+    landed retro markdown not written: open …/retro-cohort-r1-….md: no such file or directory
+--- FAIL: TestRetroCaptureInPlaceDoesNotDuplicate
+    manifest refs[retro_file] = "", want ".etude/retros/2026-08-15-etude-9uf-etude-retro-3.md"
+--- FAIL: TestRetroLandingIsCreateOnly
+    expected landing to fail rather than clobber an existing markdown file
+--- FAIL: TestRetroGenerateLandsMarkdownUnderEtudeRetros
+    generated retro markdown not landed: open …/retro-run-gen-run-1-….md: no such file or directory
+FAIL github.com/joshuavial/etude/internal/cli
+```
+
+Each fails on the behavior it exists to pin, not on a compile error or an
+unrelated assertion. `internal/cli/retro.go` was restored from the backup and the
+suite re-run green; `git diff --stat` and `gofmt -l` confirm the restore left
+nothing behind.
+
+`TestRetroCaptureRejectsReservedRetroFileRef` is the sixth regression and needs a
+different neutering — the two edits above leave the reserved key in place, so it
+keeps passing under them. Confirmed separately by removing `"retro_file": true`
+from `reservedExactKeys` and `derivedKeys` (the script asserts the replacement
+matched, after a first attempt that silently did not because the `derivedKeys`
+fold had moved the surrounding text):
+
+```
+--- FAIL: TestRetroCaptureRejectsReservedRetroFileRef
+    expected --ref retro_file to be rejected as reserved
+```
+
+Restored and re-run green. It guards forgery of the linkage, a smaller claim than
+the other five.
+
+## Manual CLI verification (this bead is CLI-facing)
+
+`go build -o <scratch>/etude ./cmd/etude`, driven from a throwaway git repo in
+the scratchpad — the real entrypoint, not the cobra test harness. Re-run in full
+after the implement-gate folds, because two of them change observable behavior.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `retro capture cohort --file draft.md --subject-run r1 --trigger cadence-retro` | `retro markdown .etude/retros/retro-cohort-r1-20260815T163551Z.md`; file present with the draft's bytes |
+| 2 | `retro capture cohort --file .etude/retros/2026-08-16-epic-etude-retro-1.md …` | reports that same path; directory holds two distinct retros, no third copy |
+| 3 | `retro show <id>` (in-place one) | `metadata:` → `retro_file: .etude/retros/2026-08-16-epic-etude-retro-1.md`, body renders, nothing else changed |
+| 4 | `retro list` | unchanged columns, both retros listed |
+| 5 | `--ref retro_file=elsewhere.md` | `--ref key "retro_file" is reserved; etude sets it`, exit 1 |
+| 6 | `--ref trigger=x` / `--ref subject_run.4=x` | still `use the dedicated flag`, exit 1 — the reworded message did not leak to keys that do have a flag |
+| 7 | `printf … \| retro capture workflow --file -` | lands under the allocated id |
+| 8 | outside a git repo | fails at the existing HEAD resolution, exit 1, before the landing path |
+| 9 | pre-created `<next-id>.md`, capture into the same second | `retro ref refs/etude/retros/retro-cohort-dd1-… was written, but landing its markdown at .etude/retros/retro-cohort-dd1-….md failed: … file exists`, exit 1, pre-existing file's bytes unchanged |
+
+`retro generate` is not driven manually — it requires a configured external
+generator. `TestRetroGenerateLandsMarkdownUnderEtudeRetros` covers it with the
+injected stub, and both commands go through the same landing code, so the
+uncovered part is the generator plumbing this bead does not touch.
+
+## Implement-gate optionals — disposition
+
+1. **`writeNewFile` could leave a partial file, wedging the id.** Folded, and
+   agreed it was the sharpest: a truncated file plus the create-only rule is a
+   path no retry can reclaim. `os.Remove(path)` now runs on both a failed `Write`
+   and a failed `Close`, with a comment naming the wedge it prevents.
+   **Not covered by a test, deliberately** — forcing a short write on a real file
+   needs a filesystem seam this package does not have, and adding one to prove a
+   two-line cleanup costs more than it protects. Flagged here rather than hidden.
+2. **The reserved-key message named a flag that does not exist.** Folded. Keys
+   etude derives (`retro_file`, `produced_via`, `generator`) now say
+   `is reserved; etude sets it`; keys with a real flag keep
+   `use the dedicated flag`. This also fixes the same pre-existing inaccuracy for
+   `produced_via`, which never had a flag either. Manual check 6 above confirms
+   the split.
+3. **Landing root comes from cwd while the store is a parameter.** Folded as a
+   doc comment on `assembleAndWriteRetro`: both production callers pass
+   `refstore.New("")`, which is the same cwd, so they agree; a store for another
+   repo would split ref and markdown across two repos. Not turned into an
+   assertion — `refstore.Store` exposes no repo path to compare against, so the
+   check would have to shell out to `git rev-parse` on a path the interface does
+   not carry. The comment names the constraint; the only in-tree caller that
+   passes a non-empty store is `TestRetroLandingIsCreateOnly`, which chdirs into
+   that same repo first.
+4. **Docs owes three sentences.** Not folded here — it is the docs phase's work,
+   and the list is now four: the `retro markdown <path>` stdout line, that capture
+   does not `git add` the landed file, the non-zero exit after a successful ref
+   commit, and (from the plan gate) that `retro_file` is not always
+   `<retro-id>.md` so a consumer must read the manifest.
+
+## Regression inventory
+
+| Test | Pins | Red without fix |
+|---|---|---|
+| `TestRetroCaptureLandsMarkdownUnderEtudeRetros` | body lands under the id byte-identical; `retro_file` recorded; stdout reports the path | yes |
+| `TestRetroCaptureInPlaceDoesNotDuplicate` | in-place capture records the existing path; directory holds exactly one file | yes |
+| `TestRetroLandingIsCreateOnly` | collision errors naming ref + file; existing bytes intact | yes |
+| `TestRetroGenerateLandsMarkdownUnderEtudeRetros` | generate goes through the same landing path | yes |
+| `TestRetroCaptureStdinFile` (extended) | a stdin body always lands anew | yes |
+| `TestRetroCaptureRejectsReservedRetroFileRef` | the linkage cannot be forged via `--ref` | yes, under its own neutering (see above) |
+
+## Known limitations, disclosed
+
+- The partial-write cleanup (fold 1) has no automated test, for the reason given.
+- The markdown is written but not staged. `retro_file` names a working-tree path,
+  so a lane that never commits it leaves a ref pointing at a file that is not in
+  history. That is the deliberate boundary — a CLI that runs `git add` behind the
+  operator is worse — and the docs phase states it.
+- The bead's headline symptom (markdown written, capture never run) is still
+  invisible to check (c). That half is `etude-24d`, filed at the plan gate, open,
+  and out of scope for this commit by the plan's own scope boundary.
+
+## Teardown
+
+Nothing long-running was launched. Scratch artifacts are two throwaway git repos
+and one binary under the session scratchpad, outside the repo. Working tree holds
+only the two modified files; `git status --porcelain` shows
+`M internal/cli/retro.go` and `M internal/cli/retro_test.go` and nothing else.
