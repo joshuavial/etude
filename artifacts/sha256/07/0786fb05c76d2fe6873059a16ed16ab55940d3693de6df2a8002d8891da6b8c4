@@ -1,0 +1,13 @@
+# GH #15 rebased docs impact
+
+Canonical shipped docs checked: `docs/run.md`, `docs/replay.md`, and `docs/gates.md`.
+
+Changed:
+
+- `docs/run.md` documents `runner.workspace: caller`, unchanged hermetic default, fail-closed tracked-tree guard, separate run-original versus caller post-run provenance, resume behavior, and tracked-submodule restriction for caller mode.
+- `docs/replay.md` documents replay from immutable original checkout and replay-record provenance/submodules.
+- `docs/gates.md` documents gates remaining pinned to the immutable original checkout while preserving populated recorded submodules.
+
+No generated Cobra reference changed because no command or flag was added. `make docs-check` regenerated 26 command pages in a temporary directory with zero drift. `make docs-reality` reported 16 commands matching the shipped CLI.
+
+Cross-consistency: the capability claims are explicitly bounded by the guard and tracked-submodule restriction; gate hermeticity and replay/resume original-SHA claims match the implementation and built-binary observations.
