@@ -1,0 +1,60 @@
+# Final review — etude-aul.4
+
+## Outcome
+
+The existing `etude bench` leaf now has an explicit, mutually exclusive gate
+mode. It accepts `--gate`, repeated `--variant`, `--cohort run-refs`, and
+optional strict `--labels`; evaluates every variant/fixture cell through the
+landed gate evaluator; scores every variant over one common successful fixture
+set; and renders aggregate provenance plus every successful or failed cell.
+
+## Decision
+
+Extend the existing leaf rather than introduce `bench gate`. The existing
+`internal/cli/bench.go` owns cohort limits, judge resolution, timeout plumbing,
+dependency seams, and report rendering. Converting the shipped `bench <stage>`
+leaf into a command group would require a compatibility shim or break its public
+syntax. Conditional argument validation and explicit cross-mode flag rejection
+make the two behaviors unambiguous without duplicating that machinery.
+
+## Scope
+
+Only the three authorized aul.4 paths changed:
+
+- `internal/cli/bench.go`
+- `internal/cli/bench_test.go`
+- `docs/bench.md`
+
+The generated `docs/cli/etude_bench.md` is intentionally the immediately
+following `etude-aul.5` commit. The two commits will be pushed together; the
+temporary generated-doc drift is not a terminal or remote state.
+
+## Verification evidence
+
+- Complete `internal/cli` package: pass (199.766s after final test folds).
+- `make lint`: pass.
+- `make build`: pass.
+- Scoped `go install ./cmd/etude`: pass.
+- Manual installed-binary proof against private run refs:
+  - explicit labels: selective prompt 100%, always-block prompt 50%, all cells;
+  - proxy labels: proxy counts and exact circularity warning;
+  - partial failure: shared denominator shrinks and exclusion names the variant;
+  - all failures: evidence printed and non-zero exit;
+  - missing variant/cohort, replay-only flag, and zero-match labels: non-zero;
+  - legacy `bench plan --help`: success;
+  - run refs unchanged by gate evaluation.
+- `git diff --check`: pass.
+- `make docs-reality`: pass.
+- The first full `make test` passed all runtime packages and failed only the
+  generated-doc drift guard. After restoring the legacy root help summary, the
+  focused drift guard reports only `docs/cli/etude_bench.md`, exactly the aul.5
+  artifact. The complete suite will run again after that generated file exists.
+
+## Review history and limitations
+
+Plan, Implement, Verify, and Docs gates passed with their required seats and
+were captured on `refs/etude/runs/etude-aul.4`. Test hardening is tracked as
+`etude-aul.6`; coordinated root help/docs polish is tracked as `etude-qcr`.
+The shipped run-refs corpus limitation—one final captured artifact per run—is
+prominent in the guide. No storage writer, concurrency behavior, or external
+state mutation was added.
