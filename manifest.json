@@ -714,6 +714,66 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:56:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verification",
+          "artifact": "53bb82b00001c847506a7b4a9608bc89be9dd416d3b9015962539b949ba870dd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Validate every non-empty recorded map against the checkout before execution."
+          ],
+          "timestamp": "2026-08-16T01:13:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T01:13:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": ""
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T01:13:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:13:00Z"
     }
   ]
 }
