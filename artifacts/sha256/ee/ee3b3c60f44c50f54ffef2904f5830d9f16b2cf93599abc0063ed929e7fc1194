@@ -1,0 +1,32 @@
+# Cadence retro — session evidence and tier reconciliation cohort
+
+## Retro summary
+
+The cohort added producer session evidence, documented it, and reconciled manifest gate tiers with registry L1-L4. The work shipped successfully, but review repeatedly found that one logical contract had multiple traversal, validation, serialization, and documentation sites.
+
+## What went wrong
+
+- The first session-evidence plan omitted transcript artifact traversal and producer-session validation sites.
+- Documentation initially exposed an empty transcript URI example.
+- Gate tiers were represented differently in the registry and manifest schema until `etude-uao` reconciled them.
+
+## Root causes
+
+- New nested schema fields were planned from the primary struct rather than an exhaustive consumer-site inventory.
+- Parallel schema representations allowed values and documentation to diverge.
+- Optional documentation examples were not validated against meaningful populated states.
+
+## What worked well
+
+- The plan gate caught missing validation and artifact traversal before code was written.
+- The docs gate removed misleading empty-field output.
+- `etude-uao` closed the cross-schema tier mismatch and updated the runbook and schema docs in the same bead.
+
+## Recommended changes
+
+- Preserve the existing plan-gate requirement to enumerate every consumer of a new schema field: validation, traversal, serialization, display, and docs.
+- Complete `etude-zdl` as the focused schema-polish follow-up, including closed-set mode validation and serializer error propagation.
+
+## Highest-leverage next step
+
+Implement `etude-zdl` with tests that exercise invalid enum-like values and forced YAML node-encode failures, so schema drift fails explicitly rather than silently.
