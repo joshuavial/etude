@@ -235,6 +235,77 @@
         "degraded_reason": "pilms seat down all session (0 CPU); proceeded on codex+gemini+opus. gemini BLOCK triggered a plan amendment to a hybrid (wrapper + pre-push hook)."
       },
       "timestamp": "2026-05-27T01:33:30Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T01:50:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T01:50:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T01:51:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU); see decision.degraded_reason",
+          "timestamp": "2026-05-27T01:51:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down (0 CPU). Amended plan adopted gemini's prescribed hybrid (dogfood-close.sh wrapper + .beads/hooks/pre-push enforcement exempting refs/etude/* and gating refs/heads/*). codex+opus r1 GO carried forward (the amendment is additive — the wrapper they approved is preserved)."
+      },
+      "timestamp": "2026-05-27T01:52:00Z"
     }
   ]
 }
