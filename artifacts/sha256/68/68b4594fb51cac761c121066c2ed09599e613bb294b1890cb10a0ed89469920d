@@ -1,0 +1,109 @@
+# Verification record: etude-3343 (run etude-3343-dev-claude)
+
+Status: **pass** (lane-level; parent owns independent QA and the final Astra+Fable gate)
+
+## Environment
+
+- Worktree: /Users/jv/projects/etude/.worktrees/etude-3343-dev-claude
+- Base HEAD: c40488ce744d1aa55622d35e9b45ee670aeeb77b (uncommitted working-tree changes on top)
+- Implementer: Sonnet worker (Agent type `implementer`, model sonnet); lead review and verification by Fable 5.1
+- Reproduction script: `<scratch>/repro.sh <binary> <workdir>` (disposable git repo, workflow `gated` with stage `review` producing role `review`, skill `dev-pr-reviewer`, L1 tier, one deterministic seat script returning `{"verdict":"go"}`)
+- Scratch: /private/tmp/claude-501/-Users-jv-projects-etude--worktrees-etude-3343-dev-claude/4ce95c35-4d1d-4b38-82a6-1d3297cb2674/scratchpad
+
+## Changed files (SHA-256 of the evaluated working-tree bytes)
+
+| File | SHA-256 |
+| --- | --- |
+| CHANGELOG.md | 749bf05703d0ae675121f4f57268e265a9521b08d4a019aae0ded541bd325e54 |
+| docs/capture.md | 4db10884c57f5dc3471e91be3bc9d30267d994856fd863e3435b0fcd8d278b1d |
+| docs/cli/etude_gate.md | 8fe758e3bc1b287e3e3df0250b06343d73f9e4e7d0b53e394900bdd71f6986af |
+| docs/development.md | be30ec015456df7fab7bea2cfaa3ceaeb6f0795b491727dc454c1ca09b3110f4 |
+| docs/gates.md | c53803fd634e084f1848008c2ff1153e32d7d99f63dc7c4a9924e61c41fbe4e3 |
+| docs/plans/dogfood/supervisor-runbook.md | e9034bba022f2d31930470f2b4ac5d00f774537a06f0120b50385252651c88df |
+| internal/cli/gate.go | aeef387611ac8b092e7e266548e68b2447808bbdc30cac10ea80cca3ded0a3b0 |
+| internal/cli/gate_test.go (untracked, new) | f644db6c87181b5424c63dd66b6982e94c3bfed96603918507f947e27210a668 |
+| internal/liverun/gate_once.go | 6a7a3bd2e019c6092877d4cdf90023b7cf12503113a95a9caa03e858674ba52e |
+| internal/liverun/gate_once_test.go | 8093767cf1c939972d09630b5b3c7e1c7193636050ee839267680d7de572b2f0 |
+| internal/runmanifest/manifest.go | dc6e106318d00226c6a58234a065d06a5779a1b3d4cbf679a806777d7844dc03 |
+| internal/runmanifest/manifest_test.go | dac88e8b09864f4c836fbc9bcef03f20533c77092bf7ddb8db942022151dc37c |
+| bin/etude (built from the above) | 8a58a7890148e6792c4f6788b9a8bfc811ba81a18776256d944356d4a1f477f0 |
+
+`git diff --stat`: 11 tracked files changed, 397 insertions, 28 deletions, plus the untracked test file.
+
+## Acceptance criteria to evidence
+
+| Req | Evidence |
+| --- | --- |
+| R1 mismatch refused before checks, seats, engine materialization, ref write | `TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats` (zero ResolveCheck/ResolveSeat calls, ScratchDir not created, ref commit unchanged, no gate recorded); post-fix repro step 3 |
+| R2 recorded digest equals reviewed bytes | `TestGateStageRecordsDigestOfReviewedBytes`; post-fix run show cites 62b5360a...de81 for the B gate |
+| R3 actionable error | error text asserted in the engine test; CLI output in post-fix repro below |
+| R4 same-name recapture keeps run valid | `TestValidateAcceptsReviewedRefOnEarlierSameNameStage`; `TestGateRejectsMismatchThenAcceptsSameNameRecapture` (CLI); post-fix repro steps 4 and 5 |
+| R5 any same-name occurrence via output/log/input; other-name rejected; digestless unchanged | `TestValidateAcceptsSameNameEarlierOccurrenceViaInputOrLogDigest`; existing `TestValidateGateRejects` cases (dangling digest, malformed digest, wrong stage) unchanged and passing |
+| R6 reviewed-ref consumers unchanged | `stageByReviewedRef` untouched; existing `TestBuildPriorAttemptInputsBindsReviewedNameAndArtifact` passes |
+| R7 docs | docs/gates.md, docs/capture.md, docs/development.md, supervisor runbook note, CHANGELOG, regenerated docs/cli/etude_gate.md; docs-check and docs-reality pass |
+
+Newline invariant: `TestGateStageArtifactNewlineDifferenceIsAMismatch` (identical with and without trailing newline pass; newline-only difference in either direction rejects).
+
+## Pre-fix reproduction (c40488c binary, unmodified tree)
+
+Command: `sh repro.sh etude-prefix repro-prefix` (log: `<scratch>/repro-prefix.log`)
+
+| Step | Result |
+| --- | --- |
+| capture review with file A (`artifact A\n`) | exit 0, output digest a830d405...8717a |
+| overwrite file with B (`artifact B\n`), digest 62b5360a...de81 | |
+| gate --artifact review.md (B) while run holds A | **exit 0, review.r1 pass**, record cites a830d405...8717a (A01 confirmed) |
+| capture review --expect append with B | **exit 1**: `invalid manifest: gate[0].reviewed_stages[0] artifact "a830d405...8717a" not found on stage "review" output or inputs` (A15 confirmed) |
+| gate again with B | exit 0, review.r2 pass, still cites A |
+
+## Post-fix reproduction (bin/etude 8a58a789..., same script)
+
+Command: `sh repro.sh $PWD/bin/etude repro-postfix` (log: `<scratch>/repro-postfix.log`)
+
+| Step | Result |
+| --- | --- |
+| capture A | exit 0, ref 9dabb867 |
+| gate with B while run holds A | **exit 1**, no seat ran, ref still 9dabb867. Output: `gate artifact does not match captured output: run r1 stage "review" output role "review" is a830d405...8717a but the supplied artifact is 62b5360a...de81; recapture it first (etude capture review --run r1 --expect append --output review=<artifact-path>, where <artifact-path> is the file given to gate --artifact) then rerun this gate` |
+| capture review --expect append with B | **exit 0**, action append, ref 8cf92c21 |
+| gate with B | exit 0, review.r1 pass, `reviewed: review (role=review) (artifact=62b5360a...de81)` |
+| run show | two `review` stage occurrences (A then B, both bytes present) and one gate citing B |
+
+## Checks
+
+Run by the Sonnet implementer on the tree before the lead's final edits (the lead then changed one test-file comment and two doc sentences to remove em dashes; no code changed):
+
+| Command | Result |
+| --- | --- |
+| `go test ./internal/liverun/ ./internal/runmanifest/ ./internal/cli/` | pass |
+| `make test` | pass, 20 packages ok |
+| `make lint` | pass |
+| `make docs` | regenerated; only docs/cli/etude_gate.md changed |
+| `make docs-check` | pass |
+| `make docs-reality` | `OK — 16 commands; docs match the shipped CLI` |
+
+Transient failure reported by the implementer during one earlier full run: `TestReviewerEnvironmentDoesNotReachChecksOrStages` (internal/liverun, resolve_test.go:274) hit its 1 s exec timeout under load; it passed in isolation and on the immediate full-package rerun. It does not touch the changed code paths. Not reproduced in the lead's runs below.
+
+Rerun by the lead after the final edits, on the exact file hashes above:
+
+| Command | Exit |
+| --- | --- |
+| `go test ./internal/liverun/ ./internal/runmanifest/ ./internal/cli/` | 0 (liverun 59.0 s, other two cached) |
+| `make lint` | 0 |
+| `make docs-check` | 0 |
+| `make docs-reality` | 0 |
+| `make build` | 0, bin/etude reports `etude dev` |
+
+`make test` was not rerun after the lead's comment and doc edits; the only Go file touched was a test comment in internal/liverun, whose package was rerun. `make shell-test` not run: no shell scripts, hooks or process scripts changed. `go test -race` not run: no concurrency or lifecycle change.
+
+## Independent QA
+
+Supervisor reports independent QA of production code, docs and the untracked CLI regression with no blocker (report at /tmp/etude-pilot-lanes/binding-fix-qa.md, owned by the parent).
+
+## Documentation assessment
+
+Behavior changed in two user-visible ways (gate refusal, validation rule), so docs were updated rather than left unchanged. Plans docs: supervisor runbook note only; no plan superseded.
+
+## Open risks
+
+- Two same-name occurrences with identical output bytes remain indistinguishable for producer metadata in a reviewed ref. Pre-existing schema limit, out of scope.
+- The engine error uses the placeholder `<artifact-path>` because the engine does not receive the CLI path. The CLI could substitute its known path in a two-line wrap if a reviewer wants it.
