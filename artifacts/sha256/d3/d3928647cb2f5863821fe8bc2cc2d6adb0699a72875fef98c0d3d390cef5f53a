@@ -1,0 +1,111 @@
+# Docs — etude-9uf.3
+
+The documentation work IS most of this bead. Deleting three scripts is nine
+lines of `git rm`; the sweep is what makes the deletion honest, and ten of the
+edit sites are prose.
+
+## Docs changed, and why each one mattered
+
+**`docs/plans/dogfood/review-gate-runbook.md`** — the important one, and the one
+that took two attempts. A live judgement runbook whose §"Gate-JSON `reviewed_stages` must name an EXISTING run
+stage" was stale on three counts:
+
+1. it named `dogfood-close`, deleted here;
+2. it asserted "A captured run has stages `plan/implement/verify/review` (NOT
+   `docs` — docs is not a captured stage)";
+3. it told the reader to map the docs-phase and final-review gates onto the
+   `implement` diff stage.
+
+Claims 2 and 3 were reversed by bead `etude-1od` two beads ago — `etude capture
+docs --output docs-diff=<file>` creates a real docs stage, `etude gate` resolves
+the reviewed stage by produced ROLE, and removing precisely that transport-only
+alias was `etude-1od`'s stated purpose. So a live runbook was instructing readers
+to do the thing this epic had just eliminated. Rewritten to the `etude capture` /
+`etude gate` flow, preserving the constraint that still holds (capture the phase
+before you gate it) and pointing at the supervisor runbook's stage/role table.
+
+**`docs/plans/product/gate-reviewer-record-schema.md`** — two historical
+citations. Reworded so the evidence stays checkable rather than deleted: they now
+name the mechanism, the file, and the bead that removed it, so a reader can go to
+the commit before `etude-9uf.3` and find the cited line. One was also in present
+tense about a path that no longer exists; moved to past tense.
+
+**`docs/plans/dogfood/retro-capture.md`** — "Manual dogfood capture supports
+these retro triggers now" named the retired protocol as the live support for
+triggers that are still live. Repointed at the supervised model.
+
+**`examples/summarize/README.md` (×2), `examples/summarize/walkthrough.sh`** —
+the contrast between the generic example and the tracker-coupled capture still
+has a point, so the mechanism is named as retired. Line 51 and the walkthrough
+drop the file path entirely; line 137 deliberately KEEPS
+`scripts/dogfood-capture.sh` alongside the removing bead, because that paragraph
+is a concrete comparison and a reader may want to go read the thing being
+compared to. An earlier version of this artifact described both README sites as
+dropping the path, which was wrong about line 137.
+
+**`.beads/hooks/pre-push`** — the operator-facing BLOCKED message. Not
+documentation in the `docs/` sense, but it is the only instruction most people
+will ever read from this bead's subject area, and it pointed at a script that no
+longer exists. It now points at `etude capture` / `etude gate` and the supervisor
+runbook. Two test assertions pin it: that the new pointer is present, and that
+the old script name is absent.
+
+**`Makefile`** — the `pre-push-test` comment. It initially inherited the same
+"that hook is live" claim the verify artifact had to retract, and now states what
+the suite actually drives, with a pointer to bead `etude-6d9`.
+
+**`scripts/dogfood-gate-capture.sh`, `scripts/dogfood-completeness-audit.sh`,
+`internal/bench/corpus_runrefs.go`** — comments in surviving files that named or
+present-tensed the deleted mechanism.
+
+## The acceptance line, read literally
+
+The acceptance says "no file in the repo references them". Three tracked files
+still contain a literal deleted-script path after this bead:
+
+| Site | Why |
+|---|---|
+| `docs/plans/product/gate-reviewer-record-schema.md:88` | a schema decision is justified by a specific line of the deleted script; the path plus the removing bead is what makes that justification checkable in history instead of an unsourced assertion. |
+| `examples/summarize/README.md:137` | a concrete comparison against the tracker-coupled capture. |
+| `scripts/pre-push_test.sh:13` | the extracted suite recording its own provenance. |
+
+The passed plan named this explicitly: the enumerated baseline GROWS to cover
+deliberately reworded lines, and the grep is never narrowed to make the output
+look clean. Each of the three names the bead that removed the script, so none of
+them reads as a live pointer. That is the reading of the acceptance this bead
+was gated on — "no file describes them as a live mechanism" — and it is stated
+here rather than left implicit, because a bead that quietly reinterprets its own
+acceptance is the failure this epic exists to end.
+
+## What is deliberately NOT changed
+
+Ten enumerated no-op sites, listed in the verify artifact: the bead id
+`etude-dogfood-capture-protocol` (a permanent tracker handle, 5 sites),
+historical retro-ledger entries, and protocol-name mentions in design notes.
+Rewriting a ledger to match the present is the opposite of what a ledger is for.
+
+## No new documentation was written
+
+This bead removes a mechanism; the model that replaces it was documented by bead
+`.2` in `docs/plans/dogfood/supervisor-runbook.md`, and the retro material that
+survived the old protocol doc was extracted to `retro-capture.md` in the same
+bead. There is nothing left to describe here — which is the point. The reason
+`.2` came first was so that `.3` would have somewhere to point.
+
+## Checks
+
+`make docs-check` and `make docs-reality` green. The `docs-reality` check
+compares documented commands against the shipped CLI; the rewritten runbook
+section names `etude capture` and `etude gate`, both of which exist.
+
+## Follow-ons filed rather than fixed here
+
+- `etude-6d9` (P2) — nothing detects the executing pre-push hook drifting from
+  the tracked one. Found by the verify gate catching this bead's own artifact
+  claiming a hook edit was live when it was not.
+- `etude-gxt` (P3, extended) — three references to `capture-protocol.md` survive
+  its deletion in bead `.2`. Out of scope here: this bead's acceptance covers
+  references to the three deleted scripts.
+- `etude-8li` (P1) — the opus seat's `agy` fallback cannot execute (wrong flags,
+  wrong model id, and the account's quota is exhausted), so the seat still has no
+  working subprocess path and every gate on this bead recorded it in-harness.
