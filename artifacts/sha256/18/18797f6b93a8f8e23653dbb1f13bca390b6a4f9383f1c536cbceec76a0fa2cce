@@ -1,0 +1,71 @@
+### Cadence Retro - gate-bench setup cohort (etude-2bm.1 / etude-aul.1 / etude-aul.2)
+
+#### Retro Summary
+
+This cadence covered three closed beads: `etude-2bm.1`, `etude-aul.1`, and `etude-aul.2`.
+Overall the loop worked: both `aul` beads shipped with complete run refs, gate records,
+scoped commits, pushed bead metadata, and clean dogfood audits.
+
+The main issues were process friction rather than product defects: external reviewer
+fallbacks needed careful handling, gate-level naming was easy to confuse, and scratch
+artifacts inside the module tree can affect `go test ./...`.
+
+#### What Went Wrong
+
+- `etude-aul.1` had a real implement-gate blocker: `Provenance.Round` used the attempt
+  count instead of the highest recorded gate round. The gate caught it and the fix held.
+- A scratch Go snapshot under `tmp/gates-aul.1/snapshot-r2` made `make test` compile
+  temporary files as a package. The implementation was fine, but the scratch placement
+  created noise.
+- Claude Opus CLI was unavailable because of quota, so the standing Opus substitute
+  through `agy --model "opus"` had to be used consistently and recorded explicitly.
+- Grok's `--prompt-file` invocation returned empty output twice during the `aul.2`
+  verify gate. Passing the same prompt through `-p` produced a valid GO.
+- L-level wording and gate JSON `tier` values are still easy to mix up. The handoff
+  notes were essential for mapping this loop correctly.
+- `agy` sometimes ignored the exact-output instruction and emitted process narration
+  before the final verdict. The verdict was usable, but extraction required judgment.
+
+#### Root Causes
+
+- Gate orchestration has several local conventions that are not fully encoded in a
+  deterministic helper: Opus substitution, Grok fallback style, L-level-to-tier mapping,
+  and ordered close-capture directories are still operator knowledge.
+- Scratch artifact hygiene is not mechanically enforced. Any copied Go files under
+  repo-local `tmp/` can enter `go test ./...`.
+- The review loop encourages optional cleanup after GO; when optional changes are
+  taken, the implementation needs a clean re-gate. This is correct but expensive and
+  should be a deliberate choice.
+
+#### What Worked Well
+
+- The review gates caught a real semantic bug in `aul.1` and a regression-risk hole in
+  the `aul.2` plan before implementation.
+- The Opus-through-`agy` substitute rule worked when applied consistently and recorded
+  in gate JSON.
+- Clean ordered gate directories prevented the `dogfood-close.sh` capture race that had
+  complicated the previous bead.
+- Scoped staging kept unrelated `.gitignore`, `.claude`, `.etude`, and scratch files out
+  of the code commit.
+- Running `dogfood-close.sh` before final pushes gave a precise bead-level completeness
+  check, and the pre-push audit independently confirmed the refs.
+
+#### Recommended Changes
+
+- High leverage: update `/Users/jv/.claude-accounts/jv/skills/etude-loop/SKILL.md` with
+  a short "gate close hygiene" checklist: create an ordered gate directory, keep Go
+  snapshots outside the module tree, and run `dogfood-close.sh` only against the clean
+  directory.
+- High leverage: add a deterministic helper script in this repo for gate-directory
+  preparation, e.g. `scripts/dogfood-prepare-gates.sh <source-dir> <dest-dir>`, so the
+  close step stops depending on manual `cp` ordering.
+- Optional: update the same skill with a Grok fallback rule: if `grok --prompt-file`
+  returns empty stdout with only MCP startup noise, retry once with `grok -p "$(<file)"`.
+- Optional: clarify L-level-to-JSON-tier mapping in the dogfood runbook or etude-loop
+  skill so phase prompts and gate records stay aligned.
+
+#### Highest-Leverage Next Step
+
+Update `/Users/jv/.claude-accounts/jv/skills/etude-loop/SKILL.md` to add a concise
+close-capture checklist covering ordered gate directories, no Go snapshots inside repo
+`tmp/`, and explicit Opus/Grok fallback recording.

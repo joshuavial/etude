@@ -1,0 +1,24 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-06-07",
+  "failure_modes": [
+    "scratch-go-files-entered-go-test",
+    "external-reviewer-empty-output",
+    "reviewer-substitute-and-tier-conventions-remained-manual"
+  ],
+  "root_causes": [
+    "gate close preparation is still mostly operator convention rather than a deterministic helper",
+    "repo-local tmp can be inside the Go module and affect package discovery",
+    "external reviewer fallback behavior is documented but not mechanically encoded"
+  ],
+  "follow_up_beads": [],
+  "decisions": [
+    "continue using agy --model \"opus\" as the standing Opus substitute while Claude Opus CLI is quota-blocked",
+    "use clean ordered gate directories for dogfood-close capture",
+    "retry Grok empty prompt-file output with direct -p prompt content before recording a failed or empty seat"
+  ],
+  "durable_changes": [
+    "captured this cadence retro as an etude retro artifact covering etude-2bm.1, etude-aul.1, and etude-aul.2",
+    "recommended updating the etude-loop skill with close-capture and external-reviewer fallback hygiene"
+  ]
+}
