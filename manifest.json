@@ -840,6 +840,125 @@
         "degraded_reason": "CONFIRMATION re-gate, not a fresh panel: the implement gate already PASSED at round 8 (codex GO + opus GO on a frozen, hash-verified tree). This round asked only the seat that raised the four round-8 follow-ups to confirm they were closed and introduced nothing new. It confirmed GO and raised three further optionals — a missed whitespace site in the awk terminator (false outage, fixed), the narrowed residue of the placeholder heuristic (documented in the code as known residue rather than hidden), and a SUPERSEDED comment left above the correct rule so the comment misdescribed its own guard (removed). All three folded with a regression for the behavioural one. 50 adapter checks green."
       },
       "timestamp": "2026-08-15T07:25:05Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "c5ae1b9fcfe29cde9bfc689e8494fd2cc0f8a66c44724bd4e77e7ed581a711b8"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "block",
+          "required": [
+            "exit 2: go: module cache not found: neither GOMODCACHE nor GOPATH is set\nmake: *** [test] Error 1"
+          ],
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "31ddc74f01368b085c36a2e7db59be4b3ce8b89fdd1ee7ccc0f866c30c023352",
+            "path": "artifacts/sha256/31/31ddc74f01368b085c36a2e7db59be4b3ce8b89fdd1ee7ccc0f866c30c023352",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 104
+          },
+          "timestamp": "2026-08-15T07:26:41.597796Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "block",
+          "required": [
+            "exit 2: go: module cache not found: neither GOMODCACHE nor GOPATH is set\nmake: *** [lint] Error 1"
+          ],
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "343b398a3cf27d3d6cf78c54cfe9eaf713d005d34a9a80c5a756c8f93d86a5b5",
+            "path": "artifacts/sha256/34/343b398a3cf27d3d6cf78c54cfe9eaf713d005d34a9a80c5a756c8f93d86a5b5",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 138
+          },
+          "timestamp": "2026-08-15T07:26:41.741963Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T07:26:43.172002Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Strengthen future verify artifacts by replacing test-only evidence for prompt/tier/check plumbing with direct built-binary observations where practical."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "f4b95b0fd20467699ea9503f78397997fc3ed54899775a0a08c8d3abb2a06f75",
+            "path": "artifacts/sha256/f4/f4b95b0fd20467699ea9503f78397997fc3ed54899775a0a08c8d3abb2a06f75",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 302
+          },
+          "session": {
+            "session_id": "codex-7705f0ca4eaaec9a",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "7705f0ca4eaaec9a3ea44396c1f4d4eb5b1581ecb1199fe4956bbb1574f54d88",
+              "path": "artifacts/sha256/77/7705f0ca4eaaec9a3ea44396c1f4d4eb5b1581ecb1199fe4956bbb1574f54d88",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 212
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T07:27:04.07118Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T07:27:04.071325Z"
     }
   ]
 }
