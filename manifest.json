@@ -546,6 +546,39 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T17:12:07.117024Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "c16cbeb62a47bd8eda68cdf0810c7fa6237ce425169292582926559d31365d9d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T17:20:50Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "GO on the worker lane's docs. L4 is single-seat and that seat has no subprocess path (bead etude-8li), so etude gate recorded docs.r1 escalated and the verdict was produced in-harness; this attempt records it, appended before it was acted on. The seat checked the documented strings and both failure paths against the source in the lane rather than trusting the artifact, and confirmed all four owed items are covered - including that the shipped stdout line is 'retro markdown <path>' where the approved plan's contract table had said 'wrote <path>'. Five optionals returned. The most useful is not a docs error at all but a gap the docs phase exposed: supervisor-runbook.md step 6 still tells a supervisor to hand-write a retro and commit it, with no pointer to 'etude retro capture' - so the practice fix landed in retro-ledger.md while the document supervisors actually follow was left describing the old two-step habit. That is the same shape as this bead's own subject. Also returned: a stale 'two extra metadata keys' count above a block that now lists three; an artifact claim to have checked every long-lived docs path that omits four; CHANGELOG debt flagged only inside a gate artifact nobody cutting a release will read; and an in-place path described as recorded 'as-is' when the code normalises it to a repo-relative slash path."
+      },
+      "timestamp": "2026-08-15T17:20:50Z"
     }
   ]
 }
