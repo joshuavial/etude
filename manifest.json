@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-i19",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -86,6 +86,84 @@
         "size": 3280
       },
       "timestamp": "2026-08-16T00:51:38.413832Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "verify.r11",
+      "phase": "verify",
+      "round": 11,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "a9e4816b4e56e3d6264e1d0ff1f2760821d0052039e1b6dbe4dec524a8831c9a"
+        },
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "85601a8ea34287fc273fa68ab22b8ad07dbf460fe17e442b6a4c6d14c7069a85"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness-subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "etude doctor owns refspec-semantics analysis and operator-facing remediation (etude-ldf)"
+          ],
+          "raw_output": {
+            "role": "opus-verdict",
+            "artifact": "8b5f02fc939f29a95a2449b5dda13add6f471a4988259e470458eb2a4999c377",
+            "path": "artifacts/sha256/8b/8b5f02fc939f29a95a2449b5dda13add6f471a4988259e470458eb2a4999c377",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 696
+          },
+          "timestamp": "2026-08-16T00:52:26Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec-ephemeral"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-verdict",
+            "artifact": "ed741f4e2e99e4fb3713c9b173c3a895ada26e9a13bb2149f15244f0c3e7cb1c",
+            "path": "artifacts/sha256/ed/ed741f4e2e99e4fb3713c9b173c3a895ada26e9a13bb2149f15244f0c3e7cb1c",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 773
+          },
+          "timestamp": "2026-08-16T00:52:26Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "11 rounds. Two sub-features CUT to etude-ldf: the refspec-semantics analyzer, and executable remediation strings embedded in warnings. ~20 real defects found and fixed, three of them introduced while fixing an earlier finding.",
+        "degraded_reason": "L2 panel (opus + codex) per the committed workflow.yaml gate tier. The registry gemini seat is unreachable: the gemini CLI returns IneligibleTierError, a client/tier error, so every entry in the seat's model_fallbacks fails identically; agy is removed as a substitute path. Tracked as etude-3rq and blocker etude-84z. No seat was waived to clear a finding.",
+        "deferred_beads": [
+          "etude-ldf",
+          "etude-26i",
+          "etude-eje"
+        ]
+      },
+      "timestamp": "2026-08-16T00:52:26Z"
     }
   ]
 }

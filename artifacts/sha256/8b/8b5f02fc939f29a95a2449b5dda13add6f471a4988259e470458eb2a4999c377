@@ -1,0 +1,7 @@
+opus seat — etude-i19 gate, plus a confirmation re-gate. VERDICT: PASS_WITH_FOLLOWUPS. BLOCKING: none.
+Verified the --replace-all convergence argument holds (git serialises the writes under an exclusive lock, so
+neither zero entries nor duplicates is reachable, and sibling push refspecs are untouched), and that
+LC_ALL=C is the right resolution of the locale dependency given a lock collision exits 255 rather than the
+documented 4 — also confirming GNU gettext's LANGUAGE override is ignored when the locale resolves to
+C/POSIX. Follow-ups folded: retry budget widened, duplicate push entries collapsed, sentinel ownership
+documented, sync regression test added, dry-run wording corrected.
