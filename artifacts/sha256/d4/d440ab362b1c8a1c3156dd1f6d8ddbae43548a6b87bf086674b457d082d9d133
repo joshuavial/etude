@@ -1,0 +1,8 @@
+# Verification
+
+- `make test`: PASS across all packages.
+- `make lint`: PASS (`gofmt` clean and `go vet ./...`).
+- `make build`: PASS; built `bin/etude` used for manual QA.
+- Built `etude replay --record` with `scripts/sidecar.sh`: created `qa-sidecar-001-replay-20260816T074108Z`; manifest version 4 recorded session `manual-session-001`, retrieval `imported`, redaction `passed`, transcript digest `19121f5e...`, and log digest `d7da3f28...`. Reading both CAS files returned the exact transcript plus stdout/stderr framing.
+- Built `etude replay --record` with `scripts/no-sidecar.sh`: created `qa-no-sidecar-001-replay-20260816T074123Z`; session was null, command succeeded, and the log was recorded under manifest version 4.
+- Focused regressions cover session history seeded by a passed attempt, replay transcript bytes in CAS, v4 log emission and parsing, and compatibility parsing for legacy v2/v3 log documents.
