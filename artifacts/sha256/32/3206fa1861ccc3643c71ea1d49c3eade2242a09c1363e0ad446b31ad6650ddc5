@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1) `etude-noo9` should carry the concrete repro (full-suite concurrent run exhausting the unrelated CLI package's 10-minute timeout) so the deferred flake is reproducible later. 2) Three seconds of process-launch headroom is thin for a timing-sensitive tail assertion on loaded CI hardware; consider widening the margin or making the assertion relative rather than absolute. 3) Consider a regression test pinning the corrected seat-session-evidence envelope contract, so the fixture defect that failed the first read-checkout run cannot silently reappear.
+CONFIDENCE: high

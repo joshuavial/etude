@@ -1831,6 +1831,137 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:28:53.744945Z"
+    },
+    {
+      "gate_id": "verify.r5",
+      "phase": "verify",
+      "round": 5,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r4",
+          "role": "verify",
+          "artifact": "ad256905799c63eb42ad7337d23d4e57a730ad5652dee4a85883c69bf40af3c1"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "8f180621ebb637d277b2297bbd792a64ec514d702b25f24bb1de298166182f84",
+            "path": "artifacts/sha256/8f/8f180621ebb637d277b2297bbd792a64ec514d702b25f24bb1de298166182f84",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1251
+          },
+          "timestamp": "2026-08-17T07:34:19.092735Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-17T07:34:19.366112Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `etude-noo9` should carry the concrete repro (full-suite concurrent run exhausting the unrelated CLI package's 10-minute timeout) so the deferred flake is reproducible later. 2) Three seconds of process-launch headroom is thin for a timing-sensitive tail assertion on loaded CI hardware; consider widening the margin or making the assertion relative rather than absolute. 3) Consider a regression test pinning the corrected seat-session-evidence envelope contract, so the fixture defect that failed the first read-checkout run cannot silently reappear."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "c81ff39239f4ede1dec1e84673d983a1873ef4c3f0ee762d00ad60135f309c28",
+            "path": "artifacts/sha256/c8/c81ff39239f4ede1dec1e84673d983a1873ef4c3f0ee762d00ad60135f309c28",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 700
+          },
+          "session": {
+            "session_id": "opus-3206fa1861ccc364",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "3206fa1861ccc3643c71ea1d49c3eade2242a09c1363e0ad446b31ad6650ddc5",
+              "path": "artifacts/sha256/32/3206fa1861ccc3643c71ea1d49c3eade2242a09c1363e0ad446b31ad6650ddc5",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 610
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:34:31.825431Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "path": "artifacts/sha256/83/831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:34:46.548582Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:34:46.550721Z"
     }
   ]
 }
