@@ -1,0 +1,95 @@
+## Plan (gc semantics resolved: report + explicit safe prune; NO auto-collection)
+
+**Storage model (grounded — determines what gc can collect).** Each run ref
+(refs/etude/runs/<id>) is a commit whose tree holds manifest.json + ONLY the
+blobs that manifest references — runmanifest.Writer.Write rejects any tree file
+not in referencedArtifactPaths (ErrUnreferencedArtifact, manifest.go:237). So
+"orphan blob within a ref tree" CANNOT exist by construction (out of scope).
+Eval refs (refs/etude/evals/<id>) hold only eval_result.json and pin run
+artifacts by ArtifactSource{RunID,Stage,Commit,Artifact}; the bytes live in the
+run trees. Refs are the only roots. Cross-ref edges: eval ArtifactSource ->
+run, and stage replay_of -> source run. Nothing references an eval. The gc UNIT
+is the whole REF; git-object cleanup is delegated to `git gc` (etude gc never
+touches the object DB).
+
+**KEY DESIGN FINDING — there is NO automatic garbage in this store.** Orphan
+blobs are impossible (Writer guard). A run ref with no inbound eval/replay edge
+is a normal, deliberately-captured ROOT (the user's work), NOT garbage — so
+auto-deleting "unreachable" runs would destroy captured data. Therefore v1 does
+NOT auto-collect anything. `etude gc` is REPORT-by-default + EXPLICIT, safety-
+checked targeted prune. (This is the honest semantics for a content-addressed
+git-ref store; "automatic GC of unreachable artifacts" does not map onto it.)
+
+**v1 behavior:**
+- `etude gc [--max-size N]` (DEFAULT = report only, never deletes, exit 0):
+  - TOTAL: total content-artifact bytes across all run refs (sum of
+    ArtifactRef.Size for Storage==content), and ref counts (runs, evals).
+  - OVERSIZED: run refs whose total content-artifact bytes exceed --max-size
+    (when --max-size is given; omit the section otherwise), each with its size.
+  - EXTERNAL: pointer artifacts (Storage==pointer) listed per run with their
+    URIs — informational (v1 does NOT fetch/validate/delete external URIs).
+- `etude gc --prune <run-id> [<run-id>...]` (EXPLICIT deletion of NAMED runs):
+  - For each named run, enforce the SAFETY INVARIANT before deleting: REFUSE
+    (skip + print why) if the run is pinned by any eval ArtifactSource.RunID OR
+    is the replay_of.RunID source of any other run — deleting it would orphan a
+    live eval target or replay link. Also refuse if the run id does not exist.
+  - Delete the surviving named refs via refstore.DeleteRef
+    (`git update-ref -d --no-deref refs/etude/runs/<id>`); print "pruned <id>".
+    Unreferenced objects are left for `git gc` (mirrors refstore.go:91).
+  - --prune with NO run-id args is an error ("--prune requires one or more run
+    ids"). gc never deletes anything not explicitly named.
+- Evals are never deletable by gc in v1 (no eval-prune); deferred.
+
+**Safety invariant (must never break a reference).** Build the LIVE pin-set by
+walking store.List("refs/etude/runs") + List("refs/etude/evals"): parse each
+manifest.json + eval_result.json; pinnedRunIDs = {every eval Target/Context
+ArtifactSource.RunID} ∪ {every stage ReplayOf.RunID}. A named run is prunable
+ONLY if its id ∉ pinnedRunIDs (re-checked immediately before the delete). This
+guarantees gc cannot orphan a live eval target or replay link.
+
+**Files:**
+- internal/gc/gc.go — new: BuildPinSet(ctx,store) (the live pin-set); Report
+  (Totals, Oversized, External) + Collect(ctx,store,opts) -> Report;
+  Prune(ctx,store,runIDs) -> (pruned []string, refused []RefusedRun, err) using
+  the pin-set + refstore.DeleteRef.
+- internal/gc/gc_test.go — new: table tests vs temp repos.
+- internal/refstore/store.go — add DeleteRef(ctx,ref) wrapping
+  `git update-ref -d --no-deref` (validateRef + rejectSymbolicRef first; error
+  on missing ref).
+- internal/refstore/store_test.go — cover DeleteRef.
+- internal/cli/gc.go — new: newGCCommand/buildGCCommand, --prune (bool) +
+  --max-size (int64) flags, run-id args, dry-run/report vs prune dispatch,
+  tabwriter output; mirror newRunCommand (SilenceUsage/Errors, refstore.New("")).
+- internal/cli/gc_test.go — new: CLI-level tests (injectable store/output).
+- internal/cli/root.go — register newGCCommand.
+
+**Tests (deterministic, temp repo + Writer harness):**
+- Pin-set correctness: eval ArtifactSource keeps its target run pinned; a
+  replay_of stage keeps its source run pinned; a run pinned by both appears once.
+- Report (default, no --prune): TOTAL bytes accurate; OVERSIZED at the
+  --max-size boundary (just-over vs just-under); EXTERNAL lists pointer
+  artifacts; empty store -> "nothing to report"; default NEVER deletes (assert
+  all refs still present).
+- Prune: `--prune <leaf-run>` deletes only that ref (others survive); `--prune`
+  of an EVAL-PINNED run is REFUSED (run survives, reason printed); `--prune` of
+  a REPLAY_OF-SOURCE run is REFUSED; unknown run id -> refused/error; `--prune`
+  with no args -> error.
+- DeleteRef: deletes an existing ref; errors on missing / symbolic / out-of-
+  namespace ref.
+- CLI: registration + --help; multiple run ids; mixed prunable+refused batch
+  (prunes the ok ones, refuses the pinned ones, clear exit semantics).
+
+**Docs:** Add docs/gc.md (dry-run-default report; --prune <run-id> explicit
+delete + safety invariant; "object cleanup is `git gc`'s job"; no auto-collect)
+and index it in docs/README.md. Update top-level README if it lists commands.
+
+**Scope / deferred (stated):** NO auto-collection of unreachable runs (none
+exist — leaf runs are kept work); tree-rewriting (orphan blobs impossible);
+invoking `git gc`; external-URI liveness/deletion; eval pruning; retro
+namespace; age-based retention. v1 = report + explicit safe targeted prune.
+
+**Why this resolves the prior contradiction:** earlier drafts defined an auto-
+collected "unreachable run" category, but "unreachable" (no inbound edge) = a
+normal leaf run = kept work, so auto-collecting it would delete the user's data.
+v1 removes auto-collection entirely: gc only deletes runs the user NAMES, and
+only when the safety invariant permits.
