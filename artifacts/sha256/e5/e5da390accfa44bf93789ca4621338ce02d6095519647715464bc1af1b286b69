@@ -1,0 +1,70 @@
+# Docs — etude-9uf.2: Supervisor + worker-lane runbook
+
+This bead's product IS documentation, so the docs phase is not "did the docs get
+updated" but "does every long-lived docs surface still tell the truth after
+769 lines were deleted and 480 added".
+
+## Docs impact matrix
+
+| Path | Checked | Changed | Reason |
+|---|---|---|---|
+| `docs/plans/dogfood/supervisor-runbook.md` | yes | **new (338)** | The bead's deliverable and the spec for `etude gate`. |
+| `docs/plans/dogfood/retro-capture.md` | yes | **new (156)** | Extracted from the deleted capture protocol; documents the LIVE `etude retro` command, so deleting it would have destroyed true guidance. |
+| `docs/plans/dogfood/capture-protocol.md` | yes | **deleted (690)** | The retroactive protocol this epic retires: capture envelope, stage names, attempt rules, close gate, pre-push contract, and an import path that reconstructs runs from bead notes. |
+| `docs/plans/dogfood/checklists.md` | yes | **deleted (79)** | A link index whose every anchor pointed into the deleted protocol or the manual gate sections. |
+| `docs/plans/dogfood/README.md` | yes | rewritten | Leads with the supervisor runbook; scripts table lists only scripts that still exist. |
+| `docs/plans/dogfood/review-gate-runbook.md` | yes | edited | Judge/mechanics split; `Invocation` → `Per-seat execution constraints` (reframed as the seat-adapter design brief); `Gate Weight` no longer restates seat lists; `Gate Orchestration` → `Supervisor discipline`; `Recording Results` now says the command writes the record. |
+| `docs/plans/dogfood/review-gate-process.md` | yes | edited | Hardcoded Gemini/Opus/codex panel → the tier the stage declares, resolved from config; opus auth exception written down with its `etude-pqv` pointer. |
+| `docs/plans/dogfood/verify-phase-design.md` | yes | edited | Eight "three-reviewer gate" phrasings → the tier's seats. No design content touched. |
+| `docs/plans/dogfood/retro-ledger.md` | yes | edited | Four entries naming the retired scripts now name the mechanism; header note explains the deliberate `etude-9uf.4` deferral. |
+| `docs/plans/README.md` | yes | edited | Indexes the supervisor runbook; two stale seat-count phrasings fixed; link off the deleted file repointed. |
+| `docs/plans/product/etude-retro-command.md` | yes | edited | Two links into the deleted file repointed at `retro-capture.md`. |
+| `docs/plans/dogfood/dogfood-process-retro.md`, `wide-retro-analysis.md` | yes | no change | Historical retro records. Their "three-reviewer gate" wording describes what was true when written; rewriting history to match current config would falsify the record. |
+| `docs/plans/product/gate-reviewer-record-schema.md` | yes | no change | Names `dogfood-capture.sh`, but it is OUTSIDE `docs/plans/dogfood/` and the acceptance criterion is scoped to that directory. Bead .3 owns the repo-wide sweep. |
+| `docs/gates.md` (shipped) | yes | no change | Documents the `GateAttempt` schema and `etude capture-gate`. Both are unchanged by this bead, and the new runbook links to it rather than restating it. |
+| `docs/run.md`, `docs/cli/**` (shipped, generated) | yes | no change | No CLI surface changed. `make docs-check` regenerates 24 pages with no diff, which is the assertion. |
+| `README.md` (root) | yes | no change | Advertises the shipped command surface, which is unchanged. |
+| `.etude/loop.local.md` | yes | refreshed, NOT committed | Gitignored (`.gitignore:20`). Names `etude-9uf`; the false pre-push-hook claim is replaced with the verified truth that no hook is installed. |
+
+## Docs checks
+
+| check | result |
+|---|---|
+| `make docs-check` | passes — 24 generated command docs, no diff |
+| `make docs-reality` | OK — 14 commands; docs match the shipped CLI |
+| repo-wide relative-link sweep over `docs/` | no broken link introduced; 4 pre-existing `../run.md` breaks in `docs/plans/product/live-execution.md`, reproduced on clean `origin/main`, filed as **etude-gxt** |
+| acceptance grep | `grep -rn 'dogfood-capture\.sh\|dogfood-close\.sh' docs/plans/dogfood/` → empty, exit 1 |
+
+## Cross-consistency check
+
+Not "is each claim true against source" but "do any two true-sounding claims
+contradict each other". Three pairs were checked deliberately, because this bead
+adds a document that describes an unbuilt command alongside documents that
+describe built ones:
+
+1. **The runbook says `etude gate` fails closed when a seat cannot run; the
+   process doc says a single seat may be disregarded under the degraded policy.**
+   Consistent, and the runbook says why explicitly: `etude gate` does NOT
+   implement the disregard exception — its synthesis escalates on insufficient
+   usable seats. Disregarding a seat is an orchestrator judgement recorded
+   through the bootstrap path. Without that sentence the two docs would appear
+   to contradict.
+
+2. **The runbook says the supervisor may not lower a tier; the review-gate
+   runbook says escalation is mandatory.** Consistent because Gate Weight now
+   states the direction explicitly: the stage's `gate.tier` is a floor, never a
+   ceiling.
+
+3. **The runbook describes a command that does not exist; `docs-reality`
+   forbids planning docs from calling a SHIPPED command unimplemented.** Not a
+   contradiction today (`gate` is not shipped) and deliberately becomes one the
+   moment bead .1 lands — which is the point. The runbook says so in the same
+   paragraph, so a reader is not left to discover it.
+
+## Shipped vs planning
+
+Nothing in this bead touches the shipped docs site. `docs/plans/**` is planning
+material by the repo's own notes policy, and the new runbook is explicit that it
+"describes how a bead is worked while `etude` is still being built. It is not
+shipped user-facing behavior." The `etude gate` contract sits under a heading
+that says outright it is prescriptive and unbuilt.
