@@ -204,6 +204,52 @@
       ],
       "decision": {},
       "timestamp": "2026-05-26T20:23:37Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T20:25:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.133.0"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "disregarded",
+          "failure_note": "codex-exec hung producing zero output on substantial payloads this session-segment; degraded-gate fallback",
+          "timestamp": "2026-05-26T20:25:22Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "codex-exec outage on substantial payloads; proceeded on Opus GO for a low-risk pure refactor"
+      },
+      "timestamp": "2026-05-26T20:25:37Z"
     }
   ]
 }
