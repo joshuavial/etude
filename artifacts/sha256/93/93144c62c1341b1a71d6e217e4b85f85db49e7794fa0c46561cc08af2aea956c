@@ -1,0 +1,12 @@
+Status: READY_FOR_INTEGRATION
+Ticket: etude-ikj3 (in progress until integration)
+Run: etude-ikj3-dev-codex
+Commit: ac8c02c6f44bdfb2120151edaa7d32bce7bea91f
+
+Supervisor resolved the blocked final gate outside the lane sandbox. Added USER to Fable/Sonnet reviewer-only env allowlists, identical to the sibling independently reviewed repair. Original six files unchanged; registry/profile regression checks passed.
+
+Actual final review.r2: PASS, Astra GO and Fable GO. Packet supervisor-final-review.md SHA256 50ec1d7bd7efaa787e956701b85093c31bfaae3699295fe2ada9f1112dda4bff. Seven-file diff ba068b66d6cffbdf409f5ce34829c57e0c304ffe7d14e510413e5d20e9e8f423. Full per-file hashes supervisor-changed-files.sha256.
+
+All implementation, full tests, lint, docs, shell tests, independent QA and real rerun evidence remain valid as recorded in verify.md and supervisor-verify.md. Fable optional requests addressed by recording the registry file hash and disclosing the repair in this commit subject and bead notes.
+
+Parent owns integration and bead closure; no main merge performed. Earlier blocked state preserved in lane-status-before-supervisor.md.
