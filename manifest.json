@@ -1116,6 +1116,41 @@
         "degraded_reason": "BLOCK, and the finding is this epic's own defect discovered INSIDE the fix for it, twice. The paragraph I had just rewritten to correct one stale claim still ended by conditioning the bootstrap-path instruction on 'until [etude-pqv] lands' - a bead that is CLOSED, closed by the very commit the same paragraph now cites. So the one instruction in the runbook telling a supervisor to hand-append a verdict read as expired, in the exact paragraph governing the manual step this epic measured as where six records went missing. It now states the bootstrap path is standing procedure and names the actually-open bead, etude-4ed, which the runbook had never mentioned. The second finding is the same claim living in review-gate-process.md, cross-linked from the section I was editing and absent from my own 'what is NOT changed' list - a supervisor following that pointer, finding pqv closed, would conclude etude gate handles the opus seat and skip the bootstrap path entirely. Both corrected. Four optionals folded: the round-gap section now ships a runnable command rather than describing one; a sharper false-negative example (etude-9uf.1 has NO docs or review gate at all, and a missing whole phase leaves no hole because there is no sequence); 'records the workaround in a comment' corrected; and the artifact's self-reported diffstat, which had gone stale twice, is now timestamped to the freeze."
       },
       "timestamp": "2026-08-15T19:42:46Z"
+    },
+    {
+      "gate_id": "docs.r6",
+      "phase": "docs",
+      "round": 6,
+      "tier": 4,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r5",
+          "role": "docs-diff",
+          "artifact": "97afdd259b6d3b6261c8b7aaa5aef8490627c908ddbd5c40a98a83a4cc863299"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh opus claude -p --model opus verdict=failed; IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task subagent_type=general-purpose model=opus; CANDIDATE_FAILED harness=agy invoke=/Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh opus agy --model opus --print verdict=failed; runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero\n  install         Configure environment paths and shell settings\n  models          List available models\n  plugin          Manage plugins (install, uninstall, list, enable, disable)\n  plugins         Alias for plugin\n  update          Update CLI",
+          "timestamp": "2026-08-15T19:52:10.655839Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 1",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T19:52:10.655847Z"
     }
   ]
 }
