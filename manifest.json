@@ -110,6 +110,55 @@
         "degraded_reason": "opus seat unreachable this round; the gate did NOT pass, so no degraded pass was taken"
       },
       "timestamp": "2026-08-15T05:20:55Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Same theme: a new section folded retro-ledger.md into this bead, but the Verification section still granted retro-ledger.md an exception, so the plan contradicted itself."
+          ],
+          "timestamp": "2026-08-15T05:20:55Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "in-harness Task sub-agent seat (subagent_type general-purpose, model opus) returned no verdict; registry invoke claude -p --model opus returns Not logged in when Claude Code is the orchestrator (see etude-pqv)",
+          "timestamp": "2026-08-15T05:20:55Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat unreachable this round; the gate did NOT pass, so no degraded pass was taken"
+      },
+      "timestamp": "2026-08-15T05:20:55Z"
     }
   ]
 }
