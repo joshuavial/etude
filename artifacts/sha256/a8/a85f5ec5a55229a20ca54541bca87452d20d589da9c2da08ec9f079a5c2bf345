@@ -1,0 +1,30 @@
+# Docs — etude-n9b.1 workflow and manifest contract
+
+Status: no documentation change in this child.
+
+ANCESTOR: etude-n9b (P1) — ship opt-in checkout reads with output-only default.
+
+BLAST RADIUS: none outside the worktree; this phase is read-only.
+
+## Impact checklist
+
+- `docs/run.md` — checked; no change because etude-n9b.1 adds only an inert
+  codec leaf. Runtime authorization and behavior land in etude-n9b.2.
+- `docs/gates.md` — checked; no change for the same reason. The final combined
+  behavior and recorded manifest field will be documented by etude-n9b.2.
+- `docs/replay.md` — checked; no change because replay does not resolve or
+  authorize gate-seat checkout reads in this schema-only child.
+- `docs/init.md` — checked but intentionally unchanged: it is off-limits to this
+  issue lane, and documenting the inert leaf before runtime consumption would
+  claim behavior that does not yet exist.
+- `docs/plans/product/gate-reviewer-record-schema.md` — checked; no planning-doc
+  change because the shipped user-facing contract will be documented once the
+  dependent runtime child lands.
+
+Documentation checks: `make lint` and `make test` pass; no generated CLI
+reference changes apply because this child adds no command or flag.
+
+The PR will contain the complete runtime and docs child together, so users will
+never receive the schema leaf without its behavior or documentation.
+
+IRREVERSIBLE SEQUENCES: none
