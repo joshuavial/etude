@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-7ri.6",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,42 @@
         "size": 233
       },
       "timestamp": "2026-07-02T09:58:06.590217Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness Task subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "removed empty transcript_uri example line (applied)",
+            "L4 docs gate recorded as manifest tier 3 (GateAttempt.tier enum is {0,1,2,3}; registry L4 has no manifest tier)"
+          ],
+          "timestamp": "2026-07-02T08:30:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-07-02T08:30:00Z"
     }
   ]
 }
