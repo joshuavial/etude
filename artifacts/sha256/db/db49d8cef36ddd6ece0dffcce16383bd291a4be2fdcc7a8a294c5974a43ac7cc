@@ -1,0 +1,20 @@
+commit c99dc199123f36eab9c907e6fb957400f17a3808
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 20:31:28 2026 +0800
+
+    fix stale ETUDE_MODEL doc comment in exec judge
+
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+index eed1a34..37c1b23 100644
+--- a/internal/eval/exec_judge.go
++++ b/internal/eval/exec_judge.go
+@@ -24,7 +24,8 @@ import (
+ //	                      <NN>-context-<role> for each Context entry (ordered, %02d)
+ //	ETUDE_OUTPUT_FILE — path the judge MUST write its JSON verdict to
+ //	ETUDE_RUBRIC_FILE — path to the materialised Rubric bytes (only set when Rubric is non-nil)
+-//	ETUDE_MODEL       — req.Producer.Model (always set, even when empty)
++//	ETUDE_MODEL       — the ExecJudge.Model field (the judge/referee model;
++//	                      always set, even when empty). NOT the producer's model.
+ //
+ // The working directory is the scratch temp dir created for this invocation.
+ //
