@@ -1,0 +1,24 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "B16 diagnosed the omission failure and responded with MORE PROSE RULES; prose does not fix omission",
+    "`grep -c … || echo 0` bug (8hq.4): grep -c prints 0 AND exits non-zero on no-match, so `|| echo 0` appended a second line, breaking the arithmetic and silently disabling the docs-drift check (caught at verify)",
+    "8hq.1 plan rejected the stronger pre-push-hook design on a false premise (\"can't see the bead id\", \"would recurse\")"
+  ],
+  "root_causes": [
+    "capture is out-of-band, so omission is the failure mode; the durable fix must be mechanical, not prose",
+    "recurring shell footgun: use `|| true`, not `|| echo 0`",
+    "rejected-alternatives rationale was not adversarially re-derived from source; gate resolution was treated as a vote count"
+  ],
+  "follow_up_beads": [],
+  "decisions": [
+    "informational — process retro; the durable changes are already implemented"
+  ],
+  "durable_changes": [
+    "8hq.4 read-only audit (run + gate + pushed + cadence + docs-drift checks; strict per-bead mode; batch window mode; explicit allowlist)",
+    "8hq.1 dogfood-close.sh wrapper + .beads/hooks/pre-push hook that exempts refs/etude/* pushes and blocks refs/heads/* code pushes when the batch `--last 9` audit fails (commit 7d8771f)",
+    "runbook Plan-Phase Discipline P3 (rejected-alternatives rationale is a prime BLOCK target) + the not-a-vote-count corollary",
+    "ledger entry B17 (dual-output with this artifact)"
+  ]
+}

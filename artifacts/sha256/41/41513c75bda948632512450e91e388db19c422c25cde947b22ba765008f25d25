@@ -1,0 +1,53 @@
+# Cadence retro (2026-05-27) — moving dogfood completeness from memory to a mechanical gate
+
+Cohort: etude-nm6 (gate-record backfill), etude-8hq.4 (build dogfood-completeness
+audit), etude-8hq.1 (wire the audit into the close/push path as a hard gate).
+8hq.4 + 8hq.1 are the first two beads of phase etude-8hq.
+
+## Trigger
+3-ticket cadence, flagged MECHANICALLY this time by the new
+`dogfood-completeness-audit.sh` cadence-overdue WARN — not by a human spot-check.
+The enforcement built this cohort is what demanded this retro.
+
+## Finding (through-line)
+B16 diagnosed the failure ("capture is out-of-band → omission") and responded with
+MORE PROSE RULES. This cohort tested whether prose fixes omission — it does not.
+The durable fix is mechanical:
+
+- etude-8hq.4 built a read-only audit (run + gate + pushed + cadence + docs-drift
+  checks; strict per-bead mode; batch window mode; explicit allowlist).
+- etude-8hq.1 put it on the critical path two ways: a `dogfood-close.sh` wrapper
+  (ergonomics — one command captures run + gates and runs the terminal `--bead`
+  audit) AND a `.beads/hooks/pre-push` hook that EXEMPTS `refs/etude/*` pushes
+  (so capture pushes pass) and BLOCKS `refs/heads/*` code pushes when the batch
+  `--last 9` audit fails.
+
+Proof it works: this retro was triggered by the audit's own WARN, and the 8hq.1
+code push was gated live by the hook (audit ran, passed, push allowed).
+
+## What went wrong / was caught
+1. **`grep -c … || echo 0` bug (8hq.4):** `grep -c` prints `0` AND exits non-zero
+   on no-match, so `|| echo 0` appended a SECOND line, breaking the arithmetic and
+   silently disabling the docs-drift check. Caught at verify. Recurring shell
+   footgun — use `|| true`, not `|| echo 0`.
+2. **8hq.1 plan rejected the stronger design on a false premise:** the plan
+   rejected a pre-push hook ("can't see the bead id", "would recurse"). One
+   adversarial seat re-derived the premise from source — the hook needs no bead id
+   (batch audit) and doesn't recurse (etude-only pushes are exempt) — and BLOCKed,
+   overriding a 2-GO majority. Durable fix: runbook Plan-Phase Discipline **P3**
+   (rejected-alternatives rationale is a prime BLOCK target; gate resolution is not
+   a vote count).
+
+## What worked well (preserve)
+The multi-seat panel earned its keep: a lone constructive BLOCK that NAMED a
+feasible better mechanism produced a materially better design than the comfortable
+majority. Keep running adversarial seats against the plan's REASONING, not just its
+diff.
+
+## Durable changes landed
+- 8hq.4 audit + 8hq.1 close wrapper + `.beads/hooks/pre-push` hook (commit 7d8771f).
+- Runbook Plan-Phase Discipline P3 + the not-a-vote-count corollary.
+- Ledger entry B17 (dual-output with this artifact).
+
+## Decision
+informational — process retro; the durable changes are already implemented.
