@@ -987,6 +987,39 @@
         "degraded_reason": "BLOCK, correct, and pointed: I introduced the inverse error INSIDE the sweep that fixed the previous instance of it. The superseded-set the audit builds survives the shrink, but my rewritten comment said it was the pattern the audit used BEFORE the shrink, contradicting another comment I wrote 22 lines below it. Both now say the audit still uses it, which is the only version that tells a maintainer there is parity to keep. Four optionals folded, two of them further provenance errors my own sweep introduced: docs/retro.md claimed the audit's --bead mode was removed in etude-9uf.3, when that bead deleted only its CALLER and this bead removes the mode; and the surviving cadence check was described as skipping superseded refs 'by the same mechanism' as the removed sidecar check - same refs.supersedes mechanism, different rule, unconditional versus PRE-cutoff only. Also corrected: an unqualified 'all seven keys must be present' twelve lines below the reframing that says nothing checks them, and a ledger citation to the f-mask-guard regression test which went with check (f). Three docs rounds, and every one found the artifact claiming a file was clean when it was not - which is why the artifact now records that nothing mechanical in this repo detects prose promising a guarantee that no longer exists, and a seat reading the text is the only check there is."
       },
       "timestamp": "2026-08-15T13:32:53Z"
+    },
+    {
+      "gate_id": "docs.r4",
+      "phase": "docs",
+      "round": 4,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r4",
+          "role": "docs-diff",
+          "artifact": "24e01daa49e9058c9195fd01c9e1e337c1a7f16e5c0cc9dce971d8d70a4b3e03"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T13:41:43Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Docs gate PASSES at round 4. Four rounds, three BLOCKs, and every one found the artifact claiming a file was clean when it was not - twice on errors the sweep itself had introduced. The pattern is worth keeping: deleting a check invalidates every document that promised the guarantee, and correcting those documents can be wrong in BOTH directions. Asserting a removed guarantee is the obvious failure; past-tensing a surviving behavior is the subtle one, and I did it twice, the second time inside the fix for the first. Five optionals folded: a tense slip inside a single sentence about a command that survives; an over-broad claim that the audit's retro bookkeeping was removed wholesale when the cadence warning survives and refs-pushed still covers refs/etude/retros/*; mandate-shaped wording in the ledger's convention block aligned with the softened wording in docs/retro.md; a 'four checks' count that included the warning, now 'three hard checks plus a warning' to match the script header; and a stray double period. One deliberate non-change, recorded: the ledger heading keeps '(required, etude-8hq.3)' because it names the bead that introduced the convention, it is cited verbatim from retro-capture.md, and the paragraph directly beneath it says 'No longer enforced'. L4 is single-seat and that seat has no working subprocess path (etude-8li), so every round was produced in-harness per the documented registry exception."
+      },
+      "timestamp": "2026-08-15T13:41:43Z"
     }
   ]
 }
