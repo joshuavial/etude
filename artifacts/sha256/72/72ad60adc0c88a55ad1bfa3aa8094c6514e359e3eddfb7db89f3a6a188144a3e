@@ -1,0 +1,3 @@
+# Verify — etude-f6h (gitignore gen-docs)
+Status: PASS. .gitignore one-line addition (Tier 3, no shipping code).
+- git check-ignore gen-docs -> ignored; after go build ./cmd/gen-docs (produces ./gen-docs at root), git status does NOT list it untracked. Root-anchored /gen-docs does NOT hide the cmd/gen-docs/ source dir (git ls-files shows the source; check-ignore on cmd/gen-docs/main.go returns nothing). go build ./... clean. Scope: .gitignore only.
