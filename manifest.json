@@ -231,6 +231,51 @@
         "degraded_reason": "opus seat run as the documented substitute after the in-harness seat returned no verdict across r1, r2, a packet-inlined retry and a direct ping. Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. It returned PASS_WITH_FOLLOWUPS; both follow-ups were FOLDED into the plan (record-shape parity requirement on bead .1; inline deferral note in the retro-ledger edit), not deferred."
       },
       "timestamp": "2026-08-15T05:20:55Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:35:21Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:35:21Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry invoke claude -p --model opus returns Not logged in under a Claude Code orchestrator; the in-harness sub-agent seat has returned no verdict on five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Both seats PASS_WITH_FOLLOWUPS; both follow-ups FOLDED (a prescriptive Contract subheading on the etude gate section, and a requirement that bead .1 VERIFY exercises the built binary against each of the ten contract items). Opus also noted the packet omitted the review-gate-runbook diff; recorded as packet-hygiene guidance for later gates, not a change to this diff."
+      },
+      "timestamp": "2026-08-15T05:35:21Z"
     }
   ]
 }
