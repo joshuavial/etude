@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.1",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,82 @@
         "size": 1699
       },
       "timestamp": "2026-05-26T23:40:13.674349Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T01:30:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T01:31:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "wrapper alone is enforcement-by-convention; add a mechanical pre-push hook that exempts refs/etude/* pushes and runs the batch audit on refs/heads/* code pushes"
+          ],
+          "timestamp": "2026-05-27T01:32:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU); see decision.degraded_reason",
+          "timestamp": "2026-05-27T01:33:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms seat down all session (0 CPU); proceeded on codex+gemini+opus. gemini BLOCK triggered a plan amendment to a hybrid (wrapper + pre-push hook)."
+      },
+      "timestamp": "2026-05-27T01:33:30Z"
     }
   ]
 }
