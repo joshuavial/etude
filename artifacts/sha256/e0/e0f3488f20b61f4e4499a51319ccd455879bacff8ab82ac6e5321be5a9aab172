@@ -1,0 +1,147 @@
+## Plan (.2 per-run replay->record->pairwise-eval pipeline)
+
+**Scope:** Library-only in internal/bench. NO CLI (.4), NO cohort selection
+(.1 done, consumed), NO caching (.3). Consumes bench.CohortRun from cohort.go.
+
+### Recorder extraction — DECISION: option (a), in THIS bead, partially closing etude-0rt
+recordRun/allocateReplayRunID/sourceInputRefs are UNEXPORTED on the cli
+replayRunner type (replay.go:236/333/323); bench lives in internal/bench and
+cannot reach them. Reimplementing (option b) would copy-paste the gated
+files-map/Skill<->Producer-mirror/replay_of/run-id-allocation dance that
+etude-0rt explicitly flags as a repeated correctness hazard. EXTRACT to an
+exported helper in internal/replay (no import cycle: replay already imports
+artifactstore/refstore/runmanifest; cli+bench both import replay):
+
+  // internal/replay/record.go (NEW)
+  type RunRecorder struct { Store refstore.Store; Now func() time.Time }
+  func (r RunRecorder) Record(ctx, resolved ResolvedStage, res RunResult,
+        sourceRunID, sourceStageName string) (RecordedRun, error)
+  type RecordedRun struct { RunID, Commit, OutputArtifact, OutputPath string }
+
+Record does exactly what recordRun does today: AddContent(output)->files map;
+copy each source input raw via store.ReadCommitFile(resolved.Commit, path);
+Stage{ProducedBy:"replay", GitSHA:resolved.GitSHA, Skill:res.Producer.Skill,
+Producer:res.Producer, Inputs:sourceInputRefs, Output:ArtifactFromManifestArtifact,
+ReplayOf:&ReplayLink{sourceRunID,sourceStageName,resolved.Commit}}; manifest from
+resolved.Workflow/WorkflowVersion/Refs; Writer.Write. allocateReplayRunID +
+sourceInputRefs move into replay too (exported AllocateRunID or kept as Record
+internals). RecordedRun.OutputArtifact = outputArtifact.SHA256 (the pin bench needs).
+Move allocateReplayRunID -> replay; eval.AllocateEvalID stays (its own ns).
+
+REFACTOR cli/replay.go: recordRun becomes a thin wrapper calling
+RunRecorder{Store:store, Now:r.now}.Record(...) then printing the existing
+"recorded replay run %s (commit %s)" line. Behavior MUST be byte-identical;
+existing replay_test.go stays green (this is the regression gate). This only
+PARTIALLY satisfies etude-0rt (replay path only; capture.go append-path
+refactor stays open) — note that in 0rt, do NOT close it.
+
+### Pipeline API (Q1) — consumable by .4
+  // internal/bench/run.go (NEW)
+  type Pipeline struct {
+      Store    refstore.Store
+      Runner   replay.Runner   // injected; StubRunner in tests
+      Judge    eval.Judge      // injected; StubJudge in tests
+      Recorder replay.RunRecorder
+      Seed     int64           // -> PairwiseEvaluator.Seed
+      Overrides ProducerOverrides
+      Now      func() time.Time
+  }
+  func (p Pipeline) BenchRun(ctx, root string, cr bench.CohortRun) (BenchOutcome, error)
+  type BenchOutcome struct {
+      RunID string            // cr.RunID (source)
+      Stage string
+      Winner eval.Winner      // A=original, B=replay
+      Confidence *float64
+      Findings []eval.Finding
+      ReplayRunID string      // recorded replay run
+      ReplayCommit string
+      EvalID string           // persisted eval id
+      Result eval.EvalResult  // the persisted doc (for .3 cache + .4 report)
+  }
+root is passed in (repoRoot is a cli helper; .4 resolves it) so bench stays
+TTY-free. A cohort-level loop helper is deferred to .4 (it owns abort/skip UX).
+
+### Per-run flow (Q2) — precise
+1. resolved, err := replay.ResolveInputs(ctx, p.Store, cr.RunID, cr.Stage.Name).
+2. Materialize inputs via inp.ReadContent (mirror replay.go:159-173;
+   ErrPointerNotMaterialized -> error, though .1 already filtered pointers).
+3. Read ORIGINAL output bytes: store.ReadCommitFile(ctx, resolved.Commit,
+   resolved.Output.Path) (resolve exposes ReadContent for INPUTS only; output
+   read is separate). Its SHA256 is resolved.Output.Artifact (no recompute).
+4. worktree.Checkout(ctx, root, resolved.GitSHA); defer Close. Build producer by
+   merging resolved.Producer with p.Overrides (mergeString pattern, replay.go:177).
+5. res := p.Runner.Run(RunRequest{WorktreeDir, ScratchDir(MkdirTemp), Inputs,
+   OutputRole/MediaType from resolved.Output, Producer}). Empty output -> error.
+6. rec := p.Recorder.Record(...) -> mints ReplayRunID + Commit + OutputArtifact sha.
+7. Build pairwise EvalRequest{Method:"pairwise", Targets:[A,B], Producer:judge id}:
+   A = EvalInput{Role:"original", MediaType:resolved.Output.MediaType,
+       Content:<orig bytes>, Source:ArtifactSource{RunID:cr.RunID,
+       Stage:cr.Stage.Name, Commit:resolved.Commit, Artifact:resolved.Output.Artifact}}
+   B = EvalInput{Role:"replay", MediaType:res.MediaType, Content:res.Output,
+       Source:ArtifactSource{RunID:rec.RunID, Stage:cr.Stage.Name,
+       Commit:rec.Commit, Artifact:rec.OutputArtifact}}
+   Both commit+sha256 pinned -> EvalResult.Validate passes.
+8. ev := (&eval.PairwiseEvaluator{Judge:p.Judge, Seed:p.Seed}).Evaluate(ctx,req).
+9. Build EvalResult{EvalResultVersion:1, EvalID:AllocateEvalID(base=EvalIDBase
+   "pairwise",cr.RunID,cr.Stage.Name,now), Method:"pairwise", Score:ev.Score,
+   Findings:ev.Findings, Targets:[A.Source,B.Source], Producer, Created:now}.
+
+### Persistence boundary (Q2 cont) — .2 PERSISTS
+.2 writes the EvalResult via eval.Writer.Write (refs/etude/evals/<id>) and returns
+it in BenchOutcome. Rationale: recording the replay is what pins B, and .3 cache
+keys off persisted EvalResults — so the durable doc must exist now. .3 adds a
+pre-judge lookup seam (BenchRun gets a cache hook later); .2 ships the always-
+evaluate-and-persist path. .4 consumes BenchOutcome for aggregation/report.
+
+### Producer overrides (Q4 axis)
+  type ProducerOverrides struct { SkillID,SkillRepo,SkillVersion,Model,Harness,
+      HarnessVersion string + matching *Changed bools }
+Mirror replayProducerFlags merge (replay.go:177-188) inside BenchRun so the
+replay runs a NEW skill-version/model vs the original recorded producer — the
+comparison axis. ExecRunner echoes/overrides via RunResult.Producer; recorder
+persists res.Producer. (.4 maps CLI flags onto this struct.)
+
+### Errors (Q5)
+BenchRun returns (BenchOutcome{}, err) on ANY per-run failure (resolve, pointer,
+checkout, runner, empty output, record, evaluate, judge, validate, write). It
+does NOT decide abort-vs-skip — that's .4's cohort loop. Wrap with run-id context
+("bench run %s stage %s: %w").
+
+### New/changed files
+- internal/replay/record.go - NEW: RunRecorder, RecordedRun, AllocateRunID, sourceInputRefs.
+- internal/replay/record_test.go - NEW: Record happy path + id allocation + raw input copy.
+- internal/cli/replay.go - EDIT: recordRun delegates to RunRecorder (behavior identical).
+- internal/bench/run.go - NEW: Pipeline, BenchOutcome, ProducerOverrides, BenchRun.
+- internal/bench/run_test.go - NEW (test list below).
+
+### Tests (Q6) — StubRunner + StubJudge, deterministic
+- Happy path: StubRunner{CannedOutput} + StubJudge{Winner:B}; assert BenchOutcome
+  Winner=B, ReplayRunID/EvalID set, Result persisted & re-readable via eval.ParseJSON.
+- Targets pinned: both Targets[].Commit (40/64 hex) + .Artifact (64 hex) non-empty;
+  Result.Validate() == nil; orientation A=original(cr.RunID), B=replay(rec.RunID).
+- Producer override applied: set Overrides.SkillVersion; assert recorded replay
+  stage + Result.Producer carry the new version (StubRunner ProducerOverride).
+- Error propagation: StubRunner.Err -> BenchRun errs, no eval written; StubJudge.Err
+  -> errs after record; empty runner output -> errs.
+- Recorder unit (record_test.go): Record copies source inputs raw, sets ReplayOf,
+  mirrors Skill<->Producer, returns valid OutputArtifact sha; AllocateRunID suffixing.
+- Regression: `go test ./internal/cli/...` (replay_test.go) + `./internal/replay/...`
+  stay green after the extraction.
+
+**Docs:** None user-facing this slice (library-only, no CLI). docs/bench.md +
+root.go rootLong land in .4 with the command. Note in etude-0rt that the replay
+path is now extracted but capture.go append-path remains.
+
+**Risks:** Refactoring shipped recordRun is the main risk — mitigated by keeping
+the wrapper output identical and relying on existing replay tests as the gate.
+Worktree.Checkout needs a real git repo at resolved.GitSHA in pipeline tests; use
+a temp git fixture (as cohort/replay tests do) or inject a fake Runner that skips
+checkout — prefer the real-checkout fixture for fidelity.
+
+**Capture:**
+- inputs: bead etude-bench-command.2 + parent etude-bench-command design + etude-0rt;
+  files read: internal/cli/replay.go, internal/cli/init.go (repoRoot),
+  internal/replay/{resolve,runner,exec_runner}.go, internal/bench/cohort.go,
+  internal/eval/{eval,pairwiseevaluator,judge,result}.go,
+  internal/runmanifest/manifest.go, internal/worktree/worktree.go.
+- output: bead --design field.
