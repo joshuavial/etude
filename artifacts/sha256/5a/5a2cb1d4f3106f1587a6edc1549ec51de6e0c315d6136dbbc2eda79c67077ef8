@@ -1,0 +1,48 @@
+# GH #15 rebase integration plan
+
+Goal: preserve caller-workspace production and its fail-closed tracked-tree mutation guard while integrating the landed submodule checkout/validation behavior from GH #14 and pinned gate-seat checkout behavior from GH #16.
+
+The run-level `original_git_sha` remains the immutable pre-caller checkout A. A caller stage may record a clean post-run HEAD B in its own `git_sha`. Every hermetic consumer must select A: live resume, gate seat checkout and recovery, direct replay, forward replay, recorded replay, and bench. Every checkout path must also populate submodules and validate the recorded submodule map before invoking a runner or seat.
+
+The caller mutation guard stays broad and fail-closed: inspect before runner execution and after it completes; reject dirty tracked state, hidden index flags, tracked submodules, replacement refs, or an unstable HEAD; publish no output, manifest stage, run ref, or gate pass on failure. Default runners and all gates remain hermetic.
+
+Planned regression: TestEngineResumeAfterCallerCommitUsesOriginalCheckout
+Planned regression: TestReplayForwardCallerStageUsesOriginalCheckout
+Planned regression: TestGateReadCheckoutPopulatesRecordedSubmodule
+Planned regression: TestCallerWorkspaceRejectsTrackedSubmoduleBeforeRunner
+Planned regression: caller tracked-file mutation leaves no run ref and no gate pass
+
+Verification: targeted integration tests; full `make test`; `make lint`; `make docs-check`; `make docs-reality`; built-binary caller/default/mutation/resume/replay/submodule QA.
+
+## Gate round 1 corrections
+
+The first L1 plan gate exposed five additional fail-closed cases. The plan now also requires:
+
+- Each caller stage must begin at the latest prior caller stage's recorded HEAD, or at original A when it is the first caller stage. A clean reset between stages must not silently fork the producing lineage.
+- Tracked executable-bit changes must be detected even if the runner changes repository `core.fileMode` configuration.
+- Caller stage `git_sha` must be a full lowercase 40/64-character Git OID.
+- Replay, bench, and forward-replay consumers must reject caller provenance that does not name a commit object in the selected repository.
+- Single-stage replay and bench must reject any selected hermetic stage whose recorded SHA differs from original A, including legacy manifests with divergent per-stage SHAs.
+
+The submodule integration docs must describe the landed behavior: read-checkout seats populate and validate recorded submodules rather than retaining the pre-GH#14 rejection. Caller-stage `submodules` describes original A, while its `git_sha` may describe post-run B.
+
+## Gate round 2 mechanism correction
+
+The second L1 round showed that site-by-site Git status checks were the wrong mechanism. The complete correction is:
+
+- Build a fresh temporary index from current HEAD for every cleanliness inspection, then compare that fresh index with the live working tree. A runner cannot hide bytes by refreshing mutable stat cache in the real index.
+- Pin `core.fileMode`, `core.trustctime`, `core.checkStat`, `core.ignoreStat`, and `core.fsmonitor` for the comparison, and reject any effective Git-configuration drift across the runner.
+- Validate the v4 topology globally: every hermetic stage SHA equals original A, while caller stage SHAs are full OIDs.
+- Validate every recorded caller stage as an existing commit before any resume, selected replay/bench, or forward replay proceeds.
+- Canonicalize both relative and absolute repository roots before caller-root identity comparison.
+
+The same-theme cap classified these cases as reachable and inside the declared untrusted-runner boundary. This is a single mechanism change plus an exhaustive all-consumer invariant, not another narrow guard.
+
+## Gate round 3 complete index invariant
+
+The fresh comparison index closes real-index stat-cache evasion, but it must be paired with an object-level check of the real index itself. The guard now requires both conditions before and after every caller runner:
+
+- `git diff-index --cached --quiet HEAD --` proves the real index records the same objects and modes as `HEAD`.
+- A fresh `HEAD`-derived temporary index, with stat and filesystem-monitor policy pinned, proves the live worktree bytes and modes match `HEAD` independently of the real index's cached metadata.
+
+The regression stages a different blob with `git update-index --cacheinfo` while leaving the working file byte-identical to `HEAD`, and proves the stage fails closed with no run ref. The temporary comparison index is a bounded host-TMP artifact removed on all normal and error returns; a process crash can leave one small `etude-caller-index-*` file for ordinary temporary-file cleanup.
