@@ -128,6 +128,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:32:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "state Runner trust root",
+            "bind validation to imported bytes"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r2",
+            "artifact": "c0f6d04124aacbb5f33adac715d6bf4f255531e7584c14d2efb8f6ec0130b1ea",
+            "path": "artifacts/sha256/c0/c0f6d04124aacbb5f33adac715d6bf4f255531e7584c14d2efb8f6ec0130b1ea",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 295
+          },
+          "timestamp": "2026-08-16T00:35:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "declare full evidence budget",
+            "resolve transcript failure disposition",
+            "pin bounded import and truncation semantics"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r2",
+            "artifact": "01ca3b98b2ae0ba2dce30684f9e1ef4b6d11e7258085e2529e43fe63d0919a7f",
+            "path": "artifacts/sha256/01/01ca3b98b2ae0ba2dce30684f9e1ef4b6d11e7258085e2529e43fe63d0919a7f",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 328
+          },
+          "timestamp": "2026-08-16T00:40:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:41:00Z"
     }
   ]
 }
