@@ -1,0 +1,56 @@
+✓ etude-phase-prep.2 · Refresh dogfood docs for current shipped etude features   [● P0 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Refreshed dogfood + user docs to match shipped reality (e16b9b6): README/docs-README/BRIEF now advertise bench/gc/reindex/capture-gate + eval library (standalone etude eval CLI kept future); capture-protocol reframed (capture shipped, real refs/etude/runs/*); Session Boot inspects runs; backlog 'Current Frontier' + phase0 out-of-scope reflect shipped surface + roadmap. make docs-reality now PASSES (the phase-prep.5 guard); docs-check green. Four-seat gate PASS (3 GO, no over/under-claim; pilms skipped).
+
+DESCRIPTION
+Update dogfood process docs that still describe pre-capture or Phase 0-era reality. Current docs say things like "until etude capture exists" and frame bead notes as the capture store, while current dogfood runs are real refs/etude/runs/* records with manifest_version=2 producer metadata and newer replay/eval/bench/gc features.
+
+Acceptance:
+- docs/plans/dogfood/capture-protocol.md no longer says capture commands are unimplemented
+- Session Boot includes inspecting recent etude runs, not only bd ready
+- Backlog Operating Model reflects shipped replay/eval/bench/gc/producer identity and current roadmap priorities
+- docs clearly distinguish current shipped dogfood capture from remaining planned gaps (gate reviewers, retros, batch capture, import)
+- links to product retro and gate visibility beads are updated where relevant
+
+DESIGN
+## Plan
+
+**Approach:** Docs-only edit (no Go code). Two surfaces. (A) Reframe dogfood PROCESS docs that still describe pre-capture / Phase-0 reality so they match the shipped git-native capture loop (capture, capture-gate, run list/show, sync, replay, bench, gc, reindex + manifest_version=2 producer identity) while precisely preserving what is still PLANNED. (B) Clear the six `make docs-reality` punch-list findings so the guard exits 0. Framing rule applied everywhere: SHIPPED = capture, capture-gate, run, sync, replay, bench, gc, reindex, init, the eval LIBRARY (internal/eval, powers bench), and gate reviewer capture/visibility (epic etude-roadmap.2 closed: capture-gate + run-show gates + scripts/dogfood-gate-capture.sh + backfill); PLANNED = standalone `etude eval` CLI, retros-as-first-class-artifact (etude-14r), batch capture (etude-jb7), GitHub/xenota import (etude-phase1/etude-github-import). Never co-mention a SHIPPED command with a future-class phrase on one line (that is exactly what the guard flags).
+
+**Files:**
+- `README.md` — under `## CLI`, add `etude` USAGE lines for the four commands the guard reports missing (`bench`, `capture-gate`, `gc`, `reindex`), matching the existing `./bin/etude <cmd> ...` block format; extend the "Implemented" + summary prose to list bench/gc/reindex/capture-gate and the eval library; add doc links (gates.md, bench.md, gc.md, reindex.md). Fixes 4 guard findings.
+- `docs/README.md` — add a `capture-gate` index entry (currently only reachable via the gates.md "Gate reviewer records" line, which does not contain the token `capture-gate`); the indexer matches the command NAME, so the entry must contain `capture-gate`. Fixes the docs/README index finding.
+- `docs/plans/product/BRIEF.md` — line ~351: rewrite "Eval (`etude eval`) and bench (`etude bench`) are future work (Phase 3)." Remove the false bench claim (bench shipped) and split so any remaining "future" prose names only the standalone `etude eval` CLI (not a shipped command → guard ignores it) and never co-mentions `etude bench`. Fixes the last guard finding. Lightly reconcile §4.6 (import still planned — OK), §4.8/§5 wording if it over/under-states; keep §5 CLI sketch but ensure no shipped command sits on a "future" line.
+- `docs/plans/dogfood/capture-protocol.md` — rewrite the Status line + Decision (lines 3-13) and §"Run Mapping"/§"Import Path"/§"Open Questions": stop saying capture commands are unimplemented and that "bead, git history, and dogfood planning docs ARE the capture store / until `etude capture` exists". State capture is SHIPPED (`etude capture`, manifest_version=2 producer metadata, scripts/dogfood-capture.sh) and gate capture is SHIPPED (`etude capture-gate`, scripts/dogfood-gate-capture.sh). Keep the still-accurate import/retro-as-planned framing but mark import (etude-github-import) and retros-as-first-class (etude-14r) and batch capture (etude-jb7) as the remaining PLANNED gaps. The §"Review Gate Capture" block (lines 357-386) already reflects shipped capture-gate — leave intact.
+- `docs/plans/dogfood/README.md` — "Session Boot": add a step to inspect recent etude runs (`etude run list` / `etude run show <id>`) alongside `bd prime`/`bd ready`, so boot reads run history not just the bead tracker.
+- `docs/plans/dogfood/backlog-operating-model.md` — replace the stale "Current Phase 0 Bias" / Product-Path leaf list (treats Phase 0 capture loop as the frontier). Reflect that replay/eval-library/bench/gc/reindex + producer-identity + gate visibility all shipped, and set current roadmap priorities to the remaining PLANNED work: retros (etude-14r / etude-phase-prep.1,.4), degraded-gate policy (etude-phase-prep.3), batch capture (etude-jb7), Phase 1 import (etude-phase1).
+- `docs/plans/dogfood/phase0-critical-path.md` — "Out Of Scope For Phase 0" lists Replay/Eval+bench/Docs site/GC+query index as not-done; add a clear note these have since SHIPPED (post-Phase-0) so the doc is not read as current backlog; keep the historical Phase-0 sequence intact.
+
+**Tests (verification, no unit tests — docs change):**
+- `make docs-reality` exits 0 (the bead completion signal) — was 6 findings; each file edit maps to a finding or to acceptance prose.
+- `make docs-check` stays GREEN (currently green; we touch no generated docs/cli/* so the generated-doc diff is unaffected).
+- All new/changed relative doc links resolve (gates.md, bench.md, gc.md, reindex.md, capture.md exist; bead refs are text not links).
+- No over-claim review: standalone `etude eval` CLI, retros (etude-14r), batch capture (etude-jb7), import (etude-phase1) stay PLANNED; bench/gc/reindex/capture-gate/replay/eval-library stay SHIPPED. Verify via `go run ./cmd/etude --help` inventory.
+
+**Docs:** This bead IS the docs deliverable (dogfood PROCESS docs under docs/plans/ + the README/docs-index/BRIEF reality fixes). No separate follow-up docs.
+
+**Risks:**
+- Over-claiming swing (stale-understate → over-state). Mitigation: shipped-vs-planned table above; keep `etude eval` CLI + import + retros + batch labeled planned.
+- Guard line-coupling: the stale scan only fires when a future-phrase AND an `etude <shipped-cmd>` token share a line. The BRIEF.md fix must split the sentence so `etude bench` never sits on a "future" line; do NOT add an allowlist entry for it (that would hide real drift). Allowlist stays minimal/empty.
+- docs/README index matches the command NAME (`capture-gate`), so the new entry text must literally contain `capture-gate`, not just link to gates.md.
+
+**Capture:**
+- inputs: bead etude-phase-prep.2 (desc/acceptance), `make docs-reality` output (6 findings), `go run ./cmd/etude --help` (shipped inventory), scripts/docs-reality-check.sh (guard logic), README.md, docs/README.md, docs/gates.md, docs/plans/product/BRIEF.md §4.5-§5, docs/plans/dogfood/{capture-protocol,README,backlog-operating-model,phase0-critical-path}.md, docs/plans/README.md, beads etude-roadmap.2 / etude-14r / etude-jb7 / etude-phase1 / etude-github-import.
+- output: bead --design field (this plan).
+
+
+NOTES
+## Plan gate — four-seat: PASS (3 substantive GO, pilms skipped). codex GO; gemini GO; Opus GO (verified: 6 guard findings exact; shipped/planned split exact via --help + bead states; guard-pass mechanics sound w/o allowlist; no stale dogfood doc missed — capture-protocol.md, dogfood/README Session Boot, backlog-operating-model.md, phase0-critical-path.md + README/BRIEF/docs-README). Optionals folded: reframe backlog 'Product Path' leaf list too; dev-workflow-audit.md:80-83 left (not a shipped-command claim). Scope: docs-only, 7 files; make docs-reality must exit 0, docs-check stays green.
+## Implement+Final gate — four-seat: PASS (3 substantive GO, pilms skipped). codex GO; gemini GO; Opus GO (verified make docs-reality exit 0 + docs-check green; no etude eval CLI over-claim — eval library + bench shipped, eval CLI/retros/batch/import stay planned; no under-claim; capture-protocol/Session-Boot/backlog/phase0 reframes accurate; all README links resolve; scope docs-only 7 files). Completion signal: the phase-prep.5 guard now PASSES after this refresh. Optional skipped: a gc --prune example (marginal).
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ✓ etude-phase-prep: Prep: overhaul dev workflow for etude dogfooding ● P0
+
