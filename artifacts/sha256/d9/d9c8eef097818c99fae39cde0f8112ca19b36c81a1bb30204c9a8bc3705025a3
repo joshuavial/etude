@@ -1,0 +1,87 @@
+# Docs — etude-9uf.5
+
+The proof run's whole output is knowledge, so the docs phase is where it becomes
+usable. Everything below went into `docs/plans/dogfood/supervisor-runbook.md` —
+the document a supervisor actually follows — rather than into a plan note.
+
+## Three sections added to the supervisor runbook (+53 lines)
+
+**1. "Run the gate from the WORKER'S worktree, not your own."** Placed inside the
+per-phase loop, immediately before the exit-code handling, because that is the
+moment a supervisor decides where to type the command. It states the failure in
+the form that matters — *every other gate defect announces itself with a BLOCK;
+this one announces itself with a pass* — gives the literal `cd <lane> && …`
+invocation, and records that two of five gates on this very run were invoked from
+the wrong worktree before it was noticed. Points at `etude-4qi`.
+
+**2. "Append the verdict BEFORE you act on it."** Carries the measurement:
+`etude gate` alone passed **0 of its 5 attempts** — on `refs/etude/runs/etude-3xt`,
+which the text now names. Most usefully it documents the **fingerprint** — a gap
+in a phase's round sequence is an attempt whose verdict was appended late or
+never, and there are exactly three in this epic (`.3` verify r2, `.3` docs r2,
+`.4` verify r2). It also warns that a bootstrap panel re-records seats
+evidence-free and omits the deterministic check seats, so a reader auditing "did
+the checks pass" must read the ESCALATED attempt rather than the passing one.
+
+**3. "Do not edit an artifact after its gate passes."** The drift found on this
+run: fold before the gate, or capture a rerun stage and gate again. Points at
+`etude-pq7`.
+
+**Corrected at the docs gate, and worth recording.** The first draft attributed
+BOTH the "0 of 5" and the "two of five gates from the wrong worktree" figures to
+`etude-9uf.5`. They are measurements of `etude-3xt`. `.5`'s own run has three
+`etude gate` attempts, all from the correct worktree — so "of five" meant two
+different runs within thirty lines, in a section whose entire point is that a
+claim must be auditable against the record.
+
+The draft also promised the round-gap fingerprint "would have caught what six
+separate seats had to notice". The manifests hold **three** gaps, carrying at
+most five seat verdicts — so either the count was wrong or a missed verdict left
+no gap, in which case the arithmetic would not have caught it. The text now says
+**partial** and explains why: a verdict never assigned a round id leaves no hole,
+so a clean gap check is not proof the record is complete. Promising a detector
+more completeness than it has is how the next person stops looking.
+
+Filed `etude-a1i`: the runbook now describes the detector and nothing implements
+it, which is the documented-but-unimplemented gap this epic exists to close.
+
+## Why the runbook and not elsewhere
+
+`etude-3xt`'s own docs gate surfaced the general form of this: that bead's
+practice fix landed in `retro-ledger.md` while `supervisor-runbook.md` step 6
+still described the old two-step habit — the fix documented somewhere other than
+where the reader looks. All three sections above are placed at the point of use:
+inside the per-phase loop, not in an appendix.
+
+## What is NOT changed
+
+- **`.etude/workflow.yaml`, `.etude/registry.yaml`** — the tiers and seats are
+  right; the gap is that `etude gate` cannot consume an in-harness verdict, which
+  is code (`etude-4ed`), not config.
+- **`docs/plans/dogfood/review-gate-runbook.md`** — covers seat conduct and the
+  degraded-gate policy, both unchanged by this run.
+- **`docs/retro.md`** — `etude-3xt` updated it in the same window; nothing here
+  touches retro capture.
+- **No new document.** The findings belong in the runbook that already exists.
+  A "proof run findings" page is a page nobody opens twice.
+
+## Findings that became beads instead of prose
+
+Documentation cannot fix a missing mechanism, so four went to the tracker:
+
+| Bead | |
+|---|---|
+| `etude-4qi` (P1) | gate checks run in the caller's cwd; the record cannot be audited for it |
+| `etude-pq7` (P2) | no detection for a stage artifact edited after its gate |
+| `etude-4ed` (extended) | verdict injection must COMPLETE an attempt, not re-record it lossily |
+| `etude-fn8` (P3) | mkdocs nav points at a file bead `.2` deleted — a docs defect four docs gates missed, because neither `docs-check` nor `docs-reality` builds the site |
+| `etude-a1i` (P2) | implement the round-gap check the runbook now describes |
+
+## Checks
+
+`make docs-check` and `make docs-reality` green.
+
+Worth stating plainly, since this bead is about what the model can and cannot
+see: **neither reads prose, and neither builds the site.** They are why
+`etude-fn8` survived four docs gates on this epic. The only thing that has
+reliably caught a false sentence here is a seat reading it.
