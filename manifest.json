@@ -225,6 +225,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:13:50Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan",
+          "artifact": "57a767548d4f5122ebc351be9794874b6cf5374b801b41702e2e788410688d90"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Concurrent non-runner writers remain an explicit exclusive-access premise.",
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r3.md sha256 a4e809d13c4c9d80af41781415e85a7a7791cbf2f155183de53027abb10ea3f0"
+          ],
+          "timestamp": "2026-08-16T03:18:10Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Make explicit that the same index-flag and tracked-gitlink inspection runs both before and after the runner."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r3.md sha256 a4e809d13c4c9d80af41781415e85a7a7791cbf2f155183de53027abb10ea3f0"
+          ],
+          "timestamp": "2026-08-16T03:18:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:18:10Z"
     }
   ]
 }
