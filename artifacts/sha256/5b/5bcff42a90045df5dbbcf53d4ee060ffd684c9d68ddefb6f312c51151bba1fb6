@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1) The prose claims the decoder "require[s] `original_git_sha` for caller stages", but the shown decoder branch only requires `original_git_sha` OR any stage log at v4 — a v4 manifest carrying a caller stage plus a log-only feature would decode with an empty `original_git_sha`; either tighten the check to key off `RunnerWorkspace != ""` or correct the wording. 2) Writer/decoder feature rules are duplicated logic in two places; a single shared predicate would keep them from drifting when issue #24 revisits versioning. 3) The integration test drives version selection only through the combined caller+log path; a table case for log-only v4 and for featureless-v4 rejection would lock the compatibility policy the artifact describes.
+CONFIDENCE: medium

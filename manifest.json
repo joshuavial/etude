@@ -384,6 +384,95 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:44:45.313104Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r2",
+          "role": "diff",
+          "artifact": "8a05a6db3338581058fa2535d45eae5658c49c4fef91952385ec1e0b623e729b"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) The prose claims the decoder \"require[s] `original_git_sha` for caller stages\", but the shown decoder branch only requires `original_git_sha` OR any stage log at v4 — a v4 manifest carrying a caller stage plus a log-only feature would decode with an empty `original_git_sha`; either tighten the check to key off `RunnerWorkspace != \"\"` or correct the wording. 2) Writer/decoder feature rules are duplicated logic in two places; a single shared predicate would keep them from drifting when issue #24 revisits versioning. 3) The integration test drives version selection only through the combined caller+log path; a table case for log-only v4 and for featureless-v4 rejection would lock the compatibility policy the artifact describes."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "979182c53ea888f863237a9699fa0005cf918c23b1a678b84ebc7fe03a2ee0b4",
+            "path": "artifacts/sha256/97/979182c53ea888f863237a9699fa0005cf918c23b1a678b84ebc7fe03a2ee0b4",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 890
+          },
+          "session": {
+            "session_id": "opus-5bcff42a90045df5",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "5bcff42a90045df5dbbcf53d4ee060ffd684c9d68ddefb6f312c51151bba1fb6",
+              "path": "artifacts/sha256/5b/5bcff42a90045df5dbbcf53d4ee060ffd684c9d68ddefb6f312c51151bba1fb6",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 795
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:46:10.724356Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "544c0fb739353dce7e52b5376cf6deef4bad642f7026e86bf0903e711f0295a2",
+            "path": "artifacts/sha256/54/544c0fb739353dce7e52b5376cf6deef4bad642f7026e86bf0903e711f0295a2",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-f3a979bee2d02161",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "f3a979bee2d021619d5c512a737118de4a4d0b14a6f7300face9b4f5a59b8b72",
+              "path": "artifacts/sha256/f3/f3a979bee2d021619d5c512a737118de4a4d0b14a6f7300face9b4f5a59b8b72",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 61
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:46:30.07485Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:46:30.076297Z"
     }
   ]
 }
