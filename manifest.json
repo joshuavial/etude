@@ -222,6 +222,98 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T05:02:52.994119Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "b0d11fd1b3bd1bdc4d5cf9c620b3b388000bd175e933c7a3a7a4a9242f1dd859"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `validatePriorTranscriptEvidence` turns a prior attempt's redaction-failed transcript into a hard, permanent run failure even though those bytes were never stored and are not being handed forward — a resumed run hits the same wall, so consider recording the failure in the index and continuing (or document the recovery path). 2) `readSessionSidecar` normalizes only scratch-absolute transcript paths back to relative; a worktree-absolute path stays absolute and can be spuriously marked `failed` on macOS via the /var → /private/var alias that motivated the scratch normalization in the first place. 3) `runAndCaptureStage` hard-fails a stage when a non-ExecRunner returns `Log > MaxStageLogBytes`, while ExecRunner bounds and frames instead — truncating with a dropped-bytes header would be more consistent than losing the stage. 4) `printRunDetail` prints `digest=` for logs while inputs/output print `path=`, forcing a `--json` round-trip to locate the blob; printing `path=` too would cost nothing. 5) `resume` now populates `refByPath` where a prior-attempt ref and its source output/log share a path with different roles (last writer wins on `Role`) — harmless if the map is only used to rehydrate content, worth confirming it is."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "50835cfbaf5ebc13c26809811b9a3d2f298bf998f8057bacddbf83183e03548a",
+            "path": "artifacts/sha256/50/50835cfbaf5ebc13c26809811b9a3d2f298bf998f8057bacddbf83183e03548a",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1405
+          },
+          "session": {
+            "session_id": "opus-4c5a5983e804f8ea",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "4c5a5983e804f8ea7fc27c219dbcb896a912b3de0b13e0858eafad14f070589f",
+              "path": "artifacts/sha256/4c/4c5a5983e804f8ea7fc27c219dbcb896a912b3de0b13e0858eafad14f070589f",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1305
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:07:03.570473Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `readSessionSidecar` rejects literal Unicode replacement characters with `strings.ContainsRune(value, utf8.RuneError)`, so a valid JSON sidecar containing U+FFFD fails even though the spec only says invalid Unicode should fail; this also makes the new `TestExecRunner_RejectsInvalidSessionSidecars/unpaired surrogate` expectation questionable because Go’s JSON decoder converts `\\ud800` to U+FFFD rather than preserving invalid UTF-8."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "ceeb4eb23bbb761c253a9dbfb2064ca6820ea95e0b0df44519b9fc9f5c11a719",
+            "path": "artifacts/sha256/ce/ceeb4eb23bbb761c253a9dbfb2064ca6820ea95e0b0df44519b9fc9f5c11a719",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 593
+          },
+          "session": {
+            "session_id": "codex-a75e3df7c6b1a21d",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "a75e3df7c6b1a21dd9664790a98bb2011e159bc9030105c23d552a4fc635f537",
+              "path": "artifacts/sha256/a7/a75e3df7c6b1a21dd9664790a98bb2011e159bc9030105c23d552a4fc635f537",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 499
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:12:33.991954Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T05:12:33.995592Z"
     }
   ]
 }

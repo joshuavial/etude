@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `readSessionSidecar` rejects literal Unicode replacement characters with `strings.ContainsRune(value, utf8.RuneError)`, so a valid JSON sidecar containing U+FFFD fails even though the spec only says invalid Unicode should fail; this also makes the new `TestExecRunner_RejectsInvalidSessionSidecars/unpaired surrogate` expectation questionable because Go’s JSON decoder converts `\ud800` to U+FFFD rather than preserving invalid UTF-8.
+OPTIONAL: none
+CONFIDENCE: medium
