@@ -641,6 +641,39 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T17:30:33.944879Z"
+    },
+    {
+      "gate_id": "review.r2",
+      "phase": "review",
+      "round": 2,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "2376a942f30e5155810288e0b81ed665747a4d87b7c6cee4b2efe720ffa8593e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T17:42:20Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "FINAL REVIEW PASSES. The worker lane's bead is cleared to commit and push. This attempt is appended BEFORE the verdict is acted on, which is what the seat's own first optional asked for and what failed six times across beads .3 and .4. All five phases of this bead passed at their first completed panel - no BLOCK rounds at all - which is the first time that has happened on this epic and is itself a result: the worker had the bead text and the phase abstraction and nothing about what a seat would ask, and still produced artifacts that survived scrutiny. The seat verified every number against the tree, confirmed every phase carries a gate attempt with no verdict missing, and checked that the 21 optionals returned across the four earlier gates were each folded or explicitly declined rather than silently dropped. Three optionals returned. The most durable: the four in-harness .r2 attempts carry EMPTY seats[].optional arrays, so all 21 optionals exist only as prose inside degraded_reason and are not machine-readable - a real limitation of the bootstrap path that etude-4ed would fix along with the rest. Also: the plan artifact is now the sole place still asserting 'the file name IS the ref name', which its own in-place rule contradicts and which the shipped docs, the code comment and bead etude-24d all correct; and five pre-existing mkdocs --strict warnings that are not this bead's but are unfiled."
+      },
+      "timestamp": "2026-08-15T17:42:20Z"
     }
   ]
 }
