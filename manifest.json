@@ -215,6 +215,78 @@
         "degraded_reason": "Both seats GO. Round 1's two findings are folded and verified rather than gestured at: the run now uses a REAL workmux lane (workmux is installed and five lanes are live here, so the earlier sub-agent substitution was a preference dressed as an infeasibility), and the subject bead is etude-3xt whose preferred fix is Go in internal/cli/retro.go, which is what make test and make lint actually cover. The restated acceptance was written onto the bead in bd BEFORE this round, so codex's round-1 concern about advancing under a narrowed acceptance is answered on the tracked record rather than in a scratch artifact. codex's two r2 optionals were folded before opus reviewed: a blanket rename had corrupted the rejection table so the REJECTED bead appeared under the CHOSEN bead's id, and a stale wall-clock bullet contradicted its own correction three lines above. Five more folded now, the sharpest being a sequencing hazard neither I nor codex saw: audit check (d) is hard and repo-wide, and workmux lanes share this repo's refs, so MY unpushed supervisor-side run refs can block the LANE's code push - a supervisor action blocking a worker for reasons invisible to the worker. Also folded: the retro had no verification line despite being an acceptance clause; 'bootstrap appends per phase' had no manifest field and is now defined from a manifest-visible signal, the same discipline that removed the wall-clock promise; and a stale 'worker sub-agent' noun."
       },
       "timestamp": "2026-08-15T15:51:55Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "bccfde0b205fbe4d843167ea28c7e5f6c4653da39cb65194bf9738829fa40a9a"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T17:51:42.610083Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Include the exact `etude gate` invocation cwd or manifest evidence in the next phase so the proof run remains auditable."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "4b262bd483d3c5fe4149b4b52a02262c2960e5930e182627e4c497ff53070414",
+            "path": "artifacts/sha256/4b/4b262bd483d3c5fe4149b4b52a02262c2960e5930e182627e4c497ff53070414",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 270
+          },
+          "session": {
+            "session_id": "codex-4d568878f4c7d389",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "4d568878f4c7d389bf37713905aeb8394613ff5b5feec18ef845f40b36c1ff04",
+              "path": "artifacts/sha256/4d/4d568878f4c7d389bf37713905aeb8394613ff5b5feec18ef845f40b36c1ff04",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 180
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T17:52:01.807882Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T17:52:01.807966Z"
     }
   ]
 }
