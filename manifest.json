@@ -296,6 +296,80 @@
         "degraded_reason": "pilms down. Amended to review-only stages (no plan/implement). codex+gemini re-confirmed GO; opus (fresh, full Tier-1 verify against runmanifest) GO — review-only mapping manifest-valid, run_id/occurred_at/git_sha correct, reuse/idempotency/read-only sound."
       },
       "timestamp": "2026-05-27T20:32:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T21:05:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T21:05:30Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "buildImportRunID collapses -- but not .. ; a repo name with .. yields an id IsValidRunID rejects (the 'always valid' comment is wrong). Collapse .. and/or guard with IsValidRunID-skip. NITs: preflight exec.LookPath(gh) outside the injected client (tests need gh on PATH); README example block lacks import"
+          ],
+          "timestamp": "2026-05-27T21:06:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T21:06:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. 1 BLOCK (codex, verified-true run-id edge case) / 2 GO. Stage honesty confirmed implemented (no plan/implement). Adopted codex's fix: collapse .. + IsValidRunID skip-guard + preflight-through-client + README example. opus live-drove the real cli/cli import."
+      },
+      "timestamp": "2026-05-27T21:07:00Z"
     }
   ]
 }
