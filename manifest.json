@@ -133,6 +133,51 @@
         "degraded_reason": "Both seats GO. Seven follow-ups between them, all folded or filed. The two that mattered: BOTH seats independently caught that stopping the ladder at an in-harness candidate makes the agy rung unreachable (rule changed to skip-not-stop, since etude cannot know whether its caller can spawn a sub-agent); and the opus seat caught that SeatMeta must be recomputed per candidate because requiresSessionEvidence depends on the harness, and that an exhausted ladder leaving Harness.Name empty would be REJECTED by runmanifest validation — turning a recorded outage into no record at all. It also established that this bead does not by itself make a Claude Code supervisor gate pass; verdict injection is filed as etude-4ed."
       },
       "timestamp": "2026-08-15T07:58:46Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:11:35Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:11:35Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. Six follow-ups, all handled. The one that mattered: no test covered the SAFETY half of the stopping rule — that a BLOCK from a primary terminates the ladder and is never replaced by a fallback go. Code was correct but untested, which is how a later refactor silently loosens every gate; a regression plus a negative control (deleting the Block arm makes it fail) now pins it. Also folded: runSeatLadder returns a struct so the error is not in a non-final position; the ladder note survives a session-evidence downgrade instead of being overwritten. Filed etude-9kc for a rung that returns go with unusable evidence stopping the ladder before evidence is validated — a missed recovery the ladder newly makes possible, not a regression. Process note the seat raised and I accept: the resolve-once fold landed AFTER the packet was built, so the seat reviewed the working tree rather than the packet diff — the same drift earlier beads flagged."
+      },
+      "timestamp": "2026-08-15T08:11:35Z"
     }
   ]
 }
