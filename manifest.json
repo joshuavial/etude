@@ -97,6 +97,41 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T08:54:14Z"
+    },
+    {
+      "gate_id": "review-fix.r1",
+      "phase": "review-fix",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review-fix",
+          "role": "review-fix"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Preserve blocking evidence separately from checkout cleanup failures in future hardening.",
+            "Add runner-error and rerun/escalation lifecycle regressions if this area changes again.",
+            "In-tree argv[0]-dependent venv and multicall dispatch is intentionally unsupported by output-only isolation."
+          ],
+          "timestamp": "2026-08-16T11:18:20Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T11:18:20Z"
     }
   ]
 }
