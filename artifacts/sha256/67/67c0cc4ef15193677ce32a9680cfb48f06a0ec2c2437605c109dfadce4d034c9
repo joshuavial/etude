@@ -1,0 +1,62 @@
+# etude-5dr.3 documentation impact
+
+ANCESTOR: etude-5dr (P1) — issue #15 adds shipped workflow syntax, live-run
+behavior, a failure mode, and manifest audit data that must be documented with
+the caller-runner capability and guard.
+
+BLAST RADIUS: documentation changes are limited to `docs/run.md`,
+`docs/gates.md`, and the embedded `etude prime` reference in
+`internal/cli/prime.go`. Generated command docs were checked but not rewritten.
+
+TRUST BOUNDARY: documentation describes only implemented and verified behavior.
+It explicitly limits the guarantee to synchronous runner completion under
+exclusive working-tree access and does not claim serialization against unrelated
+concurrent writers.
+
+TOPOLOGY: one live producing runner may opt into caller workspace; all gate
+checks/seats and replay paths remain hermetic. The docs keep those paths distinct.
+
+DURABILITY CLASS: docs state the at-least-once crash/dirty residual, the
+post-run committed SHA, and the pre-capture fail-closed boundary.
+
+COMPLETENESS ENUMERATION: the relevant long-lived surfaces checked were live-run
+behavior, gate manifest/version behavior, workflow/init schema reference, replay,
+generated CLI references, README overview, embedded `prime` reference, and
+planning-only product material.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Changed canonical docs
+
+- `docs/run.md` — added `runner.workspace` syntax and precedence, exact caller
+  invocation directory, hermetic default, post-run clean/commit rule, tracked
+  submodule rejection, Git-control/index failure modes, dirty/crash residual,
+  exclusive-access boundary, manifest v4 audit field, and unchanged pinned gate
+  checkout.
+- `docs/gates.md` — clarified that gate-bearing manifests use v4 when they also
+  contain a caller-workspace stage, otherwise v3.
+- `internal/cli/prime.go` — updated the embedded run-manifest version summary to
+  list v4.
+
+## Checked, no change
+
+- `docs/cli/**` — no command or flag was added; `make docs-check` confirms all 25
+  generated command pages remain exact.
+- `docs/replay.md` — replay remains hermetic and unchanged; caller workspace is a
+  live producing-runner option only.
+- `README.md` — high-level overview has no workflow field schema and does not
+  make a conflicting all-runners-hermetic claim.
+- `docs/plans/product/**` — planning material is intentionally not rewritten as
+  shipped documentation; canonical behavior is in `docs/run.md`/`docs/gates.md`.
+- `docs/init.md` — contains the scaffold schema, but the operator explicitly
+  marked this path off-limits to GH#15 because another lane owns it. The shipped
+  live-run guide documents the new field without creating a cross-lane conflict.
+
+## Checks and cross-consistency
+
+- `make docs-check` — PASS; generated CLI docs match.
+- `make docs-reality` — PASS; all 15 shipped commands match documentation.
+- Cross-consistency — PASS: `docs/run.md` says caller runners execute live but
+  gates remain on the original detached checkout; its concurrency limitation
+  matches the synchronous-runner contract; `docs/gates.md` and `prime` agree on
+  manifest v4 without claiming all runs move to v4.
