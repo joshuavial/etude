@@ -1,0 +1,6 @@
+## Verify — etude-phase2.3 (status: pass, recommend proceed to Docs)
+
+Automated: go test ./... -count=1 -race all 7 packages green; internal/replay all 11 stub + 11 resolve tests PASS under -race; vet clean; gofmt clean. Run() 100% statement coverage. No test changes in Verify; runner.go unchanged.
+Discrimination: every Run branch asserted such that removing/flipping the line fails a test (error via errors.Is; skill echo vs override; canned empty/single/multi; explicit-vs-default mediatype; concat order+separator; concat empty; pass-through nil-output+default; canned-wins-over-concat precedence).
+Manual built-binary: N/A — grep confirms zero importers of internal/replay (no CLI wired; exec runner phase2.4, replay command phase2.5). Stub exercised purely by unit tests.
+QA: in scope (interface + value types + FS/exec-free stub); contract correct (pristine WorktreeDir vs external ScratchDir; OutputMediaType -> RunResult.MediaType default). No regressions.
