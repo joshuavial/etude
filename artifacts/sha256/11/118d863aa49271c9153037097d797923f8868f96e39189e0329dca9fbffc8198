@@ -1,0 +1,121 @@
+✓ etude-roadmap.1.2 · Capture harness/model and real skill version into producer   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: capture --harness/--harness-version/--model populate producer block (flag-driven, per-stage dogfood model convention); 4-gate process GO (Docs re-run after a mid-bead capture.go revert incident, fixed); 2b13eed
+
+DESCRIPTION
+Populate the new Producer block at capture time with the real harness identity (which adapter/runner ran, e.g. claude -p / Agent SDK), the real model that executed the stage, and the real skill version (per the source-of-truth decided in the schema bead). Wire this through the capture path (internal/cli/capture.go and the manifest writer in internal/runmanifest) so produced stages record concrete provenance rather than placeholders.
+
+OPEN QUESTION carried from the schema bead: confirm and implement the chosen skill-version source of truth (git sha of skill repo vs SKILL.md frontmatter vs adapter-reported) — settle the exact extraction here in Plan if not fully nailed in the schema bead.
+
+Why: an empty/placeholder producer block is useless for benches; this bead makes the captured provenance real.
+
+Dependency: schema must land first (etude-roadmap.1.1).
+
+DESIGN
+## Plan
+
+**Approach:** Capture is capture-side only and remains purely flag-driven (smallest change that makes provenance real). Add three new optional flags to internal/cli/capture.go — `--harness`, `--harness-version`, `--model` — and populate `Stage.Producer` (Harness{Name,Version}, Model, Skill) when building the stage. Keep `Stage.Skill` set as today so the encode-time fallback in manifest.go (toJSON: skillForProducer falls back to Stage.Skill when Producer.Skill empty) and replay/run.go keep compiling and working. No schema or Validate changes; no run-show or replay changes (those are beads 1.4 / 1.3). Back-compat is preserved: when the new flags are omitted, Harness.Name stays empty and the encoder omits the harness block exactly as 1.1 designed.
+
+**Skill-version source of truth (settled):** FLAG-DRIVEN with a documented dogfood convention; capture.go grows NO auto-detection. Rationale, grounded in observed repo state:
+- Option (a) git sha of the skill repo is unavailable here: `git -C ~/.claude/skills rev-parse HEAD` returns "not a git repository". The skills live in an unversioned dir, so shelling out would fail or require guessing the repo root — fragile, scope-creep.
+- Option (b) SKILL.md frontmatter version does not exist: the dev-workflow frontmatter has only name+description (no version field). Adding+parsing frontmatter is new machinery outside this bead.
+- Option (c) adapter-reported: there is no automated adapter yet (Phase 1 xenota, out of scope). Manual `etude capture` is the only producer path.
+- Therefore the value MUST arrive via the existing `--skill-version` flag regardless. The real deliverable is the dogfood CONVENTION for what to pass, documented in SKILL.md (see Docs). capture.go stays flag-only.
+
+**Files:**
+- internal/cli/capture.go - add `harness`, `harnessVersion`, `model` to captureConfig; register `--harness` (default ""), `--harness-version` (default ""), `--model` (default ""); in run(), build `runmanifest.Producer{Harness: Harness{Name: cfg.harness, Version: cfg.harnessVersion}, Model: cfg.model, Skill: Skill{ID: skillID, Repo: cfg.skillRepo, Version: cfg.skillVersion}}` and set both Stage.Producer (new) and Stage.Skill (keep, unchanged) on the appended stage. No new validation; harness/model are free-form optional strings (the manifest encoder already omits empty harness/model). produced-by is a SEPARATE axis (Stage.ProducedBy, default "original") and is left untouched.
+- internal/cli/capture_test.go - new + back-compat tests (below).
+- .claude/skills/dev-workflow/SKILL.md - thread the new flags into the dogfood capture convention + example (below). [Docs phase]
+- docs/capture.md - document the three new flags + defaults. [Docs phase]
+
+**Exact flag -> Producer mapping:**
+- `--harness <name>`     -> Producer.Harness.Name     (default "" -> harness block omitted)
+- `--harness-version <v>`-> Producer.Harness.Version  (default "")
+- `--model <id>`         -> Producer.Model            (default "" -> model omitted)
+- `--skill-version <v>`  -> Producer.Skill.Version    (ALREADY EXISTS, default "manual")
+- `--skill-id`/`--skill-repo` -> Producer.Skill.ID/Repo (already exist; Skill also still set on Stage.Skill)
+
+**Validate decision:** KEEP harness/model OPTIONAL — do NOT newly require them. Requiring them would break every legacy/manual capture (and the existing capture tests that pass no harness/model), contradicting the 1.1 back-compat contract (empty Harness.Name -> omitted block). Stated explicitly: Validate is unchanged in this bead.
+
+**Dogfood flag values (for SKILL.md):**
+- `--harness claude-code`
+- `--harness-version <Claude Code CLI version>` — convention: the running CLI version string (e.g. from `claude --version`); pass the value the orchestrator already knows for the session. Documented as "the harness/runtime version that ran the phase."
+- `--model claude-opus-4-7` (the phase agents run on opus per the workflow)
+- `--skill-version <skill-repo HEAD short sha OR a manual tag>` — convention: since the skills dir is not independently versioned, pass the etude repo's current `HEAD` short sha (the gate-approved artifact is tied to that commit) as the skill-version stand-in, OR a hand-set tag. Documented as a convention, not auto-resolved by capture.go.
+
+**Tests (internal/cli/capture_test.go):**
+- TestCaptureRecordsProducer: run capture with --harness claude-code --harness-version X --model claude-opus-4-7 --skill-id dev-planner --skill-version abc123; read the manifest back through ParseJSON (end-to-end through the runmanifest.Writer) and assert stage.Producer.Harness == {claude-code, X}, stage.Producer.Model == claude-opus-4-7, stage.Producer.Skill == {dev-planner, manual, abc123}, and stage.Skill mirrors it. Also assert the raw manifest.json contains a "harness" object (grep the bytes) to prove the block is emitted.
+- TestCaptureOmitsHarnessWithoutFlags (back-compat): capture with NO harness/model flags; assert the run is valid (ParseJSON succeeds), stage.Producer.Harness == Harness{} (empty) and stage.Producer.Model == "", and the raw manifest.json does NOT contain "harness" (omitted block) — proving 1.1 omit-on-empty still holds through the capture path.
+- Existing tests (TestCaptureCreatesRun etc.) keep passing unchanged since defaults are empty.
+
+**Docs:**
+- docs/capture.md WILL drift: the Metadata flag list and defaults block must add `--harness`, `--harness-version`, `--model` and note they are optional (omitted when empty). Flag in the Docs phase.
+- .claude/skills/dev-workflow/SKILL.md "Etude Capture (Dogfood)" example + conventions list must add the three flags and the skill-version convention. Flag in the Docs phase. (Both are documentation, deferred to Docs per the five-phase flow; this Plan notes the drift so it is not missed.)
+
+**Risks:** Low. Capture-side only, additive optional flags, no schema/Validate change, encode path for empty harness already exercised by 1.1 tests. Only judgement call is the skill-version convention, which is documentation not code.
+
+**Capture:**
+- inputs: bead etude-roadmap.1.2 description + parent epic; depends-on 1.1 (commit dc205c4); files read: internal/runmanifest/manifest.go, internal/cli/capture.go, internal/cli/capture_test.go, internal/runmanifest/manifest_test.go, .etude/workflow.yaml, .claude/skills/dev-workflow/SKILL.md, docs/capture.md; observed: ~/.claude/skills is not a git repo, SKILL.md has no version frontmatter.
+- output: bead --design field
+
+NOTES
+PLAN GATE attempt 1: 3 GO (Gemini, Opus, pilms) / 1 BLOCK (codex). Codex BLOCK (valid): plan's dogfood --model convention used a UNIVERSAL claude-opus-4-7, but the dev-workflow runs MIXED models per the agent table (.claude/skills/dev-workflow/SKILL.md L390-398) — a universal opus value records FALSE provenance, defeating the bead's "real model" purpose. Code wiring (capture.go flags) confirmed aligned; only the dogfood DOC convention is wrong.
+
+INCORPORATED — dogfood --model convention is now PER-STAGE, mapping each captured stage's producing agent to its actual model:
+  plan      (dev-planner,      opus)   -> --model claude-opus-4-7
+  implement (dev-executor,     sonnet) -> --model claude-sonnet-4-6
+  verify    (dev-qa,           opus)   -> --model claude-opus-4-7
+  docs      (dev-docs-writer,  sonnet) -> --model claude-sonnet-4-6
+  review    (dev-pr-reviewer,  opus)   -> --model claude-opus-4-7
+Harness for all dogfood stages: --harness claude-code --harness-version <actual `claude --version`>.
+This per-stage mapping replaces plan deliverable #4's universal value and is what SKILL.md's "Etude Capture (Dogfood)" section will document in the Docs phase.
+
+Also folding in (test hardening, from Opus+pilms+Gemini optional notes): Test 1 asserts manifest_version==2 in raw bytes; back-compat Test 2 asserts the producer+skill blocks ARE present (only harness absent); add a PARTIAL-flags case (--harness without --harness-version); build the runmanifest.Skill once and assign to both Stage.Skill and Producer.Skill; descriptive flag help strings.
+PLAN GATE attempt 2: 4/4 GO (Gemini, Opus, Codex, pilms). codex's attempt-1 BLOCK (universal model) resolved via per-stage model convention. Proceeding to Implement. Gemini's note re setting ManifestVersion=2 in capture.go is moot — toJSON() hardcodes manifest_version:2 on every write; tests will assert via parsed struct.
+IMPLEMENT GATE attempt 1: 3 GO (Gemini, Opus, pilms) / 1 BLOCK (codex). Codex BLOCK (valid test-discrimination point): round-trip mirror check + bare "skill" substring could be masked by the shipped producer.skill->Stage.Skill encoder fallback / a leaked top-level skill block.
+INCORPORATED (test-only hardening): added parseRawProducer() structural probe; all four capture tests now assert the SERIALIZED producer shape structurally instead of by substring. Test 1 now passes --skill-repo myrepo and asserts producer.skill == exact {dev-planner,myrepo,v3} AND stages[0].skill (top-level) == nil. Back-compat test asserts producer.harness omitted + producer.skill present + no top-level skill. Tests 3/4 converted to structural harness/model checks. Mutation-verified discrimination: wrong --model fails Tests 1&4; producer.skill miswrite fails Test 1; all green after restore. No production-code change (capture.go unchanged from attempt 1).
+IMPLEMENT GATE attempt 2: 4/4 GO (Codex, Gemini, Opus, pilms). codex's attempt-1 BLOCK resolved by structural test probes. Proceeding to Verify.
+VERIFY (dev-qa): PASS — proceed to Docs.
+- Automated: gofmt + go vet clean; go test ./... all green; 4 structural producer tests pass; mutation spot-check confirms discrimination (Model:WRONG fails T1+T4).
+- Manual built-binary test (make build + bin/etude in throwaway repo): plan-with-all-flags → producer{harness:{claude-code,2.1.0}, model:claude-opus-4-7, skill:{dev-planner,codewithjv-agent-skills,abc123}}; implement-no-flags → producer{skill:{dev-executor,manual,manual}}, harness+model OMITTED; manifest_version=2; no top-level stages[].skill; run show shows skill id/repo/ver, does NOT show harness/model (deferred to 1.4).
+- Back-compat: run show etude-88o (genuine legacy, no manifest_version/producer) parses + renders all 5 stages clean against the fresh binary, exit 0.
+VERIFY GATE: 4/4 GO (Codex, Opus, Gemini, pilms; Gemini+pilms each needed one transient-glitch reroll). Opus independently injected a leaked top-level skill into toJSON and confirmed parseRawProducer catches it. Proceeding to Docs (capture flags changed → docs/capture.md + SKILL.md dogfood convention need updates).
+DOCS GATE: 2/2 GO (Opus, Codex) on attempt 3.
+- Attempt 1 INVALIDATED: an autonomous gate/QA agent reverted internal/cli/capture.go to HEAD via a git checkout/restore during mutation testing, discarding the uncommitted producer implementation. Detected by the docs-gate seats (tests failed with 'unknown flag: --harness'). ROOT-CAUSE FIXED by reapplying the exact gated diff (git apply of the saved capture.go hunk); build + full suite green again; all 4 modified files snapshotted to /tmp/r12_snapshot for re-clobber protection.
+- Attempt 2: Opus GO, Codex BLOCK — SKILL.md example used unquoted --harness-version $(claude --version), which splits on the space in 'claude --version' output (2.1.150 (Claude Code)).
+- Attempt 3 (after quoting to "$(claude --version)" in both the convention bullet and example): 2/2 GO.
+PROCESS LEARNING: gate/QA seats doing mutation testing must NOT git checkout/restore/stash uncommitted work; use file-copy backups. Final Review seats instructed read-only.
+
+LABELS: phase:docs
+
+PARENT
+  ↑ ○ etude-roadmap.1: (EPIC) Capture and surface full producer identity (harness/model/skill) ● P2
+
+DEPENDS ON
+  → ✓ etude-roadmap.1.1: Add nested Producer (harness/model/skill) to run manifest schema ● P2
+
+COMMENTS
+  2026-05-25 03:42 joshuavial
+    ## Docs
+    
+    Changed: yes
+    Files:
+    - docs/capture.md
+    - .claude/skills/dev-workflow/SKILL.md
+    
+    Rationale:
+    - docs/capture.md: added --harness, --harness-version, --model to the Metadata flag list and a prose paragraph explaining they populate the producer block and are omitted from the manifest when empty.
+    - SKILL.md: added per-stage --model mapping and --harness/--harness-version convention to the Etude Capture (Dogfood) section; updated the plan-phase example command to include the new flags.
+    
+    Policy check:
+    - policy applied: repo convention (terse, match existing flag-list + prose style in capture.md; bullet conventions + code example style in SKILL.md)
+    - shipped docs describe implemented behavior only
+    - planning material remains under docs/plans
+    - generated references are separate from hand-written guides (n/a)
+    - generated output was updated through the repo workflow or intentionally left alone (n/a)
+    
+    Capture:
+    - inputs: Verify artifact and docs policy
+    - output: docs diff (two files edited, no new files created)
+
