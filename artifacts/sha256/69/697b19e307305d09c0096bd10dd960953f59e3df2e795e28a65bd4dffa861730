@@ -1,0 +1,1140 @@
+diff --git a/docs/run.md b/docs/run.md
+index 95ba0ac..e30cb42 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -96,6 +96,8 @@ Per stage, the detail view shows:
+ - `skill` — always printed as `id@version (repo)`
+ - Each input as `role=… path=… size=… storage=… media-type=…`
+ - The output in the same format
++- `log` — the stage runner's bounded stdout/stderr artifact digest, size, and
++  media type; omitted when both streams were empty
+ - `session` evidence — printed only when the stage's producer was an agentic
+   runner that reported a session (see [Producer session evidence](#producer-session-evidence))
+ 
+@@ -134,6 +136,30 @@ transcript cannot be read, never fails the stage — the evidence is simply
+ omitted or marked `failed`. Transcripts are secret-scanned before storage; a
+ failed scan is recorded as `redaction: failed` rather than storing the bytes.
+ 
++External stage runners report identity through the optional reserved
++`ETUDE_SESSION_FILE`. Etude sets it to `<attempt-scratch>/session.json`. A runner
++publishes a complete sidecar with an atomic sibling-file rename before it exits:
++
++```json
++{"session_id":"session-123","transcript_uri":"file:///transcript","transcript_path":"transcript.jsonl"}
++```
++
++`session_id` is required; the transcript fields are optional. The complete
++sidecar is capped at 64 KiB. Unknown fields, invalid UTF-8, malformed JSON,
++non-regular files, and fields over 4 KiB fail the stage. If the
++file is absent, behavior is unchanged and no session is recorded. A reported
++transcript path follows the existing best-effort import and secret-scan policy
++described above.
++
++An empty sidecar is malformed and fails the stage; omit the file entirely when
++the runner has no session to report.
++
++Successful runner stdout and stderr are stored as one
++`application/octet-stream` stage-log artifact. Etude retains stdout's first
++1 MiB and stderr's final 1 MiB while continuing to drain both pipes. Each
++present stream has a byte-count and dropped-byte framing header; stdout is
++listed before stderr. Raw log bytes are never printed by `etude run show`.
++
+ When a run carries review-gate attempts, they are printed after the stages —
+ see [Gate reviewer records](gates.md) for the gate output format and how to
+ capture gates with `etude capture-gate`.
+@@ -322,7 +348,7 @@ runs.
+ ### Env passthrough
+ 
+ By default, each stage runner receives a hermetic environment containing only
+-`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
++`PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE`. To pass additional env
+ vars (such as API keys) to live runners, declare an allowlist of names in
+ `.etude/workflow.yaml`:
+ 
+@@ -339,8 +365,8 @@ Deterministic gate checks are always hermetic (they receive no allowlist entries
+ regardless of configuration).
+ 
+ **Validation.** Each entry must be a valid POSIX env var name
+-(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
+-`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
++(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the four reserved names (`PATH`,
++`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, `ETUDE_SESSION_FILE`) are rejected at workflow load time.
+ 
+ **Audit.** The configured names (never values) appear in `etude run show` as an
+ `env allowlist:` header line and in the run manifest (`env_allowlist` field).
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 50a010a..fa6a16d 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -357,6 +357,10 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 		o := stage.Output
+ 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
+ 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
++		if stage.Log != nil {
++			fmt.Fprintf(out, "  log:    digest=%s size=%d media-type=%s\n",
++				stage.Log.Artifact, stage.Log.Size, stage.Log.MediaType)
++		}
+ 		printSessionEvidence(out, "  ", stage.Producer.Session)
+ 	}
+ 
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 80609d8..b925d8e 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -536,14 +536,6 @@ func (e *Engine) executeStages(
+ 	return nil
+ }
+ 
+-// isAgenticProducer reports whether a stage runner's result indicates an agentic
+-// execution that should capture session evidence. Mirrors the harness-side check
+-// from requiresSessionEvidence: non-empty and not "shell".
+-func isAgenticProducer(harnessName string) bool {
+-	h := strings.ToLower(strings.TrimSpace(harnessName))
+-	return h != "" && h != "shell"
+-}
+-
+ // runAndCaptureStage executes a single stage run: resolves the runner,
+ // invokes it, stores the output artifact, appends the Stage record to
+ // completedStages, and writes an incremental CAS manifest commit.
+@@ -594,10 +586,17 @@ func (e *Engine) runAndCaptureStage(
+ 	if err != nil {
+ 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+ 	}
++	if len(res.Log) > replay.MaxStageLogBytes {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner log exceeds %d bytes", replay.MaxStageLogBytes)
++	}
++	if err := replay.ValidateSessionInfo(res.Session); err != nil {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner session: %w", err)
++	}
+ 
+-	// Build producer session evidence when the runner returned session info
+-	// and the stage is agentic (not deterministic/shell).
+-	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
++	// An explicit runner session is sufficient evidence even for inline
++	// commands whose producer harness metadata is empty. Runners without a
++	// session retain the deterministic/shell behavior.
++	if res.Session != nil && strings.ToLower(strings.TrimSpace(res.Producer.Harness.Name)) != "shell" {
+ 		sess := sessionInfoFields{
+ 			SessionID:      res.Session.SessionID,
+ 			TranscriptURI:  res.Session.TranscriptURI,
+@@ -613,6 +612,16 @@ func (e *Engine) runAndCaptureStage(
+ 		}
+ 	}
+ 
++	var logRef *runmanifest.ArtifactRef
++	if len(res.Log) > 0 {
++		logArtifact, err := as.AddContent(stageName+"-log", "application/octet-stream", res.Log)
++		if err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store log: %w", err)
++		}
++		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
++		logRef = &ref
++	}
++
+ 	outputMediaType := res.MediaType
+ 	if outputMediaType == "" {
+ 		outputMediaType = "application/octet-stream"
+@@ -631,6 +640,7 @@ func (e *Engine) runAndCaptureStage(
+ 		Producer:   producer,
+ 		Inputs:     inputRefs,
+ 		Output:     outRef,
++		Log:        logRef,
+ 		Timestamp:  e.clock(),
+ 	})
+ 
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index 7857cc7..990d552 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -859,6 +859,7 @@ func TestEngineResumeDoesNotAdvancePastInterruptedGateRerun(t *testing.T) {
+ // RunResult with a Session field populated.
+ type sessionStubRunner struct {
+ 	output          []byte
++	log             []byte
+ 	transcriptName  string
+ 	transcriptBytes []byte
+ 	sessionID       string
+@@ -875,6 +876,7 @@ func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (repla
+ 	}
+ 	return replay.RunResult{
+ 		Output:    r.output,
++		Log:       r.log,
+ 		MediaType: "text/plain; charset=utf-8",
+ 		Producer: runmanifest.Producer{
+ 			Harness: runmanifest.Harness{Name: r.harnessName},
+@@ -887,62 +889,84 @@ func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (repla
+ 	}, nil
+ }
+ 
+-func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
+-	repo := initTestRepo(t)
+-	sha := headSHA(t, repo)
+-
+-	wf := workflow.Workflow{
+-		Name: "mywf",
+-		Stages: []workflow.Stage{
+-			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+-		},
+-	}
++func TestProducerSession_ExplicitInlineSessionPopulatesEvidenceAndLog(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		harness string
++		runID   string
++	}{
++		{name: "inline", harness: "", runID: "mywf-20260101T000000Z-sesstest1"},
++		{name: "named agentic harness", harness: "claude-code", runID: "mywf-20260101T000000Z-sesstest1a"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := initTestRepo(t)
++			sha := headSHA(t, repo)
++
++			wf := workflow.Workflow{
++				Name: "mywf",
++				Stages: []workflow.Stage{
++					{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
++				},
++			}
+ 
+-	stub := &sessionStubRunner{
+-		output:          []byte("plan output"),
+-		transcriptName:  "transcript.txt",
+-		transcriptBytes: []byte("this is the transcript"),
+-		sessionID:       "session-abc",
+-		harnessName:     "claude-code",
+-	}
++			stub := &sessionStubRunner{
++				output:          []byte("plan output"),
++				log:             []byte("[stdout bytes=3 dropped=0 retained=head]\nlog"),
++				transcriptName:  "transcript.txt",
++				transcriptBytes: []byte("this is the transcript"),
++				sessionID:       "session-abc",
++				harnessName:     tc.harness,
++			}
+ 
+-	runID := "mywf-20260101T000000Z-sesstest1"
+-	e := &Engine{
+-		Store:         refstore.New(repo),
+-		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+-		Root:          repo,
+-		Now:           fixedClock(),
+-	}
++			runID := tc.runID
++			e := &Engine{
++				Store:         refstore.New(repo),
++				ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
++				Root:          repo,
++				Now:           fixedClock(),
++			}
+ 
+-	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+-		TaskBytes: []byte("task"),
+-		TaskFile:  "task.txt",
+-		RunID:     runID,
+-		GitSHA:    sha,
+-	})
+-	if err != nil {
+-		t.Fatalf("Run: %v", err)
+-	}
++			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++				TaskBytes: []byte("task"),
++				TaskFile:  "task.txt",
++				RunID:     runID,
++				GitSHA:    sha,
++			})
++			if err != nil {
++				t.Fatalf("Run: %v", err)
++			}
+ 
+-	m := readLiveManifest(t, repo, runID)
+-	if len(m.Stages) != 1 {
+-		t.Fatalf("stages = %d, want 1", len(m.Stages))
+-	}
+-	sess := m.Stages[0].Producer.Session
+-	if sess == nil {
+-		t.Fatal("expected non-nil producer.session for agentic stage")
+-	}
+-	if sess.SessionID != "session-abc" {
+-		t.Errorf("session_id = %q, want session-abc", sess.SessionID)
+-	}
+-	if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+-		t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
+-	}
+-	if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+-		t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
+-	}
+-	if sess.TranscriptArtifact == nil {
+-		t.Error("expected non-nil transcript_artifact")
++			m := readLiveManifest(t, repo, runID)
++			if len(m.Stages) != 1 {
++				t.Fatalf("stages = %d, want 1", len(m.Stages))
++			}
++			sess := m.Stages[0].Producer.Session
++			if sess == nil {
++				t.Fatal("expected non-nil producer.session for agentic stage")
++			}
++			if sess.SessionID != "session-abc" {
++				t.Errorf("session_id = %q, want session-abc", sess.SessionID)
++			}
++			if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
++				t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
++			}
++			if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
++				t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
++			}
++			if sess.TranscriptArtifact == nil {
++				t.Error("expected non-nil transcript_artifact")
++			}
++			if m.Stages[0].Log == nil {
++				t.Fatal("expected non-nil stage log")
++			}
++			logBytes, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Log.Path)
++			if err != nil {
++				t.Fatalf("read log: %v", err)
++			}
++			if string(logBytes) != string(stub.log) {
++				t.Fatalf("log = %q, want %q", logBytes, stub.log)
++			}
++		})
+ 	}
+ }
+ 
+diff --git a/internal/replay/exec_runner.go b/internal/replay/exec_runner.go
+index 630c256..3afbbd4 100644
+--- a/internal/replay/exec_runner.go
++++ b/internal/replay/exec_runner.go
+@@ -3,6 +3,7 @@ package replay
+ import (
+ 	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -11,8 +12,10 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
++	"unicode/utf8"
+ 
+ 	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/sessionevidence"
+ )
+ 
+ // Sentinel errors for ExecRunner.
+@@ -25,6 +28,7 @@ var (
+ 	ErrOutputMissing       = errors.New("output missing")
+ 	ErrOutputNotRegular    = errors.New("output is not a regular file")
+ 	ErrOutputTooLarge      = errors.New("output too large")
++	ErrSessionInvalid      = errors.New("session sidecar invalid")
+ )
+ 
+ // runnerWaitDelay is the grace period after context cancellation or process
+@@ -103,11 +107,15 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		}
+ 	}
+ 
+-	// Step 5: scratch hygiene — remove stale output and reset inputs dir.
++	// Step 5: scratch hygiene — remove stale output/session and reset inputs dir.
+ 	outputPath := filepath.Join(resolvedScratch, "output")
++	sessionPath := filepath.Join(resolvedScratch, "session.json")
+ 	inputsDir := filepath.Join(resolvedScratch, "inputs")
+ 
+ 	_ = os.Remove(outputPath) // ignore os.IsNotExist; stale output must not survive
++	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
++		return RunResult{}, fmt.Errorf("%w: remove stale session sidecar: %v", ErrInvalidScratchDir, err)
++	}
+ 
+ 	if err := os.RemoveAll(inputsDir); err != nil {
+ 		return RunResult{}, fmt.Errorf("%w: remove inputs dir: %v", ErrInvalidScratchDir, err)
+@@ -152,11 +160,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		"PATH=" + extractEnv(environ, "PATH"),
+ 		"ETUDE_INPUTS_DIR=" + inputsDir,
+ 		"ETUDE_OUTPUT_FILE=" + outputPath,
++		"ETUDE_SESSION_FILE=" + sessionPath,
+ 	}
+ 	reservedEnv := map[string]bool{
+-		"PATH":              true,
+-		"ETUDE_INPUTS_DIR":  true,
+-		"ETUDE_OUTPUT_FILE": true,
++		"PATH":               true,
++		"ETUDE_INPUTS_DIR":   true,
++		"ETUDE_OUTPUT_FILE":  true,
++		"ETUDE_SESSION_FILE": true,
+ 	}
+ 	for _, name := range r.EnvAllowlist {
+ 		if reservedEnv[name] {
+@@ -170,12 +180,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		// not which values were actually delivered.
+ 	}
+ 
+-	var stdoutBuf, stderrBuf bytes.Buffer
++	stdoutBuf := newBoundedStream(true, MaxCapturedStreamBytes)
++	stderrBuf := newBoundedStream(false, MaxCapturedStreamBytes)
+ 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+ 	cmd.Dir = resolvedWorktree
+ 	cmd.Env = env
+-	cmd.Stdout = &stdoutBuf
+-	cmd.Stderr = &stderrBuf
++	cmd.Stdout = stdoutBuf
++	cmd.Stderr = stderrBuf
+ 	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+ 	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+ 	// open can cause cmd.Run to hang indefinitely.
+@@ -185,14 +196,22 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 
+ 	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
+ 	if ctx.Err() != nil {
++		var base error
+ 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+-			return RunResult{}, fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
++			base = fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
++		} else {
++			base = fmt.Errorf("runner: context done: %w", ctx.Err())
+ 		}
+-		return RunResult{}, fmt.Errorf("runner: context done: %w", ctx.Err())
++		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
+ 	}
+ 	if runErr != nil {
+-		stderr := strings.TrimSpace(stderrBuf.String())
+-		return RunResult{}, fmt.Errorf("%w: %s: %v: %s", ErrRunnerFailed, r.Command[0], runErr, stderr)
++		base := fmt.Errorf("%w: %s: %v", ErrRunnerFailed, r.Command[0], runErr)
++		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
++	}
++
++	session, err := readSessionSidecar(resolvedScratch, sessionPath)
++	if err != nil {
++		return RunResult{}, err
+ 	}
+ 
+ 	// Step 9: read output (symlink-safe via Lstat).
+@@ -239,12 +258,143 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 	// Step 10: assemble result and apply defaults.
+ 	res := RunResult{
+ 		Output:   data,
++		Log:      frameStageLog(stdoutBuf, stderrBuf),
+ 		Producer: req.Producer,
++		Session:  session,
+ 	}
+ 	applyResultDefaults(req, &res)
+ 	return res, nil
+ }
+ 
++type boundedStream struct {
++	buf     []byte
++	dropped int64
++	head    bool
++	limit   int
++}
++
++func newBoundedStream(head bool, limit int) *boundedStream {
++	return &boundedStream{head: head, limit: limit}
++}
++
++func (w *boundedStream) Write(p []byte) (int, error) {
++	n := len(p)
++	if w.head {
++		remaining := w.limit - len(w.buf)
++		if remaining > 0 {
++			keep := min(remaining, len(p))
++			w.buf = append(w.buf, p[:keep]...)
++			w.dropped += int64(len(p) - keep)
++		} else {
++			w.dropped += int64(len(p))
++		}
++		return n, nil
++	}
++	if len(p) >= w.limit {
++		w.dropped += int64(len(w.buf) + len(p) - w.limit)
++		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
++		return n, nil
++	}
++	over := len(w.buf) + len(p) - w.limit
++	if over > 0 {
++		w.dropped += int64(over)
++		copy(w.buf, w.buf[over:])
++		w.buf = w.buf[:len(w.buf)-over]
++	}
++	w.buf = append(w.buf, p...)
++	return n, nil
++}
++
++func (w *boundedStream) Bytes() []byte { return w.buf }
++
++func frameStageLog(stdout, stderr *boundedStream) []byte {
++	var out bytes.Buffer
++	write := func(name, retained string, stream *boundedStream) {
++		if len(stream.buf) == 0 && stream.dropped == 0 {
++			return
++		}
++		if out.Len() > 0 {
++			out.WriteByte('\n')
++		}
++		fmt.Fprintf(&out, "[%s bytes=%d dropped=%d retained=%s]\n", name, len(stream.buf), stream.dropped, retained)
++		out.Write(stream.buf)
++	}
++	write("stdout", "head", stdout)
++	write("stderr", "tail", stderr)
++	if out.Len() == 0 {
++		return nil
++	}
++	return out.Bytes()
++}
++
++func withStderrDiagnostic(base error, stderr []byte) error {
++	const maxDiagnosticBytes = 8 << 10
++	if len(stderr) > maxDiagnosticBytes {
++		stderr = stderr[len(stderr)-maxDiagnosticBytes:]
++	}
++	diagnostic := strings.TrimSpace(string(stderr))
++	if diagnostic == "" {
++		return base
++	}
++	return fmt.Errorf("%w: stderr: %s", base, diagnostic)
++}
++
++func readSessionSidecar(root, path string) (*SessionInfo, error) {
++	content, err := sessionevidence.ReadRegularFileUnderLimit(root, path, 64<<10)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil, nil
++		}
++		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
++	}
++	if !utf8.Valid(content) {
++		return nil, fmt.Errorf("%w: sidecar is not valid UTF-8", ErrSessionInvalid)
++	}
++	var session SessionInfo
++	dec := json.NewDecoder(bytes.NewReader(content))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&session); err != nil {
++		return nil, fmt.Errorf("%w: decode: %v", ErrSessionInvalid, err)
++	}
++	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
++		return nil, fmt.Errorf("%w: trailing JSON", ErrSessionInvalid)
++	}
++	if err := ValidateSessionInfo(&session); err != nil {
++		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
++	}
++	if filepath.IsAbs(session.TranscriptPath) {
++		rel, err := filepath.Rel(root, session.TranscriptPath)
++		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++			// Return scratch-local transcript paths in relative form. Besides
++			// making the containment boundary explicit, this avoids macOS's
++			// /var -> /private/var alias making the engine misclassify the same
++			// attempt scratch directory as an external absolute path.
++			session.TranscriptPath = rel
++		}
++	}
++	return &session, nil
++}
++
++// ValidateSessionInfo applies the durable engine boundary to any Runner.
++func ValidateSessionInfo(session *SessionInfo) error {
++	if session == nil {
++		return nil
++	}
++	if strings.TrimSpace(session.SessionID) == "" {
++		return errors.New("session_id is required")
++	}
++	for name, value := range map[string]string{
++		"session_id":      session.SessionID,
++		"transcript_uri":  session.TranscriptURI,
++		"transcript_path": session.TranscriptPath,
++	} {
++		if len(value) > MaxSessionFieldBytes {
++			return fmt.Errorf("%s exceeds %d bytes", name, MaxSessionFieldBytes)
++		}
++	}
++	return nil
++}
++
+ // resolveDir validates that path is non-empty, absolute, exists, and is a
+ // directory, then returns its symlink-resolved form.
+ func resolveDir(path string) (string, error) {
+diff --git a/internal/replay/exec_runner_test.go b/internal/replay/exec_runner_test.go
+index fbc8d68..c656734 100644
+--- a/internal/replay/exec_runner_test.go
++++ b/internal/replay/exec_runner_test.go
+@@ -1,6 +1,7 @@
+ package replay
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
+ 	"fmt"
+@@ -637,7 +638,7 @@ func TestExecRunner_ExtractEnvExactKeyMatch(t *testing.T) {
+ }
+ 
+ // TestExecRunner_EnvIsolation proves that the child process's environment is
+-// the strict set (PATH + ETUDE_INPUTS_DIR + ETUDE_OUTPUT_FILE) and does NOT
++// the strict set (PATH plus the three reserved ETUDE paths) and does NOT
+ // inherit arbitrary parent-process environment variables.
+ func TestExecRunner_EnvIsolation(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+@@ -907,3 +908,176 @@ printf 'done' > "$ETUDE_OUTPUT_FILE"`)
+ 		t.Fatal("ExecRunner.Run did not return within 5s; WaitDelay regression: surviving child held pipes open")
+ 	}
+ }
++
++func TestExecRunner_SessionSidecarAndLog(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '%s' '{"session_id":"session-17","transcript_uri":"file:///transcript","transcript_path":"transcript.jsonl"}' > "$ETUDE_SESSION_FILE.tmp"
++mv "$ETUDE_SESSION_FILE.tmp" "$ETUDE_SESSION_FILE"
++printf 'hello'
++printf 'warning' >&2`)
++
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session == nil || res.Session.SessionID != "session-17" || res.Session.TranscriptPath != "transcript.jsonl" {
++		t.Fatalf("session = %#v", res.Session)
++	}
++	wantLog := "[stdout bytes=5 dropped=0 retained=head]\nhello\n[stderr bytes=7 dropped=0 retained=tail]\nwarning"
++	if string(res.Log) != wantLog {
++		t.Fatalf("log = %q, want %q", res.Log, wantLog)
++	}
++}
++
++func TestExecRunner_NormalizesScratchAbsoluteTranscriptPath(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++transcript="${ETUDE_SESSION_FILE%/*}/transcript.jsonl"
++printf 'transcript' > "$transcript"
++printf '{"session_id":"session-17","transcript_path":"%s"}' "$transcript" > "$ETUDE_SESSION_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session == nil || res.Session.TranscriptPath != "transcript.jsonl" {
++		t.Fatalf("session = %#v, want scratch-relative transcript path", res.Session)
++	}
++}
++
++func TestExecRunner_AbsentSessionAndStreamsRemainNil(t *testing.T) {
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session != nil || res.Log != nil {
++		t.Fatalf("session/log = %#v/%q, want nil/nil", res.Session, res.Log)
++	}
++}
++
++func TestExecRunner_RejectsInvalidSessionSidecars(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	cases := map[string]string{
++		"malformed":     `{`,
++		"unknown field": `{"session_id":"s","unexpected":true}`,
++		"missing id":    `{"transcript_uri":"file:///t"}`,
++	}
++	for name, sidecar := range cases {
++		t.Run(name, func(t *testing.T) {
++			worktree, scratch := makeSiblingDirs(t)
++			script := filepath.Join(scratch, "runner.sh")
++			writeScript(t, script, fmt.Sprintf("printf 'artifact' > \"$ETUDE_OUTPUT_FILE\"\nprintf '%%s' '%s' > \"$ETUDE_SESSION_FILE\"", sidecar))
++			_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++			if !errors.Is(err, ErrSessionInvalid) {
++				t.Fatalf("error = %v, want ErrSessionInvalid", err)
++			}
++		})
++	}
++}
++
++func TestExecRunner_RejectsInvalidUTF8SessionSidecar(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '{"session_id":"\377"}' > "$ETUDE_SESSION_FILE"`)
++	_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "valid UTF-8") {
++		t.Fatalf("error = %v", err)
++	}
++}
++
++func TestExecRunner_TimeoutRetainsStderrTail(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := runnerWaitDelay
++	runnerWaitDelay = 200 * time.Millisecond
++	defer func() { runnerWaitDelay = orig }()
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'timeout diagnostic' >&2
++sleep 30`)
++	runner := execRunner(script)
++	runner.Timeout = 500 * time.Millisecond
++	_, err := runner.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timeout diagnostic") {
++		t.Fatalf("error = %v", err)
++	}
++}
++
++func TestBoundedStreamsRetainHeadAndTail(t *testing.T) {
++	head := newBoundedStream(true, 4)
++	tail := newBoundedStream(false, 4)
++	_, _ = head.Write([]byte("abcdef"))
++	_, _ = tail.Write([]byte("abcdef"))
++	if string(head.Bytes()) != "abcd" || head.dropped != 2 {
++		t.Fatalf("head = %q dropped=%d", head.Bytes(), head.dropped)
++	}
++	if string(tail.Bytes()) != "cdef" || tail.dropped != 2 {
++		t.Fatalf("tail = %q dropped=%d", tail.Bytes(), tail.dropped)
++	}
++}
++
++func TestMaximalFramedLogFitsEngineLimit(t *testing.T) {
++	stdout := newBoundedStream(true, MaxCapturedStreamBytes)
++	stderr := newBoundedStream(false, MaxCapturedStreamBytes)
++	_, _ = stdout.Write(bytes.Repeat([]byte("o"), MaxCapturedStreamBytes))
++	_, _ = stderr.Write(bytes.Repeat([]byte("e"), MaxCapturedStreamBytes))
++	log := frameStageLog(stdout, stderr)
++	if len(log) > MaxStageLogBytes {
++		t.Fatalf("maximal framed log = %d bytes, engine limit = %d", len(log), MaxStageLogBytes)
++	}
++}
++
++func TestExecRunner_RejectsOversizedAndSymlinkSessionSidecars(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	t.Run("oversized", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++dd if=/dev/zero of="$ETUDE_SESSION_FILE" bs=65537 count=1 2>/dev/null`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "exceeds") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("symlink", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '%s' '{"session_id":"s"}' > "$ETUDE_SESSION_FILE.target"
++ln -s "$ETUDE_SESSION_FILE.target" "$ETUDE_SESSION_FILE"`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "symlink") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("fifo", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++mkfifo "$ETUDE_SESSION_FILE"`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "regular") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++}
+diff --git a/internal/replay/record.go b/internal/replay/record.go
+index f76e603..16fae2e 100644
+--- a/internal/replay/record.go
++++ b/internal/replay/record.go
+@@ -68,6 +68,18 @@ func (r RunRecorder) Record(
+ 	if err != nil {
+ 		return RecordedRun{}, fmt.Errorf("record: store output artifact: %w", err)
+ 	}
++	var logRef *runmanifest.ArtifactRef
++	if len(res.Log) > 0 {
++		if len(res.Log) > MaxStageLogBytes {
++			return RecordedRun{}, fmt.Errorf("record: runner log exceeds %d bytes", MaxStageLogBytes)
++		}
++		logArtifact, err := as.AddContent(sourceStageName+"-log", "application/octet-stream", res.Log)
++		if err != nil {
++			return RecordedRun{}, fmt.Errorf("record: store log artifact: %w", err)
++		}
++		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
++		logRef = &ref
++	}
+ 	files := as.Files()
+ 
+ 	// Copy each source input raw from the source commit. Using ReadCommitFile
+@@ -93,6 +105,7 @@ func (r RunRecorder) Record(
+ 		Producer:   res.Producer,
+ 		Inputs:     sourceInputRefs(resolved),
+ 		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
++		Log:        logRef,
+ 		Timestamp:  now,
+ 		ReplayOf: &runmanifest.ReplayLink{
+ 			RunID:  sourceRunID,
+diff --git a/internal/replay/record_test.go b/internal/replay/record_test.go
+index ce2159a..82b9d05 100644
+--- a/internal/replay/record_test.go
++++ b/internal/replay/record_test.go
+@@ -51,6 +51,7 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+ 	res := RunResult{
+ 		Output:    []byte("replay output bytes"),
++		Log:       []byte("replay log bytes"),
+ 		MediaType: "text/plain; charset=utf-8",
+ 		Producer: runmanifest.Producer{
+ 			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+@@ -100,6 +101,16 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 		t.Fatalf("stages = %d, want 1", len(m.Stages))
+ 	}
+ 	s := m.Stages[0]
++	if s.Log == nil {
++		t.Fatal("Log is nil")
++	}
++	logBytes, err := store.ReadCommitFile(context.Background(), recorded.Commit, s.Log.Path)
++	if err != nil {
++		t.Fatalf("ReadCommitFile log: %v", err)
++	}
++	if !bytes.Equal(logBytes, res.Log) {
++		t.Fatalf("log bytes = %q, want %q", logBytes, res.Log)
++	}
+ 
+ 	if s.ProducedBy != "replay" {
+ 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
+diff --git a/internal/replay/runner.go b/internal/replay/runner.go
+index 33a5680..168630b 100644
+--- a/internal/replay/runner.go
++++ b/internal/replay/runner.go
+@@ -51,9 +51,9 @@ type RunRequest struct {
+ // When a runner (e.g. a dev runner) has a session sidecar or envelope, it
+ // populates this field; engine.go wires it into Producer.Session evidence.
+ type SessionInfo struct {
+-	SessionID      string
+-	TranscriptURI  string
+-	TranscriptPath string
++	SessionID      string `json:"session_id"`
++	TranscriptURI  string `json:"transcript_uri,omitempty"`
++	TranscriptPath string `json:"transcript_path,omitempty"`
+ }
+ 
+ // RunResult is the outcome of a stage execution.
+@@ -67,11 +67,21 @@ type SessionInfo struct {
+ // Deterministic and shell runners leave this nil.
+ type RunResult struct {
+ 	Output    []byte
++	Log       []byte               // bounded stdout/stderr evidence; nil when both streams are empty
+ 	MediaType string               // if empty, Run defaults it to req.OutputMediaType
+ 	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
+ 	Session   *SessionInfo         // non-nil when the runner has a session (agentic only)
+ }
+ 
++const (
++	// MaxCapturedStreamBytes is retained independently for stdout and stderr.
++	MaxCapturedStreamBytes = 1 << 20
++	// MaxStageLogBytes includes two captured streams plus their fixed framing.
++	MaxStageLogBytes = 2*MaxCapturedStreamBytes + 256
++	// MaxSessionFieldBytes bounds each string accepted from a runner session.
++	MaxSessionFieldBytes = 4 << 10
++)
++
+ // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.
+ // Defined as a named constant so test assertions and behavior cannot drift.
+ const stubConcatSeparator = "\n"
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index a0177be..bd1f5ce 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -157,10 +157,12 @@ type Stage struct {
+ 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+ 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+ 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+-	Skill     Skill
+-	Producer  Producer
+-	Inputs    []ArtifactRef
+-	Output    ArtifactRef
++	Skill    Skill
++	Producer Producer
++	Inputs   []ArtifactRef
++	Output   ArtifactRef
++	// Log is optional bounded stdout/stderr evidence from the stage runner.
++	Log       *ArtifactRef
+ 	Timestamp time.Time
+ 	// ReplayOf, when non-nil, identifies the source run/stage this stage was
+ 	// replayed from. Required when ProducedBy=="replay"; forbidden otherwise.
+@@ -341,6 +343,9 @@ func ArtifactPaths(manifest Manifest) []string {
+ 			seen[input.Path] = struct{}{}
+ 		}
+ 		seen[stage.Output.Path] = struct{}{}
++		if stage.Log != nil {
++			seen[stage.Log.Path] = struct{}{}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -401,6 +406,11 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
+ 		if err := verifyArtifactFile(stage.Output, files, hashes); err != nil {
+ 			return "", err
+ 		}
++		if stage.Log != nil {
++			if err := verifyArtifactFile(*stage.Log, files, hashes); err != nil {
++				return "", err
++			}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -490,6 +500,11 @@ func validateStage(index int, stage Stage) error {
+ 	if err := validateArtifactRef(stage.Output); err != nil {
+ 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
+ 	}
++	if stage.Log != nil {
++		if err := validateArtifactRef(*stage.Log); err != nil {
++			return fmt.Errorf("%w: %s log: %v", ErrInvalidManifest, prefix, err)
++		}
++	}
+ 	if stage.Producer.Session != nil {
+ 		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
+ 			return err
+@@ -564,6 +579,9 @@ func stageHasArtifact(stage Stage, artifact string) bool {
+ 	if stage.Output.Artifact == artifact {
+ 		return true
+ 	}
++	if stage.Log != nil && stage.Log.Artifact == artifact {
++		return true
++	}
+ 	for _, input := range stage.Inputs {
+ 		if input.Artifact == artifact {
+ 			return true
+@@ -775,6 +793,9 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+ 			paths[input.Path] = struct{}{}
+ 		}
+ 		paths[stage.Output.Path] = struct{}{}
++		if stage.Log != nil {
++			paths[stage.Log.Path] = struct{}{}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -992,6 +1013,7 @@ type stageJSON struct {
+ 	Producer  *producerJSON  `json:"producer,omitempty"`
+ 	Inputs    []artifactJSON `json:"inputs"`
+ 	Output    artifactJSON   `json:"output"`
++	Log       *artifactJSON  `json:"log,omitempty"`
+ 	Timestamp string         `json:"timestamp"`
+ 	ReplayOf  *replayOfJSON  `json:"replay_of,omitempty"`
+ }
+@@ -1092,6 +1114,7 @@ func (m Manifest) toJSON() manifestJSON {
+ 			Producer:  producerBlock,
+ 			Inputs:    inputs,
+ 			Output:    stage.Output.toJSON(),
++			Log:       artifactRefJSON(stage.Log),
+ 			Timestamp: formatTime(stage.Timestamp),
+ 			ReplayOf:  replayOfBlock,
+ 		})
+@@ -1445,6 +1468,11 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 			Commit: s.ReplayOf.Commit,
+ 		}
+ 	}
++	var logRef *ArtifactRef
++	if s.Log != nil {
++		ref := s.Log.toArtifactRef()
++		logRef = &ref
++	}
+ 
+ 	return Stage{
+ 		Name:       s.Stage,
+@@ -1454,11 +1482,20 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 		Producer:   producer,
+ 		Inputs:     inputs,
+ 		Output:     s.Output.toArtifactRef(),
++		Log:        logRef,
+ 		Timestamp:  timestamp,
+ 		ReplayOf:   replayOf,
+ 	}, nil
+ }
+ 
++func artifactRefJSON(ref *ArtifactRef) *artifactJSON {
++	if ref == nil {
++		return nil
++	}
++	encoded := ref.toJSON()
++	return &encoded
++}
++
+ func (a artifactJSON) toArtifactRef() ArtifactRef {
+ 	return ArtifactRef{
+ 		Role:      a.Role,
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index f122b0b..691fe65 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"os/exec"
++	"slices"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -192,6 +193,47 @@ func TestParseJSONRoundTripsManifestAndArtifactPaths(t *testing.T) {
+ 	}
+ }
+ 
++func TestStageLogRoundTripsAndIsReferenced(t *testing.T) {
++	store := artifactstore.New()
++	output, err := store.AddContent("output", "text/plain", []byte("output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	logArtifact, err := store.AddContent("plan-log", "application/octet-stream", []byte("log bytes"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	manifest := validManifest(ArtifactFromManifestArtifact(output))
++	logRef := ArtifactFromManifestArtifact(logArtifact)
++	manifest.Stages[0].Log = &logRef
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	parsed, err := ParseJSON(content)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if parsed.Stages[0].Log == nil || parsed.Stages[0].Log.Artifact != logRef.Artifact {
++		t.Fatalf("log = %#v", parsed.Stages[0].Log)
++	}
++	paths := ArtifactPaths(parsed)
++	if !slices.Contains(paths, logRef.Path) {
++		t.Fatalf("ArtifactPaths = %#v, missing log", paths)
++	}
++}
++
++func TestStageLogOmittedForLegacyShape(t *testing.T) {
++	manifest := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.Contains(string(content), `"log"`) {
++		t.Fatalf("log should be omitted: %s", content)
++	}
++}
++
+ func TestParseJSONRejectsMalformedUnknownAndInvalidManifest(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	manifest := validManifest(output)
+diff --git a/internal/sessionevidence/evidence.go b/internal/sessionevidence/evidence.go
+index 60e9fa6..a65dc50 100644
+--- a/internal/sessionevidence/evidence.go
++++ b/internal/sessionevidence/evidence.go
+@@ -50,6 +50,43 @@ func ReadRegularFileUnder(root, path string) ([]byte, error) {
+ 	return readCheckedRegularFile(checkedPath)
+ }
+ 
++// ReadRegularFileUnderLimit is ReadRegularFileUnder with a hard byte cap. It
++// reads at most limit+1 bytes from the already-open regular file so a writer
++// cannot race a size pre-check and exceed the cap.
++func ReadRegularFileUnderLimit(root, path string, limit int64) ([]byte, error) {
++	checkedPath, err := checkedRegularPath(path, root)
++	if err != nil {
++		return nil, err
++	}
++	fi, err := os.Lstat(checkedPath)
++	if err != nil {
++		return nil, err
++	}
++	if !fi.Mode().IsRegular() {
++		return nil, ErrNotRegular
++	}
++	f, err := os.OpenFile(checkedPath, os.O_RDONLY|nofollowFlag|nonblockFlag, 0)
++	if err != nil {
++		return nil, err
++	}
++	defer f.Close()
++	fi, err = f.Stat()
++	if err != nil {
++		return nil, err
++	}
++	if !fi.Mode().IsRegular() {
++		return nil, ErrNotRegular
++	}
++	content, err := io.ReadAll(io.LimitReader(f, limit+1))
++	if err != nil {
++		return nil, err
++	}
++	if int64(len(content)) > limit {
++		return nil, fmt.Errorf("file exceeds %d byte limit", limit)
++	}
++	return content, nil
++}
++
+ func readCheckedRegularFile(path string) ([]byte, error) {
+ 	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
+ 	if err != nil {
+diff --git a/internal/sessionevidence/nofollow_other.go b/internal/sessionevidence/nofollow_other.go
+index 7bb0822..954d818 100644
+--- a/internal/sessionevidence/nofollow_other.go
++++ b/internal/sessionevidence/nofollow_other.go
+@@ -3,3 +3,4 @@
+ package sessionevidence
+ 
+ const nofollowFlag = 0
++const nonblockFlag = 0
+diff --git a/internal/sessionevidence/nofollow_unix.go b/internal/sessionevidence/nofollow_unix.go
+index 2d1e421..24291c6 100644
+--- a/internal/sessionevidence/nofollow_unix.go
++++ b/internal/sessionevidence/nofollow_unix.go
+@@ -4,4 +4,7 @@ package sessionevidence
+ 
+ import "syscall"
+ 
+-const nofollowFlag = syscall.O_NOFOLLOW
++const (
++	nofollowFlag = syscall.O_NOFOLLOW
++	nonblockFlag = syscall.O_NONBLOCK
++)
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index c3e604a..1fcf936 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -28,13 +28,14 @@ var specialRoles = map[string]bool{
+ 	"repo-state": true,
+ }
+ 
+-// reservedEnvNames are the three env var names that ExecRunner always controls.
++// reservedEnvNames are the four env var names that ExecRunner always controls.
+ // They must not appear in env_allowlist (fail-fast at validation; the runtime
+ // reserved-skip in ExecRunner is defense-in-depth only).
+ var reservedEnvNames = map[string]bool{
+-	"PATH":              true,
+-	"ETUDE_INPUTS_DIR":  true,
+-	"ETUDE_OUTPUT_FILE": true,
++	"PATH":               true,
++	"ETUDE_INPUTS_DIR":   true,
++	"ETUDE_OUTPUT_FILE":  true,
++	"ETUDE_SESSION_FILE": true,
+ }
+ 
+ // validEvalMethods is the closed set of eval method strings.
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 1aed480..54cebd2 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -2151,6 +2151,7 @@ func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
+ 		{"reserved PATH", []string{"PATH"}},
+ 		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
+ 		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
++		{"reserved ETUDE_SESSION_FILE", []string{"ETUDE_SESSION_FILE"}},
+ 		{"duplicate", []string{"FOO", "FOO"}},
+ 	}
+ 	for _, tc := range cases {
