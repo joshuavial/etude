@@ -571,6 +571,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T07:58:03Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff",
+          "artifact": "424516e345f2dee429ef21692e7adb1ab1b2f3e8b5c7b6c76431b114c6cff742"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Cosmetic source reflow and duplicated legacy-fallback wording may be considered later.",
+            "packet sha256 eab4cf13136c37c5dbcf6d29243f297251e438b523600dc8a954dd84638a1808"
+          ],
+          "timestamp": "2026-08-16T07:59:38Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet sha256 eab4cf13136c37c5dbcf6d29243f297251e438b523600dc8a954dd84638a1808"
+          ],
+          "timestamp": "2026-08-16T07:59:38Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-gunr"
+        ]
+      },
+      "timestamp": "2026-08-16T07:59:38Z"
     }
   ]
 }
