@@ -370,6 +370,51 @@
         "degraded_reason": "pilms down. 1 BLOCK (codex, verified-true run-id edge case) / 2 GO. Stage honesty confirmed implemented (no plan/implement). Adopted codex's fix: collapse .. + IsValidRunID skip-guard + preflight-through-client + README example. opus live-drove the real cli/cli import."
       },
       "timestamp": "2026-05-27T21:07:00Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T21:40:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "malfunction",
+          "failure_note": "codex exec hung on 'Reading additional input from stdin...' on the re-confirm and produced no verdict (recurring codex-exec instability)",
+          "timestamp": "2026-05-27T21:40:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "codex's r2 re-confirm of its OWN prescribed fix malfunctioned (stdin hang, no verdict). Proceeded on the degraded-gate fallback: the fix is exactly codex's implement-r1 prescription (collapse `..` + IsValidRunID skip-guard + preflight-through-client + README example), adopted verbatim and EMPIRICALLY verified — buildImportRunID('owner','foo..bar',5)→'gh-owner-foo.bar-pr5' (+ foo...bar/own..er cases) collapse clean, the IsValidRunID guard at import.go:270 skips any invalid id, TestImportRunIDSanitization/TestImportGHNotAuthed pass, make lint/docs-reality/reconcile green. gemini+opus implement-r1 GO carries (the fix is additive robustness). pilms down all session."
+      },
+      "timestamp": "2026-05-27T21:41:00Z"
     }
   ]
 }
