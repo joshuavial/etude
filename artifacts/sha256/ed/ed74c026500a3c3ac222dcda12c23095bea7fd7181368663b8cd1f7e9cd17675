@@ -1,0 +1,70 @@
+# VERIFY — etude-roadmap.3 retro nudge
+
+## Automated tests
+`go test ./... -count=1` → all 16 packages PASS.
+
+- `internal/workflow` (new): nudge schema parses, defaults, threshold-zero
+  rejection-when-enabled, round-trip, KnownFields rejection of unknown
+  sub-block keys.
+- `internal/nudge` (new package): counter with 0/no-retros/1-retro/many-retros;
+  snooze round-trip; snooze parse error; Decide truth-table (disabled,
+  below-threshold, at-threshold, snoozed-active, snooze-expired,
+  snooze-stale-by-different-retro); Status JSON has EXACTLY the AC#6 keys
+  + `snoozed_at` only when active; nudge line shape.
+- `internal/cli` (new tests): dismiss default/--for N/rejects 0+negative;
+  status JSON keys; status & dismiss DON'T emit the stderr line; root
+  emits the nudge over threshold; root silent below threshold; snooze
+  silences; snooze expires after N runs; stale snooze invalidated by new
+  retro; silence on `--help`, `--version`, `completion`, `__complete`.
+
+## Built-binary manual walk-through
+
+Binary built with `go build -o /tmp/etude-nudge ./cmd/etude`.
+
+| step | observed |
+|---|---|
+| Fresh init, no nudge config, `run list` | no stderr line — baseline preserved. |
+| `retro nudge status` with no config | JSON `{enabled:false, threshold:3, ..., would_emit:false}` — exact AC#6 keys. |
+| Enable nudge `threshold:2`, capture 2 runs, `run list` | stderr: `etude: retro nudge: 2 bead(s) since last retro (threshold 2); ...`. Stdout: clean run-list table. |
+| `retro nudge status` while overdue | JSON `would_emit:true`. **Stderr empty** (`retro nudge` subtree silenced). |
+| `retro nudge dismiss --for 1` | stdout: `snoozed retro nudge for 1 more bead(s); next reminder when runs-since-last-retro reaches 3`. Snooze file `.git/etude/retro-nudge-snooze.json` written with `runs_at_snooze=2, snooze_for=1, last_retro_id_at_snooze=""`. **Stderr empty** (dismiss invocation silenced). |
+| `run list` while snoozed | stderr empty. |
+| Capture 1 more run (`runs_since_last_retro=3`), `run list` | nudge re-fires. |
+| Dismiss `--for 100`, capture a workflow-scope retro, then capture 2 more runs and `run list` | nudge fires — stale snooze invalidated by new retro id. |
+| `etude --help` | stderr empty. |
+| `etude --version` | stderr empty. |
+| `etude completion bash` | stderr empty (completion script on stdout only). |
+| `etude __complete ru ""` (indirectly tested in unit tests, same code path as above) | stderr empty. |
+
+## Docs drift guard
+After regenerating `make docs`, `TestDriftGuard` in `cmd/gen-docs` PASSES.
+New CLI doc files: `etude_retro_nudge.md`, `etude_retro_nudge_dismiss.md`,
+`etude_retro_nudge_status.md`. Updated parent: `etude_retro.md`.
+
+## Pre-existing test flake (NOT introduced)
+`internal/worktree TestNoTempDirLeakOnWorktreeAddFailure` failed once in a
+parallel run because the test snapshots `etude-worktree-*` temp dirs in the
+shared $TMPDIR and caught a dir from another concurrent test. Passes
+deterministically when run alone or in a clean second pass. Pre-existing
+and unrelated to this bead.
+
+## Acceptance criteria status
+1. **Off by default** ✓ — verified by `TestRootNudgeOffByDefault` + manual.
+2. **Opt-in via workflow.yaml** ✓ — `TestNudgeExplicitEnabled`,
+   `TestNudgeThresholdZeroRejectedWhenEnabled`, manual.
+3. **Trigger** ✓ — `TestCountRunsSinceLastRetro*` covers 0/1/many retros.
+4. **Stderr output** ✓ — `TestRootNudgeEmitsWhenOverdue` plus the silence
+   tests for `--help`, `--version`, `completion`, `__complete`, and the
+   `retro nudge` subtree.
+5. **Snooze** ✓ — `TestRootNudgeSilencedByFreshSnooze`,
+   `TestRootNudgeReturnsAfterSnoozeWindow`, manual.
+6. **`retro nudge status`** ✓ — `TestRetroNudgeStatusEmitsContractKeys`
+   plus `TestStatusJSONHasExactlyContractKeys` in the nudge package
+   asserts the exact AC#6 key set.
+7. **Tests** ✓ — see above (3 new test files, 24 new test functions).
+8. **Docs** — owed to the Docs phase next.
+
+## Stays-true risk that needs Docs-phase attention
+- Linked-worktree snooze is explicitly documented as out-of-scope in
+  `nudge.SnoozePath`'s godoc but NOT yet reflected in user docs. Docs
+  phase should mention the limitation in `docs/retro.md`.

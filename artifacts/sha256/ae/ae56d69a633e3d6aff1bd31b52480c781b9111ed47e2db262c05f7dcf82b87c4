@@ -1,0 +1,44 @@
+# Final-review gate — etude-roadmap.3 (retro nudge)
+
+## Reviewer verdicts
+
+### agy (strongest Pro)
+1) Verdict: PASS
+2) Blocking findings: None.
+3) Non-blocking follow-up: consider `refstore.New(root)` vs `refstore.New("")`.
+   **Decision: not applicable** — `refstore.New("")` matches the convention
+   used by every other command in the package (run.go, retro.go).
+4) Confidence: 1.0
+
+### Claude Opus (sub-agent)
+1) Verdict: PASS_WITH_FOLLOWUPS
+2) Blocking findings: **None.** Confirmed no debug prints / TODOs / dead
+   code / unused imports / unrelated churn; no goroutine, file-handle, or
+   context leaks; the best-effort contract holds across the recover(), the
+   error returns, and the timeout-bounded git rev-parse; the test layer
+   does not use t.Parallel() and uses time deltas large enough to keep
+   ordering deterministic.
+3) Non-blocking follow-ups — 2 of 5 folded this phase:
+   - **Uniform timeout: thread `rootCtx` through `CountRunsSinceLastRetro`
+     too** ✓ folded — the refstore walk now shares the 2s budget with git
+     rev-parse.
+   - **Unexport `SnoozeSubdir` / `SnoozeFilename`** ✓ folded — package-
+     private; tests use `filepath.Dir(SnoozePath(repo))` for symmetry.
+   - **Apply timeout in `nudgeRepoRoot` itself for dismiss/status.**
+     DECLINED — matches the existing project convention (init.go's
+     `repoRoot` has no timeout). The best-effort path that runs on every
+     command IS bounded; the explicit dismiss/status paths inherit the
+     project's standard "if git is wedged, the CLI hangs" behavior.
+   - **Factor `nudgeRepoRoot` into shared internal/gitutil.** DECLINED —
+     premature; the duplication is documented and 13 lines.
+   - **Track linked-worktree v1 follow-up.** Noted in docs; can be a
+     separate bead.
+4) Confidence: 0.86
+
+## Synthesis
+Verdict: **PASS**. Zero blockers. 2 of 5 Opus follow-ups folded as cheap
+quality improvements; 3 declined with rationale matching project
+convention. Full suite (`go test ./... -count=1`) green; TestDriftGuard
+green; built-binary manual walk-through covers every acceptance path.
+
+Cleared for commit.

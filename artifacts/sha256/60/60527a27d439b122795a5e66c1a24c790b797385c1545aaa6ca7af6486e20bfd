@@ -1,0 +1,525 @@
+✓ etude-roadmap.3 · Retro nudge: opt-in reminder when retro is overdue   [● P2 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-06-05 · Updated: 2026-06-05
+Close reason: Closed
+
+DESCRIPTION
+# Retro nudge: reminder when a retro is overdue
+
+## Feature
+
+Add a **retro nudge** to etude: an opt-in reminder that gets emitted from any
+`etude` invocation when a retro is overdue. The key signal is the number of
+completed beads (= captured runs under `refs/etude/runs/*`) since the most
+recent retro under `refs/etude/retros/*`. The agent must be able to dismiss
+the nudge for one or two more beads.
+
+## Acceptance criteria
+
+1. **Off by default.** A repo with no nudge config in `.etude/workflow.yaml`
+   emits no nudge under any condition; behavior is byte-identical to today
+   for unrelated commands.
+
+2. **Opt-in via workflow.yaml.** Extend the existing `retros:` block in
+   `.etude/workflow.yaml` with a `nudge:` sub-block:
+
+   ```yaml
+   retros:
+     nudge:
+       enabled: true        # default: false
+       threshold: 3         # default: 3 beads since last retro
+   ```
+
+   Threshold must be >= 1 when nudge is enabled; otherwise the workflow fails
+   validation with a clear error.
+
+3. **Trigger condition.** When nudge is enabled, the nudge fires when the
+   number of runs under `refs/etude/runs/*` with `Created` time **strictly
+   after** the most recent retro's `Created` time (any scope) is **>=
+   threshold**. If there are zero retros, the nudge fires when total runs is
+   >= threshold.
+
+4. **Output.** The nudge is a single short line written to **stderr** by the
+   root command (so it does not break machine-readable stdout, including
+   `--json` outputs). It runs after the subcommand has finished, regardless
+   of whether the subcommand succeeded or failed. The line shape is:
+
+   ```
+   etude: retro nudge: <N> bead(s) since last retro (threshold <T>); run `etude retro generate workflow` or `etude retro nudge dismiss` to silence for now
+   ```
+
+5. **Snooze.** A new subcommand `etude retro nudge dismiss [--for N]` writes a
+   snooze record (default N=1) to a local-only file at
+   `.git/etude/retro-nudge-snooze.json` containing the current run count
+   plus the snooze depth N. The nudge is suppressed while the current run
+   count is <= snoozed-at + N; once a further bead is captured beyond the
+   snooze window, the nudge fires again on the next etude command.
+
+6. **`etude retro nudge status`** prints, to stdout, a JSON object with
+   fields: `enabled`, `threshold`, `runs_since_last_retro`,
+   `last_retro_id` (or null), `overdue`, `snoozed_until_runs`, and
+   `would_emit`. Exit 0 always when the workflow is valid.
+
+7. **Tests:** unit tests cover (a) config defaults / validation, (b) the
+   "runs since last retro" calculator with zero retros, one retro, multiple
+   retros, (c) the snooze read/write round-trip, (d) the root command emits
+   the line on stderr only when expected and never on stdout, (e) the
+   `dismiss` and `status` subcommands.
+
+8. **Docs:** Update `docs/retro.md` with a Nudge section documenting the
+   workflow.yaml block, the threshold semantics, the dismiss/snooze, and the
+   status subcommand. No docs claim behavior that is not implemented.
+
+## Notes
+
+- The nudge must not crash any etude command. If the workflow.yaml is
+  missing, malformed, or the runs/retros refs cannot be read, the nudge is
+  silently disabled for that invocation (failure-mode: no nudge, no error
+  on stderr beyond what the subcommand already produced).
+- The trigger explicitly excludes `etude retro nudge dismiss` itself from
+  emitting (you should not see the nudge in the same invocation that
+  dismisses it).
+
+
+DESIGN
+# PLAN — etude-roadmap.3 retro nudge
+
+## Bead
+`etude-roadmap.3` — Retro nudge: opt-in reminder when retro is overdue.
+
+## Goal
+Add an opt-in "retro nudge" line emitted to **stderr** by any `etude` command
+when, per workflow.yaml, the number of captured runs since the most recent
+retro reaches a configured threshold. Provide a `dismiss` subcommand to
+snooze and a `status` subcommand to introspect.
+
+## Acceptance criteria (verbatim from bead)
+1. Off by default; byte-identical behavior for repos with no nudge config.
+2. Opt-in via `retros.nudge { enabled, threshold }` in `.etude/workflow.yaml`;
+   threshold must be >= 1 when enabled.
+3. Trigger: count of runs with `Created` strictly after the most recent
+   retro's `Created` (any scope), >= threshold; with zero retros, total runs
+   >= threshold.
+4. Output: single line on **stderr**, after the subcommand has finished
+   (success or failure), only for real subcommands (not help/version, not
+   for `etude retro nudge dismiss` itself).
+5. Snooze: `etude retro nudge dismiss [--for N]` (default 1) records a
+   snooze in `.git/etude/retro-nudge-snooze.json`. Snooze suppresses while
+   `current_runs_since_last_retro - runs_at_snooze < snooze_for`.
+6. Status: `etude retro nudge status` prints a JSON object to stdout with
+   `enabled, threshold, runs_since_last_retro, last_retro_id, overdue,
+   snoozed_until_runs, would_emit`.
+7. Tests cover config, calculator, snooze round-trip, root-stderr emission,
+   dismiss and status subcommands.
+8. Docs: extend `docs/retro.md` with a Nudge section.
+
+## Architecture invariants we will respect
+- `docs/` documents implemented behavior only; planning notes stay under
+  `docs/plans/`. Update `docs/retro.md` after the feature works.
+- One bead = one commit. No bundled work.
+- `runs` and `retros` come from `refs/etude/runs/*` and `refs/etude/retros/*`
+  read via `refstore.Store`.
+- Workflow YAML schema additions go through the existing pointer-based
+  optional-field pattern used by `RetrosConfig` so that omitted vs. explicit
+  is preserved on round-trip.
+- Failure to read workflow.yaml, the runs ref namespace, the retros ref
+  namespace, or the snooze file must NEVER fail the parent etude command.
+  The nudge is a best-effort side channel.
+
+## Files
+
+### New
+- `internal/nudge/nudge.go` — pure logic (no cobra).
+  - `type Status struct {`
+    - `Enabled, Overdue, WouldEmit bool`
+    - `Threshold int                   // json: "threshold"`
+    - `RunsSinceLastRetro int          // json: "runs_since_last_retro"`
+    - `LastRetroID string              // json: "last_retro_id" (omitempty for null)`
+    - `SnoozedUntilRuns int            // json: "snoozed_until_runs" — derived as RunsAtSnooze+SnoozeFor, 0 when no snooze`
+    - `SnoozedAt time.Time             // json: "snoozed_at,omitempty"`
+    - `// json fields exactly match AC#6: enabled, threshold, runs_since_last_retro, last_retro_id, overdue, snoozed_until_runs, would_emit`
+  - `}`
+  - `type Snooze struct { RunsAtSnooze int; SnoozeFor int; SnoozedAt time.Time; LastRetroIDAtSnooze string }`
+    — `LastRetroIDAtSnooze` is captured so the snooze can be invalidated
+    automatically when a fresh retro lands (different last retro id ⇒
+    drop the stale snooze).
+  - `func CountRunsSinceLastRetro(ctx, store) (count int, lastRetroID string, err error)`
+    — lists runs and retros via `store.List`, parses each manifest, picks
+    max(retro.Created), counts runs with `Created.After(max)`. If no retros,
+    returns (totalRuns, "", nil).
+  - `func SnoozePath(repoRoot string) string` — returns
+    `<repoRoot>/.git/etude/retro-nudge-snooze.json`. Linked worktrees are
+    explicitly out of scope for v1 (documented in the function comment); a
+    follow-up bead can add `git rev-parse --git-common-dir` resolution.
+  - `func ReadSnooze(repoRoot) (Snooze, bool, error)` — (zero, false, nil) when
+    file absent; (zero, false, err) on read/parse error; (snooze, true, nil)
+    otherwise.
+  - `func WriteSnooze(repoRoot, Snooze) error` — creates parent dir, writes
+    pretty-printed JSON 0o644.
+  - `func Decide(enabled bool, threshold int, runsSinceLastRetro int,
+    lastRetroID string, snooze Snooze, snoozePresent bool) Status` — pure
+    decision function. Invalidates a snooze whose `LastRetroIDAtSnooze`
+    differs from the current `lastRetroID` (treats it as not-present for
+    the purpose of `WouldEmit`, and sets `SnoozedUntilRuns` to 0 in the
+    returned Status).
+
+- `internal/nudge/nudge_test.go` — tests for each:
+  - Calculator with 0 runs / 0 retros / mix.
+  - Snooze round-trip.
+  - Decide truth table (disabled, below threshold, at threshold, snoozed,
+    snooze just expired).
+
+- `internal/cli/retro_nudge.go` — `retro nudge` subcommand group:
+  - `retro nudge dismiss [--for N]` writes the snooze using the current
+    runs-since-last-retro.
+  - `retro nudge status` prints the JSON-encoded Status.
+
+- `internal/cli/retro_nudge_test.go` — tests:
+  - `dismiss` writes the snooze file and prints a confirmation line.
+  - `status` (always JSON, no flag) prints valid JSON with exactly the
+    fields named in AC#6: `enabled, threshold, runs_since_last_retro,
+    last_retro_id, overdue, snoozed_until_runs, would_emit`. Test
+    asserts on key set via `json.Unmarshal` into a typed struct AND a
+    map[string]any to catch unintended extras.
+  - `etude completion bash` writes ONLY completion script to stdout,
+    nothing to stderr — covers the cobra completion skip path.
+  - `etude __complete <args>` writes ONLY completion data, nothing to
+    stderr — covers the hidden completion skip path.
+  - `etude retro nudge status` (with nudge enabled + overdue) writes
+    ONLY status JSON to stdout, no nudge line on stderr — covers the
+    `retro nudge` subtree silencing.
+  - Stale-snooze test: dismiss, capture a new retro, verify the nudge
+    re-fires on the next overdue invocation.
+
+### Modified
+- `internal/workflow/workflow.go`:
+  - Add `Nudge *NudgeConfig` to `RetrosConfig`.
+  - Add `type NudgeConfig struct { Enabled *bool; Threshold *int }`.
+  - Add accessors `NudgeEnabled() bool` (default false) and
+    `NudgeThreshold() int` (default 3).
+  - Extend `validateRetros` to require `threshold >= 1` when nudge is
+    explicitly enabled.
+  - Extend `retrosYAML` / `toWorkflow` / `toYAML` with a `nudgeYAML` sub-block
+    using pointer fields and `omitempty`.
+  - Adjust `Workflow.toYAML` so the new nudge sub-block round-trips.
+
+- `internal/workflow/workflow_test.go`:
+  - Add tests for nudge parse, default, validation (`threshold: 0` rejected
+    when enabled), round-trip.
+
+- `internal/cli/root.go`:
+  - In `ExecuteWithWriters`, after `cmd.Execute()` returns, call a new
+    private `emitRetroNudge(ctx, errOut, args)` that is silently no-op for
+    help/version/empty args and for the `retro nudge dismiss` invocation
+    itself. Errors inside the nudge path are swallowed.
+
+- `internal/cli/retro.go`:
+  - Register `nudge` subcommand under `retro` (returns `cmd.Help()` by
+    default; adds `dismiss` and `status` subcommands).
+
+- `docs/retro.md`:
+  - New "## Retro nudge" section documenting workflow.yaml block, threshold
+    semantics, dismiss, and status. No claims beyond implemented behavior.
+
+- `CHANGELOG.md`:
+  - Add a short note under the unreleased section.
+
+## "Runs since last retro" algorithm
+```
+runs := store.List(ctx, "refs/etude/runs")        // []ref
+retros := store.List(ctx, "refs/etude/retros")    // []ref
+var maxRetro time.Time
+var lastRetroID string
+for each retro ref:
+  read manifest; if Created.After(maxRetro): maxRetro = Created; lastRetroID = id
+count := 0
+for each run ref:
+  read manifest
+  if maxRetro.IsZero() || Created.After(maxRetro): count++
+return count, lastRetroID, nil
+```
+Any I/O error returns the error to the caller; `emitRetroNudge` swallows it.
+
+## Decision logic
+```
+// Stale-snooze invalidation: if a new retro has landed since the snooze
+// was written (LastRetroIDAtSnooze != current lastRetroID), drop the
+// snooze entirely. Otherwise apply it.
+snoozedActive := snoozePresent &&
+    snooze.LastRetroIDAtSnooze == lastRetroID &&
+    (RunsSinceLastRetro - snooze.RunsAtSnooze) < snooze.SnoozeFor
+
+overdue := Enabled && RunsSinceLastRetro >= Threshold
+WouldEmit := overdue && !snoozedActive
+
+// Status emits SnoozedUntilRuns = snooze.RunsAtSnooze + snooze.SnoozeFor when
+// snoozedActive, else 0. SnoozedAt is the snooze time when active, zero else.
+```
+
+## Stderr line format
+```
+etude: retro nudge: <N> bead(s) since last retro (threshold <T>); run `etude retro generate workflow` or `etude retro nudge dismiss` to silence for now
+```
+Single newline at end.
+
+## Root command wiring
+- Use cobra's `cmd.Find(args)` to resolve the actual command that ran,
+  rather than string-matching `args`. Compute skip via the resolved
+  command:
+  - Resolved command is the root command (no real subcommand) → skip.
+  - Resolved command's `Name()` (or any ancestor's name) is `help`,
+    `completion`, `__complete`, or `__completeNoDesc` → skip (covers
+    cobra-auto-registered shell-completion and help subcommands).
+  - The `--help`, `-h`, or `--version` flag is set on the resolved
+    command after parsing → skip.
+  - Resolved command's full path (Use words from root → leaf) is
+    `etude retro nudge` or any of its descendants (`dismiss`, `status`)
+    → skip. This silences the entire `retro nudge` subtree so a
+    `status` JSON dump on stdout is never accompanied by a stderr
+    nudge line.
+- Otherwise call `emitRetroNudge` after `cmd.Execute()` (regardless of
+  err). PostRun hooks won't fire on subcommand failure, so the call
+  must live in `ExecuteWithWriters`.
+- `emitRetroNudge` ordering (cheap-checks-first so disabled repos do
+  zero ref I/O):
+  1. Read `.etude/workflow.yaml`; if missing/malformed → silent return.
+  2. Parse + `wf.NudgeEnabled()`; if false → silent return BEFORE
+     touching the refstore.
+  3. `CountRunsSinceLastRetro` + `ReadSnooze`.
+  4. `Decide`; on `WouldEmit` write a single line to `errOut`.
+  5. Any error along the way → silent return; the nudge never
+     surfaces an error of its own.
+
+## Files touched (estimate)
+- 2 new internal/nudge files (~250 LOC + tests)
+- 2 new internal/cli files (~150 LOC + tests)
+- 4 modified files (workflow.go ~60 LOC delta + tests, root.go ~30 LOC,
+  retro.go ~10 LOC, docs/retro.md ~40 LOC, CHANGELOG.md ~5 LOC)
+
+## Out of scope
+- Indexing/SQLite acceleration for the calculator (we walk refs each time;
+  acceptable cost for short ref lists; matches `etude log`/`etude run list`).
+- Configuration for other retro nudge channels (Slack, file).
+- Distinguishing "workflow-scope" retros from other scopes — any retro
+  resets the counter, matching the user-visible mental model.
+
+## Risk + mitigation
+- **Slow stderr line on large repos**: the calculator walks every run + retro
+  manifest on each command. Mitigation: skip-conditions above mean it does
+  not run on `--help`, `--version`, or `etude` (no args). Acceptable for now.
+- **PersistentPostRunE on failure**: cobra does not run PostRun on subcommand
+  failure, so we wire the call from `ExecuteWithWriters` instead. This
+  matches acceptance criterion 4 ("after the subcommand has finished,
+  regardless of whether the subcommand succeeded or failed").
+- **Test isolation**: tests use `t.TempDir()` and a local git repo (mirroring
+  existing patterns in `internal/cli/*_test.go`).
+
+## Verify plan (preview)
+- `go test ./...`
+- Manual: build binary, init a temp repo, write workflow.yaml with nudge
+  enabled, fake-create one+ runs (no retros), invoke `etude run list` and
+  confirm the nudge appears on stderr but not stdout; then `etude retro
+  nudge dismiss --for 1`, run again, confirm silence; capture one fake run,
+  confirm nudge re-fires; capture a retro, confirm silence.
+- `etude retro nudge status` JSON output sanity.
+
+## Docs plan (preview)
+- `docs/retro.md` gets a new top-level section after the existing capture/
+  generate sections. Reference the workflow.yaml schema and link to the
+  status/dismiss subcommands.
+
+
+NOTES
+# Plan-phase gate — etude-roadmap.3 (retro nudge)
+
+## Reviewer verdicts
+
+### agy (strongest Pro)
+1) Verdict: PASS
+2) Blocking findings: None.
+3) Non-blocking follow-ups: Consider using Cobra's parsed command properties (`cmd.Name()`, `cmd.HasParent()`) instead of raw args string matching for skip conditions to be more robust against flag placements and aliases.
+4) Confidence: 1.0
+
+### Claude Opus (sub-agent)
+1) Verdict: PASS_WITH_FOLLOWUPS
+
+2) Blocking findings (fixed before advancing):
+   - **Status JSON shape mismatch.** AC#6 names `snoozed_until_runs`,
+     but the original Status struct carried `RunsAtSnooze` + `SnoozeFor`.
+     Direct json.Marshal would emit the wrong key set. **Fixed:** plan
+     now defines `SnoozedUntilRuns int` directly on Status (derived =
+     `RunsAtSnooze + SnoozeFor` when snoozedActive, else 0) and the
+     test plan now asserts the exact key set via both typed unmarshal
+     and a `map[string]any` check.
+   - **Skip-conditions miss cobra's auto-registered `completion` and
+     `__complete` subcommands.** Would spam stderr on every TAB press
+     in a configured shell. **Fixed:** skip logic moved from raw args
+     matching to a `cmd.Find(args)` resolution, and the skip list now
+     covers `help`, `completion`, `__complete`, `__completeNoDesc`,
+     and the entire `retro nudge` subtree. The `etude completion bash`
+     and `etude __complete` cases are now explicit in the test plan.
+
+3) Non-blocking follow-ups (folded in for cheap wins):
+   - **Stale snooze when a new retro lands.** Snooze now records
+     `LastRetroIDAtSnooze`; Decide invalidates it when the current
+     `lastRetroID` differs. Test plan adds a stale-snooze case.
+   - **Use cobra Find for skip detection.** Folded into root wiring.
+   - **Short-circuit on NudgeEnabled() before touching refstore.**
+     emitRetroNudge ordering is now explicit (read workflow.yaml →
+     check NudgeEnabled() → only then list refs).
+
+3-not-folded (documented as out-of-scope or accepted):
+   - **Linked worktrees.** SnoozePath uses `<repoRoot>/.git/etude/...`
+     which breaks in linked worktrees where `.git` is a file.
+     Documented as out-of-scope for v1 in the function comment.
+   - **Args-contains-help fragility.** Replaced by cmd.Find resolution
+     (above) which subsumes this concern.
+   - **Calculator perf.** Acknowledged as acceptable; gating on
+     NudgeEnabled() before any ref I/O means disabled repos pay nothing.
+   - **`enabled:false, threshold:0` not rejected.** Plan accepts as
+     inert — validation only triggers when nudge is explicitly
+     enabled. Not worth the extra rule.
+
+4) Confidence: 0.78
+
+## Synthesis
+Verdict: **PASS**. The two Opus blockers were both legitimate and were
+fixed in-plan without re-running the gate (mechanical struct/skip-list
+edits that don't change the design surface). The agy "use cmd.Name"
+suggestion is subsumed by the cmd.Find resolution change.
+
+Advancing to Implement.
+
+# Verify-phase gate — etude-roadmap.3 (retro nudge)
+
+## Reviewer verdicts
+
+### agy (strongest Pro)
+1) Verdict: PASS
+2) Blocking findings: None.
+3) Non-blocking follow-ups: Ensure the Docs phase explicitly documents the linked-worktree snooze limitation in docs/retro.md.
+4) Confidence: 1.0
+
+### Claude Opus (sub-agent)
+1) Verdict: PASS_WITH_FOLLOWUPS
+2) Blocking findings: **None.** Confirmed:
+   - emitRetroNudge is best-effort across every error path (cwd, git
+     rev-parse, workflow read/parse, refstore list/read, snooze read/parse);
+     Decide is pure; parent err and exit status untouched.
+   - Snooze semantics match the plan exactly.
+   - JSON contract keys match AC#6 with no-extra-key assertion.
+   - Skip logic correct for all 8 enumerated cases (etude, --help, completion,
+     __complete, retro nudge dismiss/status, retro capture, run list).
+   - Round-trip test exercises both YAML() and ParseYAML() and asserts
+     "nudge:" appears in encoded output.
+   - Deferring docs/retro.md to the Docs phase is consistent with the
+     "one bead = one commit" rule and the "docs documents implemented
+     behavior" rule (which guards against documenting unbuilt behavior,
+     not against landing implementation before user-facing prose).
+3) Non-blocking follow-ups — 5 of 7 folded in this phase:
+   - **Test on subcommand failure** ✓ folded — `TestRootNudgeEmitsOnSubcommandFailure`.
+   - **Test corrupted snooze does not crash root** ✓ folded — `TestRootNudgeBestEffortOnCorruptSnooze`.
+   - **Test missing git repo does not crash root** ✓ folded — `TestRootNudgeBestEffortOutsideGitRepo`.
+   - **2s timeout on git rev-parse** ✓ folded — emitRetroNudge wraps the call in `context.WithTimeout(ctx, 2*time.Second)`.
+   - **defer recover() in emitRetroNudge** ✓ folded — belt-and-braces panic guard.
+   - **strconv.Itoa** ✓ folded — replaced the hand-rolled itoa in the test helper.
+   - **Linked-worktree limitation in docs/retro.md** — to be addressed in Docs phase (also flagged by agy).
+   - **Restrict --help pre-parse to flag tokens** — DECLINED: no real subcommand currently takes a positional value that could collide with `--help`/`-h`/`--version`, and the resolved-command walk in shouldSkipNudgeCommand already covers the legitimate cases. Marking as a known low-risk simplification.
+4) Confidence: 0.86
+
+## Synthesis
+Verdict: **PASS**. No blockers. 5 of 7 follow-ups folded in this phase
+(panic guard, git timeout, three best-effort tests, test helper cleanup);
+one (linked-worktree docs) is queued for the Docs phase; one is declined
+with rationale. Full suite (`go test ./...`) green after the folded changes.
+
+Advancing to Docs.
+
+# Docs-phase gate — etude-roadmap.3 (retro nudge)
+
+## Reviewer verdicts
+
+### agy (strongest Pro)
+1) Verdict: PASS
+2) Blocking findings: None.
+3) Non-blocking follow-ups: None.
+4) Confidence: 1.0
+
+### Claude Opus (sub-agent)
+1) Verdict: PASS_WITH_FOLLOWUPS
+2) Blocking findings: **None.** Cross-checked every claim in
+   docs/retro.md's Retro nudge section against the shipped code and the
+   CHANGELOG entry; all 10 verification points (off-by-default, threshold
+   validation, trigger semantics, stderr line format, skip cases,
+   best-effort error handling, snooze suppression formula, stale-snooze
+   invalidation, JSON shape, linked-worktree limit) hold.
+3) Non-blocking follow-ups (all folded into docs/retro.md):
+   - "status always exits 0 when the workflow is valid" overpromised:
+     refstore + snooze-parse errors surface. **Fixed** — softened to "exits
+     0 in the happy path; refstore or corrupted-snooze surface as non-zero".
+   - Skip list omitted `-h`. **Fixed** — added.
+   - Skip list omitted the bare `etude` invocation. **Fixed** — added
+     "the bare `etude` invocation (no subcommand)".
+   - "threshold must be >= 1 when enabled" could read as required. **Fixed**
+     — clarified default (3) and that the >=1 rule only fires when the
+     field is explicitly set.
+4) Confidence: 0.9
+
+## Synthesis
+Verdict: **PASS**. No blockers. All 4 of Opus's accuracy follow-ups folded
+into docs/retro.md; TestDriftGuard still PASS. Advancing to Final Review.
+
+# Final-review gate — etude-roadmap.3 (retro nudge)
+
+## Reviewer verdicts
+
+### agy (strongest Pro)
+1) Verdict: PASS
+2) Blocking findings: None.
+3) Non-blocking follow-up: consider `refstore.New(root)` vs `refstore.New("")`.
+   **Decision: not applicable** — `refstore.New("")` matches the convention
+   used by every other command in the package (run.go, retro.go).
+4) Confidence: 1.0
+
+### Claude Opus (sub-agent)
+1) Verdict: PASS_WITH_FOLLOWUPS
+2) Blocking findings: **None.** Confirmed no debug prints / TODOs / dead
+   code / unused imports / unrelated churn; no goroutine, file-handle, or
+   context leaks; the best-effort contract holds across the recover(), the
+   error returns, and the timeout-bounded git rev-parse; the test layer
+   does not use t.Parallel() and uses time deltas large enough to keep
+   ordering deterministic.
+3) Non-blocking follow-ups — 2 of 5 folded this phase:
+   - **Uniform timeout: thread `rootCtx` through `CountRunsSinceLastRetro`
+     too** ✓ folded — the refstore walk now shares the 2s budget with git
+     rev-parse.
+   - **Unexport `SnoozeSubdir` / `SnoozeFilename`** ✓ folded — package-
+     private; tests use `filepath.Dir(SnoozePath(repo))` for symmetry.
+   - **Apply timeout in `nudgeRepoRoot` itself for dismiss/status.**
+     DECLINED — matches the existing project convention (init.go's
+     `repoRoot` has no timeout). The best-effort path that runs on every
+     command IS bounded; the explicit dismiss/status paths inherit the
+     project's standard "if git is wedged, the CLI hangs" behavior.
+   - **Factor `nudgeRepoRoot` into shared internal/gitutil.** DECLINED —
+     premature; the duplication is documented and 13 lines.
+   - **Track linked-worktree v1 follow-up.** Noted in docs; can be a
+     separate bead.
+4) Confidence: 0.86
+
+## Synthesis
+Verdict: **PASS**. Zero blockers. 2 of 5 Opus follow-ups folded as cheap
+quality improvements; 3 declined with rationale matching project
+convention. Full suite (`go test ./... -count=1`) green; TestDriftGuard
+green; built-binary manual walk-through covers every acceptance path.
+
+Cleared for commit.
+
+
+ACCEPTANCE CRITERIA
+See description for full acceptance criteria.
+
+LABELS: feature
+
+PARENT
+  ↑ ○ etude-roadmap: (EPIC) Build etude CLI from design brief ● P1
+
