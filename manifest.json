@@ -347,6 +347,98 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-16T07:50:13.473903Z"
+    },
+    {
+      "gate_id": "implement.r4",
+      "phase": "implement",
+      "round": 4,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r3",
+          "role": "diff",
+          "artifact": "2eba27860d5aa8d230396463dc974907bcc096cda4e62bb43d4938a9ab672264"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `internal/cli/prime.go:71` still tells agents \"manifest.json (manifest_version 2 or 3)\" — stale after the v4 bump that the .md docs did update. 2) `replay.RunRecorder.buildSessionEvidence`/`resolveRecordedTranscriptPath` duplicates `liverun.buildSessionEvidence`/`resolveTranscriptPath` (internal/liverun/gate.go:568,626); consider hoisting one copy into `internal/sessionevidence` — that would also settle the divergence where the replay copy resets `RedactionStatus` to not_applicable on an AddContent failure while liverun leaves it passed. 3) dropping the `harness != \"shell\"` guard in record.go means a non-exec Runner can now attach session evidence to a shell stage, which contradicts the `Producer.Session` doc comment at internal/runmanifest/manifest.go:198 (\"Absent for deterministic and shell stages\") and is what the new test asserts; harmless today since ExecRunner skips the sidecar for shell, but the comment/test intent should be reconciled. 4) `resolveRecordedTranscriptPath` compares an absolute worktree-rooted path against the unresolved `wt.Dir`, so the macOS `/var`→`/private/var` alias can degrade valid evidence to retrieval=failed; `readSessionSidecar` already relativizes against the resolved scratch root for exactly this reason, but only for scratch. 5) I could not execute `go test` in this seat (command approval denied), so this verdict is from static reading of the diff plus the surrounding code, not a green test run."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "6e0df565b8cd0ffec8130122cfa67a2e9e1846769d7eb1d6e480d731cb59dab3",
+            "path": "artifacts/sha256/6e/6e0df565b8cd0ffec8130122cfa67a2e9e1846769d7eb1d6e480d731cb59dab3",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1620
+          },
+          "session": {
+            "session_id": "opus-b7dca96a4f2a0b62",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "b7dca96a4f2a0b62404d610f4f442c1b3ee70c9e7f7132bf07d5447c4c314022",
+              "path": "artifacts/sha256/b7/b7dca96a4f2a0b62404d610f4f442c1b3ee70c9e7f7132bf07d5447c4c314022",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1517
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T07:54:15.343097Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add replay tests for out-of-root transcript paths and secret-scan failures to lock the best-effort evidence behavior."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "bde8afa39f76d8878810f371d33652d37ced2d73f27c7afc6aa04796c6d25a29",
+            "path": "artifacts/sha256/bd/bde8afa39f76d8878810f371d33652d37ced2d73f27c7afc6aa04796c6d25a29",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 267
+          },
+          "session": {
+            "session_id": "codex-17c3524e22c02a43",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "17c3524e22c02a43e37e644c7d18a49ae44da7fcc4914523ab1495155ba758b7",
+              "path": "artifacts/sha256/17/17c3524e22c02a43e37e644c7d18a49ae44da7fcc4914523ab1495155ba758b7",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 177
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T07:56:16.962204Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T07:56:16.962376Z"
     }
   ]
 }
