@@ -1,0 +1,32 @@
+### B12. Cadence retro (2026-05-26) — Phase-C extras 2 & 3 + follow-up (2ku/qih/aqt)
+- **Trigger/scope:** 3-ticket cadence after the last two deferred Phase-C extras
+  (etude-2ku optional retro-meta JSON sidecar as a 2nd manifest stage; etude-qih new
+  read-only `etude log` runs+retros timeline command) and the first of the follow-ups
+  they spawned (etude-aqt render the retro-meta sidecar in `retro show`/`list`).
+- **Findings/changes:** added a SIXTH "Recurring Defect Classes" item: **a change that
+  touches GENERATED artifacts has a blast radius beyond its own file — the plan's
+  file-scope must enumerate EVERY regenerated output.** From etude-qih's PLAN gate:
+  adding a top-level command regenerates not just `docs/cli/etude_log.md` but the root
+  `docs/cli/etude.md` `SEE ALSO` list; the plan scoped only the new page, leaving the
+  root stale (docs-check / TestDriftGuard red). Fix: run `make docs` + `git status` (or
+  reason the blast radius) before finalizing scope.
+- **Reinforced (4th time, now decisive) — item 2:** the spec-vs-running-code blind spot
+  recurred in BOTH remaining beads, and notably codex (not the repo-aware Opus seat)
+  caught them even at the IMPLEMENT gate with the binary in hand: qih `--subject` matched
+  a retro by its OWN id (spec: retros match only by their subjects) — Opus AND gemini
+  GO'd, gemini explicitly rationalizing it correct; aqt's `--- retro meta ---` divider
+  would glue onto a body lacking a trailing newline (`Fprint` adds none) — Opus "no
+  divergence", gemini "defensively sound", codex BLOCKED at the PLAN gate. Updated item 2
+  with a new failure sub-class (d): a match-set/output invariant stated in PROSE that no
+  test enforces. Strengthened the rule: do NOT let two GO seats outweigh one source-cited
+  BLOCK — every two-seats-missed BLOCK this run verified TRUE against source.
+- **Worked well (preserve):** the disputed-claim discipline (verify each BLOCK against
+  source before accepting) — zero false BLOCKs this cadence; all three codex BLOCKs were
+  real. The narrow-correction-then-advance pattern (amend the bead `--design` with the
+  fix + re-gate only the corrected point) kept velocity without re-running clean phases.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` (new item 6 + item-2
+  strengthening + intro bead list). Counter reset.
+- **Remaining:** 3 Phase-C follow-up P3s open (etude-9ey cross-retro failure-mode index,
+  etude-21z rewire dogfood-capture onto capture-run, etude-094 capture-run symlink-
+  traversal hardening). Phase 1 (xenota/github-import) remains USER-BLOCKED.
+

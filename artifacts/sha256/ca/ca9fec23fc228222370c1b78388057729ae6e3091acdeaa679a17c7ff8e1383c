@@ -1,0 +1,23 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-qih PLAN scoped only the new docs/cli/etude_log.md page, leaving the root docs/cli/etude.md SEE ALSO list stale (docs-check / TestDriftGuard red)",
+    "etude-qih `--subject` matched a retro by its OWN id (spec: retros match only by their subjects); Opus AND gemini GO'd",
+    "etude-aqt `--- retro meta ---` divider would glue onto a body lacking a trailing newline (Fprint adds none); Opus \"no divergence\", gemini \"defensively sound\", codex BLOCKED at PLAN gate"
+  ],
+  "root_causes": [
+    "a change touching GENERATED artifacts has a blast radius beyond its own file; the plan's file-scope did not enumerate every regenerated output",
+    "spec-vs-running-code blind spot: a match-set/output invariant stated in PROSE that no test enforces"
+  ],
+  "follow_up_beads": [
+    "etude-9ey",
+    "etude-21z",
+    "etude-094"
+  ],
+  "decisions": [],
+  "durable_changes": [
+    "review-gate-runbook.md new item 6: a change touching generated artifacts must enumerate every regenerated output; run `make docs` + `git status` before finalizing scope",
+    "review-gate-runbook.md item 2 strengthened with failure sub-class (d) prose-stated invariant no test enforces; do NOT let two GO seats outweigh one source-cited BLOCK"
+  ]
+}
