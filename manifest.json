@@ -721,6 +721,58 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T02:15:22Z"
+    },
+    {
+      "gate_id": "verify.r4",
+      "phase": "verify",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r4",
+          "role": "verify",
+          "artifact": "c528692265c2f7ff9eb3f15106123cd062f5c6ada435adbe03505f352c4f5ce7"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "A future preflight could reject already-dirty workspaces before invoking the runner.",
+            "Confirm replay semantics for caller-stage post-run GitSHA in a separate bead if replaying such runs becomes a supported workflow.",
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r4.md sha256 240fa0ddecf0e14c82b9f3c1ab9033c7a2eabdade2fc9e886cd3ca8c1345efd4"
+          ],
+          "timestamp": "2026-08-16T02:24:25Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r4.md sha256 240fa0ddecf0e14c82b9f3c1ab9033c7a2eabdade2fc9e886cd3ca8c1345efd4"
+          ],
+          "timestamp": "2026-08-16T02:24:25Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:24:25Z"
     }
   ]
 }
