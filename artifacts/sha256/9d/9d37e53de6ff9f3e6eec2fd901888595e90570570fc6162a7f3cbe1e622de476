@@ -1,0 +1,54 @@
+## Plan
+
+**Approach:** Two small, isolated follow-ups in internal/cli/sync.go, both centered on classifyFetchBang (sync.go:214-243), the only caller of `git merge-base --is-ancestor`.
+
+Change #2 (surface stderr): classifyFetchBang currently runs merge-base with no cmd.Stderr set, so git's stderr is discarded. Add a bytes.Buffer for stderr (cmd.Stderr = &stderrBuf), and append strings.TrimSpace(stderrBuf.String()) to the existing exit-128 abort error. Match the refstore.gitBytes precedent (store.go:371: `git %s: %w: %s` with TrimSpace'd stderr). New message shape: `fetch aborted: cannot classify ref %s (merge-base exit %d): %s` where %s is git's stderr (e.g. "fatal: Not a valid commit name <oid>"). Leave the exit-1 (benign) and exit-0 (real-failure) branches untouched; only the unexpected-exit branch and the non-ExitError branch benefit.
+
+Change #1 (coverage): the abort path needs old=valid+resolvable, new=non-null but NOT resolvable locally, so merge-base exits with an unexpected code. REPRODUCED in a scratch repo: `git merge-base --is-ancestor <valid-HEAD-oid> <bogus-40-hex-oid>` exits 128 with stderr 'fatal: Not a valid commit name <oid>' (also confirmed null/garbage new OIDs all exit 128). This state is essentially impossible to construct deterministically through a real fetch+bare-remote round trip (a successful object transfer downloads the new object). The existing harness (sync_test.go) uses REAL git + bare remotes + in-process execute(); there is NO fake-git/PATH-override or GO_WANT_HELPER_PROCESS, and sync.go hardcodes "git" (no GitPath injection). classifyFetchBang is an unexported package-level func in package cli, so the deterministic, harness-fitting approach is a focused UNIT TEST calling classifyFetchBang directly with a crafted bangLine. No new infra needed.
+
+**Files:**
+- internal/cli/sync.go - classifyFetchBang: capture merge-base stderr in a bytes.Buffer (cmd.Stderr) and include TrimSpace'd stderr in the abort error message. ~3-4 line change in the exit-128 branch (and optionally the non-ExitError branch). No signature/return-type change.
+- internal/cli/sync_test.go - add TestClassifyFetchBangAbortSurfacesStderr (new unit test).
+
+**Tests:**
+- New TestClassifyFetchBangAbortSurfacesStderr: build a real repo via initCaptureRepo(t) (gives one real commit), oid := resolveRef(t, repo, "HEAD"). Call classifyFetchBang(context.Background(), repo, bangLine{old: oid, new: "0123456789012345678901234567890123456789", ref: "refs/etude/runs/abort-1"}). Assert: (a) result == fetchBangAbort; (b) err != nil and is non-nil/descriptive; (c) err names the full ref path 'refs/etude/runs/abort-1'; (d) err mentions 'merge-base exit 128'; (e) AFTER the fix, err contains the surfaced git stderr substring 'Not a valid commit name' (the regression guard for change #2). Add context import if not present (bytes already imported in sync.go but test file needs context).
+- No-push (safe-by-design) is structurally guaranteed: classifyFetchBang is called only inside r.fetch (sync.go:135); any non-nil classify error returns from r.fetch, and r.run aborts at step 4 (sync.go:64-66) before step 6 push (sync.go:79). The unit test exercises classifyFetchBang in isolation, so no push code path is reachable. The existing TestSyncLockInducedRejectedFF already proves the fetch-abort-before-push ordering end-to-end with a pre-push sentinel; the plan does not duplicate that. (Optional, only if reviewers want an integration-level abort assertion: not adding one because the merge-base-128 state cannot be produced via real fetch.)
+- Run: go test ./internal/cli/ -run 'TestSync|TestClassifyFetchBang' -count=1 (baseline currently green).
+
+**Docs:**
+- docs/sync.md 'Transport or local failures' / 'Error cases' sections describe fetch-failure wording generically ('fetch failed: ...'). The fetchBangAbort message ('fetch aborted: cannot classify ref ...') is NOT currently quoted verbatim in the docs, and surfacing merge-base stderr is an additive debugging detail that does not change any documented output line. CONFIRMED: no doc wording needs to change. Optionally add one sentence noting the abort message now includes git's merge-base stderr; treat as non-required (this is internal-edge polish, not user-facing behavior change).
+
+**Risks:** Low. Single-branch edit to one helper; no return-type or signature change; benign/real-failure classification untouched (covered by existing TestSyncTrueDivergence/TestSyncRemoteAheadFastForwards/TestSyncLocalAheadRegression). Reproduced the exit-128 + stderr behavior in a scratch repo rather than asserting from memory. Only nuance: the new test is a unit test (not a full sync round trip) because the abort state is not deterministically reachable via real fetch; this is the correct, harness-consistent choice and is called out explicitly.
+
+**Capture:**
+- inputs: bead etude-zcq (notes), internal/cli/sync.go (classifyFetchBang, fetch, run), internal/cli/sync_test.go (TestSyncGenericPushRejection, TestSyncLockInducedRejectedFF, harness helpers), internal/cli/root_test.go (execute), internal/cli/capture_test.go (initCaptureRepo/gitCapture/resolveRef), internal/refstore/store.go (gitBytes stderr precedent), docs/sync.md; reproduced merge-base --is-ancestor exit codes in scratch repos.
+- output: bead --design field
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Change #2 (sync.go): Added `var stderrBuf bytes.Buffer` and `cmd.Stderr = &stderrBuf` to `classifyFetchBang`. In the EXIT-OTHER (abort) branch, appended trimmed stderr to the error message only when non-empty, producing the shape `fetch aborted: cannot classify ref %s (merge-base exit %d): %s`. Exit-0 and exit-1 branches are untouched.
+- Change #1 (sync_test.go): Added `TestClassifyFetchBangAbortSurfacesStderr` calling the unexported `classifyFetchBang` directly. Uses `initCaptureRepo` for a real repo, resolves HEAD OID, builds a same-length bogus OID (`strings.Repeat("d", len(headOID)-1)+"1"`) to force merge-base exit 128. Asserts result==fetchBangAbort, err non-nil, full ref path, 'merge-base exit 128', and git's stderr 'not a valid commit name' (case-insensitive). Sibling benign assertion uses two real commits (old=secondOID, new=firstOID) to confirm exit-1 path returns fetchBangBenign with nil error and no stderr leakage.
+- Added `"context"` import to sync_test.go.
+
+**Checks run:**
+- `gofmt -l cmd internal`: pass (no output)
+- `go vet ./...`: pass (no output)
+- `go test ./internal/cli/ -run 'TestSync|TestClassifyFetchBang' -count=1`: pass (16 tests)
+- `go test ./... -count=1`: pass (all packages)
+
+**Changed files:**
+- /Users/jv/projects/etude/internal/cli/sync.go
+- /Users/jv/projects/etude/internal/cli/sync_test.go
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (etude-zcq --design), sync.go and sync_test.go at HEAD, refstore/store.go stderr pattern
+- output: working tree diff in both files above and this bead notes update
+## Implement gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (stderr only in abort branch; empty-guard correct; benign/real-failure untouched; test hits exit 128 for the right reason; SHA-256 portable; no flakiness via LC_ALL=C); pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Files: internal/cli/sync.go (capture+surface merge-base stderr in abort branch, empty-guard), internal/cli/sync_test.go (TestClassifyFetchBangAbortSurfacesStderr: abort + benign sibling). All tests green. No required changes.
+
