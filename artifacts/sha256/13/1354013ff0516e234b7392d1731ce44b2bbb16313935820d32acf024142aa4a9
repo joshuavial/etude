@@ -1,0 +1,84 @@
+# Integrated verification
+
+Status: PASS. Integrated main e1770dacc9c525477121deaad2ef48c6ba6415da.
+
+Both final review.r1 gates passed with actual independent Astra GO and Fable GO. All 12 Claude-lane files and 16 Codex-lane files matched their reviewed lane bytes exactly after cherry-pick.
+
+Commits: 9da75f5 binding fix; e1770da ordinary push fix.
+
+## test
+
+```text
+go test ./...
+?   	github.com/joshuavial/etude/cmd/etude	[no test files]
+ok  	github.com/joshuavial/etude/cmd/gen-docs	1.140s
+ok  	github.com/joshuavial/etude/internal/artifactmedia	1.809s
+ok  	github.com/joshuavial/etude/internal/artifactstore	0.662s
+ok  	github.com/joshuavial/etude/internal/bench	32.375s
+ok  	github.com/joshuavial/etude/internal/cli	115.840s
+ok  	github.com/joshuavial/etude/internal/eval	31.373s
+ok  	github.com/joshuavial/etude/internal/example	14.360s
+ok  	github.com/joshuavial/etude/internal/gc	7.662s
+ok  	github.com/joshuavial/etude/internal/ident	3.703s
+ok  	github.com/joshuavial/etude/internal/index	8.388s
+ok  	github.com/joshuavial/etude/internal/liverun	68.920s
+ok  	github.com/joshuavial/etude/internal/nudge	7.950s
+ok  	github.com/joshuavial/etude/internal/refstore	7.153s
+ok  	github.com/joshuavial/etude/internal/registry	5.926s
+ok  	github.com/joshuavial/etude/internal/replay	46.583s
+ok  	github.com/joshuavial/etude/internal/retro	22.229s
+ok  	github.com/joshuavial/etude/internal/runmanifest	8.531s
+ok  	github.com/joshuavial/etude/internal/sessionevidence	5.845s
+ok  	github.com/joshuavial/etude/internal/workflow	5.632s
+ok  	github.com/joshuavial/etude/internal/worktree	9.813s
+?   	github.com/joshuavial/etude/tmp	[no test files]
+
+```
+
+## lint
+
+```text
+test -z "$(gofmt -l cmd internal)"
+go vet ./...
+
+```
+
+## docs-check
+
+```text
+generated 26 command docs into /var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/tmp.YXGh8mcDsN
+
+```
+
+## docs-reality
+
+```text
+docs-reality: OK — 16 commands; docs match the shipped CLI.
+
+```
+
+## build
+
+```text
+mkdir -p bin
+go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=dev" -o bin/etude ./cmd/etude
+
+```
+
+## root-init
+
+```text
+skipped /Users/jv/projects/etude/.etude/workflow.yaml
+skipped /Users/jv/projects/etude/.etude/registry.yaml
+skipped /Users/jv/projects/etude/.etude/evals/plan-rubric.md
+skipped /Users/jv/projects/etude/.etude/evals/verify-rubric.md
+removed remote.origin.push = refs/etude/*:refs/etude/* (etude sync publishes metadata explicitly; leaving this mapping would suppress ordinary branch pushes)
+configured remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*
+configured remote.origin.fetch = +refs/etude/retros/*:refs/etude-mirror/origin/retros/*
+configured remote.origin.fetch = +refs/etude/evals/*:refs/etude-mirror/origin/evals/*
+metadata publication for remote "origin" is handled by etude sync, which supplies its own refs/etude/* refspec
+init: 0 created, 4 skipped, 4 configured
+
+```
+
+The actual repository legacy remote.origin.push value is now absent; workflow and registry bytes were independently hashed before/after init and remained unchanged. Existing reviewer and workflow setup shell suites passed during setup; neither issue changed shell scripts. No source changes were made after final gate.
