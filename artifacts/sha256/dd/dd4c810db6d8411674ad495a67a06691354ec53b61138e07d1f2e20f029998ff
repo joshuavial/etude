@@ -1,0 +1,51 @@
+## Plan
+
+**Approach:** Add a nested per-stage Producer to the run manifest while keeping the run-level Workflow/WorkflowVersion and Stage.ProducedBy unchanged. Keep the existing Skill type and the Stage.Skill field working (capture.go writes it, run.go reads it, replay/runner.go uses the Skill *type*) so this bead does NOT touch capture.go / runner.go / run.go (those are 1.2/1.3/1.4). Add Producer{Harness{Name,Version}, Model, Skill} alongside Stage.Skill, and make the JSON layer the single fold point: on ENCODE, derive producer.skill from whichever of Stage.Producer.Skill / Stage.Skill is set; on DECODE, lift the legacy top-level skill{} key into both Stage.Skill (so run.go keeps working) and Stage.Producer.Skill (harness/model empty for legacy). Add a manifest_version field (chosen name, see below) so the schema can evolve. This is schema + back-compat ONLY; 1.2 will populate harness/model.
+
+**Naming decision:** Use **manifest_version** (int, JSON key manifest_version). Rationale: BRIEF shows neither name so it is free; the field versions the on-disk manifest document, which is exactly what 'manifest_version' names. New manifests set manifest_version: 2 (legacy = absent => treated as 1/legacy). Apply consistently: manifestJSON.ManifestVersion  and a Manifest.ManifestVersion Go field (or a const the encoder stamps).
+
+**Back-compat mechanism (EMPIRICALLY VERIFIED):** Keep the legacy top-level  JSON key as an accepted field on stageJSON (as *skillJSON, pointer => present/absent distinguishable) AND add  as *producerJSON. ParseJSON keeps DisallowUnknownFields. Decode rule per stage: if producer present, use it (and mirror producer.skill into Stage.Skill); else if legacy skill present, lift it into BOTH Stage.Skill and Stage.Producer.Skill (Harness/Model empty). Validate is relaxed: when manifest_version is absent/legacy (==0/1), require skill id/repo/version (existing rule) but DO NOT require harness/model; when manifest_version>=2 still only require the skill identity within producer (harness/model become required in 1.2, not here). Encode emits only  (+ nested skill) and manifest_version:2 for new manifests; the legacy top-level skill key is accepted on read but not re-emitted, so new runs are self-consistent and old runs still parse.
+
+**Empirical evidence (reproduced, not asserted):**
+- Real fixtures: `git cat-file -p refs/etude/runs/etude-88o:manifest.json` shows top-level per-stage `skill{id,repo,version}`, NO `producer`, NO `manifest_version`. Confirmed all 8 runs (88o,dpz,cr2,zcq,nbv,phase2.1,phase2.2,phase2.3) have `grep -c producer` == 0; one inspected via python shows stage keys = [stage,produced_by,git_sha,skill,inputs,output,timestamp].
+- Scratch Go test (module pscratch, go 1.26, encoding/json + DisallowUnknownFields) against the REAL etude-88o bytes plus a synthesized producer manifest:
+  1. TestLegacyFixtureDecodes PASS — legacy bytes decode with manifest_version=0 (absent), stage0.producer=nil, stage0.skill={ID:dev-planner Repo:manual Version:manual} lifted. Output: 'LEGACY OK: manifest_version=0, stage0 skill={ID:dev-planner Repo:manual Version:manual} producer=<nil>'.
+  2. TestNewProducerRoundTrips PASS — a manifest with nested producer + manifest_version:2 encodes (producer.harness/model/skill nested, no top-level skill key) and strict-decodes back: 'NEW OK: producer={Harness:{claude-code 1.0} Model:claude-opus-4 Skill:{dev-planner skills sha}} skill key-absent-at-stage-top=true'.
+  3. TestUnknownFieldStillRejected PASS — DisallowUnknownFields still rejects a bogus key: 'json: unknown field "bogus"'. Confirms additive pointer fields (skill+producer) do not loosen strictness for truly-unknown keys.
+- Conclusion: pointer skill + pointer producer + manifest_version,omitempty preserves strict parsing, decodes all 8 legacy runs, and round-trips new producer manifests.
+
+**Files:**
+- internal/runmanifest/manifest.go — add Producer{Harness{Name,Version}, Model, Skill} and Harness types; add Stage.Producer (keep Stage.Skill); add Manifest.ManifestVersion (or encoder-stamped const); add producerJSON/harnessJSON, change stageJSON.Skill to *skillJSON and add stageJSON.Producer *producerJSON; add manifestJSON.ManifestVersion; update toJSON (emit producer-only + manifest_version, fold Stage.Skill->producer.skill when Producer empty) and toManifest/toStage (lift legacy skill into Stage.Skill + Stage.Producer.Skill); relax Validate for legacy vs v2.
+- internal/runmanifest/manifest_test.go — update the existing golden (TestManifestJSONIsDeterministicAndExact) to the new producer shape + manifest_version; add a back-compat test that strict-parses a legacy-shaped manifest (top-level skill, no producer, no manifest_version) and asserts Stage.Skill AND Stage.Producer.Skill are populated; add a new-manifest round-trip test (encode producer -> ParseJSON -> producer intact); keep TestParseJSONRejects... unknown-field cases green.
+- docs/plans/product/BRIEF.md — §3: add glossary rows defining Harness / Model / Skill / (clarify Workflow) as distinct producer axes (harness = the agent runtime e.g. claude-code; model = the LLM; skill = external skill identity {id,repo,version}; workflow = the pipeline). §4.4: replace the stage skill{} block with nested producer{harness{name,version},model,skill{id,repo,version}}, add manifest_version to the example, and update the Notes (explain producer axes + that manifest_version versions the document; keep the existing skill.version external-identity note).
+
+**Tests:**
+- Golden encode is exact and deterministic with the new producer + manifest_version shape (round-trip stable across two JSON() calls).
+- Back-compat: a legacy-shaped manifest (top-level skill, no producer, no manifest_version) parses without error under DisallowUnknownFields and synthesizes Stage.Producer.Skill (+ keeps Stage.Skill).
+- New manifest with Producer round-trips through JSON()->ParseJSON.
+- Edge cases: producer present wins over (absent) legacy skill; truly-unknown fields still rejected; Validate still rejects missing skill identity; legacy manifests pass Validate without harness/model.
+
+**Docs:**
+- docs/plans/product/BRIEF.md §3 glossary + §4.4 manifest example/notes (above). No generated command reference and no user-facing CLI docs change in this bead (run show output is 1.4); BRIEF is the design doc that must reflect the new schema now.
+
+**Risks:**
+- The existing exact-golden test WILL change (expected) — must update it deliberately, not loosen it. Low risk, covered by the round-trip + back-compat tests.
+- Choosing pointer types for stageJSON.skill/producer is the mechanism that preserves strictness; verified empirically above. Keeping Stage.Skill avoids breaking capture.go/run.go/replay this bead — the door stays open for 1.2 to populate harness/model and migrate capture.
+
+**Capture:**
+- inputs: bead etude-roadmap.1.1 (description + 3 open questions), internal/runmanifest/manifest.go, internal/runmanifest/manifest_test.go, internal/cli/capture.go, internal/cli/run.go, internal/replay/runner.go, docs/plans/product/BRIEF.md (§3/§4.4), real fixtures refs/etude/runs/etude-88o..phase2.3, scratch Go test results.
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (verified all 8 legacy manifests decode under strict decoding; golden change intentional; Stage.Skill consumers untouched); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Back-compat empirically verified (real etude-88o bytes decode; new producer round-trips; bogus key still rejected).
+Optionals folded into Implement:
+- Add a FROZEN legacy-bytes golden test (pin a real etude-88o-shaped v1 manifest -> ParseJSON ok, ManifestVersion==0, Stage.Skill + Producer.Skill populated) — guards the 8 runs against future regression without relying on live refs.
+- Add a producer-wins CONFLICT test (both legacy skill + producer.skill present & differing -> producer authoritative, Stage.Skill mirrors it).
+- Comment documenting manifest_version: 0=legacy/implicit-v1, 2=producer schema (no v1 ever emitted).
+- Ensure Validate does NOT require Producer.Harness/Model for v2 this bead (capture doesn't set them until 1.2; empty must pass).
+- Fix existing BRIEF §4.4 example drift (refs.pr shown as int vs string; artifact object shape) while updating it.
+Forward note for 1.2 (codex): after 1.1, NEW captures emit manifest_version:2 with EMPTY harness/model (capture not wired yet) — 1.2's validation must NOT reject those v2 manifests (enforce harness/model at capture, keep them optional in Validate, or bump version deliberately).
+
