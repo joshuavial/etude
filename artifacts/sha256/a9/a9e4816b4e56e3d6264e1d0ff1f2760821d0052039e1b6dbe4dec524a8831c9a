@@ -1,0 +1,1481 @@
+be1098dcaf75c5d5bd7617d31feb069639ad5cf0
+stop etude init registering a prunable refs/etude fetch refspec and remove any left behind
+
+
+ docs/init.md              | 199 ++++++++++++++---
+ docs/sync.md              |   9 +
+ internal/cli/init.go      | 425 ++++++++++++++++++++++++++++++++++--
+ internal/cli/init_test.go | 538 ++++++++++++++++++++++++++++++++++++++++++++--
+ internal/cli/sync_test.go |  55 +++++
+ 5 files changed, 1160 insertions(+), 66 deletions(-)
+commit be1098dcaf75c5d5bd7617d31feb069639ad5cf0
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Aug 16 07:53:12 2026 +0800
+
+    stop etude init registering a prunable refs/etude fetch refspec and remove any left behind
+
+diff --git a/docs/init.md b/docs/init.md
+index 82eadae..ec4ce0f 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -3,10 +3,14 @@
+ ## Overview
+ 
+ `etude init` scaffolds the `.etude/` configuration directory in the current
+-repository and registers the `refs/etude/*` refspecs on the named git remote so
+-that a plain `git fetch` also picks up the namespace. Transferring the namespace
+-explicitly is the job of [`etude sync`](sync.md), which passes its own refspecs
+-and works whether or not `init` configured the remote.
++repository and registers the `refs/etude/*` **push** refspec on the named git
++remote. Transferring the namespace is the job of [`etude sync`](sync.md), which
++passes its own refspecs on the command line and works whether or not `init`
++configured the remote.
++
++`init` deliberately does **not** register a *fetch* refspec for the namespace,
++and removes one left behind by an older version — see
++[Why there is no fetch refspec](#why-there-is-no-fetch-refspec).
+ 
+ ## What it creates
+ 
+@@ -24,38 +28,165 @@ All files are written to the working tree for normal review and commit on main.
+ 
+ ## Refspec configuration
+ 
+-By default init configures `origin` with:
++By default init configures `origin` with exactly one refspec:
+ 
+ ```
+-remote.origin.fetch = +refs/etude/*:refs/etude/*
+-remote.origin.push  = refs/etude/*:refs/etude/*
++remote.origin.push = refs/etude/*:refs/etude/*
+ ```
+ 
+-The fetch refspec is forced (`+`) so fast-forwards are never required when
+-pulling run refs. The push refspec is non-forced: a non-fast-forward push fails
+-loudly rather than silently overwriting a remote ref.
++The push refspec is non-forced: a non-fast-forward push fails loudly rather
++than silently overwriting a remote ref.
+ 
+ If `origin` does not exist, the refspec step is skipped and init still succeeds
+ (useful when initializing a repo before the remote is added). Use `--remote` to
+ target a different remote.
+ 
++### Why there is no fetch refspec
++
++A fetch refspec whose *destination* is the local `refs/etude/*` namespace —
++`+refs/etude/*:refs/etude/*`, which `etude init` used to add — makes every local
++run ref a remote-tracking ref as far as git is concerned. Per `git-fetch(1)`,
++refs fetched due to an explicit configured refspec **are subject to pruning**.
++So a single
++
++```bash
++git fetch --prune
++```
++
++anywhere in the repository deletes **every run ref that has not yet been pushed**
++to the remote.
++
++That is not hypothetical. It destroyed three recorded gate attempts during one
++epic, and it fires from ordinary tooling — `workmux remove --gone`, for example,
++runs `git fetch --prune` automatically. In a repository with linked worktrees,
++every worktree shares one ref store, so one lane running an unrelated command
++takes every other lane's unpushed run refs with it. The failure is silent:
++`etude capture` treats a missing run ref as "create", so the next capture
++starts a fresh manifest and reports success.
++
++Nothing needed the fetch refspec: `etude sync` passes
++`refs/etude/*:refs/etude/*` explicitly on its own `git fetch` command line, so
++syncing is unaffected. Removing it costs nothing and closes the failure.
++
++The push refspec is **not** affected and must stay: it is what makes
++`git push origin` carry run refs at all. Pushing cannot delete a local ref.
++
++### Migrating an existing repository
++
++Any repository initialised by an older `etude init` still carries the dangerous
++refspec and will not fix itself. Re-run init — it removes it, on both the normal
++and `--force` paths:
++
++```bash
++etude init                      # repairs the DEFAULT remote (origin)
++etude init --remote upstream    # repairs a different remote
++```
++
++**Name the same remote the old init was pointed at.** `init` configures exactly
++one remote, so a plain `etude init` repairs `origin` and leaves a hazardous
++`remote.upstream.fetch` in place — it will *warn* you about that remote, but it
++will not edit it. If you ever ran `etude init --remote <name>`, re-run it with
++that same `--remote`. To check which remotes are affected yourself:
++
++```bash
++for r in $(git remote); do
++  echo "== $r"; git config --local --get-all "remote.$r.fetch"
++done
++```
++
++Any entry whose part *after* the colon begins with `refs/etude/` is the hazard.
++(An entry with no colon at all is harmless — git fetches it to `FETCH_HEAD`
++without creating a local ref, so there is nothing for `--prune` to delete.)
++
++Or fix it by hand, without running init. List the fetch refspecs, then unset the
++one whose destination is inside `refs/etude/`:
++
++```bash
++git config --local --get-all remote.origin.fetch
++git config --local --unset-all remote.origin.fetch '^\+refs/etude/\*:refs/etude/\*$'
++git config --local --get-all remote.origin.fetch   # verify: no refs/etude entry
++git config --local --get-all remote.origin.push    # verify: still present
++```
++
++The value is a POSIX regex, so the `+` and `*` are escaped and the pattern is
++anchored — that removes exactly that entry and cannot touch your `refs/heads/*`
++refspec. Adjust the pattern if your entry is spelled differently (for example
++without the leading `+`); `git config --local --get-all remote.origin.fetch`
++above shows you the exact value to escape.
++
++Unset only the **fetch** refspec. Unsetting the push refspec too would stop run
++refs reaching the remote, which loses the same data by another route.
++
++### Safety warnings
++
++Every `init` run ends by checking that the repository is actually in the safe
++state, and prints a `warning:` line when it is not. `init` configures one
++remote, so these catch what it cannot fix itself:
++
++- an etude-registered fetch refspec still present on the target remote;
++- the target remote not carrying the canonical `refs/etude/*:refs/etude/*` push
++  refspec, so run refs never reach it;
++- the target remote not existing at all, so run refs stay local-only;
++- an etude-registered fetch refspec on **any other remote**. init configures the
++  one remote it was pointed at, so a hazardous entry on a sibling remote survives
++  the run, and `git fetch --prune <that remote>` deletes unpushed run refs just
++  the same. Those are reported but never edited — `--remote` named one remote,
++  and silently changing another's configuration is not what was asked for. Re-run
++  `etude init --remote <name>` against each one to repair it.
++
++Warnings do not fail the command and are not counted in the summary. They name
++the condition and point here; they deliberately **do not embed a runnable
++command**. Emitting a remediation that is correct in every state a setup command
++can observe turned out to be its own source of bugs — a placeholder URL git
++accepts, a preview that dropped the `--remote` selection, a quoted command that
++would not parse when pasted. Producing exact remediation is the job of
++`etude doctor`, a read-only health check where the remediation string is the
++deliverable rather than a by-product.
++
++These checks are deliberately narrow, and they compare **exactly**. Detecting an
++etude-registered fetch refspec on another remote needs no more than that same
++exact check applied to another config key, which is why it is here. But whether
++some *other* refspec is equivalent to the canonical one, whether a refspec
++broader than the namespace (`+refs/*:refs/*`) also prunes it, whether a mapping
++preserves ref names — those need a full model of refspec semantics, and
++answering them confidently but wrongly is worse than not answering. That is the
++job of `etude doctor`, a read-only health check tracked separately; `init` does
++not guess.
++
++In particular a refspec broader than `refs/etude/*` **is** dangerous and init
++neither removes nor reports it. It is also your own configuration — deleting it
++would break your branch fetching — so it is not a setup command's call to make.
++
+ ## Idempotency
+ 
+ Running `etude init` twice is safe:
+ 
+ - Existing files are skipped (reported as `skipped <path>`). Use `--force` to
+   regenerate them from the canonical default.
+-- Each refspec is added at most once. Running init twice results in exactly one
+-  entry per key.
++- The push refspec is added at most once. Running init twice results in exactly
++  one entry for the key.
++- Removing a fetch refspec into `refs/etude/*` is idempotent: the second run
++  finds none and says nothing.
+ 
+ Refspec idempotency is byte-exact: init compares the full refspec string
+-character-for-character against every existing value for the config key. If the
+-canonical string already appears, init skips the add and prints
+-`already configured <key> = <value>`. If a user has hand-edited the refspec to
+-a non-identical variant (e.g. removing the forced-fetch `+` prefix, or adding a
+-trailing space), init treats it as a different value and adds the canonical one
+-alongside it, resulting in two entries for the same key. Init does not attempt
+-to detect or merge semantically equivalent refspecs.
++character-for-character against every existing value for the config key. If
++exactly one canonical entry already exists, init leaves it alone and prints
++`already configured <key> = <value>`.
++
++Otherwise it writes with `git config --replace-all` against a pattern matching
++exactly the canonical value. That has two consequences worth knowing:
++
++- **Concurrent runs converge.** Two `etude init` processes racing on the same
++  repository — normal when linked worktrees share one `.git/config` — cannot
++  leave duplicate entries, because `--replace-all` collapses every matching line
++  to one and adds when none match.
++- **Pre-existing duplicates are collapsed.** A repository carrying two identical
++  canonical entries, left by an older version of this command, ends up with one.
++
++A refspec hand-edited to a *non-identical* variant (e.g. without the forced-fetch
++`+` prefix, or with a trailing space) is a different value: init adds the
++canonical one alongside it rather than rewriting your edit. Init does not attempt
++to detect or merge semantically equivalent refspecs — see `etude doctor`.
+ 
+ ## Plan → apply pipeline
+ 
+@@ -66,22 +197,24 @@ action and is the sole site that prints output and tallies counts.
+ After all actions run, a summary line is printed:
+ 
+ ```
+-init: 4 created, 0 skipped, 2 configured
++init: 4 created, 0 skipped, 1 configured
+ ```
+ 
+-The `configured` count covers both freshly configured and already-configured
+-refspecs. A second `init` run reports `2 configured` (idempotent, already-configured
+-entries fall into the same bucket).
++The `configured` count covers freshly configured, already-configured, and
++removed refspecs. A second `init` run on a repo that needed no removal reports
++`1 configured` (idempotent, already-configured entries fall into the same
++bucket). `warning:` lines are not counted.
+ 
+ ## --dry-run
+ 
+ `--dry-run` previews the planned actions without writing any files or modifying
+ git config. It prints `plan: create <path>` / `plan: skip <path>` lines for the
+-scaffold and `plan: configure fetch refspec on <remote>` / `plan: configure push
+-refspec on <remote>` lines for the refspecs, followed by a summary:
++scaffold, `plan: configure push refspec on <remote>` for the push refspec, and
++`plan: remove <key> = <value>` for any fetch refspec into `refs/etude/*` it
++would remove, followed by a summary:
+ 
+ ```
+-dry-run: 4 to create, 0 to skip, 2 to configure
++dry-run: 4 to create, 0 to skip, 1 to configure
+ ```
+ 
+ Dry-run behavior:
+@@ -91,14 +224,21 @@ Dry-run behavior:
+   "bad name"`) errors immediately, before any reads.
+ - **Workflow self-check still runs.** The YAML round-trip validation runs during
+   plan (read-only) and can error under dry-run.
+-- **`--force --dry-run`** previews 0 to configure (force is silent on refspecs).
++- **`--force --dry-run`** previews 0 to configure, *except* for a fetch refspec
++  removal, which is previewed on the force path too.
++- **Safety warnings are printed under `--dry-run`** — the check is read-only and
++  runs on every path. Its *output* is not identical between a preview and a real
++  run, and cannot be: a real run removes the hazardous fetch refspec before the
++  check reads the config, so the entry is reported only under `--dry-run` — and
++  there with preview wording that points at `etude init --remote <name>` rather
++  than telling you to unset it by hand.
+ 
+ ## Flags
+ 
+ | Flag | Default | Description |
+ |------|---------|-------------|
+ | `--dry-run` | false | Preview the planned actions without writing files or modifying git config. |
+-| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Does not modify git config. `--force` is always silent on refspec configuration. |
++| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Silent on refspec configuration, with one exception: it still removes a fetch refspec into `refs/etude/*`, because leaving a known data-loss setting in place is never the right outcome of a setup command. It does **not** add the push refspec — if it is missing, `--force` reports it and a plain `etude init` adds it. |
+ | `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error (even under `--force`). |
+ 
+ ## Example
+@@ -109,8 +249,9 @@ etude init
+ 
+ # Inspect what was created:
+ cat .etude/workflow.yaml
+-git config --local --get-all remote.origin.fetch
+ git config --local --get-all remote.origin.push
++# Should print no refs/etude entry:
++git config --local --get-all remote.origin.fetch
+ 
+ # Regenerate config files after editing workflow.go upstream:
+ etude init --force
+diff --git a/docs/sync.md b/docs/sync.md
+index 119c8b1..924aef9 100644
+--- a/docs/sync.md
++++ b/docs/sync.md
+@@ -28,6 +28,15 @@ Sync runs in order:
+ Both the fetch and push pass an explicit refspec on the command line, so sync
+ works even if `etude init` was never run.
+ 
++This is why `etude init` configures **only** a push refspec and never a fetch
++refspec into `refs/etude/*`: sync does not need one, and a configured fetch
++refspec into that namespace makes every local run ref prunable by a bare
++`git fetch --prune`. See
++[Why there is no fetch refspec](init.md#why-there-is-no-fetch-refspec).
++
++`etude sync` is therefore the supported way to pull the namespace down. A plain
++`git fetch` does not bring `refs/etude/*` with it, by design.
++
+ ## Reconciliation behavior
+ 
+ Sync is safe by design: it never moves a local ref backward and never
+diff --git a/internal/cli/init.go b/internal/cli/init.go
+index bebd2ba..3b0427c 100644
+--- a/internal/cli/init.go
++++ b/internal/cli/init.go
+@@ -2,12 +2,15 @@ package cli
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"regexp"
+ 	"strings"
++	"time"
+ 	"unicode"
+ 
+ 	"github.com/joshuavial/etude/internal/registry"
+@@ -25,6 +28,9 @@ const (
+ 	statusAlreadyConfigured actionStatus = "already configured"
+ 	// statusNote is uncounted — used for informational messages (e.g. remote not found).
+ 	statusNote actionStatus = "note"
++	// statusWarn is uncounted — the repo is still exposed to run-ref loss and the
++	// operator has to act. Every warning carries the exact command to run.
++	statusWarn actionStatus = "warn"
+ )
+ 
+ // Shared format strings — kept here so apply output and dry-run reporting
+@@ -35,8 +41,44 @@ const (
+ 	fmtConfigured        = "configured %s = %s"
+ 	fmtAlreadyConfigured = "already configured %s = %s"
+ 	fmtRemoteNotFound    = "remote %s not found, skipping refspec configuration"
++	fmtRemovedFetch      = "removed %s = %s (a fetch refspec into refs/etude/* makes any 'git fetch --prune' delete run refs not yet pushed)"
++
++	// Warnings state the CONDITION and point at the docs. They deliberately do
++	// NOT embed a runnable shell command any more.
++	//
++	// Three consecutive gate rounds produced a blocking defect in these strings
++	// and nowhere else: a placeholder URL git accepts as a relative URL (so
++	// pasting it created a broken remote that then silenced this very warning);
++	// a preview that dropped the --remote selection (so the operator repaired
++	// origin and left the selected remote exposed); and a nested-single-quote
++	// command that will not parse when pasted. Each fix was correct and the next
++	// round found another. The defect is not any one string — it is that a
++	// setup command was trying to emit an executable, context-correct
++	// remediation for every state it can observe.
++	//
++	// Producing correct operator-facing remediation is `etude doctor`'s entire
++	// job (bead etude-ldf): it is read-only, it reports OK/WARN/FAIL per check,
++	// and an exact remediation command is its deliverable rather than a
++	// by-product. init's job is to not exit quietly on an exposed repo. It says
++	// what is wrong and where the fix is documented; it does not hand out
++	// commands it cannot guarantee.
++	fmtWarnFetchRemains    = "warning: %s still has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. See the migration section of docs/init.md."
++	fmtWarnFetchRemainsDry = "warning: %s has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. This is a preview; a real run of this command on remote %q removes it."
++	fmtWarnNoPush          = "warning: remote %q has no %s push refspec, so run refs never reach it and stay local-only. See docs/init.md."
++	fmtWarnNoRemote        = "warning: remote %q not found, so no refs/etude/* push refspec is configured and run refs stay local-only. Add the remote, then re-run etude init against it. See docs/init.md."
++	fmtWarnOtherRemote     = "warning: remote %q also has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' against it will delete run refs not yet pushed. This run only configured the remote it was pointed at; re-run etude init with --remote %q to repair that one. See docs/init.md."
+ )
+ 
++// etudeRefPrefix is the ref namespace this tool owns.
++const etudeRefPrefix = "refs/etude/"
++
++// canonicalPushRefspec is the one push refspec etude registers and checks for.
++// init compares against it EXACTLY. Deciding whether some other refspec happens
++// to be equivalent needs a full model of refspec semantics — glob matching, name
++// preservation, grammar — which belongs in `etude doctor` (bead etude-ldf), not
++// in a setup command that would only be guessing.
++const canonicalPushRefspec = "refs/etude/*:refs/etude/*"
++
+ type actionLine struct {
+ 	status actionStatus
+ 	text   string
+@@ -159,6 +201,10 @@ func plan(ctx context.Context, root string, force bool, remote string, remoteCha
+ 	// Refspec phase — exactly one action.
+ 	actions = append(actions, refspecAction(ctx, root, remote, remoteChanged))
+ 
++	// Safety phase — report if the target remote is still exposed, so init never
++	// exits quietly on a repo that can still lose run refs.
++	actions = append(actions, refspecSafetyAction(ctx, root, remote))
++
+ 	return actions, nil
+ }
+ 
+@@ -194,10 +240,18 @@ func writeAction(path string, content []byte) initAction {
+ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool) initAction {
+ 	return initAction{
+ 		run: func(force, dryRun bool) ([]actionLine, error) {
++			// No FETCH refspec is registered. One whose destination is inside
++			// refs/etude/* makes every local run ref a remote-tracking ref, so
++			// any `git fetch --prune` deletes every run ref not yet pushed. Any
++			// left by an older etude init is removed instead. `etude sync`
++			// passes the refspec explicitly, so nothing needs it in config.
++			//
++			// The PUSH refspec stays: it is what makes `git push` carry run refs
++			// at all, and pushing cannot delete a local ref. Removing both would
++			// lose the same data by another route.
+ 			fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
+-			fetchVal := "+refs/etude/*:refs/etude/*"
+ 			pushKey := fmt.Sprintf("remote.%s.push", remote)
+-			pushVal := "refs/etude/*:refs/etude/*"
++			pushVal := canonicalPushRefspec
+ 
+ 			// Dry-run is always read-only and NEVER errors on a missing remote,
+ 			// even under --force with an explicit missing remote. Check dryRun
+@@ -214,15 +268,21 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 					note := fmt.Sprintf("remote %s not found -> would skip refspec configuration", remote)
+ 					return []actionLine{{statusNote, note}}, nil
+ 				}
++				// A hazardous-fetch-refspec removal is previewed on BOTH paths,
++				// because it happens on both.
++				var lines []actionLine
++				stale, err := findEtudeFetchRefspecs(ctx, root, fetchKey)
++				if err != nil {
++					return nil, err
++				}
++				for _, v := range stale {
++					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: remove %s = %s", fetchKey, v)})
++				}
+ 				if force {
+-					// force + present → zero output (silent on refspecs).
+-					return nil, nil
++					// force + present → silent except for the removal.
++					return lines, nil
+ 				}
+-				// Non-force + present: preview distinct fetch and push lines (both counted).
+-				return []actionLine{
+-					{statusConfigured, fmt.Sprintf("plan: configure fetch refspec on %s", remote)},
+-					{statusConfigured, fmt.Sprintf("plan: configure push refspec on %s", remote)},
+-				}, nil
++				return append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: configure push refspec on %s", remote)}), nil
+ 			}
+ 
+ 			// Normal (non-dry-run) run.
+@@ -233,8 +293,13 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 				if remoteChanged && !remoteExists(ctx, root, remote) {
+ 					return nil, remoteNotFoundErr(remote)
+ 				}
+-				// Force + all other cases: zero output (silent).
+-				return nil, nil
++				if !remoteExists(ctx, root, remote) {
++					return nil, nil
++				}
++				// Force is silent on refspecs EXCEPT for removing a hazardous
++				// fetch refspec — a known data-loss setting is never left in
++				// place just because the caller passed --force.
++				return removeEtudeFetchRefspecs(ctx, root, fetchKey)
+ 			}
+ 
+ 			// Non-force normal run.
+@@ -246,8 +311,10 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 				return []actionLine{{statusNote, note}}, nil
+ 			}
+ 
+-			// Remote present: add refspecs if absent.
+-			lines, err := addRefspecIfAbsent(ctx, root, fetchKey, fetchVal)
++			// Remote present: drop any etude-registered fetch refspec, then add
++			// the push refspec. Removal runs first so a repo initialised by an
++			// older etude is made safe even if the push step later errors.
++			lines, err := removeEtudeFetchRefspecs(ctx, root, fetchKey)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -323,16 +390,33 @@ func addRefspecIfAbsent(ctx context.Context, root, key, value string) ([]actionL
+ 	if err != nil {
+ 		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
+ 	}
++	// Count rather than return on the first match. A repo carrying DUPLICATE
++	// canonical entries — left by an older version of this code, which used a
++	// racy read-then-add — would otherwise be reported "already configured" and
++	// never collapsed. Falling through to --replace-all converges it to one,
++	// so the phase self-heals instead of preserving the old bug's output.
++	matches := 0
+ 	for _, v := range existing {
+ 		if v == value {
+-			text := fmt.Sprintf(fmtAlreadyConfigured, key, value)
+-			return []actionLine{{statusAlreadyConfigured, text}}, nil
++			matches++
+ 		}
+ 	}
++	if matches == 1 {
++		text := fmt.Sprintf(fmtAlreadyConfigured, key, value)
++		return []actionLine{{statusAlreadyConfigured, text}}, nil
++	}
++	// --replace-all with a value-pattern matching exactly this value, rather than
++	// --add. The read above is not atomic with the write, and worktree lanes
++	// share one .git/config, so two concurrent inits can both observe "absent"
++	// and both add — leaving duplicate entries. --replace-all collapses every
++	// line matching the pattern to a single value, and adds it when none match,
++	// so concurrent invocations CONVERGE on exactly one entry instead of racing.
++	// The read above therefore only decides the message, never correctness.
++	//
+ 	// Directive A: use --local explicitly.
+-	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--add", key, value)
+-	if output, err := cmd.CombinedOutput(); err != nil {
+-		return nil, fmt.Errorf("git config --add %s: %w\n%s", key, err, output)
++	pattern := "^" + regexp.QuoteMeta(value) + "$"
++	if err := runGitConfigWithLockRetry(ctx, root, "--replace-all", key, value, pattern); err != nil {
++		return nil, err
+ 	}
+ 	text := fmt.Sprintf(fmtConfigured, key, value)
+ 	return []actionLine{{statusConfigured, text}}, nil
+@@ -415,3 +499,308 @@ func validateRemoteName(name string) error {
+ 	}
+ 	return nil
+ }
++
++// refspec is a parsed git refspec: [+]<src>[:<dst>]. With no colon, one pattern
++// serves as both sides.
++//
++// This is parsed rather than substring-matched because a refspec has several
++// spellings that mean the same thing — "+refs/etude/*:refs/etude/*",
++// "refs/etude/*:refs/etude/*", and a bare "refs/etude/*" all name the same
++// namespace, and a substring test for ":refs/etude/" silently misses the last
++// one. init only needs to answer ONE question about a refspec: did etude
++// register it? Anything requiring real refspec SEMANTICS — glob coverage, name
++// preservation, grammar validity — belongs to `etude doctor` (bead etude-ldf).
++type refspec struct {
++	force    bool
++	src, dst string
++	// hasDst records whether a destination was written at all. It is NOT
++	// cosmetic: a colonless refspec means opposite things on the two sides.
++	// For FETCH, no destination means the ref is fetched to FETCH_HEAD and no
++	// local ref is updated — so it creates no local ref and cannot be pruned.
++	// For PUSH, it means the same name on the remote. Treating a colonless
++	// fetch refspec as "dst = src" would make init delete a harmless entry.
++	hasDst bool
++}
++
++func parseRefspec(value string) refspec {
++	s := strings.TrimSpace(value)
++	force := strings.HasPrefix(s, "+")
++	s = strings.TrimPrefix(s, "+")
++	src, dst, ok := strings.Cut(s, ":")
++	if !ok {
++		return refspec{force: force, src: s, hasDst: false}
++	}
++	return refspec{force: force, src: src, dst: dst, hasDst: true}
++}
++
++// etudeOwnedFetchRefspec reports whether a fetch refspec is one etude itself
++// registers: its destination lands inside refs/etude/. These, and only these,
++// are init's to remove.
++//
++// A refspec BROADER than the namespace (e.g. "+refs/*:refs/*") prunes run refs
++// just as effectively, but it is the user's own configuration and deleting it
++// would break their branch fetching. Detecting and reporting that case needs
++// glob semantics and is `etude doctor`'s job (etude-ldf); init does not guess.
++func etudeOwnedFetchRefspec(r refspec) bool {
++	// No destination means the ref goes to FETCH_HEAD only — no local ref is
++	// created, so nothing is prunable and there is nothing for init to remove.
++	// Deleting such an entry would destroy harmless user configuration, which is
++	// a worse outcome than the bug this bead fixes.
++	if !r.hasDst {
++		return false
++	}
++	return strings.HasPrefix(strings.TrimSuffix(r.dst, "*"), etudeRefPrefix)
++}
++
++// findEtudeFetchRefspecs returns the values of key that etude registered and may
++// remove. Read-only, so the dry-run preview and the real run report the same set.
++func findEtudeFetchRefspecs(ctx context.Context, root, key string) ([]string, error) {
++	existing, err := gitGetAll(ctx, root, key)
++	if err != nil {
++		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
++	}
++	var hazardous []string
++	for _, v := range existing {
++		if etudeOwnedFetchRefspec(parseRefspec(v)) {
++			hazardous = append(hazardous, v)
++		}
++	}
++	return hazardous, nil
++}
++
++// removeEtudeFetchRefspecs deletes every etude-registered fetch refspec on key.
++//
++// Such an entry makes every local run ref a remote-tracking ref, and per
++// git-fetch(1) refs fetched due to an explicit configured refspec are subject to
++// pruning — so one `git fetch --prune` anywhere in the repository deletes every
++// run ref not yet pushed. That destroyed three recorded gate attempts during
++// epic etude-9uf (bead etude-nad), and it fires from ordinary tooling:
++// `workmux remove --gone` runs `git fetch --prune` automatically, and linked
++// worktrees share one ref store.
++//
++// Runs on every init, including --force.
++func removeEtudeFetchRefspecs(ctx context.Context, root, key string) ([]actionLine, error) {
++	hazardous, err := findEtudeFetchRefspecs(ctx, root, key)
++	if err != nil {
++		return nil, err
++	}
++	if len(hazardous) == 0 {
++		return nil, nil
++	}
++
++	// ONE git call removes ALL matches, via an anchored alternation of the exact
++	// escaped values. Unsetting them one call at a time would not be atomic:
++	// with two hazardous entries, a kill between calls leaves the second active
++	// and the repo still prunable — precisely the state this exists to remove.
++	// git rewrites .git/config under an exclusive lock, so a single --unset-all
++	// either removes every match or changes nothing.
++	alternatives := make([]string, 0, len(hazardous))
++	for _, v := range hazardous {
++		alternatives = append(alternatives, regexp.QuoteMeta(v))
++	}
++	valuePattern := "^(" + strings.Join(alternatives, "|") + ")$"
++
++	// Two concurrency cases, both reachable because worktree lanes share one
++	// .git/config and the read above is not atomic with this write:
++	//   - exit 5, "unset an option which does not exist": a concurrent init
++	//     already removed them. That is the outcome we wanted, so it is success,
++	//     but report nothing removed — this process did not remove it.
++	//   - "could not lock config file": git takes an exclusive lock and does NOT
++	//     retry, so simultaneous inits collide. Retry briefly. This is detected
++	//     by message, so the child runs under LC_ALL=C — a localized git would
++	//     otherwise translate the string and turn a retriable collision into a
++	//     hard failure. Matching an exit code instead does not work here: git
++	//     exits 255 on a lock collision, which is its generic fatal status and
++	//     would swallow unrelated errors (it is NOT the documented 4, "can not
++	//     write config file").
++	//
++	// ponytail: fixed short backoff, no jitter — the contending population is a
++	// handful of lanes, not a fleet. Move to jittered exponential backoff if init
++	// ever runs at real concurrency.
++	if err := runGitConfigWithLockRetry(ctx, root, "--unset-all", key, valuePattern); err != nil {
++		if errors.Is(err, errNothingToUnset) {
++			return nil, nil
++		}
++		return nil, err
++	}
++
++	lines := make([]actionLine, 0, len(hazardous))
++	for _, v := range hazardous {
++		lines = append(lines, actionLine{statusConfigured, fmt.Sprintf(fmtRemovedFetch, key, v)})
++	}
++	return lines, nil
++}
++
++// refspecSafetyAction reports, without changing anything, whether the remote
++// init was pointed at ended up in the safe state. Exiting quietly on an exposed
++// repo is how the original bug went unnoticed across two incidents.
++//
++// Deliberately narrow: it checks only the TARGET remote, and only by exact
++// comparison — "is an etude-registered fetch refspec still present" and "is the
++// canonical push refspec present". A general audit (other remotes, refspecs
++// broader than the namespace, mappings that do not preserve names, invalid
++// grammar) requires a full refspec-semantics model and is `etude doctor`'s job,
++// tracked as bead etude-ldf. A setup command that guessed at those would report
++// confidently and be wrong.
++//
++// Read-only: it performs no writes and runs on every path, including --force and
++// --dry-run. Its OUTPUT is not identical between the two, and cannot be: a real
++// run removes the hazardous entry before this action reads it, so the entry is
++// reported only under --dry-run — and there, with preview-appropriate wording.
++func refspecSafetyAction(ctx context.Context, root, remote string) initAction {
++	return initAction{
++		run: func(force, dryRun bool) ([]actionLine, error) {
++			var lines []actionLine
++
++			// A missing target remote is reported, but must NOT short-circuit
++			// the sweep below: the repo can still carry a hazardous refspec on a
++			// remote that does exist, and `git fetch --prune <that remote>`
++			// deletes unpushed run refs regardless of whether the remote this
++			// run was pointed at is present. Returning here would make the most
++			// exposed configuration — no origin, a hazardous sibling — the one
++			// case that reports nothing.
++			targetExists := remoteExists(ctx, root, remote)
++			if !targetExists {
++				lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoRemote, remote)})
++			}
++
++			// Target-remote checks only make sense when it exists; the
++			// missing-remote warning above already covers that case, and adding
++			// "no push refspec" on top of "remote not found" is noise.
++			if targetExists {
++				fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
++				stale, err := findEtudeFetchRefspecs(ctx, root, fetchKey)
++				if err != nil {
++					return nil, err
++				}
++				for _, v := range stale {
++					// Under --dry-run nothing has been removed yet, so the entry
++					// is still there by construction and a manual unset command
++					// would contradict the "plan: remove ..." line above.
++					if dryRun {
++						lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnFetchRemainsDry, fetchKey, v, remote)})
++						continue
++					}
++					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnFetchRemains, fetchKey, v)})
++				}
++
++				pushKey := fmt.Sprintf("remote.%s.push", remote)
++				push, err := gitGetAll(ctx, root, pushKey)
++				if err != nil {
++					return nil, err
++				}
++				found := false
++				for _, v := range push {
++					if v == canonicalPushRefspec {
++						found = true
++						break
++					}
++				}
++				if !found {
++					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoPush, remote, canonicalPushRefspec)})
++				}
++			}
++
++			// Every OTHER remote is checked too, and only warned about. init
++			// configures the one remote it was pointed at, so a hazardous entry
++			// on a sibling remote survives it — and `git fetch --prune <that
++			// remote>` deletes unpushed run refs just the same. Reporting only
++			// the target remote would leave a real exposure silent, which is the
++			// failure mode this phase exists to prevent.
++			//
++			// This needs NO refspec semantics beyond what init already has: it
++			// is the same exact etudeOwnedFetchRefspec predicate applied to more
++			// config keys. It is not the general audit that was cut to
++			// `etude doctor` — that one needed glob coverage, name preservation
++			// and grammar validation, none of which appear here.
++			//
++			// Warn only, never remove: --remote named ONE remote, and silently
++			// editing a different one's config is not what was asked for.
++			others, err := gitRemotes(ctx, root)
++			if err != nil {
++				return nil, err
++			}
++			for _, other := range others {
++				if other == remote {
++					continue
++				}
++				otherKey := fmt.Sprintf("remote.%s.fetch", other)
++				otherStale, err := findEtudeFetchRefspecs(ctx, root, otherKey)
++				if err != nil {
++					return nil, err
++				}
++				for _, v := range otherStale {
++					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnOtherRemote, other, v, other)})
++				}
++			}
++			return lines, nil
++		},
++	}
++}
++
++// errNothingToUnset reports git config's exit 5, "tried to unset an option which
++// does not exist". For a concurrent init that is success, not failure: another
++// process reached the desired end state first.
++//
++// Only the --unset-all caller checks for it. --replace-all cannot produce exit 5
++// (it ADDS when no line matches), so the add path never sees this sentinel.
++var errNothingToUnset = errors.New("nothing to unset")
++
++// runGitConfigWithLockRetry runs one `git config --local <args...>` write,
++// retrying briefly on a lock collision.
++//
++// Both durable config writes in this command go through here. git takes an
++// EXCLUSIVE lock on .git/config and does NOT retry, so simultaneous inits — which
++// are normal when worktree lanes share one config file — collide with
++// "could not lock config file". The collision is detected by MESSAGE, so the
++// child runs under LC_ALL=C: a localized git would otherwise translate the
++// string and turn a retriable collision into a hard failure. Matching an exit
++// code instead does not work here — git exits 255 on a lock collision, which is
++// its generic fatal status and would swallow unrelated errors (it is NOT the
++// documented 4, "can not write config file"). Verified by holding the lock file.
++//
++// ponytail: fixed short backoff, no jitter — the contending population is a
++// handful of lanes, not a fleet. Move to jittered exponential backoff if init
++// ever runs at real concurrency.
++func runGitConfigWithLockRetry(ctx context.Context, root string, args ...string) error {
++	full := append([]string{"-C", root, "config", "--local"}, args...)
++	var lastErr error
++	for attempt := 0; attempt < 8; attempt++ {
++		if attempt > 0 {
++			select {
++			case <-ctx.Done():
++				return ctx.Err()
++			case <-time.After(time.Duration(attempt) * 20 * time.Millisecond):
++			}
++		}
++		cmd := exec.CommandContext(ctx, "git", full...)
++		cmd.Env = append(os.Environ(), "LC_ALL=C")
++		output, err := cmd.CombinedOutput()
++		if err == nil {
++			return nil
++		}
++		var exitErr *exec.ExitError
++		if errors.As(err, &exitErr) && exitErr.ExitCode() == 5 {
++			return errNothingToUnset
++		}
++		lastErr = fmt.Errorf("git config %s: %w\n%s", strings.Join(args, " "), err, output)
++		if !strings.Contains(string(output), "could not lock config file") {
++			return lastErr
++		}
++	}
++	return lastErr
++}
++
++// gitRemotes lists the repo's configured remotes.
++func gitRemotes(ctx context.Context, root string) ([]string, error) {
++	cmd := exec.CommandContext(ctx, "git", "-C", root, "remote")
++	out, err := cmd.Output()
++	if err != nil {
++		return nil, fmt.Errorf("git remote: %w", err)
++	}
++	raw := strings.TrimSpace(string(out))
++	if raw == "" {
++		return nil, nil
++	}
++	return strings.Split(raw, "\n"), nil
++}
+diff --git a/internal/cli/init_test.go b/internal/cli/init_test.go
+index fefcf6b..fa57f4c 100644
+--- a/internal/cli/init_test.go
++++ b/internal/cli/init_test.go
+@@ -1,9 +1,12 @@
+ package cli
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"os"
++	"os/exec"
+ 	"path/filepath"
++	"regexp"
+ 	"strings"
+ 	"testing"
+ 
+@@ -74,10 +77,12 @@ func TestInitCreatesScaffoldAndRefspecs(t *testing.T) {
+ 		}
+ 	}
+ 
+-	// Refspecs must be configured.
++	// The push refspec is configured; a FETCH refspec into refs/etude/* must
++	// NOT be, because it would make every local run ref prunable by a bare
++	// `git fetch --prune` (etude-i19).
+ 	fetchVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+-	if !strings.Contains(fetchVal, "+refs/etude/*:refs/etude/*") {
+-		t.Fatalf("fetch refspec not configured: %q", fetchVal)
++	if strings.Contains(fetchVal, ":refs/etude/") {
++		t.Fatalf("init configured a fetch refspec into refs/etude/*: %q", fetchVal)
+ 	}
+ 	pushVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+ 	if !strings.Contains(pushVal, "refs/etude/*:refs/etude/*") {
+@@ -183,16 +188,10 @@ func TestInitIdempotency(t *testing.T) {
+ 		t.Fatalf("second init did not report skipped files: %q", stdout2)
+ 	}
+ 
+-	// Each refspec key must have exactly one etude entry.
++	// The fetch key must have no etude entry at all, on any run.
+ 	fetchOut := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+-	etudeFetch := 0
+-	for _, line := range strings.Split(strings.TrimSpace(fetchOut), "\n") {
+-		if strings.Contains(line, "refs/etude") {
+-			etudeFetch++
+-		}
+-	}
+-	if etudeFetch != 1 {
+-		t.Fatalf("fetch refspec duplicated: found %d etude entries in %q", etudeFetch, fetchOut)
++	if strings.Contains(fetchOut, ":refs/etude/") {
++		t.Fatalf("fetch refspec into refs/etude/* present after repeat init: %q", fetchOut)
+ 	}
+ 
+ 	pushOut := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+@@ -414,9 +413,13 @@ func TestInitAcceptsEmbeddedDashRemote(t *testing.T) {
+ 	if _, stderr, err := execute("init", "--remote", "my-origin"); err != nil {
+ 		t.Fatalf("init --remote my-origin errored: %v (stderr %q)", err, stderr)
+ 	}
+-	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.fetch")
+-	if !strings.Contains(got, "+refs/etude/*:refs/etude/*") {
+-		t.Fatalf("fetch refspec not configured on my-origin: %q", got)
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.push")
++	if !strings.Contains(got, "refs/etude/*:refs/etude/*") {
++		t.Fatalf("push refspec not configured on my-origin: %q", got)
++	}
++	fetchGot := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.fetch")
++	if strings.Contains(fetchGot, ":refs/etude/") {
++		t.Fatalf("init configured a fetch refspec into refs/etude/* on my-origin: %q", fetchGot)
+ 	}
+ }
+ 
+@@ -720,22 +723,22 @@ func TestInitSummaryCounts(t *testing.T) {
+ 	}
+ 	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
+ 
+-	// First run: all created + 2 configured (fetch + push).
++	// First run: all created + 1 configured (push only — no fetch refspec).
+ 	stdout, stderr, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
+ 	}
+-	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 2 configured", expectedCreated)
++	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 1 configured", expectedCreated)
+ 	if !strings.Contains(stdout, wantSummary1) {
+ 		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
+ 	}
+ 
+-	// Second run: all skipped + 2 configured (already-configured → still in configured bucket).
++	// Second run: all skipped + 1 configured (already-configured → still in configured bucket).
+ 	stdout2, stderr2, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
+ 	}
+-	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 2 configured", expectedCreated)
++	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 1 configured", expectedCreated)
+ 	if !strings.Contains(stdout2, wantSummary2) {
+ 		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
+ 	}
+@@ -784,3 +787,500 @@ func assertFileContains(t *testing.T, path, substr string) {
+ 		t.Fatalf("file %s does not contain %q:\n%s", path, substr, string(content))
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// etude-i19: a fetch refspec whose destination is refs/etude/* makes every
++// local run ref a remote-tracking ref, so any `git fetch --prune` deletes every
++// run ref not yet pushed. init must never register one and must remove one left
++// behind by an older etude init.
++// ---------------------------------------------------------------------------
++
++// seedHazardousFetchRefspec configures the refspec older etude versions added.
++func seedHazardousFetchRefspec(t *testing.T, repo, remote string) {
++	t.Helper()
++	gitCapture(t, repo, "config", "--local", "--add", "remote."+remote+".fetch", "+refs/etude/*:refs/etude/*")
++}
++
++func TestInitRemovesPreexistingEtudeFetchRefspec(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	if strings.Contains(got, ":refs/etude/") {
++		t.Fatalf("hazardous fetch refspec survived init: %q", got)
++	}
++	// The remote's ordinary branch refspec must be untouched.
++	if !strings.Contains(got, "refs/remotes/origin/*") {
++		t.Fatalf("init removed the branch fetch refspec too: %q", got)
++	}
++	if !strings.Contains(stdout, "removed remote.origin.fetch") {
++		t.Fatalf("init did not report the removal: %q", stdout)
++	}
++	// Push is still configured — pushing cannot delete a local ref.
++	if push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(push, "refs/etude/*:refs/etude/*") {
++		t.Fatalf("push refspec not configured: %q", push)
++	}
++}
++
++func TestInitForceRemovesPreexistingEtudeFetchRefspec(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	if _, stderr, err := execute("init", "--force"); err != nil {
++		t.Fatalf("init --force errored: %v\nstderr: %s", err, stderr)
++	}
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	if strings.Contains(got, ":refs/etude/") {
++		t.Fatalf("--force left the hazardous fetch refspec in place: %q", got)
++	}
++}
++
++func TestInitDryRunPreviewsRemovalWithoutChangingConfig(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++	before := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++
++	stdout, stderr, err := execute("init", "--dry-run")
++	if err != nil {
++		t.Fatalf("init --dry-run errored: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "plan: remove remote.origin.fetch") {
++		t.Fatalf("dry run did not preview the removal: %q", stdout)
++	}
++	if after := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); after != before {
++		t.Fatalf("dry run modified git config: before=%q after=%q", before, after)
++	}
++}
++
++// TestInitLeavesRunRefsSafeFromFetchPrune is the acceptance test for the whole
++// bead: it drives a REAL `git fetch --prune` against a real remote and asserts a
++// local run ref that has not been pushed survives it.
++func TestInitLeavesRunRefsSafeFromFetchPrune(t *testing.T) {
++	origin := t.TempDir()
++	gitCapture(t, origin, "init", "--bare")
++
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", origin)
++	gitCapture(t, repo, "push", "origin", "HEAD:main")
++	// A repo initialised by an older etude carries the hazardous refspec.
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/unpushed", head)
++
++	// Before the fix this deletes the run ref. Prove the hazard is real first,
++	// so the assertion after init cannot pass vacuously.
++	gitCapture(t, repo, "fetch", "--prune", "origin")
++	if out := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude/runs")); out != "" {
++		t.Fatalf("negative control failed: the hazardous refspec did not prune %q — this test no longer proves anything", out)
++	}
++
++	// Now run init, which must remove the refspec, and re-create the run ref.
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/unpushed", head)
++
++	gitCapture(t, repo, "fetch", "--prune", "origin")
++	if out := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude/runs")); out != "refs/etude/runs/unpushed" {
++		t.Fatalf("git fetch --prune deleted the unpushed run ref after init; refs = %q", out)
++	}
++}
++
++// TestInitKeepsPushRefspecWhenRemovingFetchRefspec pins the distinction the fix
++// turns on. Only the FETCH refspec is dangerous: it makes local run refs
++// prunable. The PUSH refspec is what carries run refs to the remote at all, so
++// removing both would be the same data loss by another route.
++func TestInitKeepsPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "refs/etude/*:refs/etude/*")
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++
++	if fetch := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(fetch, ":refs/etude/") {
++		t.Fatalf("fetch refspec into refs/etude/* survived: %q", fetch)
++	}
++	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
++		t.Fatalf("init removed the etude PUSH refspec; run refs could no longer be pushed: %q", push)
++	}
++	// Exactly one push entry — removal must not have dropped-and-re-added a dup.
++	if n := strings.Count(push, "refs/etude/*:refs/etude/*"); n != 1 {
++		t.Fatalf("etude push refspec count = %d, want 1: %q", n, push)
++	}
++}
++
++func TestInitWarnsWhenRemoteMissing(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, `warning: remote "origin" not found`) {
++		t.Fatalf("init did not warn about the missing remote: %q\nstderr: %s", stdout, stderr)
++	}
++	// init warnings deliberately embed NO runnable shell command — three gate
++	// rounds produced a defect in exactly that surface and nowhere else. They
++	// name the condition and point at the docs; `etude doctor` owns remediation.
++	if strings.Contains(stdout, "git config --local") || strings.Contains(stdout, "YOUR_REMOTE_URL") {
++		t.Fatalf("warning embeds a runnable command: %q", stdout)
++	}
++	if !strings.Contains(stdout, "docs/init.md") {
++		t.Fatalf("warning lacks the exact fix command: %q", stdout)
++	}
++}
++
++func TestInitEmitsNoWarningsWhenSafe(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	if strings.Contains(stdout, "warning:") {
++		t.Fatalf("init warned on a safe repo: %q\nstderr: %s", stdout, stderr)
++	}
++}
++
++// A push refspec with an EMPTY source (":refs/etude/runs/foo") is git's syntax
++// for DELETING that ref on the remote. It mentions the namespace but uploads
++// nothing, so it must not be mistaken for "push is configured" — otherwise the
++// warning is suppressed on a repo whose run refs never leave the machine.
++func TestInitWarnsWhenPushRefspecDeletesInsteadOfUploading(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", ":refs/etude/runs/foo")
++
++	stdout, stderr, err := execute("init", "--force")
++	if err != nil {
++		t.Fatalf("init --force errored: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
++		t.Fatalf("delete-only push refspec was accepted as configured: %q", stdout)
++	}
++}
++
++// Lanes share one .git/config, so two inits can race: both read the hazardous
++// entry, the first unsets it, and the second's --unset-all finds nothing and
++// exits 5. That is the outcome we wanted, not a failure.
++func TestRemoveEtudeFetchRefspecsIsConcurrencySafe(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	const workers = 8
++	errs := make(chan error, workers)
++	start := make(chan struct{})
++	for i := 0; i < workers; i++ {
++		go func() {
++			<-start
++			_, err := removeEtudeFetchRefspecs(context.Background(), repo, "remote.origin.fetch")
++			errs <- err
++		}()
++	}
++	close(start)
++	for i := 0; i < workers; i++ {
++		if err := <-errs; err != nil {
++			t.Fatalf("concurrent removal returned error: %v", err)
++		}
++	}
++	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(got, ":refs/etude/") {
++		t.Fatalf("hazardous refspec survived concurrent removal: %q", got)
++	}
++}
++
++// TestInitWarningsEmbedNoRunnableCommands is the regression for the CUT: init
++// warnings must not contain a shell command at all. Three consecutive gate
++// rounds each found a different defect in embedded remediation strings — a
++// placeholder URL git accepts, a preview that dropped the --remote selection,
++// and a nested-single-quote command that will not parse. Removing the surface
++// removes the class; `etude doctor` (etude-ldf) owns remediation.
++func TestInitWarningsEmbedNoRunnableCommands(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/y.git")
++	seedHazardousFetchRefspec(t, repo, "backup")
++
++	for _, args := range [][]string{
++		{"init"},
++		{"init", "--dry-run", "--remote", "backup"},
++		{"init", "--force", "--remote", "backup"},
++	} {
++		stdout, stderr, err := execute(args...)
++		if err != nil {
++			t.Fatalf("%v errored: %v\nstderr: %s", args, err, stderr)
++		}
++		for _, line := range strings.Split(stdout, "\n") {
++			if !strings.HasPrefix(line, "warning:") {
++				continue
++			}
++			for _, banned := range []string{"git config", "git remote add", "--unset-all", "--replace-all", "YOUR_REMOTE_URL"} {
++				if strings.Contains(line, banned) {
++					t.Errorf("%v warning embeds a runnable command fragment %q: %s", args, banned, line)
++				}
++			}
++		}
++	}
++}
++
++func TestParseRefspec(t *testing.T) {
++	cases := []struct {
++		in       string
++		force    bool
++		src, dst string
++	}{
++		{"+refs/etude/*:refs/etude/*", true, "refs/etude/*", "refs/etude/*"},
++		{"refs/etude/*:refs/etude/*", false, "refs/etude/*", "refs/etude/*"},
++		{"+refs/etude/*", true, "refs/etude/*", ""}, // no destination recorded
++		{":refs/etude/runs/foo", false, "", "refs/etude/runs/foo"},
++	}
++	for _, tc := range cases {
++		got := parseRefspec(tc.in)
++		if got.force != tc.force || got.src != tc.src || got.dst != tc.dst {
++			t.Errorf("parseRefspec(%q) = %+v, want force=%v src=%q dst=%q", tc.in, got, tc.force, tc.src, tc.dst)
++		}
++	}
++}
++
++func TestRegexpQuoteMetaEscapesRefspecs(t *testing.T) {
++	// The value-pattern handed to git config is a POSIX ERE, and refspecs are
++	// full of metacharacters. regexp.QuoteMeta escapes the same set POSIX ERE
++	// treats as special, so a backslash-escaped punctuation character is literal
++	// in both. Pinned because the whole removal targets an anchored literal.
++	got := regexp.QuoteMeta("+refs/etude/*:refs/etude/*")
++	want := `\+refs/etude/\*:refs/etude/\*`
++	if got != want {
++		t.Fatalf("regexp.QuoteMeta = %q, want %q", got, want)
++	}
++}
++
++// etudeOwnedFetchRefspec decides what init may remove. It is parsed rather than
++// substring-matched because the same mapping has several spellings; a bare
++// "+refs/etude/*" has no colon, so a ":refs/etude/" substring test misses it.
++func TestEtudeOwnedFetchRefspec(t *testing.T) {
++	cases := []struct {
++		refspec string
++		owned   bool
++	}{
++		{"+refs/etude/*:refs/etude/*", true}, // the canonical hazard
++		{"refs/etude/*:refs/etude/*", true},  // unforced variant
++		// No destination: git fetches to FETCH_HEAD and updates no local ref, so
++		// nothing is prunable and init must NOT delete it. Reading it as
++		// "dst = src" would destroy harmless user configuration.
++		{"+refs/etude/*", false},
++		{"refs/etude/runs/foo", false},
++		{"+refs/heads/*:refs/etude/runs/x", true},      // single etude destination
++		{"+refs/heads/*:refs/remotes/origin/*", false}, // ordinary, harmless
++		{"+refs/tags/*:refs/tags/*", false},
++		{"+refs/*:refs/*", false}, // broader than the namespace: doctor's call, not init's
++	}
++	for _, tc := range cases {
++		if got := etudeOwnedFetchRefspec(parseRefspec(tc.refspec)); got != tc.owned {
++			t.Errorf("etudeOwnedFetchRefspec(%q) = %v, want %v", tc.refspec, got, tc.owned)
++		}
++	}
++}
++
++// The refspec phase makes TWO durable config writes, and the removal test only
++// covered the first. addRefspecIfAbsent reads-then-writes, so two concurrent
++// inits could both see "absent" and both add, leaving DUPLICATE push entries.
++// It uses --replace-all with a pattern matching exactly this value, which
++// collapses matching lines to one and adds when none match, so racing callers
++// converge on exactly one entry.
++func TestAddRefspecIfAbsentConvergesUnderConcurrency(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++
++	const workers = 8
++	errs := make(chan error, workers)
++	start := make(chan struct{})
++	for i := 0; i < workers; i++ {
++		go func() {
++			<-start
++			_, err := addRefspecIfAbsent(context.Background(), repo, "remote.origin.push", canonicalPushRefspec)
++			errs <- err
++		}()
++	}
++	close(start)
++	for i := 0; i < workers; i++ {
++		if err := <-errs; err != nil {
++			t.Fatalf("concurrent addRefspecIfAbsent returned error: %v", err)
++		}
++	}
++
++	out := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if n := strings.Count(out, canonicalPushRefspec); n != 1 {
++		t.Fatalf("push refspec entry count = %d, want exactly 1 after concurrent adds:\n%s", n, out)
++	}
++}
++
++// A dry-run preview must name the SAME remote it was pointed at, or the operator
++// runs a bare `etude init` that repairs origin and leaves this remote exposed.
++func TestInitDryRunRemediationCarriesRemoteSelection(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/y.git")
++	seedHazardousFetchRefspec(t, repo, "backup")
++
++	stdout, stderr, err := execute("init", "--dry-run", "--remote", "backup")
++	if err != nil {
++		t.Fatalf("init --dry-run --remote backup errored: %v\nstderr: %s", err, stderr)
++	}
++	// The preview must still identify WHICH remote it is previewing, or the
++	// operator repairs origin and leaves this one exposed. It says so in prose
++	// rather than as a pasteable command.
++	if !strings.Contains(stdout, `"backup"`) {
++		t.Fatalf("dry-run preview does not name the selected remote: %q", stdout)
++	}
++	if strings.Contains(stdout, "'etude init --remote 'backup''") {
++		t.Fatalf("nested-quote command regression: %q", stdout)
++	}
++}
++
++// An older version of addRefspecIfAbsent used a racy read-then-add, so a repo
++// can already carry DUPLICATE canonical push entries. Returning on the first
++// match would report "already configured" and preserve the duplicate forever;
++// falling through to --replace-all collapses it, making the phase self-healing.
++func TestAddRefspecIfAbsentCollapsesPreexistingDuplicates(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++	if n := strings.Count(gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"), canonicalPushRefspec); n != 2 {
++		t.Fatalf("precondition: wanted 2 duplicate entries, got %d", n)
++	}
++
++	if _, err := addRefspecIfAbsent(context.Background(), repo, "remote.origin.push", canonicalPushRefspec); err != nil {
++		t.Fatalf("addRefspecIfAbsent returned error: %v", err)
++	}
++
++	out := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if n := strings.Count(out, canonicalPushRefspec); n != 1 {
++		t.Fatalf("duplicates not collapsed: count = %d\n%s", n, out)
++	}
++}
++
++// init configures ONE remote, so a hazardous fetch refspec on a sibling remote
++// survives it — and `git fetch --prune <that remote>` deletes unpushed run refs
++// just the same. Reporting only the target remote would leave a real exposure
++// silent, which is the failure mode the safety phase exists to prevent.
++// Warn only: --remote named one remote, so another's config is not edited.
++func TestInitWarnsAboutHazardousRefspecOnOtherRemotes(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/y.git")
++	seedHazardousFetchRefspec(t, repo, "backup")
++
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, `remote "backup" also has a fetch refspec`) {
++		t.Fatalf("init did not warn about the sibling remote: %q", stdout)
++	}
++	if !strings.Contains(stdout, `--remote "backup"`) {
++		t.Fatalf("warning does not name the remote to re-run against: %q", stdout)
++	}
++	// Warn only — the sibling's config must be untouched.
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.backup.fetch")
++	if !strings.Contains(got, "+refs/etude/*:refs/etude/*") {
++		t.Fatalf("init edited a remote it was not pointed at: %q", got)
++	}
++	// And it must still carry no runnable command.
++	for _, line := range strings.Split(stdout, "\n") {
++		if strings.HasPrefix(line, "warning:") && strings.Contains(line, "git config") {
++			t.Errorf("warning embeds a runnable command: %s", line)
++		}
++	}
++}
++
++// The most exposed configuration is a MISSING target remote plus a hazardous
++// sibling: an early return on "remote not found" made that the one case that
++// reported nothing at all, while `git fetch --prune backup` would still delete
++// unpushed run refs.
++func TestInitWarnsAboutOtherRemotesEvenWhenTargetRemoteMissing(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	// No origin. Only a sibling remote, carrying the hazard.
++	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/y.git")
++	seedHazardousFetchRefspec(t, repo, "backup")
++
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, `remote "origin" not found`) {
++		t.Fatalf("missing-remote warning absent: %q", stdout)
++	}
++	if !strings.Contains(stdout, `remote "backup" also has a fetch refspec`) {
++		t.Fatalf("sibling-remote exposure went unreported when the target remote was missing: %q", stdout)
++	}
++	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.backup.fetch"); !strings.Contains(got, "+refs/etude/*:refs/etude/*") {
++		t.Fatalf("init edited a remote it was not pointed at: %q", got)
++	}
++}
++
++// --force removes a hazardous fetch refspec (a data-loss setting is never left
++// in place) but is silent on the PUSH refspec by long-standing design. So a
++// --force-only operator stays without the push refspec — which is reported on
++// every run, because the safety phase ignores --force, and repaired by one
++// non-force init. Pinned because a gate seat correctly caught the declaration
++// claiming any re-run repairs it.
++func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	stdout, stderr, err := execute("init", "--force")
++	if err != nil {
++		t.Fatalf("init --force errored: %v\nstderr: %s", err, stderr)
++	}
++	// The hazard is removed even under --force.
++	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(got, ":refs/etude/") {
++		t.Fatalf("--force left the hazardous fetch refspec: %q", got)
++	}
++	// The push refspec is NOT added under --force, and that is reported. git
++	// exits 1 when the key is absent entirely, which is the expected state here,
++	// so read it tolerantly rather than through the fail-on-error helper.
++	pushOut, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
++	if strings.Contains(string(pushOut), canonicalPushRefspec) {
++		t.Fatalf("--force added the push refspec, contrary to its documented silence: %q", pushOut)
++	}
++	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
++		t.Fatalf("--force did not report the missing push refspec: %q", stdout)
++	}
++
++	// One non-force run repairs it.
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("non-force init errored: %v\nstderr: %s", err, stderr)
++	}
++	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(got, canonicalPushRefspec) {
++		t.Fatalf("non-force init did not repair the push refspec: %q", got)
++	}
++}
+diff --git a/internal/cli/sync_test.go b/internal/cli/sync_test.go
+index 6c2ab8c..3255252 100644
+--- a/internal/cli/sync_test.go
++++ b/internal/cli/sync_test.go
+@@ -645,3 +645,58 @@ func seedRunRefInBare(t *testing.T, bare, runID string) {
+ 		t.Fatalf("seedRunRefInBare sync error: %v\nstderr: %s", err, stderr)
+ 	}
+ }
++
++// TestSyncWorksWithNoConfiguredEtudeFetchRefspec pins the assumption etude-i19
++// rests on. init no longer registers a `refs/etude/*` FETCH refspec, because one
++// makes every local run ref prunable by a bare `git fetch --prune`. Removing it
++// is only safe because sync passes the refspec EXPLICITLY on its own fetch and
++// push command lines and never relies on config.
++//
++// Nothing asserted that before: it was verified by hand. Without this test a
++// future sync refactor that leaned on `remote.<name>.fetch` would silently
++// re-couple the two, and the failure would show up as run refs that stop
++// arriving rather than as a test failure.
++func TestSyncWorksWithNoConfiguredEtudeFetchRefspec(t *testing.T) {
++	repoA := initCaptureRepo(t)
++	bare := setupBareRemote(t, repoA)
++
++	assertNoEtudeFetchRefspec := func(t *testing.T, repo string) {
++		t.Helper()
++		out := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++		for _, line := range strings.Split(out, "\n") {
++			if _, dst, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "+"), ":"); ok {
++				if strings.HasPrefix(dst, "refs/etude/") {
++					t.Fatalf("test precondition broken: %s has an etude fetch refspec %q", repo, line)
++				}
++			}
++		}
++	}
++
++	// PUSH leg: no etude fetch refspec configured anywhere.
++	assertNoEtudeFetchRefspec(t, repoA)
++	capture1Stage(t, repoA, "run-1", "plan", "plan.md", "# plan A")
++	chdir(t, repoA)
++	if _, stderr, err := execute("sync"); err != nil {
++		t.Fatalf("sync push with no configured fetch refspec: %v\nstderr: %s", err, stderr)
++	}
++	if !refExists(t, bare, "refs/etude/runs/run-1") {
++		t.Fatal("push leg did not carry run-1 to the remote without a config fetch refspec")
++	}
++
++	// FETCH leg: a fresh clone, with any etude fetch refspec explicitly removed,
++	// must still pull the namespace down via sync's own explicit refspec.
++	// A fresh clone carries only the branch refspec — git clone does not bring
++	// refs/etude/* with it — so this is exactly the post-i19 configuration.
++	repoB := cloneFrom(t, bare)
++	assertNoEtudeFetchRefspec(t, repoB)
++	if refExists(t, repoB, "refs/etude/runs/run-1") {
++		t.Fatal("precondition: run-1 already present in B, so the fetch leg would prove nothing")
++	}
++	chdir(t, repoB)
++	if _, stderr, err := execute("sync"); err != nil {
++		t.Fatalf("sync fetch with no configured fetch refspec: %v\nstderr: %s", err, stderr)
++	}
++	if !refExists(t, repoB, "refs/etude/runs/run-1") {
++		t.Fatal("fetch leg did not retrieve run-1 without a config fetch refspec")
++	}
++}
