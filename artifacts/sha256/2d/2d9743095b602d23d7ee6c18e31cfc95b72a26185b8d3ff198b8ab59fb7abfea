@@ -1,0 +1,21 @@
+# GH #15 rebased verification
+
+CLI-facing: yes. All commands below used the freshly built `bin/etude` (`sha256 eaa50cc236e071074cb4e1f54bcecf448eaabb81bc33ad131d4b25f766d3c120`), not `go run`.
+
+Automated checks:
+
+- `make test`: exit 0; every package green, including `internal/liverun` and all original-SHA/submodule regressions.
+- `make lint`: exit 0 (`gofmt -l` empty; `go vet ./...` green).
+- `make docs-check`: exit 0; 26 generated command docs matched.
+- `make docs-reality`: exit 0; 16 commands matched shipped CLI docs.
+- `make build`: exit 0.
+
+Built-binary observations in fresh fixture `/tmp/etude-gh15-final-qa.nBOjHj`:
+
+- Caller opt-in from nested cwd: exit 0; output recorded `runner_pwd=/private/tmp/etude-gh15-final-qa.nBOjHj/caller/nested` and read ignored sentinel `caller-only final sentinel`; manifest v4 recorded `runner_workspace=caller`, `original_git_sha=90a27f0...`, stage `git_sha=90a27f0...`; deterministic gate `produce.r1` recorded pass; final tracked status empty.
+- Default without workspace: exit 0; manifest v2 omitted runner workspace; output recorded `/private/var/.../etude-worktree-3283170956` and `caller_only=absent`; tracked status empty.
+- Forced tracked-file mutation: exit 1 with `stage "produce" failed: caller workspace has uncommitted changes`; `tracked.txt` became modified; `show-ref` and `run show` both exited 1 (`run "dirty-mutation" not found`), so no gate pass/run record was published.
+- Forced real-index-only mutation: the runner staged blob `ff4d7afb...` while the working and HEAD blobs both remained `226a22df...`; the stage exited 1 with the same fail-closed error and `show-ref` exited 1.
+- Untouched caller guard negative control: the caller opt-in case above exited 0 and recorded a passing gate.
+- Resume A/B proof: original A=`16309acd30199550c24a80a7e1cd960d235582aa`; caller committed B=`89ec12500a0ee57e431a6e59b610bbb91bda1507`; initial hermetic stage failed with exit 23. Resume exited 0 and its output recorded `runner_head=A`; final manifest retained `original_git_sha=A`, caller stage `git_sha=B`, hermetic stage `git_sha=A`. Direct replay also recorded `replay_head=A` while live HEAD remained B.
+- Submodule integration: superproject `8b92dfb...` pinned `modules/lib=1578456...`; run and replay both exited 0, read `pinned submodule final content`, and recorded the same submodule OID in the manifest.
