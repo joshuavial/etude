@@ -1,0 +1,22 @@
+# Implementation delta after implement.r18 PASS
+
+The complete rebased implementation at `8ad573d` passed L3 gate `implement.r18`
+with Opus and Codex. The verify gate then exposed one timing-sensitive regression
+test that could miss its emitted stderr when a loaded builder took more than 500
+ms to launch `/bin/sh`. Product code is unchanged. Commit `e519a12` contains this
+only delta:
+
+```diff
+diff --git a/internal/replay/exec_runner_test.go b/internal/replay/exec_runner_test.go
+@@
+- runner.Timeout = 500 * time.Millisecond
++ // Leave enough launch headroom for loaded builders: this assertion is about
++ // retaining diagnostics after a timeout, not sub-second process startup.
++ runner.Timeout = 3 * time.Second
+```
+
+The test continues to force the same ExecRunner deadline path, require
+`context.DeadlineExceeded`, and require the literal `timeout diagnostic` stderr
+tail. It now passes three consecutive focused runs under the same host load. The
+broader unrelated `internal/cli` 10-minute full-suite contention issue is tracked
+as `etude-noo9`.
