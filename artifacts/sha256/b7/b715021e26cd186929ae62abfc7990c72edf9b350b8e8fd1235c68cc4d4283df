@@ -1,0 +1,234 @@
+commit ad4a347ceb079d091769473f57344bdfb5d400c2
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 11:32:40 2026 +0800
+
+    extract WriteManifestTree shared core for run and retro writers
+
+diff --git a/internal/retro/retro.go b/internal/retro/retro.go
+index cb8adba..e033dcc 100644
+--- a/internal/retro/retro.go
++++ b/internal/retro/retro.go
+@@ -69,57 +69,16 @@ type WriteOptions struct {
+ }
+ 
+ // Write validates and persists manifest to refs/etude/retros/<manifest.RunID>.
+-// It runs the same artifact-verification and unreferenced-file guard that
+-// runmanifest.Writer.Write uses (verifyArtifactFile / referencedArtifactPaths),
+-// accessed by exporting those helpers from the runmanifest package.
++// It delegates to runmanifest.WriteManifestTree which holds the shared
++// validate → verify-artifacts → unreferenced-file-guard → WriteCommit sequence.
+ // Returns refstore.ErrRefExists on collision (create-only).
+ func (w Writer) Write(ctx context.Context, manifest runmanifest.Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
+-	if err := manifest.Validate(); err != nil {
+-		return "", err
+-	}
+-	if _, ok := files["manifest.json"]; ok {
+-		return "", runmanifest.ErrManifestCollision
+-	}
+-
+-	// Verify all artifacts referenced in the manifest are present and hash-correct.
+-	referenced := runmanifest.ReferencedArtifactPaths(manifest)
+-	hashes := make(map[string]string, len(referenced))
+-	for _, stage := range manifest.Stages {
+-		for _, input := range stage.Inputs {
+-			if err := runmanifest.VerifyArtifactFile(input, files, hashes); err != nil {
+-				return "", err
+-			}
+-		}
+-		if err := runmanifest.VerifyArtifactFile(stage.Output, files, hashes); err != nil {
+-			return "", err
+-		}
+-	}
+-
+-	// Guard against files that are not referenced by the manifest.
+-	const manifestPath = "manifest.json"
+-	out := make(map[string][]byte, len(files)+1)
+-	for filePath, content := range files {
+-		if _, ok := referenced[filePath]; !ok {
+-			return "", fmt.Errorf("%w: %s", runmanifest.ErrUnreferencedArtifact, filePath)
+-		}
+-		outBytes := make([]byte, len(content))
+-		copy(outBytes, content)
+-		out[filePath] = outBytes
+-	}
+-
+-	manifestBytes, err := manifest.JSON()
+-	if err != nil {
+-		return "", err
+-	}
+-	out[manifestPath] = manifestBytes
+-
+ 	msg := opts.Message
+ 	if strings.TrimSpace(msg) == "" {
+ 		msg = fmt.Sprintf("retro: %s", manifest.RunID)
+ 	}
+-
+-	return w.Store.WriteCommit(ctx, retrosPrefix+manifest.RunID, out, refstore.WriteOptions{
+-		// No ExpectedOld: create-only. Collision surfaces as ErrRefExists from refstore.
++	// No ExpectedOld: create-only. Collision surfaces as ErrRefExists from refstore.
++	return runmanifest.WriteManifestTree(ctx, w.Store, retrosPrefix, manifest, files, refstore.WriteOptions{
+ 		Message: msg,
+ 	})
+ }
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index f0ed3b8..8411102 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -312,16 +312,29 @@ func ArtifactPaths(manifest Manifest) []string {
+ }
+ 
+ func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
++	return WriteManifestTree(ctx, w.Store, "refs/etude/runs/", manifest, files, refstore.WriteOptions{
++		ExpectedOld: opts.ExpectedOld,
++		Message:     opts.Message,
++	})
++}
++
++// WriteManifestTree is the shared core that validates, verifies artifacts,
++// guards against unreferenced files, encodes manifest.json, and commits to
++// refPrefix+manifest.RunID via store.WriteCommit. It is parameterized by:
++//   - refPrefix: e.g. "refs/etude/runs/" or "refs/etude/retros/"
++//   - wopts.ExpectedOld: empty string = create-only; non-empty = CAS append
++//   - wopts.Message: commit message (callers supply any default before calling)
++//
++// Both runmanifest.Writer.Write and retro.Writer.Write delegate here so the
++// validate → verify-artifacts → unreferenced-file-guard → WriteCommit sequence
++// lives in exactly one place.
++func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix string, manifest Manifest, files map[string][]byte, wopts refstore.WriteOptions) (string, error) {
+ 	if err := manifest.Validate(); err != nil {
+ 		return "", err
+ 	}
+ 	if _, ok := files[manifestPath]; ok {
+ 		return "", ErrManifestCollision
+ 	}
+-	manifestBytes, err := manifest.JSON()
+-	if err != nil {
+-		return "", err
+-	}
+ 
+ 	referenced := referencedArtifactPaths(manifest)
+ 	hashes := make(map[string]string, len(referenced))
+@@ -343,12 +356,14 @@ func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][
+ 		}
+ 		out[filePath] = cloneBytes(content)
+ 	}
++
++	manifestBytes, err := manifest.JSON()
++	if err != nil {
++		return "", err
++	}
+ 	out[manifestPath] = manifestBytes
+ 
+-	return w.Store.WriteCommit(ctx, "refs/etude/runs/"+manifest.RunID, out, refstore.WriteOptions{
+-		ExpectedOld: opts.ExpectedOld,
+-		Message:     opts.Message,
+-	})
++	return store.WriteCommit(ctx, refPrefix+manifest.RunID, out, wopts)
+ }
+ 
+ func validateStage(index int, stage Stage) error {
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 6039e9a..f674300 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -534,6 +534,100 @@ func TestWriterForwardsCAS(t *testing.T) {
+ 	}
+ }
+ 
++// TestWriteManifestTreeParameterization locks the three seams that
++// WriteManifestTree exposes to callers:
++//
++//  1. The ref prefix is honoured: writing with the retros prefix stores the ref
++//     under refs/etude/retros/ (not refs/etude/runs/), and the runs ref stays absent.
++//
++//  2. Create-only (empty ExpectedOld) rejects a second write with ErrRefExists.
++//
++//  3. CAS append (non-empty ExpectedOld) succeeds with a new commit whose
++//     parent is the one supplied — invoked directly on WriteManifestTree so the
++//     seam is independently locked from TestWriterForwardsCAS.
++func TestWriteManifestTreeParameterization(t *testing.T) {
++	ctx := context.Background()
++	artifact := contentArtifact("output", "text/plain", []byte("tree-param"))
++	files := map[string][]byte{artifact.Path: []byte("tree-param")}
++	manifest := validManifest(artifact)
++
++	// --- seam 1 + 2: retros prefix, create-only ---
++	t.Run("retros prefix and create-only", func(t *testing.T) {
++		repo := initGitRepo(t)
++		store := refstore.New(repo)
++		const retrosPrefix = "refs/etude/retros/"
++
++		commit, err := WriteManifestTree(ctx, store, retrosPrefix, manifest, files, refstore.WriteOptions{
++			Message: "retros prefix write",
++		})
++		if err != nil {
++			t.Fatalf("WriteManifestTree returned error: %v", err)
++		}
++
++		// Ref must resolve under retros/, not under runs/.
++		resolved, err := store.Resolve(ctx, retrosPrefix+manifest.RunID)
++		if err != nil {
++			t.Fatalf("Resolve retros ref: %v", err)
++		}
++		if resolved != commit {
++			t.Fatalf("resolved commit = %q, want %q", resolved, commit)
++		}
++
++		// The runs prefix must NOT exist (prefix isolation).
++		_, err = store.Resolve(ctx, "refs/etude/runs/"+manifest.RunID)
++		if !errors.Is(err, refstore.ErrNotFound) {
++			t.Fatalf("runs ref exists unexpectedly (err=%v); prefix isolation broken", err)
++		}
++
++		// Second write to same ref with no ExpectedOld must yield ErrRefExists.
++		_, err = WriteManifestTree(ctx, store, retrosPrefix, manifest, files, refstore.WriteOptions{
++			Message: "duplicate write",
++		})
++		if !errors.Is(err, refstore.ErrRefExists) {
++			t.Fatalf("second create-only write error = %v, want ErrRefExists", err)
++		}
++	})
++
++	// --- seam 3: CAS append via ExpectedOld ---
++	t.Run("CAS append via ExpectedOld", func(t *testing.T) {
++		repo := initGitRepo(t)
++		store := refstore.New(repo)
++
++		first, err := WriteManifestTree(ctx, store, "refs/etude/runs/", manifest, files, refstore.WriteOptions{
++			Message: "first",
++		})
++		if err != nil {
++			t.Fatalf("first WriteManifestTree: %v", err)
++		}
++
++		manifest2 := manifest
++		manifest2.Created = manifest.Created.Add(time.Second)
++		second, err := WriteManifestTree(ctx, store, "refs/etude/runs/", manifest2, files, refstore.WriteOptions{
++			ExpectedOld: first,
++			Message:     "second",
++		})
++		if err != nil {
++			t.Fatalf("CAS WriteManifestTree: %v", err)
++		}
++		if second == first {
++			t.Fatal("CAS write did not produce a new commit")
++		}
++		parent := strings.TrimSpace(git(t, repo, "rev-parse", second+"^"))
++		if parent != first {
++			t.Fatalf("parent = %q, want first commit %q", parent, first)
++		}
++
++		// Stale CAS must return ErrStaleRef.
++		_, err = WriteManifestTree(ctx, store, "refs/etude/runs/", manifest2, files, refstore.WriteOptions{
++			ExpectedOld: first,
++			Message:     "stale",
++		})
++		if !errors.Is(err, refstore.ErrStaleRef) {
++			t.Fatalf("stale CAS error = %v, want ErrStaleRef", err)
++		}
++	})
++}
++
+ // TestLegacyBackCompatFrozenBytes is a FROZEN regression guard: it embeds a
+ // real legacy-shaped manifest byte string (top-level per-stage skill{}, no
+ // producer, no manifest_version) modelled on refs/etude/runs/etude-88o and
