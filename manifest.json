@@ -410,6 +410,62 @@
         ]
       },
       "timestamp": "2026-08-16T07:42:14Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "6e9adf6e2043b3961d0feec17d0d960cb841cf1cb1f2f12fb5cdd40ab7d42f64"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Consider a more actionable error for pre-field v4 manifests.",
+            "Consider sharing the caller-workspace stage predicate between write and validation.",
+            "packet sha256 df5f91db6e9cf30502060f16e4ebc431e29ac7da44e78bf0d72410b48f6b1f53"
+          ],
+          "timestamp": "2026-08-16T07:54:51Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet sha256 df5f91db6e9cf30502060f16e4ebc431e29ac7da44e78bf0d72410b48f6b1f53"
+          ],
+          "timestamp": "2026-08-16T07:54:51Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-gunr"
+        ]
+      },
+      "timestamp": "2026-08-16T07:54:51Z"
     }
   ]
 }
