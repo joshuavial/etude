@@ -227,6 +227,70 @@
       ],
       "decision": {},
       "timestamp": "2026-06-29T19:46:11Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "note Mode closed-set deferred to execution",
+            "add negative-value tests for max_rounds/pass_threshold"
+          ],
+          "timestamp": "2026-06-29T19:46:11Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "assert exact dry-run summary for registry.yaml",
+            "self-documenting 1+1 comment"
+          ],
+          "timestamp": "2026-06-29T19:46:11Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-29T19:46:11Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-29T19:46:11Z"
     }
   ]
 }
