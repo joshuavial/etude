@@ -1,0 +1,3020 @@
+diff --git a/docs/gates.md b/docs/gates.md
+index 9bb9f7e..6548f70 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -69,8 +69,11 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
+ recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+ strictly: an unknown or misspelled field (at any nesting level) is rejected
+ rather than silently dropped, as is any trailing content after the gate object.
+-Invalid input is rejected without changing the run. A run that carries
+-any gates is written as `manifest_version` 3; gate-less runs are unchanged.
++Invalid input is rejected without changing the run. A run that carries gates
++is written as `manifest_version` 3 unless it also carries a stage-log artifact,
++which requires version 4; gate-less runs without stage logs are unchanged. For
++compatibility with durable refs written by development builds, readers also
++accept a stage log in version 2 or 3, but new writers always emit version 4.
+ 
+ The capture input above uses `session.transcript_path` because it points at a
+ local file to import. Stored manifests replace that input-only path with:
+@@ -273,9 +276,9 @@ this boundary. All `GIT_*` variables are removed from output-only exec-harness
+ seat environments, and a configured temporary or scratch directory inside the checkout fails
+ closed. Supervised gates cannot grant read access because their worktree
+ is the mutable caller tree, so each model seat uses its own neutral output-only
+-working directory. Live read grants also fail closed before seat invocation when the
+-pinned tree contains a submodule gitlink; submodule population and identity are
+-tracked by GitHub issue #14.
++working directory. When the pinned tree contains submodules, each read-enabled
++seat checkout populates them recursively and records their pinned identities by
++the same checkout rules used for stage execution.
+ 
+ ### Seat output envelope
+ 
+@@ -323,7 +326,8 @@ live-specific characteristics:
+   checkout. False is omitted, including for checks-only gates. This field is an
+   audit record; current workflow configuration remains the authorization source.
+   It is live-derived and is not accepted in an offline `capture-gate` input file.
+-- A run that carries any gate attempts is stored as `manifest_version` 3.
++- A run that carries gate attempts is stored as `manifest_version` 3, or
++  version 4 when any stage carries a log artifact.
+ 
+ ### Resuming an unusable-seat outage
+ 
+diff --git a/docs/plans/product/V1-SCOPE.md b/docs/plans/product/V1-SCOPE.md
+index b959b52..2d67e60 100644
+--- a/docs/plans/product/V1-SCOPE.md
++++ b/docs/plans/product/V1-SCOPE.md
+@@ -42,7 +42,8 @@ Source: `internal/cli/root.go:36-48`.
+   per-run refs; no shared write point (`internal/refstore`).
+ - **Content-addressed inline artifacts** — blobs stored by hash inside the
+   ref store (`internal/artifactstore/store.go`).
+-- **Run manifests v2 and v3** — v3 adds gate-reviewer records; the producer
++- **Run manifests v2, v3, and v4** — v3 adds gate-reviewer records; v4 adds
++  stage-log artifact references; the producer
+   record is authoritative (`internal/runmanifest/manifest.go:932-935, 1063,
+   1196`).
+ - **Retro-meta sidecars** — retrospective metadata stored alongside run
+diff --git a/docs/replay.md b/docs/replay.md
+index 10f6c0e..6a479d0 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -68,6 +68,11 @@ The new run contains a single stage with:
+ - `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
+   content-addressed refs).
+ - `output` — the artifact produced by the replay run.
++- `log` — the bounded successful runner stdout/stderr artifact, when either
++  stream was non-empty.
++- `producer.session` — the replay runner's reported session identity and, when
++  `transcript_path` resolves beneath replay scratch or its pinned worktree, the
++  imported and secret-scanned transcript artifact.
+ - `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
+   `commit` is the immutable git commit of the source run ref (not the stage's
+   `git_sha`). This pins the link durably even if the source run ref is later
+@@ -76,6 +81,13 @@ The new run contains a single stage with:
+ The `replay_of` field is required for any stage with `produced_by: "replay"`,
+ and forbidden otherwise. The manifest validator enforces this bidirectionally.
+ 
++Transcript capture is best-effort at record time, matching live-stage capture.
++An unreadable transcript or one that fails the secret scan leaves durable
++failed evidence but does not discard an otherwise valid replay output;
++rejected bytes are never stored. If a later gate rerun would depend on a
++redaction-failed transcript, that handoff fails closed before invoking the next
++stage runner.
++
+ ### Confirmation and output
+ 
+ After the new run is written, `etude replay` prints:
+@@ -114,18 +126,23 @@ The runner is invoked as an external process with:
+ 
+ - **Working directory** set to the throwaway worktree (a pristine checkout of
+   the stage's recorded git SHA).
+-- **Environment** restricted to three variables:
++- **Environment** restricted to four variables:
+   - `PATH` — inherited from the calling process.
+   - `ETUDE_INPUTS_DIR` — path to a directory containing one file per stage
+     input, named `<NN>-<role>` (two-digit zero-padded index, then the input
+     role). For example: `00-context`, `01-rubric`.
+   - `ETUDE_OUTPUT_FILE` — path the runner must write its output to. The file
+     does not exist before the runner is called; the runner must create it.
+-- **Stdout and stderr** are captured but not forwarded to the terminal. Stderr
+-  appears in error messages only when the runner exits non-zero.
+-
+-All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`, and
+-`ETUDE_OUTPUT_FILE` are stripped from the runner's environment.
++  - `ETUDE_SESSION_FILE` — optional JSON sidecar path for session identity and
++    transcript location; publish it atomically as described in
++    [Runs](run.md#producer-session-evidence).
++- **Stdout and stderr** are captured but not forwarded to the terminal. On a
++  successful recorded replay they are stored as the bounded stage-log artifact;
++  stderr appears in error messages when the runner exits non-zero.
++
++All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`,
++`ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE` are stripped from the runner's
++environment.
+ 
+ After the runner exits, `etude replay` reads the file at `ETUDE_OUTPUT_FILE`
+ and emits its bytes as the replay output (to stdout or to `--output <path>`).
+diff --git a/docs/run.md b/docs/run.md
+index 74d0d16..107550e 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -96,8 +96,12 @@ Per stage, the detail view shows:
+ - `skill` — always printed as `id@version (repo)`
+ - Each input as `role=… path=… size=… storage=… media-type=…`
+ - The output in the same format
+-- `session` evidence — printed only when the stage's producer was an agentic
+-  runner that reported a session (see [Producer session evidence](#producer-session-evidence))
++- `log` — the successful stage runner's bounded stdout/stderr artifact using
++  the exact labels `digest=… size=… media-type=…`; omitted when both streams
++  were empty or the stage failed
++- `session` evidence — printed when the stage record contains evidence from a
++  valid `ETUDE_SESSION_FILE` sidecar or another session-reporting runner (see
++  [Producer session evidence](#producer-session-evidence))
+ 
+ `path` is the content-addressed `artifacts/sha256/…` path of the stored
+ artifact, `size` is its size in bytes, and `storage` is `content` for inline
+@@ -134,6 +138,49 @@ transcript cannot be read, never fails the stage — the evidence is simply
+ omitted or marked `failed`. Transcripts are secret-scanned before storage; a
+ failed scan is recorded as `redaction: failed` rather than storing the bytes.
+ 
++Command-backed external stage runners report identity through the optional
++reserved `ETUDE_SESSION_FILE`. Etude sets it to
++`<attempt-scratch>/session.json`. A runner must publish a complete sidecar by
++atomically renaming a sibling temporary file before it exits:
++
++```json
++{"session_id":"session-123","transcript_uri":"etude-session://session-123","transcript_path":"transcript.jsonl"}
++```
++
++`session_id` is required and must be non-empty; the transcript fields are optional. The 64 KiB
++whole-file cap is a pre-parse read bound; each field is independently capped at
++4 KiB. Exceeding either bound, unknown fields, invalid Unicode, malformed JSON,
++and non-regular files fail the stage rather than truncating evidence. If the
++file is absent, behavior is unchanged and no session is recorded.
++
++`transcript_uri` is opaque identity metadata: Etude records but never fetches
++it. `transcript_path` independently selects bytes for best-effort import. A
++relative path resolves first beneath the attempt scratch directory, then the
++pinned worktree for compatibility; an absolute path must be beneath one of
++those roots. External runners should copy transcripts into attempt scratch and
++report a scratch-relative path. Import and secret-scan behavior follows the
++policy described above. A path outside both roots leaves the session id/URI in
++the manifest with transcript retrieval marked `failed`; it does not fail an
++otherwise successful stage.
++
++An empty sidecar is malformed and fails the stage; omit the file entirely when
++the runner has no session to report.
++
++Successful runner stdout and stderr are stored as one
++`application/octet-stream` stage-log artifact. Etude retains stdout's first
++1 MiB and stderr's final 1 MiB while continuing to drain both pipes. Each
++present stream has a byte-count and dropped-byte framing header; stdout is
++listed before stderr. Raw log bytes are never printed by `etude run show`.
++Logs are stored as raw runner evidence and are not secret-scanned like imported
++transcripts; runners must not print credentials or other secrets to either
++stream.
++
++Failed-runner stderr remains bounded in the reported error but is not stored as
++a stage log because a failed attempt has no Stage record. To retrieve a stored
++successful log, read its `path` from `etude run show <id> --json`, then read that
++path from `refs/etude/runs/<id>` with Git (for example,
++`git show refs/etude/runs/<id>:<path>`).
++
+ When a run carries review-gate attempts, they are printed after the stages —
+ see [Gate reviewer records](gates.md) for the gate output format and how to
+ capture gates with `etude capture-gate`.
+@@ -327,9 +374,8 @@ an opted-in seat reads; it is the seat command's working directory. Supervised
+ gates reject `read_checkout` because they review the caller's mutable,
+ uncommitted tree rather than a reproducible pin.
+ 
+-Until submodule checkout identity is implemented by GitHub issue #14, an
+-opted-in live gate fails closed before invoking seats when the pinned tree
+-contains a submodule gitlink. Output-only gates are unaffected. Workflow files
++An opted-in live gate populates pinned submodules recursively in each disposable
++seat checkout. Output-only gates remain isolated from the checkout. Workflow files
+ using `read_checkout` require a version of Etude that knows the field; older
+ strict parsers reject it rather than silently ignoring the grant.
+ 
+@@ -349,6 +395,57 @@ that artifact appended to its inputs (role `gate-feedback`). The re-run stage
+ is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
+ against its output.
+ 
++The rerun also receives a rebuilt, digest-bound history of every earlier
++attempt killed by a `rerun` verdict:
++
++- `prior-attempts` is a deterministic JSON index. In chronological manifest
++  order it records each attempt's stage and round, session id, whether that
++  exact non-empty session id appeared on an earlier attempt, output/log/
++  transcript digests and input roles, transcript retrieval/redaction status,
++  and the killing gate's aggregate status plus ordered seat verdicts and
++  required changes.
++- `prior-attempt-<N>-output` always carries the attempt output, where `N` is
++  the attempt's 1-based position in the chronological index. Optional
++  `prior-attempt-<N>-log` and `prior-attempt-<N>-transcript` inputs carry the
++  corresponding stored artifacts when present; a transcript is attached only
++  after successful import and secret scanning. Distinct roles may point at the
++  same digest when attempts produced identical bytes.
++
++These are ordinary declared stage inputs, so their content-addressed digests
++are recorded in the rerun stage manifest. The bundle is rebuilt from durable
++run history on every round rather than copied forward; `gate-feedback` remains
++cumulative. Consequently the handover grows with the number and size of prior
++attempts.
++
++Only attempts whose gate status is `rerun` enter this history. An `escalated`
++gate re-evaluates the latest stage output at a stronger tier without invoking
++the stage again, so it does not create a producer attempt to hand forward.
++
++A stage runner may report no session. That is the legitimate no-transcript
++state: the attempt still contributes output, log, and verdict evidence without
++a transcript. Transcript retrieval failure is recorded in the index and the
++rerun continues without transcript bytes. The redaction status reports whether
++the transcript secret scan passed or failed. A transcript that was imported
++but failed that scan stops the rerun before its stage runner is invoked.
++Output and stage-log artifacts follow their existing storage contract and are
++not secret-scanned. Prior-attempt logs are handed to every later rerun as raw
++inputs, so a credential printed by a producer can persist in the run and cross
++attempt boundaries; runner authors must treat stdout and stderr as durable,
++shared evidence rather than an ephemeral console.
++
++Session ids are opaque and compared byte-for-byte; whitespace is used only to
++recognize an empty id. Reusing an exact non-empty id marks the later attempt as
++resuming a prior session. Such an attempt is intentionally **not replayable
++from its declared inputs alone**, because the external model session contains
++state outside the run manifest; the repeated id makes that condition
++detectable without a manifest schema change.
++
++The roles `prior-attempts` and the `prior-attempt-` prefix are reserved for the
++engine. Workflow validation rejects them in stage `inputs` and `produces`, and
++the live engine repeats that check at entry so programmatically constructed
++workflows fail before checkout or stage invocation. The near-miss role
++`prior-attempt` is not reserved.
++
+ On **escalated**: the engine advances the tier ladder toward L1 (strongest)
+ and re-runs the gate against the latest stage output at the stronger tier. If
+ no stronger tier exists (already at L1, or the gate used inline seats with no
+@@ -358,18 +455,19 @@ by unusable model seats is resumable; substantive reviewer decisions remain
+ terminal.
+ 
+ Each gate attempt is recorded automatically as a `GateAttempt` in the run
+-manifest (`manifest_version` 3); gate attempts appear after stages in
+-`etude run show`. No separate `etude capture-gate` call is required for live
+-runs. An effective checkout grant is recorded as `read_checkout: true`; false
+-is omitted. The workflow is the authorization source—the manifest field is an
+-audit record and is never read back to authorize a later seat.
++manifest (`manifest_version` 3, or version 4 when a stage log is present); gate
++attempts appear after stages in `etude run show`. No separate
++`etude capture-gate` call is required for live runs. An effective checkout
++grant is recorded as `read_checkout: true`; false is omitted. The workflow is
++the authorization source—the manifest field is an audit record and is never
++read back to authorize a later seat.
+ 
+ ### Env passthrough
+ 
+ By default, each stage runner receives a hermetic environment containing only
+-`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
+-vars (such as API keys) to live runners, declare an allowlist of names in
+-`.etude/workflow.yaml`:
++`PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE`. To
++pass additional env vars (such as API keys) to live runners, declare an
++allowlist of names in `.etude/workflow.yaml`:
+ 
+ ```yaml
+ env_allowlist: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
+@@ -384,8 +482,9 @@ Deterministic gate checks are always hermetic (they receive no allowlist entries
+ regardless of configuration).
+ 
+ **Validation.** Each entry must be a valid POSIX env var name
+-(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
+-`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
++(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the four reserved names (`PATH`,
++`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, `ETUDE_SESSION_FILE`) are rejected at
++workflow load time.
+ 
+ **Audit.** The configured names (never values) appear in `etude run show` as an
+ `env allowlist:` header line and in the run manifest (`env_allowlist` field).
+diff --git a/internal/bench/run.go b/internal/bench/run.go
+index 9aa7364..d947876 100644
+--- a/internal/bench/run.go
++++ b/internal/bench/run.go
+@@ -182,7 +182,10 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 	// The bench checkout is authoritative even for a legacy source manifest
+ 	// that predates submodule recording.
+ 	resolved.Submodules = wt.Submodules
+-	recorded, err := p.Recorder.Record(ctx, cr.RunID, stageName, resolved, res)
++	recorder := p.Recorder
++	recorder.SessionScratchDir = scratch
++	recorder.SessionWorktreeDir = wt.Dir
++	recorded, err := recorder.Record(ctx, cr.RunID, stageName, resolved, res)
+ 	if err != nil {
+ 		return BenchOutcome{}, wrap("record replay run", err)
+ 	}
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index f0c9b97..7e56182 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -265,7 +265,7 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
+ 		// The replay checkout is authoritative even for a legacy source manifest
+ 		// that predates submodule recording.
+ 		resolved.Submodules = wt.Submodules
+-		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
++		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs, scratch, wt.Dir); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -316,8 +316,12 @@ func (r *replayRunner) recordRun(
+ 	resolved replay.ResolvedStage,
+ 	res replay.RunResult,
+ 	_ []replay.RunInput, // materialized inputs unused here; raw bytes come from source commit
++	scratchDir, worktreeDir string,
+ ) error {
+-	rec := replay.RunRecorder{Store: store, Now: r.now}
++	rec := replay.RunRecorder{
++		Store: store, Now: r.now,
++		SessionScratchDir: scratchDir, SessionWorktreeDir: worktreeDir,
++	}
+ 	recorded, err := rec.Record(ctx, sourceRunID, sourceStageName, resolved, res)
+ 	if err != nil {
+ 		return err
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 50a010a..fa6a16d 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -357,6 +357,10 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 		o := stage.Output
+ 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
+ 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
++		if stage.Log != nil {
++			fmt.Fprintf(out, "  log:    digest=%s size=%d media-type=%s\n",
++				stage.Log.Artifact, stage.Log.Size, stage.Log.MediaType)
++		}
+ 		printSessionEvidence(out, "  ", stage.Producer.Session)
+ 	}
+ 
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 57575cc..24b15b5 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -13,6 +13,7 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/joshuavial/etude/internal/artifactstore"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/replay"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+@@ -295,6 +296,26 @@ func TestRunShowExistingRun(t *testing.T) {
+ 	}
+ }
+ 
++func TestPrintRunDetailShowsLogDigestAndSize(t *testing.T) {
++	logRef := runmanifest.ArtifactRef{
++		Role: "plan-log", Artifact: strings.Repeat("a", 64),
++		Path:      "artifacts/sha256/aa/" + strings.Repeat("a", 64),
++		MediaType: "application/octet-stream", Storage: artifactstore.StorageContent, Size: 109,
++	}
++	m := runmanifest.Manifest{RunID: "run", Workflow: "wf", WorkflowVersion: "v1", Stages: []runmanifest.Stage{{
++		Name: "plan", Producer: runmanifest.Producer{Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"}},
++		Output: runmanifest.ArtifactRef{Role: "output"}, Log: &logRef,
++	}}}
++	var out bytes.Buffer
++	if err := printRunDetail(&out, m); err != nil {
++		t.Fatal(err)
++	}
++	want := "log:    digest=" + strings.Repeat("a", 64) + " size=109 media-type=application/octet-stream"
++	if !strings.Contains(out.String(), want) {
++		t.Fatalf("output missing %q:\n%s", want, out.String())
++	}
++}
++
+ func TestRunShowJSON(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	writeFile(t, repo, "out.md", "output content")
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 57b972e..477baa2 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -202,12 +202,32 @@ func (e *Engine) clock() time.Time {
+ // Run executes the workflow, capturing each stage incrementally via CAS.
+ // If opts.ResumeID is non-empty, resumes an existing partial run from its frontier.
+ func (e *Engine) Run(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
++	// ParseYAML calls Workflow.Validate, but Engine also accepts programmatic
++	// workflows. Enforce the engine-owned rerun input namespace here, before a
++	// checkout or runner invocation, so both entry paths fail at the same seam.
++	if err := validatePriorAttemptRoleCollisions(wf); err != nil {
++		return err
++	}
+ 	if opts.ResumeID != "" {
+ 		return e.resume(ctx, out, wf, opts.ResumeID)
+ 	}
+ 	return e.startFresh(ctx, out, wf, opts)
+ }
+ 
++func validatePriorAttemptRoleCollisions(wf workflow.Workflow) error {
++	for i, stage := range wf.Stages {
++		if workflow.IsPriorAttemptRole(stage.Produces) {
++			return fmt.Errorf("%w: stage[%d] produces role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, stage.Produces)
++		}
++		for j, role := range stage.Inputs {
++			if workflow.IsPriorAttemptRole(role) {
++				return fmt.Errorf("%w: stage[%d] input[%d] role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, j, role)
++			}
++		}
++	}
++	return nil
++}
++
+ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
+ 	runID := opts.RunID
+ 	if runID == "" {
+@@ -348,6 +368,10 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
+ 			refByPath[inp.Path] = inp
+ 		}
+ 		refByPath[ms.Output.Path] = ms.Output
++		if ms.Log != nil {
++			ref := *ms.Log
++			refByPath[ref.Path] = ref
++		}
+ 		if ms.Producer.Session != nil && ms.Producer.Session.TranscriptArtifact != nil {
+ 			ref := *ms.Producer.Session.TranscriptArtifact
+ 			refByPath[ref.Path] = ref
+@@ -545,14 +569,6 @@ func (e *Engine) executeStages(
+ 	return nil
+ }
+ 
+-// isAgenticProducer reports whether a stage runner's result indicates an agentic
+-// execution that should capture session evidence. Mirrors the harness-side check
+-// from requiresSessionEvidence: non-empty and not "shell".
+-func isAgenticProducer(harnessName string) bool {
+-	h := strings.ToLower(strings.TrimSpace(harnessName))
+-	return h != "" && h != "shell"
+-}
+-
+ // runAndCaptureStage executes a single stage run: resolves the runner,
+ // invokes it, stores the output artifact, appends the Stage record to
+ // completedStages, and writes an incremental CAS manifest commit.
+@@ -604,10 +620,17 @@ func (e *Engine) runAndCaptureStage(
+ 	if err != nil {
+ 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+ 	}
++	if len(res.Log) > replay.MaxStageLogBytes {
++		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner log exceeds %d bytes", replay.MaxStageLogBytes)
++	}
+ 
+-	// Build producer session evidence when the runner returned session info
+-	// and the stage is agentic (not deterministic/shell).
+-	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
++	// An explicit runner session is sufficient evidence even for inline
++	// commands whose producer harness metadata is empty. Runners without a
++	// session retain the deterministic/shell behavior.
++	if res.Session != nil && strings.ToLower(strings.TrimSpace(res.Producer.Harness.Name)) != "shell" {
++		if err := replay.ValidateSessionInfo(res.Session); err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner session: %w", err)
++		}
+ 		sess := sessionInfoFields{
+ 			SessionID:      res.Session.SessionID,
+ 			TranscriptURI:  res.Session.TranscriptURI,
+@@ -623,6 +646,16 @@ func (e *Engine) runAndCaptureStage(
+ 		}
+ 	}
+ 
++	var logRef *runmanifest.ArtifactRef
++	if len(res.Log) > 0 {
++		logArtifact, err := as.AddContent(stageName+"-log", "application/octet-stream", res.Log)
++		if err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store log: %w", err)
++		}
++		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
++		logRef = &ref
++	}
++
+ 	outputMediaType := res.MediaType
+ 	if outputMediaType == "" {
+ 		outputMediaType = "application/octet-stream"
+@@ -642,6 +675,7 @@ func (e *Engine) runAndCaptureStage(
+ 		Producer:   producer,
+ 		Inputs:     inputRefs,
+ 		Output:     outRef,
++		Log:        logRef,
+ 		Timestamp:  e.clock(),
+ 	})
+ 
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index fdeedc2..502b179 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -707,10 +707,12 @@ func TestEngineResumeRetriesZeroSeatEscalationWithoutRerunningProducer(t *testin
+ 		Store: refstore.New(repo),
+ 		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+ 			producerCalls++
+-			return &replay.StubRunner{
+-				CannedOutput:    []byte("captured plan"),
+-				CannedMediaType: "text/plain; charset=utf-8",
+-			}, nil
++			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++				return replay.RunResult{
++					Output: []byte("captured plan"), Log: []byte("captured runner log"),
++					MediaType: "text/plain; charset=utf-8", Producer: req.Producer,
++				}, nil
++			}), nil
+ 		},
+ 		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+ 			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+@@ -1027,6 +1029,7 @@ func TestEngineResumeDoesNotAdvancePastInterruptedGateRerun(t *testing.T) {
+ // RunResult with a Session field populated.
+ type sessionStubRunner struct {
+ 	output          []byte
++	log             []byte
+ 	transcriptName  string
+ 	transcriptBytes []byte
+ 	sessionID       string
+@@ -1034,15 +1037,18 @@ type sessionStubRunner struct {
+ }
+ 
+ func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+-	path := filepath.Join(req.ScratchDir, r.transcriptName)
+-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+-		return replay.RunResult{}, err
+-	}
+-	if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
+-		return replay.RunResult{}, err
++	if r.transcriptName != "" {
++		path := filepath.Join(req.ScratchDir, r.transcriptName)
++		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++			return replay.RunResult{}, err
++		}
++		if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
++			return replay.RunResult{}, err
++		}
+ 	}
+ 	return replay.RunResult{
+ 		Output:    r.output,
++		Log:       r.log,
+ 		MediaType: "text/plain; charset=utf-8",
+ 		Producer: runmanifest.Producer{
+ 			Harness: runmanifest.Harness{Name: r.harnessName},
+@@ -1055,26 +1061,21 @@ func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (repla
+ 	}, nil
+ }
+ 
+-func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
++func TestProducerSession_WithoutTranscriptIsNotApplicable(t *testing.T) {
+ 	repo := initTestRepo(t)
+ 	sha := headSHA(t, repo)
+-
+ 	wf := workflow.Workflow{
+ 		Name: "mywf",
+ 		Stages: []workflow.Stage{
+ 			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+ 		},
+ 	}
+-
+ 	stub := &sessionStubRunner{
+-		output:          []byte("plan output"),
+-		transcriptName:  "transcript.txt",
+-		transcriptBytes: []byte("this is the transcript"),
+-		sessionID:       "session-abc",
+-		harnessName:     "claude-code",
++		output:      []byte("plan output"),
++		sessionID:   "abc",
++		harnessName: "claude-code",
+ 	}
+-
+-	runID := "mywf-20260101T000000Z-sesstest1"
++	runID := "mywf-20260101T000000Z-session-without-transcript"
+ 	e := &Engine{
+ 		Store:         refstore.New(repo),
+ 		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+@@ -1082,35 +1083,124 @@ func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
+ 		Now:           fixedClock(),
+ 	}
+ 
+-	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+-		TaskBytes: []byte("task"),
+-		TaskFile:  "task.txt",
+-		RunID:     runID,
+-		GitSHA:    sha,
+-	})
+-	if err != nil {
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++	}); err != nil {
+ 		t.Fatalf("Run: %v", err)
+ 	}
+-
+-	m := readLiveManifest(t, repo, runID)
+-	if len(m.Stages) != 1 {
+-		t.Fatalf("stages = %d, want 1", len(m.Stages))
+-	}
+-	sess := m.Stages[0].Producer.Session
+-	if sess == nil {
+-		t.Fatal("expected non-nil producer.session for agentic stage")
++	session := readLiveManifest(t, repo, runID).Stages[0].Producer.Session
++	if session == nil || session.SessionID != "abc" || session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
++		t.Fatalf("session = %#v, want id abc with not_applicable retrieval", session)
+ 	}
+-	if sess.SessionID != "session-abc" {
+-		t.Errorf("session_id = %q, want session-abc", sess.SessionID)
+-	}
+-	if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+-		t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
+-	}
+-	if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+-		t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
++}
++
++func TestEngineRejectsPriorAttemptRoleBeforeRunnerInvocation(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		edit func(*workflow.Workflow)
++	}{
++		{name: "produces exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempts" }},
++		{name: "produces evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
++		{name: "input exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
++		{name: "input evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			wf := workflow.Workflow{Name: "mywf", Stages: []workflow.Stage{{Name: "plan", Produces: "plan", Skill: "sk"}}}
++			tc.edit(&wf)
++			runnerCalls := 0
++			e := &Engine{ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++				runnerCalls++
++				return &replay.StubRunner{CannedOutput: []byte("unexpected")}, nil
++			}}
++			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{})
++			if !errors.Is(err, workflow.ErrInvalidWorkflow) || !strings.Contains(err.Error(), "reserved for gate reruns") {
++				t.Fatalf("error = %v, want reserved-role workflow error", err)
++			}
++			if runnerCalls != 0 {
++				t.Fatalf("runner calls = %d, want 0", runnerCalls)
++			}
++		})
+ 	}
+-	if sess.TranscriptArtifact == nil {
+-		t.Error("expected non-nil transcript_artifact")
++}
++
++func TestProducerSession_ExplicitInlineSessionPopulatesEvidenceAndLog(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		harness string
++		runID   string
++	}{
++		{name: "inline", harness: "", runID: "mywf-20260101T000000Z-sesstest1"},
++		{name: "named agentic harness", harness: "claude-code", runID: "mywf-20260101T000000Z-sesstest1a"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := initTestRepo(t)
++			sha := headSHA(t, repo)
++
++			wf := workflow.Workflow{
++				Name: "mywf",
++				Stages: []workflow.Stage{
++					{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
++				},
++			}
++
++			stub := &sessionStubRunner{
++				output:          []byte("plan output"),
++				log:             []byte("[stdout bytes=3 dropped=0 retained=head]\nlog"),
++				transcriptName:  "transcript.txt",
++				transcriptBytes: []byte("this is the transcript"),
++				sessionID:       "session-abc",
++				harnessName:     tc.harness,
++			}
++
++			runID := tc.runID
++			e := &Engine{
++				Store:         refstore.New(repo),
++				ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
++				Root:          repo,
++				Now:           fixedClock(),
++			}
++
++			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++				TaskBytes: []byte("task"),
++				TaskFile:  "task.txt",
++				RunID:     runID,
++				GitSHA:    sha,
++			})
++			if err != nil {
++				t.Fatalf("Run: %v", err)
++			}
++
++			m := readLiveManifest(t, repo, runID)
++			if len(m.Stages) != 1 {
++				t.Fatalf("stages = %d, want 1", len(m.Stages))
++			}
++			sess := m.Stages[0].Producer.Session
++			if sess == nil {
++				t.Fatal("expected non-nil producer.session for agentic stage")
++			}
++			if sess.SessionID != "session-abc" {
++				t.Errorf("session_id = %q, want session-abc", sess.SessionID)
++			}
++			if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
++				t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
++			}
++			if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
++				t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
++			}
++			if sess.TranscriptArtifact == nil {
++				t.Error("expected non-nil transcript_artifact")
++			}
++			if m.Stages[0].Log == nil {
++				t.Fatal("expected non-nil stage log")
++			}
++			logBytes, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Log.Path)
++			if err != nil {
++				t.Fatalf("read log: %v", err)
++			}
++			if string(logBytes) != string(stub.log) {
++				t.Fatalf("log = %q, want %q", logBytes, stub.log)
++			}
++		})
+ 	}
+ }
+ 
+@@ -1157,3 +1247,37 @@ func TestProducerSession_DeterministicStageNilSession(t *testing.T) {
+ 		t.Error("expected nil producer.session for shell/deterministic stage")
+ 	}
+ }
++
++func TestProducerLog_OverLimitFailsBeforeManifest(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	wf := workflow.Workflow{
++		Name: "mywf",
++		Stages: []workflow.Stage{
++			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
++		},
++	}
++	stub := &sessionStubRunner{
++		output:          []byte("plan output"),
++		log:             bytes.Repeat([]byte("x"), replay.MaxStageLogBytes+1),
++		transcriptName:  "transcript.txt",
++		transcriptBytes: []byte("transcript"),
++		sessionID:       "session",
++	}
++	runID := "mywf-20260101T000000Z-loglimit"
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
++		Root:          repo,
++		Now:           fixedClock(),
++	}
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
++	})
++	if err == nil || !strings.Contains(err.Error(), "runner log exceeds") {
++		t.Fatalf("Run error = %v", err)
++	}
++	if _, err := e.Store.Resolve(context.Background(), "refs/etude/runs/"+runID); err == nil {
++		t.Fatal("over-limit runner log wrote a manifest ref")
++	}
++}
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index 6487d88..b1aeda7 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -351,6 +351,197 @@ func buildGateFeedback(checkBlocks []string, seatBlockRequired map[string][]stri
+ 	return []byte(sb.String())
+ }
+ 
++type priorAttemptsIndex struct {
++	Version  int                    `json:"version"`
++	Attempts []priorAttemptEvidence `json:"attempts"`
++}
++
++type priorAttemptEvidence struct {
++	Stage                     string                  `json:"stage"`
++	Round                     int                     `json:"round"`
++	SessionID                 string                  `json:"session_id,omitempty"`
++	ResumedSession            bool                    `json:"resumed_session"`
++	OutputDigest              string                  `json:"output_digest"`
++	OutputRole                string                  `json:"output_role"`
++	LogDigest                 string                  `json:"log_digest,omitempty"`
++	LogRole                   string                  `json:"log_role,omitempty"`
++	TranscriptDigest          string                  `json:"transcript_digest,omitempty"`
++	TranscriptRole            string                  `json:"transcript_role,omitempty"`
++	TranscriptRetrievalStatus string                  `json:"transcript_retrieval_status,omitempty"`
++	TranscriptRedactionStatus string                  `json:"transcript_redaction_status,omitempty"`
++	KillingVerdict            priorAttemptGateVerdict `json:"killing_verdict"`
++}
++
++type priorAttemptGateVerdict struct {
++	GateID string                    `json:"gate_id"`
++	Status runmanifest.GateStatus    `json:"status"`
++	Seats  []priorAttemptSeatVerdict `json:"seats"`
++}
++
++type priorAttemptSeatVerdict struct {
++	Seat     string                  `json:"seat"`
++	Verdict  runmanifest.SeatVerdict `json:"verdict"`
++	Required []string                `json:"required,omitempty"`
++}
++
++func filterPriorAttemptInputs(refs []runmanifest.ArtifactRef, inputs []replay.RunInput) ([]runmanifest.ArtifactRef, []replay.RunInput) {
++	filteredRefs := make([]runmanifest.ArtifactRef, 0, len(refs))
++	for _, ref := range refs {
++		if !workflow.IsPriorAttemptRole(ref.Role) {
++			filteredRefs = append(filteredRefs, ref)
++		}
++	}
++	filteredInputs := make([]replay.RunInput, 0, len(inputs))
++	for _, input := range inputs {
++		if !workflow.IsPriorAttemptRole(input.Role) {
++			filteredInputs = append(filteredInputs, input)
++		}
++	}
++	return filteredRefs, filteredInputs
++}
++
++func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []runmanifest.GateAttempt, as *artifactstore.Store) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
++	killingGates := make([]runmanifest.GateAttempt, 0)
++	for _, gate := range gates {
++		if gate.Phase == phase && gate.Status == runmanifest.GateStatusRerun {
++			killingGates = append(killingGates, gate)
++		}
++	}
++	index := priorAttemptsIndex{Version: 1, Attempts: make([]priorAttemptEvidence, 0, len(killingGates))}
++	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
++	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
++	files := as.Files()
++
++	for _, gate := range killingGates {
++		if len(gate.ReviewedStages) != 1 {
++			return nil, nil, fmt.Errorf("prior attempts: gate %s has %d reviewed stages, want exactly one", gate.GateID, len(gate.ReviewedStages))
++		}
++		reviewed := gate.ReviewedStages[0]
++		stage, stageIndex, ok := stageByName(stages, reviewed.Stage)
++		if !ok {
++			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s", gate.GateID, reviewed.Stage)
++		}
++		attemptNumber := len(index.Attempts) + 1
++		attempt := priorAttemptEvidence{
++			Stage:        stage.Name,
++			Round:        gate.Round,
++			OutputDigest: stage.Output.Artifact,
++			OutputRole:   fmt.Sprintf("prior-attempt-%d-output", attemptNumber),
++			KillingVerdict: priorAttemptGateVerdict{
++				GateID: gate.GateID,
++				Status: gate.Status,
++				Seats:  make([]priorAttemptSeatVerdict, 0, len(gate.Seats)),
++			},
++		}
++		for _, seat := range gate.Seats {
++			attempt.KillingVerdict.Seats = append(attempt.KillingVerdict.Seats, priorAttemptSeatVerdict{
++				Seat: seat.Seat, Verdict: seat.Verdict, Required: append([]string(nil), seat.Required...),
++			})
++		}
++
++		var err error
++		refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, stage.Output, attempt.OutputRole)
++		if err != nil {
++			return nil, nil, err
++		}
++		if stage.Log != nil {
++			attempt.LogDigest = stage.Log.Artifact
++			attempt.LogRole = fmt.Sprintf("prior-attempt-%d-log", attemptNumber)
++			refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *stage.Log, attempt.LogRole)
++			if err != nil {
++				return nil, nil, err
++			}
++		}
++
++		if session := stage.Producer.Session; session != nil {
++			attempt.SessionID = session.SessionID
++			// Session identifiers are opaque. Whitespace only determines whether
++			// an identifier is blank; non-blank identities compare byte-for-byte.
++			sessionID := session.SessionID
++			nonBlankSessionID := strings.TrimSpace(sessionID) != ""
++			attempt.ResumedSession = nonBlankSessionID && sessionSeenBefore(stages[:stageIndex], sessionID)
++			attempt.TranscriptRetrievalStatus = session.RetrievalStatus
++			attempt.TranscriptRedactionStatus = session.RedactionStatus
++			if err := validatePriorTranscriptEvidence(session); err != nil {
++				return nil, nil, fmt.Errorf("prior attempts: stage %s: %w", stage.Name, err)
++			}
++			if session.TranscriptArtifact != nil {
++				attempt.TranscriptDigest = session.TranscriptArtifact.Artifact
++				attempt.TranscriptRole = fmt.Sprintf("prior-attempt-%d-transcript", attemptNumber)
++				refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *session.TranscriptArtifact, attempt.TranscriptRole)
++				if err != nil {
++					return nil, nil, err
++				}
++			}
++		}
++		index.Attempts = append(index.Attempts, attempt)
++	}
++
++	indexBytes, err := json.MarshalIndent(index, "", "  ")
++	if err != nil {
++		return nil, nil, fmt.Errorf("encode prior attempts: %w", err)
++	}
++	indexBytes = append(indexBytes, '\n')
++	artifact, err := as.AddContent("prior-attempts", "application/json", indexBytes)
++	if err != nil {
++		return nil, nil, fmt.Errorf("store prior attempts: %w", err)
++	}
++	indexRef := runmanifest.ArtifactFromManifestArtifact(artifact)
++	refs = append([]runmanifest.ArtifactRef{indexRef}, refs...)
++	inputs = append([]replay.RunInput{{Role: indexRef.Role, MediaType: indexRef.MediaType, Content: indexBytes}}, inputs...)
++	return refs, inputs, nil
++}
++
++func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, int, bool) {
++	for i := len(stages) - 1; i >= 0; i-- {
++		if stages[i].Name == name {
++			return stages[i], i, true
++		}
++	}
++	return runmanifest.Stage{}, 0, false
++}
++
++func sessionSeenBefore(stages []runmanifest.Stage, sessionID string) bool {
++	for _, stage := range stages {
++		if session := stage.Producer.Session; session != nil && session.SessionID == sessionID {
++			return true
++		}
++	}
++	return false
++}
++
++func appendPriorAttemptArtifact(refs []runmanifest.ArtifactRef, inputs []replay.RunInput, files map[string][]byte, source runmanifest.ArtifactRef, role string) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
++	content, ok := files[source.Path]
++	if !ok {
++		return nil, nil, fmt.Errorf("prior attempts: artifact %s is not materialized", source.Artifact)
++	}
++	ref := source
++	ref.Role = role
++	return append(refs, ref), append(inputs, replay.RunInput{Role: role, MediaType: ref.MediaType, Content: content}), nil
++}
++
++func validatePriorTranscriptEvidence(session *runmanifest.SessionEvidence) error {
++	if session == nil {
++		return nil
++	}
++	if session.TranscriptArtifact == nil {
++		switch {
++		case session.RetrievalStatus == runmanifest.SessionEvidenceFailed && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
++			return nil
++		case session.RetrievalStatus == runmanifest.SessionEvidenceRetrievalImported && session.RedactionStatus == runmanifest.SessionEvidenceFailed:
++			return fmt.Errorf("transcript redaction failed; refusing rerun without safely scanned evidence")
++		case session.RetrievalStatus == runmanifest.SessionEvidenceNotApplicable && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
++			return nil
++		default:
++			return fmt.Errorf("invalid transcript evidence state without artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
++		}
++	}
++	if session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
++		return fmt.Errorf("invalid transcript evidence state with artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
++	}
++	return nil
++}
++
+ // storeRawOutput adds raw bytes to the artifact store and returns the artifact.
+ // Returns nil when content is empty (no artifact stored).
+ func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artifactstore.ManifestArtifact {
+@@ -1000,9 +1191,12 @@ func (e *Engine) runGate(
+ 	reviewedStageName := initialOutputStage
+ 	reviewedOutputRef := initialOutputRef
+ 	reviewedOutputContent := initialOutputContent
+-	// inputRefs/runInputs grow each RERUN as gate-feedback is appended.
+-	inputRefs := append([]runmanifest.ArtifactRef(nil), baseInputRefs...)
+-	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
++	// Ordinary inputs retain the workflow inputs plus cumulative gate feedback.
++	// A recovered rerun Stage may also carry an older engine-owned prior bundle;
++	// strip that reserved namespace and rebuild it from durable Stage/Gate history.
++	ordinaryInputRefs, ordinaryRunInputs := filterPriorAttemptInputs(baseInputRefs, baseRunInputs)
++	inputRefs := append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...)
++	runInputs := append([]replay.RunInput(nil), ordinaryRunInputs...)
+ 
+ 	thisAttempts := make([]runmanifest.GateAttempt, 0)
+ 	for {
+@@ -1030,15 +1224,6 @@ func (e *Engine) runGate(
+ 		readCheckout := gate.ReadCheckout && len(seatNames) > 0
+ 		var checkoutFactory gateSeatCheckoutFactory
+ 		if readCheckout {
+-			gitlink, err := firstCheckoutGitlink(ctx, e.Root, gitSHA)
+-			if err != nil {
+-				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
+-					fmt.Errorf("inspect pinned checkout for read_checkout: %w", err)
+-			}
+-			if gitlink != "" {
+-				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
+-					fmt.Errorf("gate on stage %q: read_checkout cannot inspect submodule gitlink %q until GitHub issue #14 populates submodules and records their SHAs", stage.Name, gitlink)
+-			}
+ 			checkoutFactory = func() (string, func() error, error) {
+ 				checkout, checkoutErr := worktree.Checkout(ctx, e.Root, gitSHA)
+ 				if checkoutErr != nil {
+@@ -1146,13 +1331,20 @@ func (e *Engine) runGate(
+ 					fmt.Errorf("store gate feedback: %w", err)
+ 			}
+ 			feedbackRef := runmanifest.ArtifactFromManifestArtifact(feedbackArt)
+-			inputRefs = append(inputRefs, feedbackRef)
+-			runInputs = append(runInputs, replay.RunInput{
++			ordinaryInputRefs = append(ordinaryInputRefs, feedbackRef)
++			ordinaryRunInputs = append(ordinaryRunInputs, replay.RunInput{
+ 				Role:      "gate-feedback",
+ 				MediaType: "text/markdown; charset=utf-8",
+ 				Content:   feedbackBytes,
+ 			})
+ 
++			priorRefs, priorInputs, err := buildPriorAttemptInputs(stage.Name, completedStages, allAttempts, as)
++			if err != nil {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent, err
++			}
++			inputRefs = append(append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...), priorRefs...)
++			runInputs = append(append([]replay.RunInput(nil), ordinaryRunInputs...), priorInputs...)
++
+ 			globalRound++
+ 			tierRound++
+ 
+@@ -1190,35 +1382,6 @@ func (e *Engine) runGate(
+ 	}
+ }
+ 
+-// firstCheckoutGitlink returns the first recursive mode-160000 entry in the
+-// pinned tree. Until GH #14 populates submodules and records their identities,
+-// granting reads in such a checkout would expose an empty directory as if it
+-// were evidence, so callers fail closed before invoking a model seat.
+-func firstCheckoutGitlink(ctx context.Context, worktreeDir, gitSHA string) (string, error) {
+-	cmd := exec.CommandContext(ctx, "git", "-C", worktreeDir, "ls-tree", "-r", "-z", "--full-tree", gitSHA, "--")
+-	out, err := cmd.Output()
+-	if err != nil {
+-		var exitErr *exec.ExitError
+-		if errors.As(err, &exitErr) {
+-			if detail := strings.TrimSpace(string(exitErr.Stderr)); detail != "" {
+-				return "", fmt.Errorf("git ls-tree %s: %w: %s", gitSHA, err, detail)
+-			}
+-		}
+-		return "", fmt.Errorf("git ls-tree %s: %w", gitSHA, err)
+-	}
+-	for _, record := range bytes.Split(out, []byte{0}) {
+-		meta, path, ok := bytes.Cut(record, []byte{'\t'})
+-		if !ok {
+-			continue
+-		}
+-		fields := bytes.Fields(meta)
+-		if len(fields) >= 1 && bytes.Equal(fields[0], []byte("160000")) {
+-			return string(path), nil
+-		}
+-	}
+-	return "", nil
+-}
+-
+ // resolveSeatRunner returns the runner for a seat's PRIMARY invocation, used
+ // when no candidate ladder is configured. Kept separate so the ladder path and
+ // the legacy path share one call site in runGateSeats.
+diff --git a/internal/liverun/gate_test.go b/internal/liverun/gate_test.go
+index 2c9b280..b961f84 100644
+--- a/internal/liverun/gate_test.go
++++ b/internal/liverun/gate_test.go
+@@ -923,13 +923,20 @@ func TestGateReadCheckoutCapturesSessionBeforeCleanup(t *testing.T) {
+ 	}
+ }
+ 
+-func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
++func TestGateReadCheckoutPopulatesPinnedSubmodules(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	submodule := initTestRepo(t)
++	writeTestFile(t, submodule, "payload.txt", "pinned submodule evidence\n")
++	gitRun(t, submodule, "add", "payload.txt")
++	gitRun(t, submodule, "commit", "-m", "add payload")
++	pinnedSubmoduleOID := headSHA(t, submodule)
++
+ 	for _, readCheckout := range []bool{false, true} {
+ 		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+ 			repo := initTestRepo(t)
+-			baseSHA := headSHA(t, repo)
+-			gitRun(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+baseSHA+",nested/vendor/sub")
+-			gitRun(t, repo, "commit", "-m", "add nested gitlink")
++			gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "nested/vendor/sub")
++			gitRun(t, repo, "add", ".gitmodules", "nested/vendor/sub")
++			gitRun(t, repo, "commit", "-m", "pin submodule")
+ 			sha := headSHA(t, repo)
+ 
+ 			seatCalls := 0
+@@ -938,7 +945,18 @@ func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
+ 				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+ 				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+ 					seatCalls++
+-					return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++					return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++						if readCheckout {
++							content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "nested/vendor/sub/payload.txt"))
++							if err != nil {
++								return replay.RunResult{}, err
++							}
++							if string(content) != "pinned submodule evidence\n" {
++								return replay.RunResult{}, fmt.Errorf("submodule evidence = %q", content)
++							}
++						}
++						return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
++					}), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+ 				},
+ 				Tiers: fixedTiers(map[string][2]interface{}{
+ 					"L1": {[]string{"reviewer"}, ""},
+@@ -952,23 +970,15 @@ func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
+ 				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+ 			})
+ 
+-			if readCheckout {
+-				if err == nil || !strings.Contains(err.Error(), "nested/vendor/sub") || !strings.Contains(err.Error(), "#14") {
+-					t.Fatalf("read grant error = %v, want recursive gitlink and GH #14 guidance", err)
+-				}
+-				if seatCalls != 0 {
+-					t.Fatalf("seat ran %d times before gitlink rejection", seatCalls)
+-				}
+-				if got := readLiveManifest(t, repo, runID); len(got.Gates) != 0 {
+-					t.Fatalf("gitlink rejection recorded %d gate attempts, want none", len(got.Gates))
+-				}
+-				return
+-			}
+ 			if err != nil {
+-				t.Fatalf("output-only gate on gitlink repo changed behavior: %v", err)
++				t.Fatalf("Run: %v", err)
+ 			}
+ 			if seatCalls != 1 {
+-				t.Fatalf("output-only seat calls = %d, want 1", seatCalls)
++				t.Fatalf("seat calls = %d, want 1", seatCalls)
++			}
++			manifest := readLiveManifest(t, repo, runID)
++			if got := manifest.Stages[0].Submodules["nested/vendor/sub"]; got != pinnedSubmoduleOID {
++				t.Fatalf("recorded submodule = %q, want %q", got, pinnedSubmoduleOID)
+ 			}
+ 		})
+ 	}
+@@ -1235,6 +1245,9 @@ func TestGateAC2_FailingCheckHardBlocks(t *testing.T) {
+ 
+ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	repo := initTestRepo(t)
++	writeTestFile(t, repo, "checkout-marker.txt", "pinned marker\n")
++	gitRun(t, repo, "add", "checkout-marker.txt")
++	gitRun(t, repo, "commit", "-m", "add checkout marker")
+ 	sha := headSHA(t, repo)
+ 
+ 	// Round 1: seats block → RERUN.
+@@ -1248,21 +1261,26 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	// Stage runner: 1st call = original; 2nd call = rerun (must see gate-feedback input).
+ 	stageCallCount := 0
+ 	var rerunSawFeedback bool
++	var rerunInputs []replay.RunInput
+ 	resolveStage := func(stage workflow.Stage) (replay.Runner, error) {
+ 		call := stageCallCount
+ 		stageCallCount++
+ 		if call == 0 {
+-			return &replay.StubRunner{CannedOutput: []byte("plan v1"), CannedMediaType: "text/plain; charset=utf-8"}, nil
++			return &stageEvidenceRunner{
++				output: []byte("plan v1"), log: []byte("runner log"), transcript: []byte("transcript"), sessionID: "session-1",
++			}, nil
+ 		}
+ 		// Rerun: return a runner that inspects inputs.
+ 		return &feedbackCheckRunner{
+ 			output:      []byte("plan v2"),
+ 			mediaType:   "text/plain; charset=utf-8",
+ 			sawFeedback: &rerunSawFeedback,
++			captured:    &rerunInputs,
+ 		}, nil
+ 	}
+ 
+-	ss := &stubSeats{responses: seatResponses}
++	seatCall := 0
++	var seatCheckoutDirs []string
+ 	two := 2
+ 	e := &Engine{
+ 		Store:         refstore.New(repo),
+@@ -1271,7 +1289,19 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 			return &stubCheckRunner{passed: true}, nil
+ 		},
+ 		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
+-			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++			response := seatResponses[seatCall]
++			seatCall++
++			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++				content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
++				if err != nil {
++					return replay.RunResult{}, err
++				}
++				if string(content) != "pinned marker\n" {
++					return replay.RunResult{}, fmt.Errorf("checkout marker = %q", content)
++				}
++				seatCheckoutDirs = append(seatCheckoutDirs, req.WorktreeDir)
++				return replay.RunResult{Output: response, MediaType: "application/json"}, nil
++			}), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+ 		},
+ 		Tiers: fixedTiers(map[string][2]interface{}{
+ 			"L2": {[]string{"seatA", "seatB"}, "L1"},
+@@ -1282,8 +1312,9 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	_ = e.ResolveCheck // ensure ResolveCheck is set; checks are configured but pass
+ 
+ 	wf := gatedWorkflow(&workflow.GateConfig{
+-		Tier:      "L2",
+-		MaxRounds: &two,
++		Tier:         "L2",
++		MaxRounds:    &two,
++		ReadCheckout: true,
+ 	})
+ 
+ 	runID := "mywf-20260101T000000Z-gateac03"
+@@ -1300,6 +1331,20 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	if !rerunSawFeedback {
+ 		t.Error("rerun stage runner did not receive gate-feedback input")
+ 	}
++	assertPriorAttemptInputs(t, rerunInputs)
++	if len(seatCheckoutDirs) != 4 {
++		t.Fatalf("seat checkout count = %d, want 4", len(seatCheckoutDirs))
++	}
++	seenCheckoutDirs := make(map[string]bool, len(seatCheckoutDirs))
++	for _, dir := range seatCheckoutDirs {
++		if seenCheckoutDirs[dir] {
++			t.Fatalf("seat checkout %q was reused across isolated invocations", dir)
++		}
++		seenCheckoutDirs[dir] = true
++		if _, err := os.Stat(dir); !os.IsNotExist(err) {
++			t.Fatalf("seat checkout %q still exists after invocation: %v", dir, err)
++		}
++	}
+ 
+ 	m := readLiveManifest(t, repo, runID)
+ 
+@@ -1313,6 +1358,9 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	if m.Gates[1].Status != runmanifest.GateStatusPass {
+ 		t.Errorf("gate[1].status = %q, want pass", m.Gates[1].Status)
+ 	}
++	if !m.Gates[0].ReadCheckout || !m.Gates[1].ReadCheckout {
++		t.Fatalf("read_checkout grants = %t/%t, want true/true", m.Gates[0].ReadCheckout, m.Gates[1].ReadCheckout)
++	}
+ 
+ 	// Round numbers must match.
+ 	if m.Gates[0].Round != 1 {
+@@ -1328,15 +1376,23 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 		if s.Name == "plan.r2" {
+ 			foundRerunStage = true
+ 			hasFeedback := false
++			priorRoles := map[string]bool{}
+ 			for _, inp := range s.Inputs {
+ 				if inp.Role == "gate-feedback" {
+ 					hasFeedback = true
+-					break
++				}
++				if workflow.IsPriorAttemptRole(inp.Role) {
++					priorRoles[inp.Role] = true
+ 				}
+ 			}
+ 			if !hasFeedback {
+ 				t.Error("plan.r2 stage has no gate-feedback input")
+ 			}
++			for _, role := range []string{"prior-attempts", "prior-attempt-1-output", "prior-attempt-1-log", "prior-attempt-1-transcript"} {
++				if !priorRoles[role] {
++					t.Errorf("plan.r2 stage has no %s input", role)
++				}
++			}
+ 			// chain role unchanged: output role is still "plan".
+ 			if s.Output.Role != "plan" {
+ 				t.Errorf("plan.r2 output role = %q, want plan", s.Output.Role)
+@@ -1366,11 +1422,15 @@ type feedbackCheckRunner struct {
+ 	output      []byte
+ 	mediaType   string
+ 	sawFeedback *bool
++	captured    *[]replay.RunInput
+ }
+ 
+ func (r *feedbackCheckRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	if r.captured != nil {
++		*r.captured = append([]replay.RunInput(nil), req.Inputs...)
++	}
+ 	for _, inp := range req.Inputs {
+-		if inp.Role == "gate-feedback" {
++		if inp.Role == "gate-feedback" && r.sawFeedback != nil {
+ 			*r.sawFeedback = true
+ 			break
+ 		}
+@@ -1378,6 +1438,404 @@ func (r *feedbackCheckRunner) Run(_ context.Context, req replay.RunRequest) (rep
+ 	return replay.RunResult{Output: r.output, MediaType: r.mediaType, Producer: req.Producer}, nil
+ }
+ 
++type stageEvidenceRunner struct {
++	output     []byte
++	log        []byte
++	transcript []byte
++	sessionID  string
++}
++
++func (r *stageEvidenceRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	if err := os.WriteFile(filepath.Join(req.ScratchDir, "stage-transcript.txt"), r.transcript, 0o600); err != nil {
++		return replay.RunResult{}, err
++	}
++	return replay.RunResult{
++		Output: r.output,
++		Log:    r.log,
++		Producer: runmanifest.Producer{
++			Harness: runmanifest.Harness{Name: "stub"},
++			Skill:   req.Producer.Skill,
++		},
++		Session: &replay.SessionInfo{SessionID: r.sessionID, TranscriptPath: "stage-transcript.txt"},
++	}, nil
++}
++
++func assertPriorAttemptInputs(t *testing.T, inputs []replay.RunInput) {
++	t.Helper()
++	byRole := make(map[string][]byte, len(inputs))
++	for _, input := range inputs {
++		byRole[input.Role] = input.Content
++	}
++	wantIndex := `{
++  "version": 1,
++  "attempts": [
++    {
++      "stage": "plan",
++      "round": 1,
++      "session_id": "session-1",
++      "resumed_session": false,
++      "output_digest": "7ba7dc833f225079fec28c951951783c7362bbc50857e0f71ceb6d5b71eb1041",
++      "output_role": "prior-attempt-1-output",
++      "log_digest": "a18c461b8e1526a691a4fa19184dd5dff12ed156f9f2b59d2c1efe0d7ff043b9",
++      "log_role": "prior-attempt-1-log",
++      "transcript_digest": "54e6289e14c7b0e7ad9acc2dfc4c1e3d027d0eef7f5c4c3fe7c292761d0e06a6",
++      "transcript_role": "prior-attempt-1-transcript",
++      "transcript_retrieval_status": "imported",
++      "transcript_redaction_status": "passed",
++      "killing_verdict": {
++        "gate_id": "plan.r1",
++        "status": "rerun",
++        "seats": [
++          {
++            "seat": "seatA",
++            "verdict": "block",
++            "required": [
++              "fix the plan"
++            ]
++          },
++          {
++            "seat": "seatB",
++            "verdict": "block",
++            "required": [
++              "fix the plan"
++            ]
++          }
++        ]
++      }
++    }
++  ]
++}
++`
++	if got := string(byRole["prior-attempts"]); got != wantIndex {
++		t.Fatalf("prior-attempts index:\n%s\nwant:\n%s", got, wantIndex)
++	}
++	for role, want := range map[string]string{
++		"prior-attempt-1-output":     "plan v1",
++		"prior-attempt-1-log":        "runner log",
++		"prior-attempt-1-transcript": "transcript",
++	} {
++		if got := string(byRole[role]); got != want {
++			t.Fatalf("input %s = %q, want %q", role, got, want)
++		}
++	}
++}
++
++func TestValidatePriorTranscriptEvidenceStateMachine(t *testing.T) {
++	artifact := &runmanifest.ArtifactRef{Artifact: strings.Repeat("a", 64)}
++	tests := []struct {
++		name    string
++		session *runmanifest.SessionEvidence
++		wantErr string
++	}{
++		{name: "missing session is no transcript", session: nil},
++		{name: "no transcript", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}},
++		{name: "retrieval failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceFailed, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}},
++		{name: "imported and scanned", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed, TranscriptArtifact: artifact}},
++		{name: "redaction failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceFailed}, wantErr: "redaction failed"},
++		{name: "success missing artifact", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed}, wantErr: "without artifact"},
++		{name: "artifact retrieval failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceFailed, RedactionStatus: runmanifest.SessionEvidenceNotApplicable, TranscriptArtifact: artifact}, wantErr: "with artifact"},
++		{name: "mixed absent state", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed}, wantErr: "without artifact"},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			err := validatePriorTranscriptEvidence(tc.session)
++			if tc.wantErr == "" && err != nil {
++				t.Fatalf("validate: %v", err)
++			}
++			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
++				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
++			}
++		})
++	}
++}
++
++func TestFilterPriorAttemptInputsPreservesOrdinaryAndFeedback(t *testing.T) {
++	refs := []runmanifest.ArtifactRef{
++		{Role: "task"}, {Role: "prior-attempts"}, {Role: "prior-attempt-1-output"}, {Role: "gate-feedback"},
++	}
++	inputs := []replay.RunInput{
++		{Role: "task"}, {Role: "prior-attempts"}, {Role: "prior-attempt-1-output"}, {Role: "gate-feedback"},
++	}
++	gotRefs, gotInputs := filterPriorAttemptInputs(refs, inputs)
++	if len(gotRefs) != 2 || gotRefs[0].Role != "task" || gotRefs[1].Role != "gate-feedback" {
++		t.Fatalf("filtered refs = %#v", gotRefs)
++	}
++	if len(gotInputs) != 2 || gotInputs[0].Role != "task" || gotInputs[1].Role != "gate-feedback" {
++		t.Fatalf("filtered inputs = %#v", gotInputs)
++	}
++}
++
++func TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs(t *testing.T) {
++	as := artifactstore.New()
++	outputArtifact, err := as.AddContent("plan", "text/plain", []byte("same output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
++	noTranscriptSession := func(id string) *runmanifest.SessionEvidence {
++		return &runmanifest.SessionEvidence{SessionID: id, RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}
++	}
++	stages := []runmanifest.Stage{
++		{Name: "plan", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession("shared-session")}},
++		{Name: "plan.r2", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession("shared-session")}},
++		{Name: "plan.r3", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession(" shared-session ")}},
++		{Name: "plan.r4", Output: output},
++	}
++	gates := []runmanifest.GateAttempt{
++		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
++		{GateID: "plan.r2", Phase: "plan", Round: 2, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r2"}}},
++		{GateID: "plan.r3", Phase: "plan", Round: 3, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r3"}}},
++		{GateID: "plan.r4", Phase: "plan", Round: 4, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r4"}}},
++	}
++	refs, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
++	if err != nil {
++		t.Fatalf("buildPriorAttemptInputs: %v", err)
++	}
++	if len(refs) != 5 || len(inputs) != 5 {
++		t.Fatalf("refs/inputs = %d/%d, want index plus four outputs", len(refs), len(inputs))
++	}
++	var index priorAttemptsIndex
++	if err := json.Unmarshal(inputs[0].Content, &index); err != nil {
++		t.Fatalf("decode index: %v", err)
++	}
++	if len(index.Attempts) != 4 || index.Attempts[0].ResumedSession || !index.Attempts[1].ResumedSession || index.Attempts[2].ResumedSession || index.Attempts[3].ResumedSession {
++		t.Fatalf("resumed flags = %#v", index.Attempts)
++	}
++	if index.Attempts[3].SessionID != "" {
++		t.Fatalf("nil Session encoded session_id = %q", index.Attempts[3].SessionID)
++	}
++	for i := 1; i <= 4; i++ {
++		ref := refs[i]
++		if ref.Artifact != output.Artifact || ref.Role != fmt.Sprintf("prior-attempt-%d-output", i) {
++			t.Fatalf("output ref[%d] = %#v", i, ref)
++		}
++	}
++}
++
++func TestBuildPriorAttemptInputsSeedsSessionHistoryFromPassedAttempts(t *testing.T) {
++	as := artifactstore.New()
++	upstreamArtifact, err := as.AddContent("upstream", "text/plain", []byte("passed output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	blockedArtifact, err := as.AddContent("plan", "text/plain", []byte("blocked output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	session := func() *runmanifest.SessionEvidence {
++		return &runmanifest.SessionEvidence{
++			SessionID:       "reused-session",
++			RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
++			RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
++		}
++	}
++	stages := []runmanifest.Stage{
++		{Name: "upstream", Output: runmanifest.ArtifactFromManifestArtifact(upstreamArtifact), Producer: runmanifest.Producer{Session: session()}},
++		{Name: "plan", Output: runmanifest.ArtifactFromManifestArtifact(blockedArtifact), Producer: runmanifest.Producer{Session: session()}},
++	}
++	gates := []runmanifest.GateAttempt{
++		{GateID: "upstream.r1", Phase: "upstream", Round: 1, Status: runmanifest.GateStatusPass, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "upstream"}}},
++		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
++	}
++
++	_, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
++	if err != nil {
++		t.Fatalf("buildPriorAttemptInputs: %v", err)
++	}
++	var index priorAttemptsIndex
++	if err := json.Unmarshal(inputs[0].Content, &index); err != nil {
++		t.Fatalf("decode index: %v", err)
++	}
++	if len(index.Attempts) != 1 || !index.Attempts[0].ResumedSession {
++		t.Fatalf("attempt index = %#v, want killed attempt marked resumed from earlier passed producer", index.Attempts)
++	}
++}
++
++func TestBuildPriorAttemptInputsRequiresOneReviewedStage(t *testing.T) {
++	as := artifactstore.New()
++	outputArtifact, err := as.AddContent("plan", "text/plain", []byte("output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
++	stages := []runmanifest.Stage{{Name: "plan", Output: output}}
++	gates := []runmanifest.GateAttempt{{
++		GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun,
++		ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}, {Stage: "plan"}},
++	}}
++
++	_, _, err = buildPriorAttemptInputs("plan", stages, gates, as)
++	if err == nil || !strings.Contains(err.Error(), "want exactly one") {
++		t.Fatalf("buildPriorAttemptInputs error = %v, want reviewed-stage cardinality error", err)
++	}
++}
++
++func TestGateRerunStopsBeforeRunnerWhenPriorTranscriptRedactionFailed(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	stageCalls := 0
++	block := envelopeJSON("block", []string{"fix it"})
++	ss := &stubSeats{responses: [][]byte{block, block}}
++	two := 2
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			return &stageEvidenceRunner{
++				output: []byte("plan"), transcript: []byte("api_key=abcdefghijklmnop"), sessionID: "unsafe-session",
++			}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &two})
++	runID := "mywf-20260101T000000Z-redaction-stop"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha})
++	if err == nil || !strings.Contains(err.Error(), "transcript redaction failed") {
++		t.Fatalf("Run error = %v, want transcript redaction failure", err)
++	}
++	if stageCalls != 1 {
++		t.Fatalf("stage calls = %d, want 1", stageCalls)
++	}
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Stages) != 1 || len(m.Gates) != 1 || m.Gates[0].Status != runmanifest.GateStatusRerun {
++		t.Fatalf("durable state = stages:%d gates:%#v", len(m.Stages), m.Gates)
++	}
++	if session := m.Stages[0].Producer.Session; session == nil || session.RedactionStatus != runmanifest.SessionEvidenceFailed {
++		t.Fatalf("session = %#v, want persisted redaction failure", session)
++	}
++}
++
++func TestGateRerunReportsTranscriptRetrievalFailureAndContinues(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	block := envelopeJSON("block", []string{"fix it"})
++	goResult := envelopeJSON("go", nil)
++	ss := &stubSeats{responses: [][]byte{block, block, goResult, goResult}}
++	stageCalls := 0
++	var rerunInputs []replay.RunInput
++	two := 2
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			if stageCalls == 1 {
++				return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++					return replay.RunResult{
++						Output:   []byte("plan v1"),
++						Producer: runmanifest.Producer{Harness: runmanifest.Harness{Name: "stub"}, Skill: req.Producer.Skill},
++						Session:  &replay.SessionInfo{SessionID: "missing-transcript", TranscriptPath: "missing.txt"},
++					}, nil
++				}), nil
++			}
++			return &feedbackCheckRunner{output: []byte("plan v2"), captured: &rerunInputs}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &two})
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: "mywf-20260101T000000Z-retrieval-continues", GitSHA: sha,
++	}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if stageCalls != 2 {
++		t.Fatalf("stage calls = %d, want 2", stageCalls)
++	}
++	var index priorAttemptsIndex
++	for _, input := range rerunInputs {
++		if input.Role == "prior-attempts" {
++			if err := json.Unmarshal(input.Content, &index); err != nil {
++				t.Fatal(err)
++			}
++		}
++		if strings.Contains(input.Role, "transcript") {
++			t.Fatalf("unexpected transcript input %q after retrieval failure", input.Role)
++		}
++	}
++	if len(index.Attempts) != 1 || index.Attempts[0].TranscriptRetrievalStatus != runmanifest.SessionEvidenceFailed || index.Attempts[0].TranscriptRole != "" {
++		t.Fatalf("index attempts = %#v", index.Attempts)
++	}
++}
++
++func TestGateThirdAttemptReceivesRebuiltHistoryAndResumedSession(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	block := envelopeJSON("block", []string{"fix it"})
++	goResult := envelopeJSON("go", nil)
++	ss := &stubSeats{responses: [][]byte{block, block, block, block, goResult, goResult}}
++	stageCalls := 0
++	var thirdInputs []replay.RunInput
++	three := 3
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			if stageCalls <= 2 {
++				return &stageEvidenceRunner{
++					output: []byte(fmt.Sprintf("plan v%d", stageCalls)),
++					log:    []byte(fmt.Sprintf("log v%d", stageCalls)), transcript: []byte(fmt.Sprintf("transcript v%d", stageCalls)), sessionID: "shared-session",
++				}, nil
++			}
++			return &feedbackCheckRunner{output: []byte("plan v3"), captured: &thirdInputs}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &three})
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: "mywf-20260101T000000Z-third-attempt", GitSHA: sha,
++	}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	var index priorAttemptsIndex
++	roleCounts := make(map[string]int)
++	feedbackCount := 0
++	for _, input := range thirdInputs {
++		roleCounts[input.Role]++
++		if input.Role == "gate-feedback" {
++			feedbackCount++
++		}
++		if input.Role == "prior-attempts" {
++			if err := json.Unmarshal(input.Content, &index); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if feedbackCount != 2 || roleCounts["prior-attempts"] != 1 {
++		t.Fatalf("feedback/prior index counts = %d/%d", feedbackCount, roleCounts["prior-attempts"])
++	}
++	if len(index.Attempts) != 2 || index.Attempts[0].ResumedSession || !index.Attempts[1].ResumedSession {
++		t.Fatalf("attempt index = %#v", index.Attempts)
++	}
++	for _, role := range []string{
++		"prior-attempt-1-output", "prior-attempt-1-log", "prior-attempt-1-transcript",
++		"prior-attempt-2-output", "prior-attempt-2-log", "prior-attempt-2-transcript",
++	} {
++		if roleCounts[role] != 1 {
++			t.Errorf("input role %s count = %d, want 1", role, roleCounts[role])
++		}
++	}
++}
++
++type runnerFunc func(context.Context, replay.RunRequest) (replay.RunResult, error)
++
++func (f runnerFunc) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	return f(ctx, req)
++}
++
+ // ---------------------------------------------------------------------------
+ // AC4: escalation advances tier; terminal escalation → GateEscalationError.
+ // ---------------------------------------------------------------------------
+diff --git a/internal/replay/exec_runner.go b/internal/replay/exec_runner.go
+index 630c256..c8b51df 100644
+--- a/internal/replay/exec_runner.go
++++ b/internal/replay/exec_runner.go
+@@ -3,6 +3,7 @@ package replay
+ import (
+ 	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -11,8 +12,11 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
++	"unicode"
++	"unicode/utf8"
+ 
+ 	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/sessionevidence"
+ )
+ 
+ // Sentinel errors for ExecRunner.
+@@ -25,6 +29,7 @@ var (
+ 	ErrOutputMissing       = errors.New("output missing")
+ 	ErrOutputNotRegular    = errors.New("output is not a regular file")
+ 	ErrOutputTooLarge      = errors.New("output too large")
++	ErrSessionInvalid      = errors.New("session sidecar invalid")
+ )
+ 
+ // runnerWaitDelay is the grace period after context cancellation or process
+@@ -103,11 +108,15 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		}
+ 	}
+ 
+-	// Step 5: scratch hygiene — remove stale output and reset inputs dir.
++	// Step 5: scratch hygiene — remove stale output/session and reset inputs dir.
+ 	outputPath := filepath.Join(resolvedScratch, "output")
++	sessionPath := filepath.Join(resolvedScratch, "session.json")
+ 	inputsDir := filepath.Join(resolvedScratch, "inputs")
+ 
+ 	_ = os.Remove(outputPath) // ignore os.IsNotExist; stale output must not survive
++	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
++		return RunResult{}, fmt.Errorf("%w: remove stale session sidecar: %v", ErrInvalidScratchDir, err)
++	}
+ 
+ 	if err := os.RemoveAll(inputsDir); err != nil {
+ 		return RunResult{}, fmt.Errorf("%w: remove inputs dir: %v", ErrInvalidScratchDir, err)
+@@ -152,11 +161,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		"PATH=" + extractEnv(environ, "PATH"),
+ 		"ETUDE_INPUTS_DIR=" + inputsDir,
+ 		"ETUDE_OUTPUT_FILE=" + outputPath,
++		"ETUDE_SESSION_FILE=" + sessionPath,
+ 	}
+ 	reservedEnv := map[string]bool{
+-		"PATH":              true,
+-		"ETUDE_INPUTS_DIR":  true,
+-		"ETUDE_OUTPUT_FILE": true,
++		"PATH":               true,
++		"ETUDE_INPUTS_DIR":   true,
++		"ETUDE_OUTPUT_FILE":  true,
++		"ETUDE_SESSION_FILE": true,
+ 	}
+ 	for _, name := range r.EnvAllowlist {
+ 		if reservedEnv[name] {
+@@ -170,12 +181,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		// not which values were actually delivered.
+ 	}
+ 
+-	var stdoutBuf, stderrBuf bytes.Buffer
++	stdoutBuf := newBoundedStream(true, MaxCapturedStreamBytes)
++	stderrBuf := newBoundedStream(false, MaxCapturedStreamBytes)
+ 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+ 	cmd.Dir = resolvedWorktree
+ 	cmd.Env = env
+-	cmd.Stdout = &stdoutBuf
+-	cmd.Stderr = &stderrBuf
++	cmd.Stdout = stdoutBuf
++	cmd.Stderr = stderrBuf
+ 	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+ 	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+ 	// open can cause cmd.Run to hang indefinitely.
+@@ -185,14 +197,25 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 
+ 	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
+ 	if ctx.Err() != nil {
++		var base error
+ 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+-			return RunResult{}, fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
++			base = fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
++		} else {
++			base = fmt.Errorf("runner: context done: %w", ctx.Err())
+ 		}
+-		return RunResult{}, fmt.Errorf("runner: context done: %w", ctx.Err())
++		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
+ 	}
+ 	if runErr != nil {
+-		stderr := strings.TrimSpace(stderrBuf.String())
+-		return RunResult{}, fmt.Errorf("%w: %s: %v: %s", ErrRunnerFailed, r.Command[0], runErr, stderr)
++		base := fmt.Errorf("%w: %s: %v", ErrRunnerFailed, r.Command[0], runErr)
++		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
++	}
++
++	var session *SessionInfo
++	if strings.ToLower(strings.TrimSpace(req.Producer.Harness.Name)) != "shell" {
++		session, err = readSessionSidecar(resolvedScratch, sessionPath)
++		if err != nil {
++			return RunResult{}, err
++		}
+ 	}
+ 
+ 	// Step 9: read output (symlink-safe via Lstat).
+@@ -239,12 +262,149 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 	// Step 10: assemble result and apply defaults.
+ 	res := RunResult{
+ 		Output:   data,
++		Log:      frameStageLog(stdoutBuf, stderrBuf),
+ 		Producer: req.Producer,
++		Session:  session,
+ 	}
+ 	applyResultDefaults(req, &res)
+ 	return res, nil
+ }
+ 
++type boundedStream struct {
++	buf     []byte
++	dropped int64
++	head    bool
++	limit   int
++}
++
++func newBoundedStream(head bool, limit int) *boundedStream {
++	return &boundedStream{head: head, limit: limit}
++}
++
++func (w *boundedStream) Write(p []byte) (int, error) {
++	n := len(p)
++	if w.head {
++		remaining := w.limit - len(w.buf)
++		if remaining > 0 {
++			keep := min(remaining, len(p))
++			w.buf = append(w.buf, p[:keep]...)
++			w.dropped += int64(len(p) - keep)
++		} else {
++			w.dropped += int64(len(p))
++		}
++		return n, nil
++	}
++	if len(p) >= w.limit {
++		w.dropped += int64(len(w.buf) + len(p) - w.limit)
++		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
++		return n, nil
++	}
++	over := len(w.buf) + len(p) - w.limit
++	if over > 0 {
++		w.dropped += int64(over)
++		copy(w.buf, w.buf[over:])
++		w.buf = w.buf[:len(w.buf)-over]
++	}
++	w.buf = append(w.buf, p...)
++	return n, nil
++}
++
++func (w *boundedStream) Bytes() []byte { return w.buf }
++
++func frameStageLog(stdout, stderr *boundedStream) []byte {
++	var out bytes.Buffer
++	write := func(name, retained string, stream *boundedStream) {
++		if len(stream.buf) == 0 && stream.dropped == 0 {
++			return
++		}
++		if out.Len() > 0 {
++			out.WriteByte('\n')
++		}
++		fmt.Fprintf(&out, "[%s bytes=%d dropped=%d retained=%s]\n", name, len(stream.buf), stream.dropped, retained)
++		out.Write(stream.buf)
++	}
++	write("stdout", "head", stdout)
++	write("stderr", "tail", stderr)
++	if out.Len() == 0 {
++		return nil
++	}
++	return out.Bytes()
++}
++
++func withStderrDiagnostic(base error, stderr []byte) error {
++	const maxDiagnosticBytes = 8 << 10
++	if len(stderr) > maxDiagnosticBytes {
++		stderr = stderr[len(stderr)-maxDiagnosticBytes:]
++	}
++	diagnostic := strings.TrimSpace(string(stderr))
++	if diagnostic == "" {
++		return base
++	}
++	return fmt.Errorf("%w: stderr: %s", base, diagnostic)
++}
++
++func readSessionSidecar(root, path string) (*SessionInfo, error) {
++	content, err := sessionevidence.ReadRegularFileUnderLimit(root, path, 64<<10)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil, nil
++		}
++		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
++	}
++	if !utf8.Valid(content) {
++		return nil, fmt.Errorf("%w: sidecar is not valid UTF-8", ErrSessionInvalid)
++	}
++	var session SessionInfo
++	dec := json.NewDecoder(bytes.NewReader(content))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&session); err != nil {
++		return nil, fmt.Errorf("%w: decode: %v", ErrSessionInvalid, err)
++	}
++	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
++		return nil, fmt.Errorf("%w: trailing JSON", ErrSessionInvalid)
++	}
++	if err := ValidateSessionInfo(&session); err != nil {
++		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
++	}
++	if filepath.IsAbs(session.TranscriptPath) {
++		rel, err := filepath.Rel(root, session.TranscriptPath)
++		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++			// Return scratch-local transcript paths in relative form. Besides
++			// making the containment boundary explicit, this avoids macOS's
++			// /var -> /private/var alias making the engine misclassify the same
++			// attempt scratch directory as an external absolute path.
++			session.TranscriptPath = rel
++		}
++	}
++	return &session, nil
++}
++
++// ValidateSessionInfo applies the durable engine boundary to any Runner.
++func ValidateSessionInfo(session *SessionInfo) error {
++	if session == nil {
++		return nil
++	}
++	if strings.TrimSpace(session.SessionID) == "" {
++		return errors.New("session_id is required")
++	}
++	for name, value := range map[string]string{
++		"session_id":      session.SessionID,
++		"transcript_uri":  session.TranscriptURI,
++		"transcript_path": session.TranscriptPath,
++	} {
++		if !utf8.ValidString(value) {
++			return fmt.Errorf("%s contains invalid Unicode", name)
++		}
++		if strings.IndexFunc(value, unicode.IsControl) >= 0 {
++			return fmt.Errorf("%s contains a control character", name)
++		}
++		if len(value) > MaxSessionFieldBytes {
++			return fmt.Errorf("%s exceeds %d bytes", name, MaxSessionFieldBytes)
++		}
++	}
++	return nil
++}
++
+ // resolveDir validates that path is non-empty, absolute, exists, and is a
+ // directory, then returns its symlink-resolved form.
+ func resolveDir(path string) (string, error) {
+diff --git a/internal/replay/exec_runner_test.go b/internal/replay/exec_runner_test.go
+index fbc8d68..83c4b13 100644
+--- a/internal/replay/exec_runner_test.go
++++ b/internal/replay/exec_runner_test.go
+@@ -1,11 +1,14 @@
+ package replay
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"math"
+ 	"os"
+ 	"path/filepath"
++	"reflect"
+ 	"runtime"
+ 	"strings"
+ 	"testing"
+@@ -637,7 +640,7 @@ func TestExecRunner_ExtractEnvExactKeyMatch(t *testing.T) {
+ }
+ 
+ // TestExecRunner_EnvIsolation proves that the child process's environment is
+-// the strict set (PATH + ETUDE_INPUTS_DIR + ETUDE_OUTPUT_FILE) and does NOT
++// the strict set (PATH plus the three reserved ETUDE paths) and does NOT
+ // inherit arbitrary parent-process environment variables.
+ func TestExecRunner_EnvIsolation(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+@@ -907,3 +910,262 @@ printf 'done' > "$ETUDE_OUTPUT_FILE"`)
+ 		t.Fatal("ExecRunner.Run did not return within 5s; WaitDelay regression: surviving child held pipes open")
+ 	}
+ }
++
++func TestExecRunner_SessionSidecarAndLog(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '%s' '{"session_id":"session-17","transcript_uri":"file:///transcript","transcript_path":"transcript.jsonl"}' > "$ETUDE_SESSION_FILE.tmp"
++mv "$ETUDE_SESSION_FILE.tmp" "$ETUDE_SESSION_FILE"
++printf 'hello'
++printf 'warning' >&2`)
++
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session == nil || res.Session.SessionID != "session-17" || res.Session.TranscriptPath != "transcript.jsonl" {
++		t.Fatalf("session = %#v", res.Session)
++	}
++	wantLog := "[stdout bytes=5 dropped=0 retained=head]\nhello\n[stderr bytes=7 dropped=0 retained=tail]\nwarning"
++	if string(res.Log) != wantLog {
++		t.Fatalf("log = %q, want %q", res.Log, wantLog)
++	}
++}
++
++func TestExecRunner_MinimalSessionSidecar(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '%s' '{"session_id":"abc"}' > "$ETUDE_SESSION_FILE"`)
++
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	want := &SessionInfo{SessionID: "abc"}
++	if !reflect.DeepEqual(res.Session, want) {
++		t.Fatalf("session = %#v, want %#v", res.Session, want)
++	}
++}
++
++func TestExecRunner_NormalizesScratchAbsoluteTranscriptPath(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++transcript="${ETUDE_SESSION_FILE%/*}/transcript.jsonl"
++printf 'transcript' > "$transcript"
++printf '{"session_id":"session-17","transcript_path":"%s"}' "$transcript" > "$ETUDE_SESSION_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session == nil || res.Session.TranscriptPath != "transcript.jsonl" {
++		t.Fatalf("session = %#v, want scratch-relative transcript path", res.Session)
++	}
++}
++
++func TestExecRunner_AbsentSessionAndStreamsRemainNil(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session != nil || res.Log != nil {
++		t.Fatalf("session/log = %#v/%q, want nil/nil", res.Session, res.Log)
++	}
++}
++
++func TestExecRunner_ShellProducerIgnoresSessionSidecar(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '{' > "$ETUDE_SESSION_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{
++		WorktreeDir: worktree, ScratchDir: scratch,
++		Producer: runmanifest.Producer{Harness: runmanifest.Harness{Name: "shell"}},
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session != nil {
++		t.Fatalf("session = %#v, want nil", res.Session)
++	}
++}
++
++func TestExecRunner_RejectsInvalidSessionSidecars(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	cases := map[string]string{
++		"empty":         ``,
++		"malformed":     `{`,
++		"unknown field": `{"session_id":"s","unexpected":true}`,
++		"missing id":    `{"transcript_uri":"file:///t"}`,
++	}
++	for name, sidecar := range cases {
++		t.Run(name, func(t *testing.T) {
++			worktree, scratch := makeSiblingDirs(t)
++			script := filepath.Join(scratch, "runner.sh")
++			writeScript(t, script, fmt.Sprintf("printf 'artifact' > \"$ETUDE_OUTPUT_FILE\"\nprintf '%%s' '%s' > \"$ETUDE_SESSION_FILE\"", sidecar))
++			_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++			if !errors.Is(err, ErrSessionInvalid) {
++				t.Fatalf("error = %v, want ErrSessionInvalid", err)
++			}
++		})
++	}
++}
++
++func TestExecRunner_AcceptsReplacementCharacterInSessionID(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '{"session_id":"session-\ufffd"}' > "$ETUDE_SESSION_FILE"`)
++	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if res.Session == nil || res.Session.SessionID != "session-\ufffd" {
++		t.Fatalf("session = %#v", res.Session)
++	}
++}
++
++func TestExecRunner_RejectsInvalidUTF8SessionSidecar(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '{"session_id":"\377"}' > "$ETUDE_SESSION_FILE"`)
++	_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "valid UTF-8") {
++		t.Fatalf("error = %v", err)
++	}
++}
++
++func TestExecRunner_TimeoutRetainsStderrTail(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := runnerWaitDelay
++	runnerWaitDelay = 200 * time.Millisecond
++	defer func() { runnerWaitDelay = orig }()
++	worktree, scratch := makeSiblingDirs(t)
++	script := filepath.Join(scratch, "runner.sh")
++	writeScript(t, script, `printf 'timeout diagnostic' >&2
++sleep 30`)
++	runner := execRunner(script)
++	runner.Timeout = 500 * time.Millisecond
++	_, err := runner.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timeout diagnostic") {
++		t.Fatalf("error = %v", err)
++	}
++}
++
++func TestBoundedStreamsRetainHeadAndTail(t *testing.T) {
++	head := newBoundedStream(true, 4)
++	tail := newBoundedStream(false, 4)
++	_, _ = head.Write([]byte("abcdef"))
++	_, _ = tail.Write([]byte("abcdef"))
++	if string(head.Bytes()) != "abcd" || head.dropped != 2 {
++		t.Fatalf("head = %q dropped=%d", head.Bytes(), head.dropped)
++	}
++	if string(tail.Bytes()) != "cdef" || tail.dropped != 2 {
++		t.Fatalf("tail = %q dropped=%d", tail.Bytes(), tail.dropped)
++	}
++}
++
++func TestMaximalFramedLogFitsEngineLimit(t *testing.T) {
++	stdout := newBoundedStream(true, MaxCapturedStreamBytes)
++	stderr := newBoundedStream(false, MaxCapturedStreamBytes)
++	_, _ = stdout.Write(bytes.Repeat([]byte("o"), MaxCapturedStreamBytes))
++	_, _ = stderr.Write(bytes.Repeat([]byte("e"), MaxCapturedStreamBytes))
++	stdout.dropped = math.MaxInt64
++	stderr.dropped = math.MaxInt64
++	log := frameStageLog(stdout, stderr)
++	if len(log) > MaxStageLogBytes {
++		t.Fatalf("maximal framed log = %d bytes, engine limit = %d", len(log), MaxStageLogBytes)
++	}
++}
++
++func TestValidateSessionInfoBoundary(t *testing.T) {
++	for name, session := range map[string]*SessionInfo{
++		"nil":                    nil,
++		"valid":                  {SessionID: "session"},
++		"missing id":             {TranscriptURI: "file:///transcript"},
++		"long id":                {SessionID: strings.Repeat("s", MaxSessionFieldBytes+1)},
++		"long uri":               {SessionID: "session", TranscriptURI: strings.Repeat("u", MaxSessionFieldBytes+1)},
++		"long path":              {SessionID: "session", TranscriptPath: strings.Repeat("p", MaxSessionFieldBytes+1)},
++		"invalid utf8":           {SessionID: string([]byte{0xff})},
++		"valid replacement rune": {SessionID: "valid\ufffdid"},
++		"control character":      {SessionID: "bad\nid"},
++		"valid replacement uri":  {SessionID: "session", TranscriptURI: "valid\ufffduri"},
++		"invalid path":           {SessionID: "session", TranscriptPath: string([]byte{0xff})},
++	} {
++		t.Run(name, func(t *testing.T) {
++			err := ValidateSessionInfo(session)
++			wantErr := name != "nil" && name != "valid" && name != "valid replacement rune" && name != "valid replacement uri"
++			if (err != nil) != wantErr {
++				t.Fatalf("error = %v, wantErr=%v", err, wantErr)
++			}
++		})
++	}
++}
++
++func TestExecRunner_RejectsOversizedAndSymlinkSessionSidecars(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	t.Run("oversized", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++dd if=/dev/zero of="$ETUDE_SESSION_FILE" bs=65537 count=1 2>/dev/null`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "exceeds") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("symlink", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++printf '%s' '{"session_id":"s"}' > "$ETUDE_SESSION_FILE.target"
++ln -s "$ETUDE_SESSION_FILE.target" "$ETUDE_SESSION_FILE"`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "symlink") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++	t.Run("fifo", func(t *testing.T) {
++		worktree, scratch := makeSiblingDirs(t)
++		script := filepath.Join(scratch, "runner.sh")
++		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
++mkfifo "$ETUDE_SESSION_FILE"`)
++		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "regular") {
++			t.Fatalf("error = %v", err)
++		}
++	})
++}
+diff --git a/internal/replay/record.go b/internal/replay/record.go
+index 3e63587..9e3d1bb 100644
+--- a/internal/replay/record.go
++++ b/internal/replay/record.go
+@@ -4,11 +4,16 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
+ 	"time"
+ 
++	"github.com/joshuavial/etude/internal/artifactmedia"
+ 	"github.com/joshuavial/etude/internal/artifactstore"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/sessionevidence"
+ )
+ 
+ // RecordedRun is the result of RunRecorder.Record: the identity of the new
+@@ -32,6 +37,11 @@ type RunRecorder struct {
+ 	// Now returns the current time. Defaults to time.Now when nil; tests inject a
+ 	// fixed clock to make replay run ids deterministic.
+ 	Now func() time.Time
++	// SessionScratchDir and SessionWorktreeDir are the containment roots from
++	// the runner invocation. They remain live through Record and let a reported
++	// transcript_path be imported without trusting an arbitrary filesystem path.
++	SessionScratchDir  string
++	SessionWorktreeDir string
+ }
+ 
+ // Record writes a new linked replay run and returns its identity.
+@@ -68,6 +78,26 @@ func (r RunRecorder) Record(
+ 	if err != nil {
+ 		return RecordedRun{}, fmt.Errorf("record: store output artifact: %w", err)
+ 	}
++	var logRef *runmanifest.ArtifactRef
++	if len(res.Log) > 0 {
++		if len(res.Log) > MaxStageLogBytes {
++			return RecordedRun{}, fmt.Errorf("record: runner log exceeds %d bytes", MaxStageLogBytes)
++		}
++		logArtifact, err := as.AddContent(sourceStageName+"-log", "application/octet-stream", res.Log)
++		if err != nil {
++			return RecordedRun{}, fmt.Errorf("record: store log artifact: %w", err)
++		}
++		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
++		logRef = &ref
++	}
++
++	producer := res.Producer
++	if res.Session != nil {
++		if err := ValidateSessionInfo(res.Session); err != nil {
++			return RecordedRun{}, fmt.Errorf("record: runner session: %w", err)
++		}
++		producer.Session = r.buildSessionEvidence(as, sourceStageName+"-transcript", res.Session)
++	}
+ 	files := as.Files()
+ 
+ 	// Copy each source input raw from the source commit. Using ReadCommitFile
+@@ -84,16 +114,17 @@ func (r RunRecorder) Record(
+ 
+ 	// Build the stage. Both Stage.Skill and Stage.Producer must be set
+ 	// (mirrors capture.go's pattern; validateStage requires Skill fields).
+-	skill := res.Producer.Skill
++	skill := producer.Skill
+ 	stage := runmanifest.Stage{
+ 		Name:       sourceStageName,
+ 		ProducedBy: "replay",
+ 		GitSHA:     resolved.GitSHA,
+ 		Submodules: resolved.Submodules,
+ 		Skill:      skill,
+-		Producer:   res.Producer,
++		Producer:   producer,
+ 		Inputs:     sourceInputRefs(resolved),
+ 		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
++		Log:        logRef,
+ 		Timestamp:  now,
+ 		ReplayOf: &runmanifest.ReplayLink{
+ 			RunID:  sourceRunID,
+@@ -126,6 +157,73 @@ func (r RunRecorder) Record(
+ 	}, nil
+ }
+ 
++func (r RunRecorder) buildSessionEvidence(as *artifactstore.Store, role string, session *SessionInfo) *runmanifest.SessionEvidence {
++	evidence := &runmanifest.SessionEvidence{
++		SessionID:       session.SessionID,
++		TranscriptURI:   session.TranscriptURI,
++		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
++		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
++	}
++	if strings.TrimSpace(session.TranscriptPath) == "" {
++		return evidence
++	}
++
++	path, root := resolveRecordedTranscriptPath(session.TranscriptPath, r.SessionScratchDir, r.SessionWorktreeDir)
++	if root == "" {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	content, err := sessionevidence.ReadRegularFileUnder(root, path)
++	if err != nil {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
++	if err := sessionevidence.ScanForSecrets(content); err != nil {
++		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
++	artifact, err := as.AddContent(role, artifactmedia.Infer(path), content)
++	if err != nil {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
++		return evidence
++	}
++	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
++	evidence.TranscriptArtifact = &ref
++	return evidence
++}
++
++func resolveRecordedTranscriptPath(pathValue, scratchDir, worktreeDir string) (string, string) {
++	if filepath.IsAbs(pathValue) {
++		for _, root := range []string{scratchDir, worktreeDir} {
++			if root == "" {
++				continue
++			}
++			rel, err := filepath.Rel(root, pathValue)
++			if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++				return pathValue, root
++			}
++		}
++		return "", ""
++	}
++	cleanPath := filepath.Clean(pathValue)
++	if cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
++		return "", ""
++	}
++	if scratchDir != "" {
++		scratchPath := filepath.Join(scratchDir, cleanPath)
++		if _, err := os.Lstat(scratchPath); err == nil {
++			return scratchPath, scratchDir
++		}
++	}
++	if worktreeDir != "" {
++		return filepath.Join(worktreeDir, cleanPath), worktreeDir
++	}
++	return "", ""
++}
++
+ // AllocateRunID probes for a free replay run id, trying base then
+ // base-2 through base-10. Returns an error if none are free.
+ // Mirrors allocateReplayRunID (now exported for use by bench).
+diff --git a/internal/replay/record_test.go b/internal/replay/record_test.go
+index 5d80884..59cf174 100644
+--- a/internal/replay/record_test.go
++++ b/internal/replay/record_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"errors"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -52,6 +54,8 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+ 	res := RunResult{
+ 		Output:    []byte("replay output bytes"),
++		Log:       []byte("replay log bytes"),
++		Session:   &SessionInfo{SessionID: "replay-session", TranscriptURI: "file:///replay-transcript"},
+ 		MediaType: "text/plain; charset=utf-8",
+ 		Producer: runmanifest.Producer{
+ 			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+@@ -101,6 +105,22 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 		t.Fatalf("stages = %d, want 1", len(m.Stages))
+ 	}
+ 	s := m.Stages[0]
++	if s.Log == nil {
++		t.Fatal("Log is nil")
++	}
++	if s.Producer.Session == nil || s.Producer.Session.SessionID != "replay-session" {
++		t.Fatalf("producer session = %#v", s.Producer.Session)
++	}
++	if s.Producer.Session.TranscriptURI != "file:///replay-transcript" || s.Producer.Session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
++		t.Fatalf("producer session metadata = %#v", s.Producer.Session)
++	}
++	logBytes, err := store.ReadCommitFile(context.Background(), recorded.Commit, s.Log.Path)
++	if err != nil {
++		t.Fatalf("ReadCommitFile log: %v", err)
++	}
++	if !bytes.Equal(logBytes, res.Log) {
++		t.Fatalf("log bytes = %q, want %q", logBytes, res.Log)
++	}
+ 
+ 	if s.ProducedBy != "replay" {
+ 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
+@@ -127,6 +147,57 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunRecorderImportsSessionTranscript(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++	scratch := t.TempDir()
++	transcript := []byte("recorded replay transcript\n")
++	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	res := RunResult{
++		Output:    []byte("replay output"),
++		MediaType: "text/plain",
++		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: "transcript.jsonl"},
++		Producer: runmanifest.Producer{
++			Harness: runmanifest.Harness{Name: "shell"},
++			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		},
++	}
++	rec := RunRecorder{
++		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC) },
++		SessionScratchDir: scratch,
++	}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
++	if err != nil {
++		t.Fatal(err)
++	}
++	m, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatal(err)
++	}
++	session := m.Stages[0].Producer.Session
++	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed || session.TranscriptArtifact == nil {
++		t.Fatalf("session evidence = %#v", session)
++	}
++	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(got, transcript) {
++		t.Fatalf("transcript bytes = %q, want %q", got, transcript)
++	}
++}
++
++func TestResolveRecordedTranscriptPathRejectsRelativeTraversal(t *testing.T) {
++	if path, root := resolveRecordedTranscriptPath("nested/../../outside", t.TempDir(), t.TempDir()); path != "" || root != "" {
++		t.Fatalf("resolveRecordedTranscriptPath traversal = (%q, %q), want rejection", path, root)
++	}
++}
++
+ // TestRunRecorderInputBytesCopiedVerbatim verifies that source input raw bytes
+ // appear byte-identical in the recorded replay run (reading from the source commit
+ // path is the mechanism that handles both content and pointer records correctly).
+@@ -361,6 +432,22 @@ func TestRunRecorderAcceptsEmptyOutput(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunRecorderRejectsOverLimitLog(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++	res := RunResult{
++		Output:    []byte("output"),
++		MediaType: "text/plain",
++		Log:       bytes.Repeat([]byte("x"), MaxStageLogBytes+1),
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
++		},
++	}
++	_, err := (RunRecorder{Store: store}).Record(context.Background(), "source-run", "gen", resolved, res)
++	if err == nil || !strings.Contains(err.Error(), "runner log exceeds") {
++		t.Fatalf("Record error = %v", err)
++	}
++}
++
+ // ---------------------------------------------------------------------------
+ // Helper for int-to-string without strconv (mirrors bench/cohort_test.go)
+ // ---------------------------------------------------------------------------
+diff --git a/internal/replay/runner.go b/internal/replay/runner.go
+index 33a5680..168630b 100644
+--- a/internal/replay/runner.go
++++ b/internal/replay/runner.go
+@@ -51,9 +51,9 @@ type RunRequest struct {
+ // When a runner (e.g. a dev runner) has a session sidecar or envelope, it
+ // populates this field; engine.go wires it into Producer.Session evidence.
+ type SessionInfo struct {
+-	SessionID      string
+-	TranscriptURI  string
+-	TranscriptPath string
++	SessionID      string `json:"session_id"`
++	TranscriptURI  string `json:"transcript_uri,omitempty"`
++	TranscriptPath string `json:"transcript_path,omitempty"`
+ }
+ 
+ // RunResult is the outcome of a stage execution.
+@@ -67,11 +67,21 @@ type SessionInfo struct {
+ // Deterministic and shell runners leave this nil.
+ type RunResult struct {
+ 	Output    []byte
++	Log       []byte               // bounded stdout/stderr evidence; nil when both streams are empty
+ 	MediaType string               // if empty, Run defaults it to req.OutputMediaType
+ 	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
+ 	Session   *SessionInfo         // non-nil when the runner has a session (agentic only)
+ }
+ 
++const (
++	// MaxCapturedStreamBytes is retained independently for stdout and stderr.
++	MaxCapturedStreamBytes = 1 << 20
++	// MaxStageLogBytes includes two captured streams plus their fixed framing.
++	MaxStageLogBytes = 2*MaxCapturedStreamBytes + 256
++	// MaxSessionFieldBytes bounds each string accepted from a runner session.
++	MaxSessionFieldBytes = 4 << 10
++)
++
+ // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.
+ // Defined as a named constant so test assertions and behavior cannot drift.
+ const stubConcatSeparator = "\n"
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 551459c..0ac9dc7 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -34,8 +34,8 @@ var (
+ type Manifest struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = schema with stage-log artifact refs.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+ 	ManifestVersion int
+ 	RunID           string
+ 	Workflow        string
+@@ -162,10 +162,12 @@ type Stage struct {
+ 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+ 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+ 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+-	Skill     Skill
+-	Producer  Producer
+-	Inputs    []ArtifactRef
+-	Output    ArtifactRef
++	Skill    Skill
++	Producer Producer
++	Inputs   []ArtifactRef
++	Output   ArtifactRef
++	// Log is optional bounded stdout/stderr evidence from the stage runner.
++	Log       *ArtifactRef
+ 	Timestamp time.Time
+ 	// ReplayOf, when non-nil, identifies the source run/stage this stage was
+ 	// replayed from. Required when ProducedBy=="replay"; forbidden otherwise.
+@@ -346,6 +348,9 @@ func ArtifactPaths(manifest Manifest) []string {
+ 			seen[input.Path] = struct{}{}
+ 		}
+ 		seen[stage.Output.Path] = struct{}{}
++		if stage.Log != nil {
++			seen[stage.Log.Path] = struct{}{}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -406,6 +411,11 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
+ 		if err := verifyArtifactFile(stage.Output, files, hashes); err != nil {
+ 			return "", err
+ 		}
++		if stage.Log != nil {
++			if err := verifyArtifactFile(*stage.Log, files, hashes); err != nil {
++				return "", err
++			}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -503,6 +513,11 @@ func validateStage(index int, stage Stage) error {
+ 	if err := validateArtifactRef(stage.Output); err != nil {
+ 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
+ 	}
++	if stage.Log != nil {
++		if err := validateArtifactRef(*stage.Log); err != nil {
++			return fmt.Errorf("%w: %s log: %v", ErrInvalidManifest, prefix, err)
++		}
++	}
+ 	if stage.Producer.Session != nil {
+ 		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
+ 			return err
+@@ -577,6 +592,9 @@ func stageHasArtifact(stage Stage, artifact string) bool {
+ 	if stage.Output.Artifact == artifact {
+ 		return true
+ 	}
++	if stage.Log != nil && stage.Log.Artifact == artifact {
++		return true
++	}
+ 	for _, input := range stage.Inputs {
+ 		if input.Artifact == artifact {
+ 			return true
+@@ -788,6 +806,9 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+ 			paths[input.Path] = struct{}{}
+ 		}
+ 		paths[stage.Output.Path] = struct{}{}
++		if stage.Log != nil {
++			paths[stage.Log.Path] = struct{}{}
++		}
+ 	}
+ 	for _, gate := range manifest.Gates {
+ 		for _, seat := range gate.Seats {
+@@ -924,8 +945,8 @@ func cloneBytes(in []byte) []byte {
+ type manifestJSON struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = schema with stage-log artifact refs.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+ 	ManifestVersion int    `json:"manifest_version,omitempty"`
+ 	RunID           string `json:"run_id"`
+ 	Workflow        string `json:"workflow"`
+@@ -1007,6 +1028,7 @@ type stageJSON struct {
+ 	Producer  *producerJSON  `json:"producer,omitempty"`
+ 	Inputs    []artifactJSON `json:"inputs"`
+ 	Output    artifactJSON   `json:"output"`
++	Log       *artifactJSON  `json:"log,omitempty"`
+ 	Timestamp string         `json:"timestamp"`
+ 	ReplayOf  *replayOfJSON  `json:"replay_of,omitempty"`
+ }
+@@ -1108,6 +1130,7 @@ func (m Manifest) toJSON() manifestJSON {
+ 			Producer:  producerBlock,
+ 			Inputs:    inputs,
+ 			Output:    stage.Output.toJSON(),
++			Log:       artifactRefJSON(stage.Log),
+ 			Timestamp: formatTime(stage.Timestamp),
+ 			ReplayOf:  replayOfBlock,
+ 		})
+@@ -1121,6 +1144,12 @@ func (m Manifest) toJSON() manifestJSON {
+ 			gatesOut = append(gatesOut, gate.toJSON())
+ 		}
+ 	}
++	for _, stage := range m.Stages {
++		if stage.Log != nil {
++			version = 4
++			break
++		}
++	}
+ 
+ 	return manifestJSON{
+ 		ManifestVersion: version,
+@@ -1256,13 +1285,14 @@ func ensureEOF(dec *json.Decoder) error {
+ }
+ 
+ func (m manifestJSON) toManifest() (Manifest, error) {
+-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
++	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
++	// and 4 (with stage-log artifact refs).
+ 	// Reject 1 (never emitted) and any future version this binary cannot model.
+ 	switch m.ManifestVersion {
+-	case 0, 2, 3:
++	case 0, 2, 3, 4:
+ 		// accepted
+ 	default:
+-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
++		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+ 	}
+ 
+ 	created, err := parseTime("created", m.Created)
+@@ -1463,6 +1493,11 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 			Commit: s.ReplayOf.Commit,
+ 		}
+ 	}
++	var logRef *ArtifactRef
++	if s.Log != nil {
++		ref := s.Log.toArtifactRef()
++		logRef = &ref
++	}
+ 
+ 	return Stage{
+ 		Name:       s.Stage,
+@@ -1473,6 +1508,7 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 		Producer:   producer,
+ 		Inputs:     inputs,
+ 		Output:     s.Output.toArtifactRef(),
++		Log:        logRef,
+ 		Timestamp:  timestamp,
+ 		ReplayOf:   replayOf,
+ 	}, nil
+@@ -1489,6 +1525,14 @@ func cloneStringMap(source map[string]string) map[string]string {
+ 	return cloned
+ }
+ 
++func artifactRefJSON(ref *ArtifactRef) *artifactJSON {
++	if ref == nil {
++		return nil
++	}
++	encoded := ref.toJSON()
++	return &encoded
++}
++
+ func (a artifactJSON) toArtifactRef() ArtifactRef {
+ 	return ArtifactRef{
+ 		Role:      a.Role,
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index a49ce68..097c695 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -9,6 +9,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"os/exec"
++	"slices"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -229,6 +230,51 @@ func TestSubmodulesJSONRoundTripAndLegacyOmission(t *testing.T) {
+ 	}
+ }
+ 
++func TestStageLogRoundTripsAndIsReferenced(t *testing.T) {
++	store := artifactstore.New()
++	output, err := store.AddContent("output", "text/plain", []byte("output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	logArtifact, err := store.AddContent("plan-log", "application/octet-stream", []byte("log bytes"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	manifest := validManifest(ArtifactFromManifestArtifact(output))
++	logRef := ArtifactFromManifestArtifact(logArtifact)
++	manifest.Stages[0].Log = &logRef
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	parsed, err := ParseJSON(content)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if parsed.Stages[0].Log == nil || parsed.Stages[0].Log.Artifact != logRef.Artifact {
++		t.Fatalf("log = %#v", parsed.Stages[0].Log)
++	}
++	paths := ArtifactPaths(parsed)
++	if !slices.Contains(paths, logRef.Path) {
++		t.Fatalf("ArtifactPaths = %#v, missing log", paths)
++	}
++}
++
++func TestStageLogOmittedForLegacyShape(t *testing.T) {
++	manifest := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	parsed, err := ParseJSON(content)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if parsed.Stages[0].Log != nil {
++		t.Fatalf("log should be nil: %#v", parsed.Stages[0].Log)
++	}
++}
++
+ func TestParseJSONRejectsMalformedUnknownAndInvalidManifest(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	manifest := validManifest(output)
+@@ -1719,8 +1765,8 @@ func TestValidateGateRejects(t *testing.T) {
+ 	})
+ }
+ 
+-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
+-// and rejects 1 and 4 with ErrInvalidManifest.
++// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3,
++// and 4, and rejects unsupported versions with ErrInvalidManifest.
+ func TestVersionAllowlist(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	m := validManifest(output)
+@@ -1752,8 +1798,34 @@ func TestVersionAllowlist(t *testing.T) {
+ 		}
+ 	})
+ 
++	// Version 4: a stage-log artifact requires the stage-log schema.
++	t.Run("accept version 4", func(t *testing.T) {
++		m4 := validManifest(output)
++		log := contentArtifact("stage-log", "application/octet-stream", []byte("log"))
++		m4.Stages[0].Log = &log
++		j, err := m4.JSON()
++		if err != nil {
++			t.Fatalf("JSON: %v", err)
++		}
++		if !strings.Contains(string(j), `"manifest_version": 4`) {
++			t.Fatalf("stage log did not emit manifest_version 4:\n%s", j)
++		}
++		if _, err := ParseJSON(j); err != nil {
++			t.Fatalf("ParseJSON rejected version 4: %v", err)
++		}
++
++		// Development builds briefly emitted stage logs under v2/v3 before v4
++		// existed. Keep those durable refs readable while all new writes use v4.
++		for _, legacyVersion := range []int{2, 3} {
++			legacy := strings.Replace(string(j), `"manifest_version": 4`, fmt.Sprintf(`"manifest_version": %d`, legacyVersion), 1)
++			if _, err := ParseJSON([]byte(legacy)); err != nil {
++				t.Fatalf("ParseJSON rejected legacy stage log at version %d: %v", legacyVersion, err)
++			}
++		}
++	})
++
+ 	// Versions that should be rejected.
+-	for _, v := range []int{1, 4, 5, 100} {
++	for _, v := range []int{1, 5, 100} {
+ 		v := v
+ 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
+ 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
+diff --git a/internal/sessionevidence/evidence.go b/internal/sessionevidence/evidence.go
+index 60e9fa6..a65dc50 100644
+--- a/internal/sessionevidence/evidence.go
++++ b/internal/sessionevidence/evidence.go
+@@ -50,6 +50,43 @@ func ReadRegularFileUnder(root, path string) ([]byte, error) {
+ 	return readCheckedRegularFile(checkedPath)
+ }
+ 
++// ReadRegularFileUnderLimit is ReadRegularFileUnder with a hard byte cap. It
++// reads at most limit+1 bytes from the already-open regular file so a writer
++// cannot race a size pre-check and exceed the cap.
++func ReadRegularFileUnderLimit(root, path string, limit int64) ([]byte, error) {
++	checkedPath, err := checkedRegularPath(path, root)
++	if err != nil {
++		return nil, err
++	}
++	fi, err := os.Lstat(checkedPath)
++	if err != nil {
++		return nil, err
++	}
++	if !fi.Mode().IsRegular() {
++		return nil, ErrNotRegular
++	}
++	f, err := os.OpenFile(checkedPath, os.O_RDONLY|nofollowFlag|nonblockFlag, 0)
++	if err != nil {
++		return nil, err
++	}
++	defer f.Close()
++	fi, err = f.Stat()
++	if err != nil {
++		return nil, err
++	}
++	if !fi.Mode().IsRegular() {
++		return nil, ErrNotRegular
++	}
++	content, err := io.ReadAll(io.LimitReader(f, limit+1))
++	if err != nil {
++		return nil, err
++	}
++	if int64(len(content)) > limit {
++		return nil, fmt.Errorf("file exceeds %d byte limit", limit)
++	}
++	return content, nil
++}
++
+ func readCheckedRegularFile(path string) ([]byte, error) {
+ 	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
+ 	if err != nil {
+diff --git a/internal/sessionevidence/nofollow_other.go b/internal/sessionevidence/nofollow_other.go
+index 7bb0822..954d818 100644
+--- a/internal/sessionevidence/nofollow_other.go
++++ b/internal/sessionevidence/nofollow_other.go
+@@ -3,3 +3,4 @@
+ package sessionevidence
+ 
+ const nofollowFlag = 0
++const nonblockFlag = 0
+diff --git a/internal/sessionevidence/nofollow_unix.go b/internal/sessionevidence/nofollow_unix.go
+index 2d1e421..24291c6 100644
+--- a/internal/sessionevidence/nofollow_unix.go
++++ b/internal/sessionevidence/nofollow_unix.go
+@@ -4,4 +4,7 @@ package sessionevidence
+ 
+ import "syscall"
+ 
+-const nofollowFlag = syscall.O_NOFOLLOW
++const (
++	nofollowFlag = syscall.O_NOFOLLOW
++	nonblockFlag = syscall.O_NONBLOCK
++)
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index 74a790c..53a235d 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -28,13 +28,21 @@ var specialRoles = map[string]bool{
+ 	"repo-state": true,
+ }
+ 
+-// reservedEnvNames are the three env var names that ExecRunner always controls.
++// IsPriorAttemptRole reports whether role belongs to the engine-owned input
++// namespace used to hand prior stage attempts to gate reruns. Workflows may
++// not declare these roles because the engine injects them dynamically.
++func IsPriorAttemptRole(role string) bool {
++	return role == "prior-attempts" || strings.HasPrefix(role, "prior-attempt-")
++}
++
++// reservedEnvNames are the four env var names that ExecRunner always controls.
+ // They must not appear in env_allowlist (fail-fast at validation; the runtime
+ // reserved-skip in ExecRunner is defense-in-depth only).
+ var reservedEnvNames = map[string]bool{
+-	"PATH":              true,
+-	"ETUDE_INPUTS_DIR":  true,
+-	"ETUDE_OUTPUT_FILE": true,
++	"PATH":               true,
++	"ETUDE_INPUTS_DIR":   true,
++	"ETUDE_OUTPUT_FILE":  true,
++	"ETUDE_SESSION_FILE": true,
+ }
+ 
+ // validEvalMethods is the closed set of eval method strings.
+@@ -343,6 +351,9 @@ func (w Workflow) Validate() error {
+ 		if err := validateRoleToken(prefix+".produces", s.Produces); err != nil {
+ 			return err
+ 		}
++		if IsPriorAttemptRole(s.Produces) {
++			return fmt.Errorf("%w: %s produces role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, s.Produces)
++		}
+ 		// A reserved special role (task, repo-state) is an implicit input
+ 		// available to every stage; a stage producing one is meaningless, so
+ 		// reject it rather than let it slip through as a no-op.
+@@ -368,6 +379,9 @@ func (w Workflow) Validate() error {
+ 			if err := validateRoleToken(fmt.Sprintf("%s.input[%d]", prefix, j), inp); err != nil {
+ 				return err
+ 			}
++			if IsPriorAttemptRole(inp) {
++				return fmt.Errorf("%w: %s input[%d] role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, j, inp)
++			}
+ 			// Duplicate inputs within a stage are rejected: an input appearing
+ 			// twice gives no additional information and most likely indicates a
+ 			// copy-paste error.
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 3822756..30dc550 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -251,6 +251,10 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 		// Reserved produces roles
+ 		{"produces reserved role task", func(w *Workflow) { w.Stages[0].Produces = "task" }},
+ 		{"produces reserved role repo-state", func(w *Workflow) { w.Stages[0].Produces = "repo-state" }},
++		{"produces reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Produces = "prior-attempts" }},
++		{"produces reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
++		{"inputs reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
++		{"inputs reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
+ 	}
+ 
+ 	for _, tc := range cases {
+@@ -266,6 +270,17 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 	}
+ }
+ 
++func TestPriorAttemptRoleReservationAllowsNearMiss(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Produces = "prior-attempt"
++	if err := w.Validate(); err != nil {
++		t.Fatalf("Validate near-miss role: %v", err)
++	}
++	if IsPriorAttemptRole("prior-attempt") {
++		t.Fatal("prior-attempt must not be in the reserved namespace")
++	}
++}
++
+ func TestValidateRequiredStageName(t *testing.T) {
+ 	tests := []struct {
+ 		name    string
+@@ -2236,6 +2251,7 @@ func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
+ 		{"reserved PATH", []string{"PATH"}},
+ 		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
+ 		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
++		{"reserved ETUDE_SESSION_FILE", []string{"ETUDE_SESSION_FILE"}},
+ 		{"duplicate", []string{"FOO", "FOO"}},
+ 	}
+ 	for _, tc := range cases {
