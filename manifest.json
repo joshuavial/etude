@@ -192,6 +192,37 @@
         "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat reviewed kb0.2+kb0.3 plans together (sibling README beads). GO — README section boundary vs kb0.3 non-colliding, deferred list will match V1-SCOPE, per-command usage mentions preserved (docs-reality safe)."
       },
       "timestamp": "2026-05-27T16:21:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T16:40:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single Opus seat. GO — README deferred list matches V1-SCOPE; command list/usage/See-links untouched; docs-reality + reconcile green; no 'not yet' adjacent to shipped cmd tokens; scope clean."
+      },
+      "timestamp": "2026-05-27T16:41:00Z"
     }
   ]
 }
