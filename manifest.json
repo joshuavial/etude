@@ -201,6 +201,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:54:08Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "e2bf96fb6712739f34e74e4ca28f237bc315deba5a5a981458441471032a0491"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/verify-gate-r1.md sha256 ed348feb00453a6e6f6400e117ae95745657ce31d41e32ed0e7111bf0efec45b"
+          ],
+          "timestamp": "2026-08-16T00:56:14Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Full suite remains required for the execution child and final PR.",
+            "packet path .etude/tmp/etude-5dr.1/verify-gate-r1.md sha256 ed348feb00453a6e6f6400e117ae95745657ce31d41e32ed0e7111bf0efec45b"
+          ],
+          "timestamp": "2026-08-16T00:56:14Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:56:14Z"
     }
   ]
 }
