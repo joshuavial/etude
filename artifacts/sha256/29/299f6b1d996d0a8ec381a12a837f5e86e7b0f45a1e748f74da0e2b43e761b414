@@ -1,0 +1,12 @@
+# Final Review — etude-2ku (optional retro-meta JSON sidecar)
+
+Verdict: GO. Commit d64b789 "add optional retro-meta json sidecar to retro captures".
+
+- Coherent: `--meta-file <path>|-` on `retro capture` reads a JSON sidecar (file or stdin), validates with `json.Valid` before any write, and — only when present — appends it as a second `retro-meta` stage (role:retro-meta, application/json) in the same manifest. Body stays Stages[0]; retro-meta is Stages[1]. Plan (Option A: 2-stage manifest) → impl → tests → docs consistent.
+- Backward compat (the key property, verified built-binary): no `--meta-file` → byte-identical single-stage manifest; existing retros + their tests unaffected; ExecGenerator leaves Meta nil so the generate-exec path is a no-op.
+- Robustness: malformed JSON rejected before any AddContent/ref write (empirically: clear error, exit 1, ref count unchanged). retro-meta blob stored verbatim (byte-identical), both artifacts retained by WriteManifestTree (walks every stage Output), 2-stage manifest passes Manifest.Validate.
+- Code quality: assembleAndWriteRetro extracts a shared `producer` struct reused by both stages and builds the stage slice (retro always [0], retro-meta conditionally [1]) — minimal, no duplication. produced_by="retro-meta" (valid identifier ≠ "replay"). generate path wires genResult.Meta; StubGenerator.CannedMeta added for tests.
+- Docs: regenerated docs/cli/etude_retro_capture.md (new flag) + hand-written docs/retro.md retro-meta sidecar subsection (notes show does not yet render it). docs-check / docs-reality (12 cmds) / gen-docs TestDriftGuard / lint green.
+- Scope: 4 product/test files + 2 docs files; 1-bead=1-commit.
+
+Gate history (3-seat degraded, pilms outage): plan Tier-1 — Option A unanimous GO (codex's only BLOCK was an inaccurate Docs section, resolved via bead note + advance). Implement Tier-1 — unanimous GO (codex, gemini, in-harness Opus; Opus empirically verified 2-stage assembly, backward-compat 1-stage, malformed-JSON rejection, both artifacts retained, existing tests unchanged). codex non-blocking note: future generator-side Meta emitters should keep Meta well-formed JSON (capture is the only user-facing malformed-input path today).
