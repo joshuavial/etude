@@ -207,6 +207,51 @@
       ],
       "decision": {},
       "timestamp": "2026-05-26T10:05:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T11:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T11:01:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 2 (Opus+codex); gemini+pilms dropped per tier for low-risk dev tooling"
+      },
+      "timestamp": "2026-05-26T11:05:00Z"
     }
   ]
 }
