@@ -251,6 +251,68 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:23:00Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-plan-r3",
+            "artifact": "e289c6f2ffb744040853133b108202c865a52a00a642b8006a632aec2541c2dc",
+            "path": "artifacts/sha256/e2/e289c6f2ffb744040853133b108202c865a52a00a642b8006a632aec2541c2dc",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 310
+          },
+          "timestamp": "2026-08-16T03:31:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "replace transcript-status denylist with an authoritative imported-and-redaction-passed allowlist"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r3",
+            "artifact": "98a099b5da73cb14663e225e6598a3c0b41dcdd466a641642ddbf82c44ce1c53",
+            "path": "artifacts/sha256/98/98a099b5da73cb14663e225e6598a3c0b41dcdd466a641642ddbf82c44ce1c53",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 436
+          },
+          "timestamp": "2026-08-16T03:31:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:31:00Z"
     }
   ]
 }

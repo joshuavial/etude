@@ -1,0 +1,3 @@
+The plan remains blocked on its transcript-admission mechanism. Failing only when redaction status equals `failed` is a denylist: any future or inconsistent status could attach unscanned bytes. Normalizing empty status to not-applicable is safe only when no transcript artifact exists. Admit transcript bytes only under the authoritative imported-and-passed state; fail closed for any artifact paired with other status.
+
+VERDICT: BLOCK
