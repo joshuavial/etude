@@ -901,6 +901,62 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T02:33:27Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff",
+          "artifact": "fd3d4943c919b78a1c8a55e8fb7b84ca3cb535ec7f0a9bc26e98aea38425bc06"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Mention gate-less caller runs also use manifest v4 and older binaries reject v4.",
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r2.md sha256 87a8021a3f965a52aa0549767bf7d41b3f361b739894a0eaa1c81f56520ce693"
+          ],
+          "timestamp": "2026-08-16T02:43:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Declare the live caller runner as the irreversible step and document the clean-commit crash-before-capture at-least-once residual.",
+            "Adjudicate Git clean-filter normalization and core.fileMode=false rather than claiming raw tracked state is always bound.",
+            "Treat ignored-file effects as explicitly outside the tracked/non-ignored guard rather than an undeclared publication invariant."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r2.md sha256 87a8021a3f965a52aa0549767bf7d41b3f361b739894a0eaa1c81f56520ce693"
+          ],
+          "timestamp": "2026-08-16T02:43:12Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:43:12Z"
     }
   ]
 }
