@@ -1,0 +1,114 @@
+# etude-5dr.5 plan — preserve the original run checkout
+
+## Goal
+
+Fix PR #22's blocking manifest-v4 provenance defect without changing the
+caller-workspace guard: retain each caller stage's clean post-run `git_sha`, add
+an immutable run-level `original_git_sha`, and make every operation that creates
+a hermetic worktree use the original run checkout.
+
+The defect is reproduced when stage 0 runs in the caller workspace and commits,
+stage 1 fails, and resume checks out `stages[0].git_sha`. That field now names the
+post-run commit, so the resumed hermetic stage silently runs against a different
+tree than the fresh run. Single-stage replay, forward replay, replay recording,
+and bench resolve the same stage-oriented SHA and have the same provenance error.
+
+## Design
+
+1. Extend manifest v4 with top-level `original_git_sha`. It is the immutable
+   checkout selected when the run starts; caller stage `git_sha` remains the
+   authoritative clean post-run HEAD. Version 0/2/3 manifests retain their
+   historical meaning, where stage 0's `git_sha` is the run checkout.
+2. Add one `Manifest.OriginalCheckout()` accessor that returns the v4 run-level
+   value and falls back to stage 0 only for legacy versions. Require
+   `original_git_sha` on v4 parse/write and reject it on versions below 4, so a
+   malformed or pre-fix v4 manifest fails closed instead of silently choosing
+   caller post-run provenance. Keep v0/v2/v3 serialized bytes unchanged.
+3. Have live-run manifest writes carry the original `gitSHA` independently of
+   each stage's post-run SHA. Resume uses `OriginalCheckout()` before creating
+   its detached worktree; uninterrupted gate execution remains on the existing
+   original worktree.
+4. Have replay resolution expose both the selected stage provenance and the
+   run's original checkout. Single-stage replay, forward replay, replay-record
+   manifests, and bench checkout the original run SHA. The selected caller
+   stage retains its post-run `GitSHA` for inspection rather than overwriting or
+   relabeling it.
+5. Update shipped run/replay/gate documentation to distinguish run-level
+   original checkout from per-stage caller post-run provenance. Do not modify
+   the separately owned bench documentation.
+
+## Complete consumer set
+
+- `internal/liverun/engine.go`: resume detached worktree.
+- `internal/cli/replay.go`: single-stage replay detached worktree.
+- `internal/liverun/replay_forward.go`: forward-replay detached worktree.
+- `internal/bench/run.go`: benchmark replay detached worktree.
+- `internal/replay/record.go`: recorded replay stage provenance must describe
+  the checkout actually used.
+
+`internal/replay.ResolveInputs` is the shared boundary for CLI replay, bench,
+and replay recording, so it will return the original checkout explicitly while
+preserving the embedded source stage and its post-run SHA.
+
+## Compatibility and failure policy
+
+- Manifests v0, v2, and v3 parse and replay exactly as before via stage 0.
+- Hermetic-only live runs continue emitting v2/v3 with no new JSON field.
+- Every newly emitted v4 manifest includes `original_git_sha`.
+- A v4 manifest missing the field is rejected. Falling back to stage 0 for v4
+  would recreate the reviewed silent-pass defect, so compatibility cannot take
+  priority over provenance integrity on that malformed/unreleased shape.
+- The existing caller dirty-tree and changing-HEAD guard stays at the same
+  pre-publication point and retains all current tests.
+
+## Files
+
+- `internal/runmanifest/manifest.go`
+- `internal/runmanifest/manifest_test.go`
+- `internal/liverun/engine.go`
+- `internal/liverun/engine_test.go`
+- `internal/replay/resolve.go`
+- `internal/replay/resolve_test.go`
+- `internal/replay/record.go`
+- `internal/liverun/replay_forward.go`
+- `internal/liverun/replay_forward_test.go`
+- `internal/cli/replay.go`
+- `internal/cli/replay_test.go`
+- `internal/bench/run.go`
+- `internal/bench/run_test.go`
+- `docs/run.md`
+- `docs/replay.md`
+- `docs/gates.md`
+
+## Verification
+
+- Manifest tests prove v4 emits and round-trips both SHAs, rejects missing or
+  older-version `original_git_sha`, and preserves literal v0/v2/v3 fixtures.
+- A live-run regression drives a caller stage that commits, a later hermetic
+  stage that fails once, then resume; the resumed runner asserts its detached
+  HEAD equals the original run SHA and differs from the caller post-run SHA.
+- Single-stage CLI replay and forward replay regressions seed a v4 run whose
+  caller stage SHA differs from the original SHA, then assert the runner's
+  worktree HEAD equals the original SHA.
+- Replay resolver/recorder tests assert the source stage post-run SHA remains
+  visible while the resolved/run-record checkout uses the original SHA.
+- Bench regression asserts its runner worktree uses the original SHA for the
+  same v4 source shape.
+- Run targeted tests for runmanifest, liverun, replay, CLI, and bench, then
+  `make test`, `make lint`, `make docs-check`, and `make docs-reality`.
+- Build `bin/etude` and reproduce the two-stage commit/fail/resume sequence in a
+  throwaway repository, recording the original SHA, caller post-run SHA,
+  resumed hermetic runner SHA, exit codes, and final manifest field. Also replay
+  the caller stage with the built binary and record the detached checkout SHA.
+
+## Rejected alternatives
+
+- Reusing stage 0 `git_sha` for the run checkout is rejected because caller
+  stages deliberately change its meaning to post-run provenance.
+- Replacing caller stage `git_sha` with the original SHA is rejected because it
+  destroys the post-run provenance that binds the produced output.
+- Refusing resume whenever stage 0 is caller-workspace is rejected because a
+  distinct immutable field fully preserves the capability and fixes every
+  affected consumer.
+- Silently accepting v4 without `original_git_sha` is rejected because its only
+  available fallback is the unsafe overloaded field.
