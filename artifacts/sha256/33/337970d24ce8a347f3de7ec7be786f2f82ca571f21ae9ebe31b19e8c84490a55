@@ -1,0 +1,13 @@
+### B2. Gate-spiral hardening cluster (2026-05-25)
+- **Scope:** the real-spiral lessons that built the runbook's per-seat-sandbox,
+  tooling-outage, and codex-caveat sections.
+- **Evidence/changes:** 6045147 (reviewer seats NEVER revert the working tree
+  mid-gate — a seat's mutation-test revert once wiped producer wiring out of
+  `internal/cli/capture.go`); bf3d755 (per-seat sandbox constraints + the gemini
+  GrepTool cross-file-bleed caveat); cc32afb (codex diff-only-from-first-attempt
+  + the autonomous-loop tooling-outage fallback); a262870 (codex large-input
+  ~1000+ line verdict truncation). Artifacts: review-gate-runbook.md,
+  capture-protocol.md.
+- **Follow-up beads:** **etude-ojz** — provision ripgrep to fix the gemini
+  GrepTool cross-file bleed (originates from bf3d755). `[IMPLEMENTED]` → etude-ojz.
+
