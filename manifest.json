@@ -879,6 +879,47 @@
         ]
       },
       "timestamp": "2026-08-16T00:36:00Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r3",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Unify phase and stage terminology and explain replayable as a storage eligibility term.",
+            "Scope ETUDE_INPUTS_DIR shapes separately for replay and gate modes.",
+            "State that severity is required and gate mode does not use the replay eval cache."
+          ],
+          "timestamp": "2026-08-16T00:41:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task; the final correctness-oriented wording follow-ups were folded, and further polish will not expand this bead.",
+        "deferred_beads": [
+          "etude-aul.6",
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:41:00Z"
     }
   ]
 }
