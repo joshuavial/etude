@@ -1,0 +1,99 @@
+# etude-l8tz verification
+
+Status: **READY_FOR_FINAL_REVIEW**. Worker verification passed and the supervisor QA delivery blocker is addressed. The production diff is frozen and ready for the parent-owned independent Astra/Fable review and final L2 gate. This record does not claim that gate has passed.
+
+## Scope and provenance
+
+- Profile/run: `dev-codex` / `etude-l8tz-dev-codex`.
+- Implementation worker: `/root/sol_worker`, `gpt-5.6-sol`, high reasoning.
+- Worktree HEAD while verifying: `c40488ce744d1aa55622d35e9b45ee670aeeb77b`.
+- Base changed externally from initial `42d3593` via two cherry-picks at 12:46:16 +1200 (reflog), before the lead full-check snapshot at 13:03:21 +1200. This lane did not commit. Final verification covers `c40488c` plus the uncommitted diff.
+- The lead reproduced the defect from clean source `42d3593c1099093519345c4cd0969dad17d968f6`: after baseline init, ordinary `git push` exited 0 with “Everything up-to-date” while local `main` was `52a79662...` and remote `main` remained `678772d2...`. Exact commands and output are in `.etude/tmp/lead-baseline.log`; context is in `.etude/tmp/lead-baseline.md`.
+- Final built binary: `bin/etude`, SHA-256 `5974546adf405d34683e02d0846357039330553d52a8b08f25ae7c56a4abe0e4`.
+- Final diff: 16 modified tracked files, 588 insertions, 356 deletions. Changes are uncommitted as requested. `git diff --binary HEAD` SHA-256: `677810cdcb05c135a4057ee5350ce4d8b56c0087df4bfb5d91dbebad947b7901`.
+- The original `.etude/tmp/lead-checks/source-hashes.json` still matches all 15 files from the implementation pass. Only `RELEASING.md` was added in the QA follow-up; affected docs checks were rerun. Final hashes for all 16 files are in `.etude/tmp/release-doc-checks/final-source-hashes.json`.
+
+Environment for build and automated checks: Go 1.26.1 darwin/arm64, Git 2.47.1, `GOCACHE=/tmp/etude-l8tz-go-cache`. Go-backed commands emitted a nonfatal warning because the sandbox cannot update the module stat cache under `/Users/jv/go/pkg/mod/cache/download`; every reported command still exited 0.
+
+The disposable Git/CLI exercise additionally set:
+
+```text
+GIT_CONFIG_NOSYSTEM=1
+GIT_CONFIG_GLOBAL=/dev/null
+GIT_CONFIG_COUNT=0
+```
+
+It invoked the absolute binary `/Users/jv/projects/etude/.worktrees/etude-l8tz-dev-codex/bin/etude`. The complete replayable command script is `.etude/tmp/cli-evidence.sh`; exact commands, output, and exit statuses are in `.etude/tmp/cli-evidence.log`. The passing fixture is `/var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/etude-l8tz-final.KR0Vft`. An earlier harness-only attempt is preserved in `.etude/tmp/cli-evidence-harness-attempt.log`; it stopped because the script expected exit 1 instead of Git's exit 128 for a missing ref. The assertion was changed to `show-ref --verify --quiet`, which has the documented absent-ref status 1; no product code changed.
+
+## Acceptance evidence
+
+| Requirement | Evidence |
+| --- | --- |
+| Fresh init must preserve ordinary branch push | Fresh `etude init` configured three safe fetch mirrors and no `remote.origin.push` (`git config --local --get-all` exit 1). A following empty commit and plain `git push` advanced both local and bare-remote `main` to `25231b98715c53e15f5267dbc0b3d6d7eec93dc2`. |
+| Migrate old init safely | A cloned repository received two duplicate exact local `refs/etude/*:refs/etude/*` values. Normal init reported two removals; the key was absent afterward. A following plain `git push` advanced local and remote `main` to `8de1b8fb1c4368de7a3f4030336ec9cfa88a9b34`. |
+| Normal and force remove every exact duplicate only | CLI evidence shows normal and force each reporting two exact removals. Focused tests cover normal/force duplicates and preserve custom `HEAD`, forced canonical, name-changing, colonless, whitespace-bearing, invalid, and embedded-newline values in original order. |
+| Preserve local/inherited user policy | Focused tests cover local custom values, `push.default=nothing`, a selected backup remote without touching origin, and system/global/global-include/local-include push policies. `GIT_CONFIG_NOSYSTEM=0` forces the system-scope fixture to be observed. Local config reads use NUL delimiters, so multiline values cannot be mistaken for the legacy exact value. |
+| Do not guess a branch mapping | Fresh and migrated configs have no Etude-added push value. The final force fixture retains only the pre-existing `HEAD:refs/heads/custom`; Etude never synthesized one. |
+| Dry-run is truthful and write-free | `etude init --force --dry-run` previewed two push removals and counted two configuration actions. `.git/config` SHA-256 remained `350105ff...` and workflow SHA-256 remained `ba5b14a3...`. Focused tests also cover missing-remote normal/force dry-run semantics and byte-identical config/workflow snapshots. |
+| Preserve fetch safety and missing-remote behavior | Existing tests plus new normal/force paths verify hazardous fetch cleanup still precedes additions, safe per-kind mirrors remain the normal-init result, force performs cleanup without additions, implicit missing origin skips configuration, and an explicit missing remote errors only on a real run. |
+| Metadata publication remains explicit and non-mirroring | The absolute binary's `etude sync` pushed `refs/etude/runs/manual-sync` to the bare remote. A local `refs/etude-mirror/origin/runs/must-not-upload` remained absent remotely (`show-ref --verify --quiet` exit 1). A regression test also verifies a custom branch push mapping does not affect sync and that no mirror ref is uploaded. |
+| Doctor no longer requires push coverage | The disposable CLI reported `OK push-refspec[origin] configured Git push mappings are syntactically valid; etude sync publishes refs/etude metadata explicitly` with no configured push value. Its aggregate exit was 1 solely because the disposable repository lacks the workflow's two `scripts/seat-adapter.sh` executables. Focused doctor tests accept missing, partial, single-ref, delete, and name-changing valid mappings; they retain FAIL for invalid syntax and WARN for `remote.<name>.mirror=true`. |
+| Documentation matches shipped behavior | Updated top-level and docs indexes, `docs/init.md`, `docs/sync.md`, `docs/doctor.md`, generated CLI references, directly affected current product/dogfood planning docs, and `RELEASING.md` section 6. The final documentation bytes pass `docs-check` and `docs-reality`. |
+
+## Automated verification
+
+All commands ran from the lane worktree.
+
+```sh
+GOCACHE=/tmp/etude-l8tz-go-cache go test ./internal/cli -run 'TestInit|TestDoctor|TestSyncUsesExplicit' -count=1
+```
+
+Exit 0; `ok github.com/joshuavial/etude/internal/cli 21.249s`.
+
+```sh
+GOCACHE=/tmp/etude-l8tz-go-cache make build
+```
+
+Exit 0; produced the binary hash recorded above.
+
+```sh
+GOCACHE=/tmp/etude-l8tz-go-cache make test
+GOCACHE=/tmp/etude-l8tz-go-cache make lint
+GOCACHE=/tmp/etude-l8tz-go-cache make docs-check
+GOCACHE=/tmp/etude-l8tz-go-cache make docs-reality
+```
+
+All four exited 0 on frozen source. The lead's exact outputs are under `.etude/tmp/lead-checks/`, summarized in `.etude/tmp/lead-checks/results.md`: full `internal/cli` took 111.609s, lint ran the format check and `go vet`, docs-check regenerated 26 command documents in a temporary directory, and docs-reality reported 16 commands matching the CLI. The worker also completed an independent full `make test` run (exit 0; `internal/cli` 111.291s). The lead and worker launches crossed before the duplication was noticed; both statuses are actual completed processes.
+
+```sh
+git diff --check
+```
+
+Exit 0. A direct `gofmt` comparison also exited 0.
+
+The shell suite was not run because no shell, hook, or process-lifecycle files changed. Race testing was not required because the change introduces no concurrency or lifecycle behavior. No services or background processes were started.
+
+## Residual behavior and review notes
+
+- Cleanup deliberately uses an ownership heuristic: it removes every byte-exact local legacy value and leaves all variants. A user who intentionally configured the exact local value will see it removed; documentation states this boundary.
+- System, global, and included canonical values may remain effective because init does not mutate inherited policy. Documentation and tests make that scope explicit.
+- Dry-run reports a read-only snapshot. A concurrent Git-config change after the preview can make a later apply differ.
+- Fetch cleanup runs before push cleanup and mirror additions, so a later apply failure cannot leave the known hazardous direct fetch mapping in place.
+- The parent still owns independent review, final gate disposition, capture/integration, tracker synchronization, commit, and any push.
+- Parent process follow-up: the fresh scaffold references missing `scripts/seat-adapter.sh`; doctor reports two unrelated reviewer executable failures. Recorded in lane-status.md; no out-of-scope scaffold/process fix was attempted.
+
+## Supervisor QA follow-up: release documentation
+
+Read `/tmp/etude-pilot-lanes/push-fix-qa.md` (retained in `release-doc-checks/qa-report.md`). Independent QA passed the production code and focused regression coverage but marked delivery incomplete because RELEASING.md described the old direct fetch mapping and this verification artifact was not yet present during its inspection. That historical verdict is preserved; no new independent verdict or gate is claimed.
+
+The same Sol implementation worker corrected only RELEASING.md section 6. It now describes safe per-kind mirror destinations and explicit authoritative etude sync, preserving the recommended init-plus-sync sequence. Historical CHANGELOG text is unchanged. This verification artifact is now present and refreshed for the final bytes.
+
+Final affected checks, all exit 0:
+
+```sh
+GOCACHE=/tmp/etude-l8tz-go-cache make docs-check
+GOCACHE=/tmp/etude-l8tz-go-cache make docs-reality
+git diff --check HEAD
+```
+
+Exact results and final hash manifest are in `.etude/tmp/release-doc-checks/`. Manual review also checked RELEASING.md against the implemented mirror/sync behavior; the mechanical docs checks alone do not prove those prose claims. All prior source/tests remain byte-identical, so the earlier passing full tests, lint, and actual CLI checks remain applicable. Parent-owned final independent review/gate is pending; no commit, gate, merge, push, or bead closure was performed.
