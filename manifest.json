@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-3343-dev-claude",
   "workflow": "dev-claude",
   "workflow_version": "manual-v1",
@@ -32,6 +32,103 @@
         "size": 114063
       },
       "timestamp": "2026-09-07T00:46:45.123279Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "51d3590d672ea53673ff7baf2278cbfccd1d386682a24cb12ab8dffb91307fda"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "block",
+          "required": [
+            "1. R1 requires rejection before scratch creation, but the supplied runGateCommand calls os.MkdirTemp before GateStage performs the proposed binding check. Include a CLI change that defers scratch creation until binding succeeds, and CLI-level verification that mismatch creates no scratch directory."
+          ],
+          "optional": [
+            "1. Strengthen R2’s test by asserting every seat receives the expected artifact bytes in its prompt, alongside the recorded digest assertion."
+          ],
+          "raw_output": {
+            "role": "astra",
+            "artifact": "e4ca10494d36984a3a695fd0d0719fbef5a8ad50c1d246a32c0b80a0d2616596",
+            "path": "artifacts/sha256/e4/e4ca10494d36984a3a695fd0d0719fbef5a8ad50c1d246a32c0b80a0d2616596",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 596
+          },
+          "session": {
+            "session_id": "astra-d5d9526c7a325c7c",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "d5d9526c7a325c7c83b37edce7379ad2a938576e5b31602bd063275066561864",
+              "path": "artifacts/sha256/d5/d5d9526c7a325c7c83b37edce7379ad2a938576e5b31602bd063275066561864",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 495
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:47:01.277146Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Stage outputs with pointer storage carry the digest of the pointer record, not the reviewed bytes; a gate against such an output would always mismatch with a misleading message. State in the invariants that binding assumes content storage and return a distinct error for pointer outputs, or note that `etude capture` only ever produces content outputs so the path is unreachable today. 2. The recapture hint names `reviewed.Name`, which may differ from `req.Stage.Name` when the latest producer of the role is a differently named stage; add one line to the docs so a supervisor is not surprised the hint names another stage. 3. The CLI e2e test depends on fix 2 landing before the r2 write validates; keep both in one commit so bisect never lands on a state where the same-name flow is half-fixed."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "64f8c7d4ef6f8ba9fa50f132551f7fec571dd71aca41c710acba415ca4c17916",
+            "path": "artifacts/sha256/64/64f8c7d4ef6f8ba9fa50f132551f7fec571dd71aca41c710acba415ca4c17916",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 947
+          },
+          "session": {
+            "session_id": "fable-b2139281fa6f5061",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "b2139281fa6f5061acd13dd060a6a2a862111695aaa1ca37066504cafbc0a457",
+              "path": "artifacts/sha256/b2/b2139281fa6f5061acd13dd060a6a2a862111695aaa1ca37066504cafbc0a457",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 855
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:47:33.119044Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T00:47:33.120513Z"
     }
   ]
 }

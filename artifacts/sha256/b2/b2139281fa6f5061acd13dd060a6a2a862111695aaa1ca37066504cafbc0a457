@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. Stage outputs with pointer storage carry the digest of the pointer record, not the reviewed bytes; a gate against such an output would always mismatch with a misleading message. State in the invariants that binding assumes content storage and return a distinct error for pointer outputs, or note that `etude capture` only ever produces content outputs so the path is unreachable today. 2. The recapture hint names `reviewed.Name`, which may differ from `req.Stage.Name` when the latest producer of the role is a differently named stage; add one line to the docs so a supervisor is not surprised the hint names another stage. 3. The CLI e2e test depends on fix 2 landing before the r2 write validates; keep both in one commit so bisect never lands on a state where the same-name flow is half-fixed.
+CONFIDENCE: high
