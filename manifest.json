@@ -358,6 +358,76 @@
         ]
       },
       "timestamp": "2026-06-29T20:09:53Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "explicit abstraction-field test for full AC1 visibility"
+          ],
+          "timestamp": "2026-06-29T20:17:04Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "clean leftover _ = threshold no-op (test 1322)",
+            "TODO stub for deferred cross-file ref in xin/04i"
+          ],
+          "timestamp": "2026-06-29T20:17:04Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "name the gate.seats/abstraction test explicitly"
+          ],
+          "timestamp": "2026-06-29T20:17:04Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-zdl"
+        ]
+      },
+      "timestamp": "2026-06-29T20:17:04Z"
     }
   ]
 }
