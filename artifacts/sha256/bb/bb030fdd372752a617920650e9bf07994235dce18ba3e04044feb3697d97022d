@@ -1,0 +1,16 @@
+# Documentation impact — etude-8u3
+
+Canonical shipped behavior checked:
+
+- `docs/run.md`: changed. It now explains recursive population, private per-run submodule metadata with local object reuse/fetch fallback, and the optional stage `submodules` identity map beside `git_sha`.
+- `docs/gates.md`: checked, unchanged. Gate record semantics do not change; only the checkout supplied to checks is populated.
+- Generated CLI reference under `docs/cli/`: checked by `make docs-check`, unchanged because no flag or command surface changed.
+
+Planning/product material checked:
+
+- `docs/plans/product/BRIEF.md`: changed to remove the false claim that the superproject SHA alone reconstructs exact repo state and to show the optional map.
+- `docs/plans/dogfood/`: working-process material, unchanged.
+
+Cross-consistency: the capability claim that checks can read recursive submodules agrees with the stated fetch fallback and with the machine-readable identity claim; no remaining reviewed text says `git_sha` alone identifies a submodule checkout.
+
+Checks: `make docs-check` PASS; `make docs-reality` PASS. This repository has no separate docs application.
