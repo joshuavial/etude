@@ -1266,6 +1266,98 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T06:35:22.059044Z"
+    },
+    {
+      "gate_id": "implement.r18",
+      "phase": "implement",
+      "round": 18,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r17",
+          "role": "diff",
+          "artifact": "e1d54fd3d5b5f14ea9c0112373e956c9b59f4cb4367251a07032fe697eea882c"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) Stage logs are stored unscanned and re-handed to every later rerun as raw inputs, so one credential printed to stdout persists across attempt boundaries — documented, but worth a secret scan (or a warn-only scan) on the log artifact later. 2) A transcript with `redaction: failed` permanently wedges the run: `validatePriorTranscriptEvidence` errors on every subsequent rebuild, so resume re-fails identically with no documented recovery path — consider a documented override or an operator-visible remediation step. 3) `sessionSeenBefore` scans all earlier stages, not just earlier attempts of the same phase, so a session id shared with an unrelated upstream producer marks the attempt `resumed_session: true`; docs/run.md says \"appeared on an earlier attempt\" — tighten either the doc or the scan. 4) docs/plans/product/V1-SCOPE.md still pins `internal/runmanifest/manifest.go:932-935, 1063, 1196`, which this diff shifts by ~20 lines."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "87811e2aa98281a34cf42a58a6e5df6d68b7a9e61ab38473d13bdee67b40ed29",
+            "path": "artifacts/sha256/87/87811e2aa98281a34cf42a58a6e5df6d68b7a9e61ab38473d13bdee67b40ed29",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1103
+          },
+          "session": {
+            "session_id": "opus-a6e080c6ac425c34",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "a6e080c6ac425c34ab25f09e667b06f07a3305f09d228dc54f01f9135c41e42f",
+              "path": "artifacts/sha256/a6/a6e080c6ac425c34ab25f09e667b06f07a3305f09d228dc54f01f9135c41e42f",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1004
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:40:35.002309Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Consider adding a replay CLI integration test that proves `ETUDE_SESSION_FILE` is present end-to-end, not just at `ExecRunner`/recorder boundaries."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "b7b758ada06f80bbc5eb5b1024607228b49dd04fa6455655e8b56e870e3d9a8d",
+            "path": "artifacts/sha256/b7/b7b758ada06f80bbc5eb5b1024607228b49dd04fa6455655e8b56e870e3d9a8d",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 297
+          },
+          "session": {
+            "session_id": "codex-bf695e7f154ff3d2",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "bf695e7f154ff3d280e5cab9babb56788e93de8a94f611c9754ddccc3aaaac5e",
+              "path": "artifacts/sha256/bf/bf695e7f154ff3d280e5cab9babb56788e93de8a94f611c9754ddccc3aaaac5e",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 207
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:56:29.017824Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T06:56:29.021989Z"
     }
   ]
 }
