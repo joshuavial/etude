@@ -1,0 +1,37 @@
+✓ etude-0ew · Validate gate input: reject negative round/tier + reject unknown fields   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+SCOPED DOWN after premise-check: the 'reject negative round/tier' half is ALREADY ENFORCED — runmanifest.Writer.Write calls Manifest.Validate (manifest.go:285), which rejects Round<1 (manifest.go:430) and Tier<0||Tier>3 (manifest.go:433). The capture-gate append (capture.go: runmanifest.Writer{}.Write) therefore already rejects a bad round/tier at write time; it cannot persist. Remaining REAL gap: gateInputJSON is decoded with json.Unmarshal (capture.go:437), which SILENTLY DROPS unknown/typo'd fields — unlike the capture-run YAML spec path which uses yaml KnownFields(true). A misspelled field (e.g. 'verdct' instead of 'verdict') is silently lost and the seat records an empty value. FIX: decode the gate JSON with a json.Decoder + DisallowUnknownFields() (+ reject trailing data, matching the EOF check pattern used elsewhere). RISK to verify at gate: DisallowUnknownFields is strict at ALL nesting levels (seats, raw_output, decision, reviewed_stages) — confirm the gateInputJSON struct tags cover EVERY field real/dogfood gate files send, so no currently-valid gate file starts being rejected.
+
+NOTES
+## Implement
+
+**Implemented:**
+- Replaced `json.Unmarshal` with a strict `json.NewDecoder` + `DisallowUnknownFields()` decoder in the capture-gate JSON parse path (capture.go ~line 437).
+- Added EOF trailing-data check after the first Decode call, mirroring the capture_run.go YAML pattern.
+- Added `bytes` import (the only new import; `encoding/json`, `errors`, `io` were already present).
+- Added `TestCaptureGateRejectsUnknownField`: gate JSON with typo'd top-level field `"verdct"` is rejected with "parse gate JSON" error; no ref written. Confirms old `json.Unmarshal` would have silently accepted it (unknown field dropped).
+- Added `TestCaptureGateRejectsTrailingData`: gate file with valid object followed by `{}` is rejected with "parse gate JSON" error; no ref written.
+
+**Checks run:**
+- `go build ./...`: pass
+- `gofmt -l`: pass (no output)
+- `go vet ./internal/cli/...`: pass
+- `go test ./internal/cli/... -run TestCaptureGate`: 9/9 pass (7 pre-existing + 2 new)
+- `go test ./...`: all packages green
+
+**Changed files:**
+- internal/cli/capture.go
+- internal/cli/capture_test.go
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved bead description (etude-0ew), capture_run.go:92-108 YAML pattern as reference
+- output: working tree diff (2 files changed) and bead notes
+
+LABELS: phase:implement
+

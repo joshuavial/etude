@@ -1,0 +1,6 @@
+# Final Review — etude-0ew (reject unknown fields in capture-gate JSON)
+Verdict: GO (Tier 2, unanimous Opus+codex on both plan + implement). Commit 8f21d21.
+- Closes a review hardening finding, SCOPED DOWN after a premise-check: the "reject negative round/tier" half was already enforced by runmanifest.Validate at write time (validateGate, manifest.go:430-433), so it could not persist — correctly scoped out. The real gap was the gate-JSON decode silently dropping unknown/typo'd fields (json.Unmarshal), unlike the capture-run YAML path's KnownFields(true).
+- Fix: strict json.Decoder + DisallowUnknownFields() + a trailing-data EOF check. Behavior change is strictly additive-rejection of malformed/typo'd input; every VALID gate file still decodes (DTO field-coverage verified by both seats against docs sample + test fixtures + backfill script). 2 new tests prove the strictness (the unknown-field test would have passed-through under the old Unmarshal).
+- Docs: one-line note in docs/gates.md (gate JSON parsed strictly; unknown/trailing rejected). docs-check/docs-reality green. No flag → no docs/cli regen.
+- Scope: capture.go + capture_test.go + docs/gates.md. 1-bead=1-commit.

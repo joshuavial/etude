@@ -1,0 +1,7 @@
+# Verify — etude-0ew (reject unknown fields in capture-gate JSON)
+Result: PASS. Tier 2.
+- go build ./... clean; go test ./... green (Opus full run incl internal/worktree green — the codex-noted worktree temp-dir flake was transient + this cli-only change can't affect it). 9/9 capture-gate tests pass (7 pre-existing unchanged + 2 new). go vet/gofmt clean. docs-check/docs-reality (13) green.
+- The decode is strict: json.NewDecoder + DisallowUnknownFields() before Decode + a trailing-data EOF check (dec.Decode(json.RawMessage) must be io.EOF), mirroring capture_run.go's KnownFields path; "parse gate JSON:" prefix preserved.
+- TestCaptureGateRejectsUnknownField proves the fix: a top-level "verdct" (typo of seat-level "verdict", NOT a gateInputJSON field) was silently dropped by the old json.Unmarshal; now rejected with no ref written. TestCaptureGateRejectsTrailingData rejects a trailing object. No regression — the DTO covers every field in docs/gates.md's sample + all test fixtures + the backfill script (both gate seats verified field-coverage), so valid gate files still decode.
+- Premise-check: the bead's other half ("reject negative round/tier") was ALREADY enforced — capture-gate writes via runmanifest.Writer.Write → WriteManifestTree → Validate → validateGate rejects Round<1 (manifest.go:430) + Tier∉{0,3} (:433); a bad value cannot persist. Correctly scoped out.
+Scope: internal/cli/capture.go + capture_test.go + docs/gates.md (one-line strict-parse note). 1-bead=1-commit.
