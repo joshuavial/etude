@@ -988,6 +988,43 @@
         "degraded_reason": "BLOCK, both findings correct, both verified by recomputation before folding. The first is the sharper: I attributed etude-3xt's measurements to etude-9uf.5 in runbook text whose entire point is that a claim must be auditable against the record. Verified - .5 has three etude gate attempts, all from the correct worktree, so 'two of five from the wrong worktree' is not reproducible from the run I named, while the artifact-drift claim thirty lines later IS about .5. The same phrase meant two different runs. Now attributed to refs/etude/runs/etude-3xt explicitly, which the text never previously named. The second finding is the more interesting: I wrote that the round-gap fingerprint 'would have caught what six separate seats had to notice', but the manifests hold exactly three gaps carrying at most five verdicts. So either the count was wrong or a missed verdict left no gap - in which case the detector would not have caught it. The runbook now says PARTIAL and explains why a verdict never assigned a round id leaves no hole, because promising a detector more completeness than it has is how the next person stops looking. Three optionals also folded: a lost backslash continuation in the bash block (the heredoc that wrote it had eaten it), the imprecise 'caller's working directory' corrected to the caller's WORKTREE ROOT since etude gate resolves the root and sets cmd.Dir from it, and a back-reference to the seat-exception precondition. And the seat's fourth point became bead etude-a1i: the runbook now describes a detector that nothing implements and no bead covered - the documented-but-unimplemented gap this epic exists to close, recreated in the act of documenting it."
       },
       "timestamp": "2026-08-15T19:14:04Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff",
+          "artifact": "d9c8eef097818c99fae39cde0f8112ca19b36c81a1bb30204c9a8bc3705025a3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The round-1 misattribution is only half-fixed - 'This happened to two of five artifacts on etude-9uf.5' is still etude-3xt's measurement. etude-3xt has exactly five gated stage artifacts and two drifted; etude-9uf.5 has three that passed a gate, so 'of five' cannot be .5's denominator. Round 1's finding asserted this sentence IS about .5 and the fold accepted that premise without checking it.",
+            "2. 'There are exactly three such gaps in this epic' is false - there are four. etude-9uf.1 plan has rounds 1, 3, 4 with no r2, which is precisely the pattern the paragraph defines, and it is unnamed. It is also probably a FALSE POSITIVE: 9uf.1's plan.r3 and plan.r4 both review a stage named plan.r2, so the round counter appears to have skipped to avoid the name collision. That matters because the paragraph tells the reader the detector's only weakness is false negatives - this epic's own record contains a likely false positive, so a supervisor running the check as described gets four hits and no guidance on the fourth. The wrong count is propagated verbatim into etude-a1i."
+          ],
+          "timestamp": "2026-08-15T19:24:28Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, and both findings are corrections to my CORRECTIONS - the round-1 fixes were themselves wrong. The first: round 1 told me the drift sentence was about etude-9uf.5, and I folded that premise without checking it. Both runs drifted, but the denominators differ - etude-3xt has five gated artifacts with two drifted, .5 has three gate-passed with two drifted - so I had published one run's numerator against the other's name, in the section about auditability, for the second round running. The second is the more valuable finding of this entire epic's docs work: the round-gap detector I documented has a FALSE POSITIVE mode and this epic's own record contains one. etude-9uf.1's plan rounds run 1, 3, 4, which is a hole by the stated rule - but that run has a STAGE named plan.r2 that gates plan.r3 and plan.r4 both review, so the counter skipped the number to avoid a collision and no verdict is missing. I had told the reader the only weakness was false negatives, so a supervisor running the check as first written gets four hits and no guidance on the fourth. Both the runbook and bead etude-a1i now state both failure modes and say to treat a hit as a question rather than a finding. A detector described as more complete than it is teaches people to ignore it. Three optionals also folded, including one where THIS epic's own etude-5f6 had made an older runbook section stale: the seat exception is no longer 'prose, not code' - registry.yaml encodes it in invocation_fallbacks and etude gate walks the ladder since 17d0ab5 - so the real gap is narrower than the old text claimed, namely that etude gate cannot CONSUME an in-harness verdict."
+      },
+      "timestamp": "2026-08-15T19:24:28Z"
     }
   ]
 }
