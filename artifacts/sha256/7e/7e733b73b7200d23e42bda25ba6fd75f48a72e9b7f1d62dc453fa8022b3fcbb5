@@ -1,0 +1,532 @@
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index a0177be..4e6325e 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -34,8 +34,8 @@ var (
+ type Manifest struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = caller-workspace stage provenance.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+ 	ManifestVersion int
+ 	RunID           string
+ 	Workflow        string
+@@ -153,7 +153,13 @@ type ReplayLink struct {
+ type Stage struct {
+ 	Name       string
+ 	ProducedBy string
+-	GitSHA     string
++	// GitSHA is the checkout SHA for a hermetic runner and the clean post-run
++	// HEAD for a caller-workspace runner.
++	GitSHA string
++	// RunnerWorkspace records an explicit non-default stage runner workspace.
++	// Empty means the historical hermetic detached worktree; "caller" means
++	// the runner executed in the CLI invocation directory.
++	RunnerWorkspace string
+ 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+ 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+ 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+@@ -470,6 +476,9 @@ func validateStage(index int, stage Stage) error {
+ 	if strings.TrimSpace(stage.GitSHA) == "" {
+ 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+ 	}
++	if stage.RunnerWorkspace != "" && stage.RunnerWorkspace != "caller" {
++		return fmt.Errorf("%w: %s runner_workspace %q is not caller", ErrInvalidManifest, prefix, stage.RunnerWorkspace)
++	}
+ 	if strings.TrimSpace(stage.Skill.ID) == "" {
+ 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
+ 	}
+@@ -911,8 +920,8 @@ func cloneBytes(in []byte) []byte {
+ type manifestJSON struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = caller-workspace stage provenance.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+ 	ManifestVersion int    `json:"manifest_version,omitempty"`
+ 	RunID           string `json:"run_id"`
+ 	Workflow        string `json:"workflow"`
+@@ -983,9 +992,10 @@ type gateDecisionJSON struct {
+ }
+ 
+ type stageJSON struct {
+-	Stage      string `json:"stage"`
+-	ProducedBy string `json:"produced_by"`
+-	GitSHA     string `json:"git_sha"`
++	Stage           string `json:"stage"`
++	ProducedBy      string `json:"produced_by"`
++	GitSHA          string `json:"git_sha"`
++	RunnerWorkspace string `json:"runner_workspace,omitempty"`
+ 	// Skill is present only in legacy manifests (no producer block).
+ 	// New manifests omit it; the skill travels inside producer.
+ 	Skill     *skillJSON     `json:"skill,omitempty"`
+@@ -1085,9 +1095,10 @@ func (m Manifest) toJSON() manifestJSON {
+ 		}
+ 
+ 		stages = append(stages, stageJSON{
+-			Stage:      stage.Name,
+-			ProducedBy: stage.ProducedBy,
+-			GitSHA:     stage.GitSHA,
++			Stage:           stage.Name,
++			ProducedBy:      stage.ProducedBy,
++			GitSHA:          stage.GitSHA,
++			RunnerWorkspace: stage.RunnerWorkspace,
+ 			// Do NOT emit top-level skill — it lives inside producer only.
+ 			Producer:  producerBlock,
+ 			Inputs:    inputs,
+@@ -1105,6 +1116,12 @@ func (m Manifest) toJSON() manifestJSON {
+ 			gatesOut = append(gatesOut, gate.toJSON())
+ 		}
+ 	}
++	for _, stage := range m.Stages {
++		if stage.RunnerWorkspace != "" {
++			version = 4
++			break
++		}
++	}
+ 
+ 	return manifestJSON{
+ 		ManifestVersion: version,
+@@ -1239,13 +1256,14 @@ func ensureEOF(dec *json.Decoder) error {
+ }
+ 
+ func (m manifestJSON) toManifest() (Manifest, error) {
+-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
++	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
++	// and 4 (caller-workspace stage provenance).
+ 	// Reject 1 (never emitted) and any future version this binary cannot model.
+ 	switch m.ManifestVersion {
+-	case 0, 2, 3:
++	case 0, 2, 3, 4:
+ 		// accepted
+ 	default:
+-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
++		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+ 	}
+ 
+ 	created, err := parseTime("created", m.Created)
+@@ -1261,6 +1279,9 @@ func (m manifestJSON) toManifest() (Manifest, error) {
+ 	}
+ 	stages := make([]Stage, 0, len(m.Stages))
+ 	for i, stage := range m.Stages {
++		if stage.RunnerWorkspace != "" && m.ManifestVersion < 4 {
++			return Manifest{}, fmt.Errorf("%w: stage[%d] runner_workspace requires manifest_version 4", ErrInvalidManifest, i)
++		}
+ 		converted, err := stage.toStage(i)
+ 		if err != nil {
+ 			return Manifest{}, err
+@@ -1447,15 +1468,16 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 	}
+ 
+ 	return Stage{
+-		Name:       s.Stage,
+-		ProducedBy: s.ProducedBy,
+-		GitSHA:     s.GitSHA,
+-		Skill:      skill,
+-		Producer:   producer,
+-		Inputs:     inputs,
+-		Output:     s.Output.toArtifactRef(),
+-		Timestamp:  timestamp,
+-		ReplayOf:   replayOf,
++		Name:            s.Stage,
++		ProducedBy:      s.ProducedBy,
++		GitSHA:          s.GitSHA,
++		RunnerWorkspace: s.RunnerWorkspace,
++		Skill:           skill,
++		Producer:        producer,
++		Inputs:          inputs,
++		Output:          s.Output.toArtifactRef(),
++		Timestamp:       timestamp,
++		ReplayOf:        replayOf,
+ 	}, nil
+ }
+ 
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index f122b0b..3d526af 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1556,8 +1556,8 @@ func TestValidateGateRejects(t *testing.T) {
+ 	})
+ }
+ 
+-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
+-// and rejects 1 and 4 with ErrInvalidManifest.
++// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2,
++// 3, and 4 while rejecting unsupported versions.
+ func TestVersionAllowlist(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	m := validManifest(output)
+@@ -1589,8 +1589,27 @@ func TestVersionAllowlist(t *testing.T) {
+ 		}
+ 	})
+ 
++	t.Run("accept version 4", func(t *testing.T) {
++		m4 := validManifest(output)
++		m4.Stages[0].RunnerWorkspace = "caller"
++		j, err := m4.JSON()
++		if err != nil {
++			t.Fatalf("JSON: %v", err)
++		}
++		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) {
++			t.Fatalf("caller workspace manifest does not emit v4 field:\n%s", j)
++		}
++		got, err := ParseJSON(j)
++		if err != nil {
++			t.Fatalf("ParseJSON rejected version 4: %v", err)
++		}
++		if got.Stages[0].RunnerWorkspace != "caller" {
++			t.Fatalf("RunnerWorkspace = %q, want caller", got.Stages[0].RunnerWorkspace)
++		}
++	})
++
+ 	// Versions that should be rejected.
+-	for _, v := range []int{1, 4, 5, 100} {
++	for _, v := range []int{1, 5, 100} {
+ 		v := v
+ 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
+ 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
+@@ -1605,6 +1624,32 @@ func TestVersionAllowlist(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunnerWorkspaceRequiresManifestVersionFour(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	withWorkspace := strings.Replace(string(raw), `"git_sha": "abc123",`, "\"git_sha\": \"abc123\",\n      \"runner_workspace\": \"caller\",", 1)
++	_, err = ParseJSON([]byte(withWorkspace))
++	if err == nil || !errors.Is(err, ErrInvalidManifest) {
++		t.Fatalf("ParseJSON older-version runner_workspace error = %v, want ErrInvalidManifest", err)
++	}
++	if !strings.Contains(err.Error(), "runner_workspace requires manifest_version 4") {
++		t.Fatalf("ParseJSON error = %v, want runner_workspace version requirement", err)
++	}
++}
++
++func TestRunnerWorkspaceRejectsUnknownValue(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	m.Stages[0].RunnerWorkspace = "ambient"
++	if _, err := m.JSON(); err == nil || !errors.Is(err, ErrInvalidManifest) {
++		t.Fatalf("JSON invalid runner_workspace error = %v, want ErrInvalidManifest", err)
++	}
++}
++
+ // TestArtifactPathsWalksGateRawOutput verifies that ArtifactPaths and
+ // referencedArtifactPaths include a seat's raw_output path.
+ func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index c3e604a..f66ff14 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -52,8 +52,17 @@ type Runner struct {
+ 	Name string
+ 	// Command is an inline shell command (e.g. "make test").
+ 	Command string
++	// Workspace selects where a live stage runner executes. Empty and
++	// "hermetic" preserve the detached-worktree default; "caller" opts into
++	// the directory from which etude was invoked.
++	Workspace string
+ }
+ 
++const (
++	RunnerWorkspaceHermetic = "hermetic"
++	RunnerWorkspaceCaller   = "caller"
++)
++
+ // GateConfig holds the optional gate block for a stage, defining how the
+ // stage output is reviewed.  At least one of Checks, Seats, or Tier must be
+ // set (an explicit empty checks: [] list is treated as unset).
+@@ -119,6 +128,27 @@ type Workflow struct {
+ 	EnvAllowlist []string
+ }
+ 
++// EffectiveRunnerWorkspace returns the execution workspace for stage. An
++// explicit stage workspace wins; a stage-local command/name without one is a
++// complete binding whose workspace defaults to hermetic.
++func (w Workflow) EffectiveRunnerWorkspace(stage Stage) string {
++	if stage.Runner != nil {
++		if stage.Runner.Workspace == RunnerWorkspaceCaller {
++			return RunnerWorkspaceCaller
++		}
++		if stage.Runner.Workspace == RunnerWorkspaceHermetic {
++			return RunnerWorkspaceHermetic
++		}
++		if stage.Runner.Name != "" || stage.Runner.Command != "" {
++			return RunnerWorkspaceHermetic
++		}
++	}
++	if w.DefaultRunner != nil && w.DefaultRunner.Workspace == RunnerWorkspaceCaller {
++		return RunnerWorkspaceCaller
++	}
++	return RunnerWorkspaceHermetic
++}
++
+ // RetrosConfig holds the parsed retros: configuration block.  Fields use
+ // pointer types so that an omitted field is distinguishable from an explicit
+ // false/0 when encoding and when computing effective defaults via the accessor
+@@ -387,7 +417,7 @@ func (w Workflow) Validate() error {
+ 			}
+ 		}
+ 		if s.Runner != nil {
+-			if err := validateRunner(prefix+".runner", s.Runner); err != nil {
++			if err := validateStageRunner(prefix+".runner", s.Runner, w.DefaultRunner != nil); err != nil {
+ 				return err
+ 			}
+ 		}
+@@ -400,6 +430,19 @@ func (w Workflow) Validate() error {
+ 	return nil
+ }
+ 
++func validateStageRunner(prefix string, r *Runner, hasDefault bool) error {
++	if r.Name == "" && r.Command == "" && r.Workspace != "" {
++		if !hasDefault {
++			return fmt.Errorf("%w: %s: workspace-only override requires default_runner", ErrInvalidWorkflow, prefix)
++		}
++		if r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
++			return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
++		}
++		return nil
++	}
++	return validateRunner(prefix, r)
++}
++
+ func validateEval(prefix string, e *Eval) error {
+ 	if !validEvalMethods[e.Method] {
+ 		return fmt.Errorf("%w: %s method %q is not one of rubric, pairwise, assertion", ErrInvalidWorkflow, prefix, e.Method)
+@@ -432,6 +475,9 @@ func validateRunner(prefix string, r *Runner) error {
+ 			return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
+ 		}
+ 	}
++	if r.Workspace != "" && r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
++		return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
++	}
+ 	return nil
+ }
+ 
+@@ -446,6 +492,9 @@ func validateGate(prefix string, g *GateConfig) error {
+ 		if err := validateRunner(fmt.Sprintf("%s.checks[%d]", prefix, i), &c); err != nil {
+ 			return err
+ 		}
++		if c.Workspace != "" {
++			return fmt.Errorf("%w: %s.checks[%d].workspace is not allowed; gates always use the pinned worktree", ErrInvalidWorkflow, prefix, i)
++		}
+ 	}
+ 	hasChecks := len(g.Checks) > 0
+ 	hasSeats := len(g.Seats) > 0
+@@ -722,8 +771,9 @@ type stageYAML struct {
+ 
+ // runnerYAML is the decode/encode counterpart to Runner.
+ type runnerYAML struct {
+-	Name    string `yaml:"name,omitempty"`
+-	Command string `yaml:"command,omitempty"`
++	Name      string `yaml:"name,omitempty"`
++	Command   string `yaml:"command,omitempty"`
++	Workspace string `yaml:"workspace,omitempty"`
+ }
+ 
+ // gateYAML is the decode/encode counterpart to GateConfig.
+@@ -783,7 +833,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 			sy.Eval = &evalYAML{Method: s.Eval.Method, Rubric: s.Eval.Rubric}
+ 		}
+ 		if s.Runner != nil {
+-			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
++			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command, Workspace: s.Runner.Workspace}
+ 			var n yaml.Node
+ 			if err := n.Encode(rn); err != nil {
+ 				return workflowYAML{}, fmt.Errorf("encode stage[%q].runner: %w", s.Name, err)
+@@ -799,7 +849,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 				Abstraction:   s.Gate.Abstraction,
+ 			}
+ 			for _, c := range s.Gate.Checks {
+-				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
++				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
+ 			}
+ 			var n yaml.Node
+ 			if err := n.Encode(gy); err != nil {
+@@ -811,7 +861,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 	}
+ 	out := workflowYAML{Name: w.Name, Stages: stages, EnvAllowlist: w.EnvAllowlist}
+ 	if w.DefaultRunner != nil {
+-		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
++		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command, Workspace: w.DefaultRunner.Workspace}
+ 		var n yaml.Node
+ 		if err := n.Encode(dr); err != nil {
+ 			return workflowYAML{}, fmt.Errorf("encode default_runner: %w", err)
+@@ -971,7 +1021,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 			return Workflow{}, fmt.Errorf("%w: stage %q decode runner: %v", ErrInvalidWorkflow, s.Name, err)
+ 		}
+ 		if rn != nil {
+-			st.Runner = &Runner{Name: rn.Name, Command: rn.Command}
++			st.Runner = &Runner{Name: rn.Name, Command: rn.Command, Workspace: rn.Workspace}
+ 		}
+ 		gn, err := decodeGateNode(s.Gate)
+ 		if err != nil {
+@@ -986,7 +1036,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 				Abstraction:   gn.Abstraction,
+ 			}
+ 			for _, c := range gn.Checks {
+-				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command})
++				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
+ 			}
+ 			st.Gate = gate
+ 		}
+@@ -998,7 +1048,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)
+ 	}
+ 	if drn != nil {
+-		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command}
++		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command, Workspace: drn.Workspace}
+ 	}
+ 	ry, err := decodeRetrosNode(d.Retros)
+ 	if err != nil {
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 1aed480..b5ce524 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -1214,6 +1214,66 @@ stages:
+ 	}
+ }
+ 
++func TestRunnerWorkspaceCallerParseAndRoundTrip(t *testing.T) {
++	input := `name: w
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++    runner:
++      command: make plan
++      workspace: caller
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
++		t.Fatalf("Runner.Workspace = %q, want caller", got)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++	encoded, err := w.YAML()
++	if err != nil {
++		t.Fatalf("YAML error: %v", err)
++	}
++	if !strings.Contains(string(encoded), "workspace: caller") {
++		t.Fatalf("encoded workflow omits caller workspace:\n%s", encoded)
++	}
++	reparsed, err := ParseYAML(encoded)
++	if err != nil {
++		t.Fatalf("ParseYAML round trip: %v", err)
++	}
++	if got := reparsed.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
++		t.Fatalf("round-trip Runner.Workspace = %q, want caller", got)
++	}
++}
++
++func TestRunnerWorkspaceValidationAndHermeticDefault(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Runner = &Runner{Command: "make plan", Workspace: "somewhere"}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate workspace error = %v, want ErrInvalidWorkflow", err)
++	}
++	w.Stages[0].Runner.Workspace = ""
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceHermetic {
++		t.Fatalf("empty workspace effective value = %q, want hermetic", got)
++	}
++	w.Stages[0].Runner.Workspace = RunnerWorkspaceHermetic
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceHermetic {
++		t.Fatalf("explicit hermetic effective value = %q, want hermetic", got)
++	}
++}
++
++func TestGateCheckCannotSelectCallerWorkspace(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Gate = &GateConfig{Checks: []Runner{{Command: "make test", Workspace: RunnerWorkspaceCaller}}}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate gate check workspace error = %v, want ErrInvalidWorkflow", err)
++	}
++}
++
+ // TestRunnerBothSetErrors asserts that setting both name and command is rejected.
+ func TestRunnerBothSetErrors(t *testing.T) {
+ 	input := `name: w
+@@ -1655,6 +1715,72 @@ stages:
+ 	}
+ }
+ 
++func TestDefaultRunnerWorkspaceCallerIsInherited(t *testing.T) {
++	input := `name: w
++default_runner:
++  command: make plan
++  workspace: caller
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++}
++
++func TestStageWorkspaceOnlyOverridesDefaultRunner(t *testing.T) {
++	input := `name: w
++default_runner:
++  command: make plan
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++    runner:
++      workspace: caller
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++}
++
++func TestStageHermeticWorkspaceOverridesCallerDefault(t *testing.T) {
++	w := Workflow{
++		Name:          "w",
++		DefaultRunner: &Runner{Command: "make plan", Workspace: RunnerWorkspaceCaller},
++		Stages: []Stage{{
++			Name: "plan", Produces: "plan", Skill: "dev-planner",
++			Runner: &Runner{Workspace: RunnerWorkspaceHermetic},
++		}},
++	}
++	if err := w.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceHermetic {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want hermetic", got)
++	}
++}
++
++func TestStageWorkspaceOnlyRequiresDefaultRunner(t *testing.T) {
++	w := Workflow{Name: "w", Stages: []Stage{{
++		Name: "plan", Produces: "plan", Skill: "dev-planner",
++		Runner: &Runner{Workspace: RunnerWorkspaceCaller},
++	}}}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate error = %v, want ErrInvalidWorkflow", err)
++	}
++}
++
+ // TestDefaultRunnerBothSetErrors asserts that setting both name and command in
+ // default_runner is rejected.
+ func TestDefaultRunnerBothSetErrors(t *testing.T) {
