@@ -114,6 +114,66 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T07:07:31Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "53d67b1e0ef299f1de3c998b6335df0285d74becf6eebc2a8dcca8f9d4ea5594"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "Include the distinct-commit resume and replay regression test bodies in the review packet."
+          ],
+          "optional": [
+            "Make original-checkout propagation structurally explicit across rewrites.",
+            "Validate the run-level value as a Git OID.",
+            "packet sha256 959c8c4fbb1609071be7e3f640b64824e523208764717fde10b0da80bb26a596"
+          ],
+          "timestamp": "2026-08-16T07:24:53Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Show that original checkout propagation cannot be replaced by caller post-run HEAD.",
+            "Validate original_git_sha as an immutable Git OID.",
+            "Include the distinct-commit resume and replay regression test bodies in the packet."
+          ],
+          "optional": [
+            "packet sha256 959c8c4fbb1609071be7e3f640b64824e523208764717fde10b0da80bb26a596"
+          ],
+          "timestamp": "2026-08-16T07:24:53Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T07:24:53Z"
     }
   ]
 }
