@@ -258,6 +258,73 @@
       ],
       "decision": {},
       "timestamp": "2026-07-02T07:25:00Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "gemini-3.1-pro-preview"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-07-02T08:00:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness Task subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "drop redundant presence check in seat wrapper",
+            "add transcript-read-fail-still-completes-stage test"
+          ],
+          "timestamp": "2026-07-02T08:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "agentic check via producer.Harness.Name (already done)"
+          ],
+          "timestamp": "2026-07-02T08:00:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-07-02T08:00:00Z"
     }
   ]
 }
