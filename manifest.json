@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aul.5",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -32,6 +32,47 @@
         "size": 611
       },
       "timestamp": "2026-08-16T00:57:01.022911Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Coordinate a future gate-aware Use/description update on etude-qcr.",
+            "Keep the hand-written guide explicit about gate-only flags; already satisfied by aul.4."
+          ],
+          "timestamp": "2026-08-16T01:01:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task. Generated-doc gate passed; the synopsis improvement is already tracked as etude-qcr.",
+        "deferred_beads": [
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T01:01:00Z"
     }
   ]
 }
