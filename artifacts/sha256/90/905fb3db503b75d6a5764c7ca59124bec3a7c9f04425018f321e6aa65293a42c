@@ -1,0 +1,5 @@
+# Verify — etude-egg (retros: config block in workflow.yaml)
+Status: PASS. Workflow-schema change (Tier 1); parse+validate+expose only (advisory, auto-fire deferred).
+- go test ./... green (15 pkgs; 19 workflow tests incl present/absent/null + nested KnownFields + golden-unchanged); make lint clean; make docs-reality (12 cmds) + docs-check green (no command added).
+- Invariants verified by tests + seats: Retros==nil <=> absent (legacy ParseYAML().YAML() byte-stable, no spurious retros:); a PRESENT block in any form (bare/null/{}/populated) -> Retros!=nil -> validateRetros runs (present-empty errors on missing generator). yaml.Node presence detection (decodeRetrosNode) distinguishes absent vs present-null. OnRunCloseEnabled() default-true via accessor (no struct mutation). Nested KnownFields rejects unknowns at retros: AND on_repeated_gate_block: (re-marshal + fresh KnownFields decoder). goldenDefaultYAML UNEDITED.
+- No built-binary test: no CLI command consumes retros: yet (advisory; firing deferred). Scope: workflow.go + workflow_test.go + docs/init.md.
