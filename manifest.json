@@ -254,6 +254,76 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:32:06Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "model the global request chain",
+            "correct temporary and prompt crash residuals",
+            "state non-fsync power-loss behavior"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r3",
+            "artifact": "5a63c8c927089a5050cfebb98705ed547ea0dec2ecad05b79a935a2b28203a55",
+            "path": "artifacts/sha256/5a/5a63c8c927089a5050cfebb98705ed547ea0dec2ecad05b79a935a2b28203a55",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 558
+          },
+          "timestamp": "2026-08-15T23:39:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "randomize data delimiters",
+            "pin full safe argv",
+            "test directory inputs",
+            "confirm PATH and downstream review artifact handling"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r3",
+            "artifact": "cc5b42a73a9aacff6cb298df0ef9e595bec2f1217e757cb97486b4609fddfeda",
+            "path": "artifacts/sha256/cc/cc5b42a73a9aacff6cb298df0ef9e595bec2f1217e757cb97486b4609fddfeda",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 467
+          },
+          "timestamp": "2026-08-15T23:38:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:39:57Z"
     }
   ]
 }
