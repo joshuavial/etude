@@ -288,6 +288,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:56:14Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs",
+          "artifact": "cffee73968acbfe365dded5354d6c86fdfe202c88e1b7ed8b2b5a8a0808172eb"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/docs-gate-r1.md sha256 6fd362e988b950726a02999ec5363d8f588c94b34d518d858aadfc3526ce5319"
+          ],
+          "timestamp": "2026-08-16T00:57:40Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirm deferred user-facing docs in etude-5dr.2.",
+            "packet path .etude/tmp/etude-5dr.1/docs-gate-r1.md sha256 6fd362e988b950726a02999ec5363d8f588c94b34d518d858aadfc3526ce5319"
+          ],
+          "timestamp": "2026-08-16T00:57:40Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:57:40Z"
     }
   ]
 }
