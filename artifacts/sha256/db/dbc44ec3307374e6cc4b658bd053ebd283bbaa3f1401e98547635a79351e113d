@@ -1,0 +1,45 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs, then commit aul.4 and immediately complete its generated-reference dependency aul.5 before closing either bead.
+
+Inputs:
+- bead: etude-aul.4
+- approved plan: plan.r3
+- implementation: implement.r4; production files are internal/cli/bench.go and internal/cli/bench_test.go
+
+Automated tests:
+- Focused gate/replay/help regression set: PASS, 0.717s after the final test fold.
+- Full internal/cli package after the fold: PASS, 199.766s.
+- make lint after implementation: PASS; gofmt clean and go vet ./... clean.
+- First make test after implementation: every package except cmd/gen-docs passed. TestDriftGuard correctly reported docs/cli/etude.md and docs/cli/etude_bench.md stale because the first Short string changed the root page.
+- Implement r4 restored the legacy Short string. The focused TestDriftGuard then reported only docs/cli/etude_bench.md stale. That exact generated file belongs to dependent bead etude-aul.5, which the operator requires as a separate second commit produced by make docs.
+- The temporary red generated-doc window is intentional and bounded: aul.4 will not be closed or landed alone, aul.5 runs immediately after its commit, and final make test, make lint, docs-check, and reconcile must all pass before either bead is reported complete.
+
+Manual CLI verification:
+- Required: yes; this bead changes a public CLI.
+- Built from the final implement.r4 working tree with make build and installed the actual binary using GOCACHE, GOMODCACHE, and GOBIN beneath .etude/tmp/etude-aul.4/go-verify. The host-installed etude was not overwritten.
+- Created a private throwaway git repository with two captured plan runs and real refs/etude/runs/manual-good and manual-bad refs, each with a round-1 gate record.
+- Help: temporary etude bench --help displayed --gate, repeatable --variant, --cohort, --labels, shared judge/timeout/last flags, and all legacy replay flags. etude bench plan --help retained the legacy synopsis and exited 0.
+- Explicit-label happy path: selective.prompt scored 100 percent (TP=1, TN=1); always-block.prompt scored 50 percent (TP=1, FP=1); all four cell verdicts printed; exit 0; run refs were byte-for-byte unchanged before versus after.
+- Progression-proxy path: both variants reported PROXY=2 and printed the exact circularity warning; exit 0.
+- Partial judge failure: one bad cell failed, both variants used the same one-fixture common denominator, the excluded manual-bad/plan/r1 key and failing variant were printed, and exit was 0.
+- All-cell failure: zero common fixtures and both excluded keys printed; exit was 1 with no-fixture-succeeded-for-all-variants.
+- Validation: one variant, missing cohort, incompatible --runner, and a supplied labels file matching zero run_id+stage+round keys each printed its specific error and exited 1.
+- External judge command was passed as an absolute path because ExecJudge intentionally runs in a scratch working directory.
+- No processes or services were launched. The private fixture repository and scoped Go caches remain under the single bead temp directory for gate evidence and will be removed at closeout.
+
+QA findings:
+- Correctness: gate mode is mutually exclusive with replay mode; prompt paths are canonical, symlink-resolved, distinct, readable, and non-empty before evaluation; explicit labels are strict and zero-match protected; per-cell failures do not create incomparable rates.
+- Coverage: the named regression tests are TestBenchGateHappyPathReportsVariantScoresAndCells, TestBenchGateUsesProgressionProxyAndWarns, TestBenchGateExplicitLabelsOverrideProxy, TestBenchGateLabelsFileWithZeroMatchesFails, TestBenchGateReportsExplicitProxyAndUnlabeledCounts, TestBenchGatePartialJudgeFailureUsesCommonFixtureSet, TestBenchGateNoCompleteFixtureExitsNonZero, TestBenchGateRejectsAliasesOfOneVariantPath, TestBenchGateSymlinkResolutionFailureIsValidationError, TestBenchGateValidation, TestBenchGateRejectsEveryReplayOnlyFlag, TestBenchGateCorpusErrors, TestBenchGateResolvedUnreadableVariant, TestBenchGateTimeoutFlagIsWired, TestBenchReplayModeRejectsGateOnlyFlags, and TestBenchHelpDocumentsGateMode. They exist and pass.
+- Regressions: legacy replay package tests and help tests pass. The root generated-page drift found in the first Verify run was removed in implement.r4.
+- Code quality: deterministic variant/fixture ordering, no new goroutines or persistence, one-line finding sanitization, and no duplicate outcome classifier.
+- Remaining risk: only the mechanically stale docs/cli/etude_bench.md page, intentionally owned by the immediately following aul.5 commit. There are no unresolved runtime defects.
+
+Docs:
+- docs/bench.md is required in the next phase.
+- docs/cli/etude_bench.md is intentionally deferred to the separate dependent aul.5 commit.
+
+Provenance:
+- CLI-facing: yes; installed-binary evidence is listed above.
+- Go caches and GOBIN were scoped to one bounded temp root; initial population downloaded modules because the isolated GOMODCACHE began empty.
