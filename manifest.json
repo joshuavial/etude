@@ -114,6 +114,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:51:22Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "7e733b73b7200d23e42bda25ba6fd75f48a72e9b7f1d62dc453fa8022b3fcbb5"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/implement-gate-r1.md sha256 25b599c89e1f3488ef20e9a869258386ed7e90864d87636a85e36ce3bdb53d9d"
+          ],
+          "timestamp": "2026-08-16T00:54:08Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Execution must record hermetic as an omitted manifest field.",
+            "packet path .etude/tmp/etude-5dr.1/implement-gate-r1.md sha256 25b599c89e1f3488ef20e9a869258386ed7e90864d87636a85e36ce3bdb53d9d"
+          ],
+          "timestamp": "2026-08-16T00:54:08Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:54:08Z"
     }
   ]
 }
