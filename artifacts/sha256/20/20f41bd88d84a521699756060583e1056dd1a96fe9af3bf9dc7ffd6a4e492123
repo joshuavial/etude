@@ -1,0 +1,92 @@
+# Final Review — etude-9uf.2: Supervisor + worker-lane runbook
+
+## Diff vs plan
+
+| Plan said | Shipped | Divergence |
+|---|---|---|
+| New `supervisor-runbook.md` with 9 numbered elements | 338 lines, all 9 present, plus a `### If a run ref is lost` subsection folded from a gate follow-up | additive |
+| Rewrite `README.md` | done — leads with the runbook, scripts table lists only surviving scripts | none |
+| Delete `capture-protocol.md` (690) | deleted, **but** its retro material extracted to `retro-capture.md` (156) | **yes — disclosed, adjudicated** |
+| Delete `checklists.md` (79) | deleted | none |
+| Edit `review-gate-runbook.md`, removing the sections `etude gate` owns | edited; `Gate Orchestration` **retitled** `Supervisor discipline` rather than removed | **yes — disclosed, adjudicated** |
+| Edit `review-gate-process.md` to tier-driven | done | none |
+| Edit `retro-ledger.md` — 4 script mentions | done, plus a header note on the `.4` deferral (folded gate follow-up) | additive |
+| Refresh `.etude/loop.local.md` | done; gitignored, so absent from the commit as the plan predicted | none |
+| — | `verify-phase-design.md`: 8 stale "three-reviewer gate" phrasings | **not in the plan**; a phrasing sweep the tier change made necessary |
+| — | `docs/plans/README.md`, `docs/plans/product/etude-retro-command.md` | **not in the plan**; links my own deletion would otherwise have broken |
+
+Both material divergences were disclosed in the implement artifact before the
+implement gate and adjudicated there by both seats with no blocking findings. The
+two unplanned files are consequences of the planned deletion, not scope growth: a
+deletion that leaves dangling links is not finished.
+
+## Gate history
+
+| gate | tier | codex | opus | result |
+|---|---|---|---|---|
+| plan.r1 | L2 | BLOCK — retro-ledger exempted from a criterion that grants no exception | seat outage | rerun |
+| plan.r2 | L2 | BLOCK — plan self-contradictory after a partial fix | seat outage | rerun |
+| plan.r3 | L2 | GO | GO (substitute) | **pass** |
+| implement.r1 | L3 | PASS_WITH_FOLLOWUPS | PASS_WITH_FOLLOWUPS (substitute) | **pass** |
+| verify.r1 | L2 | BLOCK — criterion 1's positive half asserted, not demonstrated | GO w/ same finding as follow-up | rerun |
+| verify.r2 | L2 | PASS_WITH_FOLLOWUPS | PASS (substitute) | **pass** |
+| docs.r1 | L4 | n/a | (this gate) | — |
+
+Every BLOCK was a real defect in my work, and each was fixed rather than argued:
+a scope exemption I invented, a self-contradiction I left behind when fixing it,
+and an acceptance criterion I asserted instead of demonstrating. No tier was
+lowered and no seat was dropped at any point.
+
+Four follow-ups were FOLDED rather than deferred, all cheap and in-scope: the
+record-shape parity requirement on bead .1, the `retro-ledger` deferral note, the
+prescriptive `Contract` heading plus the per-item verification duty on .1, and
+the `If a run ref is lost` rule.
+
+## Seat integrity
+
+The registry `opus` seat could not be invoked as a subprocess (`claude -p --model
+opus` → "Not logged in" under a Claude Code orchestrator — the exact exception
+`.etude/registry.yaml` documents in prose and `etude-pqv` exists to mechanize).
+The in-harness sub-agent fallback named in that comment returned no verdict on
+five attempts. The gate therefore ran the documented substitute, `agy --model
+"Claude Opus 4.6 (Thinking)"`, on the identical packet.
+
+This is recorded in `decision.degraded_reason` on **every** gate attempt, not
+summarized once. It is a degraded seat, not a skipped one: no gate passed on a
+single seat where the tier requires two, and the two rounds where opus produced
+nothing were recorded `failed` with the gate status `rerun` — never a pass.
+
+## Commit scope
+
+Staged, by explicit path, 11 files: 2 new, 2 deleted, 7 edited. Verified absent:
+`.etude/tmp/**` (gitignored scratch — packets, artifacts, the `mkgate.py`
+bootstrap helper), `.etude/loop.local.md` (gitignored), `bin/` (gitignored). No
+Go file changed; `git diff --stat` on `internal/` and `cmd/` is empty.
+
+## Checks
+
+`make test` ok · `make lint` clean · `make docs-check` no diff · `make
+docs-reality` OK · acceptance grep empty (exit 1) · no docs link broken by this
+change.
+
+## Known issues filed, not fixed here
+
+- **etude-nad** (P1) — run refs disappearing mid-session, and `etude capture`
+  silently creating a fresh run when the ref is missing, which discarded three of
+  this bead's own gate records. Ref rebuilt from surviving artifacts with the
+  original verdicts, disclosed, and pushed to origin. Both seats adjudicated
+  rebuilding as correct over re-running, escalating to BLOCK on recurrence once
+  the fix lands.
+- **etude-gxt** (P3) — 4 pre-existing broken `../run.md` links, reproduced on
+  clean `origin/main`.
+- **etude-rep** — the pre-existing `make test` failure that blocked every bead
+  close in this epic. Fixed and landed on `origin/main` as its own bead before
+  this one.
+
+## Readiness
+
+Acceptance criteria all met and demonstrated rather than asserted. The runbook is
+now the spec bead .1 is written against, and two mechanisms will catch drift
+between them: `docs-reality` fails the moment `etude gate` ships while the doc
+still calls it unbuilt, and the `Contract` heading obliges .1's verify phase to
+report against each of the ten items. Ready to commit.
