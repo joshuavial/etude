@@ -921,6 +921,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:11:00Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "reject unpaired surrogate escapes and invalid in-process session strings"
+          ],
+          "raw_output": {
+            "role": "codex-verify-r2",
+            "artifact": "377dabffe2596ca00c4d2306175b310526a8a6521552704cac8b694e763e797c",
+            "path": "artifacts/sha256/37/377dabffe2596ca00c4d2306175b310526a8a6521552704cac8b694e763e797c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 239
+          },
+          "timestamp": "2026-08-16T03:25:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "add empty-sidecar regression",
+            "pin run-show log format",
+            "test recorder over-cap rejection",
+            "skip validation for discarded shell sessions"
+          ],
+          "raw_output": {
+            "role": "opus-verify-r2",
+            "artifact": "00434fcb1c92d493b181117d3f5072318067361269f955491213c4e99c46980c",
+            "path": "artifacts/sha256/00/00434fcb1c92d493b181117d3f5072318067361269f955491213c4e99c46980c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 206
+          },
+          "timestamp": "2026-08-16T03:33:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:34:00Z"
     }
   ]
 }

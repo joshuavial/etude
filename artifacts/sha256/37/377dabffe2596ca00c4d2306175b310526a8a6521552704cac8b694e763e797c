@@ -1,0 +1,3 @@
+Replay session persistence is fixed, but strict Unicode validation still accepts an unpaired surrogate escape that encoding/json silently normalizes to U+FFFD; in-process runners can likewise provide invalid UTF-8 strings.
+
+VERDICT: BLOCK
