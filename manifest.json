@@ -1703,6 +1703,52 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T14:52:17.998378Z"
+    },
+    {
+      "gate_id": "verify.r11",
+      "phase": "verify",
+      "round": 11,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r6",
+          "role": "verify",
+          "artifact": "fbc1c271d56073670b0fce66ef93249c1da3b57d5258684a5885d2f208e44844"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T15:01:29Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T15:01:29Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO on the FROZEN artifact, and the freeze was honoured: three optionals were returned and NONE were folded into the artifact after the verdict. Two are filed as bead etude-le0 (the --last window boundary and check (c)'s trigger filter are both unpinned, each confirmed by mutation at 49/49 green); the third is a hedge that is already accurate ('roughly 40' header lines against an actual 37). This matters because four earlier verify passes on this bead certified revisions that then changed - the artifact would be edited to fold optionals, and the pass would silently come to describe something else. Recording the optionals instead of applying them is what makes a pass mean what it says. The deterministic checks were executed live by etude gate on this same artifact at verify.r10 (make test go, make lint go, codex go); that attempt escalated only because the opus seat has no working subprocess path (bead etude-8li), so it ran in-harness per the documented registry exception and this record carries the completed panel. Eleven verify attempts in total on this bead, of which the substantive rounds found: half of check (d) untested, two fail-closed guards unpinned, two subprocess-error fail-opens, a vacuous test case that could not fire, and three rounds of artifact numbers that did not match the tree."
+      },
+      "timestamp": "2026-08-15T15:01:29Z"
     }
   ]
 }
