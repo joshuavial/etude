@@ -1,0 +1,23 @@
+# Final Review — etude-example-repo (combined Implement+Final four-seat gate)
+
+## Verdict: PASS (3 substantive GO; pilms skipped per documented outage)
+
+Tier 1 gate (new user-facing artifact + shell correctness surface). Four-seat gate; pilms unavailable all session (0-CPU client hang) → degraded policy: proceed on 3 substantive GO per the review-gate-runbook.
+
+## Seats
+### codex (GPT-5.5, xhigh) — BLOCK → GO
+Lone BLOCK: in walkthrough.sh, `BINDIR` was created (mktemp) before the cleanup trap was installed, so a failing `go build` under `set -e` would leak the temp build dir. Concrete and fixable.
+Fix incorporated: moved `WORK=mktemp` + the single unified trap above the build block; `BINDIR=""` initialised before the trap so it is covered once set. Reran codex against the fix → GO. Everything else passed first time (make example, go test ./..., go vet, gofmt; bench +11 bytes per doc; judge content-based/swap-safe).
+
+### gemini (3.1 Pro) — GO
+Isolation via throwaway repo + unified trap; deterministic v1-vs-v2 100% win; rot-guard smoke test sound. `ls | head -1` under `set -eo pipefail` safe here (exactly one matching file in the etude-provided dirs).
+
+### Claude Opus (in-harness) — GO
+Empirical verification: built a fresh binary, ran walkthrough + `make example` + smoke test + full suite — all green. Confirmed runner/judge I/O contract against the REAL implementation (roles materialized `%02d-target-<role>`; `{"winner":A|B|tie}` mapped to canonical A=original/B=replay via mapWinnerBack). Strictly-longer invariant holds incl. single-line/no-newline/empty edge cases (mutation tested on /tmp copies). Bench B=3 A=0 tie=0 across seeds 0/1/2/7/42/99. No temp-dir leak; no beads/LLM/network coupling; tracker-agnostic framing vs scripts/dogfood-capture.sh accurate.
+
+## Optional notes
+- Incorporated: README expected-headline updated to include the real `; 0 skipped, 0 failed` suffix (Opus doc-drift note).
+- Left (latent, not example-specific, match general etude flag behavior): paths-with-spaces in `--runner`/`--judge` (split by strings.Fields); `make example` builds bin/etude (gitignored).
+
+## Outcome
+Committed eb111a2 "add non-beads example workflow"; bead closed; pushed to origin + Dolt.
