@@ -1,0 +1,57 @@
+diff --git a/docs/run.md b/docs/run.md
+index 2a0ab01..67000e1 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -353,6 +353,52 @@ that artifact appended to its inputs (role `gate-feedback`). The re-run stage
+ is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
+ against its output.
+ 
++The rerun also receives a rebuilt, digest-bound history of every earlier
++attempt killed by a `rerun` verdict:
++
++- `prior-attempts` is a deterministic JSON index. In chronological manifest
++  order it records each attempt's stage and round, session id, whether that
++  exact non-empty session id appeared on an earlier attempt, output/log/
++  transcript digests and input roles, transcript retrieval/redaction status,
++  and the killing gate's aggregate status plus ordered seat verdicts and
++  required changes.
++- `prior-attempt-<N>-output` always carries the attempt output. Optional
++  `prior-attempt-<N>-log` and `prior-attempt-<N>-transcript` inputs carry the
++  corresponding stored artifacts when present; a transcript is attached only
++  after successful import and secret scanning. Distinct roles may point at the
++  same digest when attempts produced identical bytes.
++
++These are ordinary declared stage inputs, so their content-addressed digests
++are recorded in the rerun stage manifest. The bundle is rebuilt from durable
++run history on every round rather than copied forward; `gate-feedback` remains
++cumulative. Consequently the handover grows with the number and size of prior
++attempts.
++
++Only attempts whose gate status is `rerun` enter this history. An `escalated`
++gate re-evaluates the latest stage output at a stronger tier without invoking
++the stage again, so it does not create a producer attempt to hand forward.
++
++A stage runner may report no session. That is the legitimate no-transcript
++state: the attempt still contributes output, log, and verdict evidence without
++a transcript. Transcript retrieval failure is recorded in the index and the
++rerun continues without transcript bytes. A transcript that was imported but
++failed secret scanning stops the rerun before its stage runner is invoked.
++Output and stage-log artifacts follow their existing storage contract and are
++not secret-scanned.
++
++Session ids are opaque and compared byte-for-byte; whitespace is used only to
++recognize an empty id. Reusing an exact non-empty id marks the later attempt as
++resuming a prior session. Such an attempt is intentionally **not replayable
++from its declared inputs alone**, because the external model session contains
++state outside the run manifest; the repeated id makes that condition
++detectable without a manifest schema change.
++
++The roles `prior-attempts` and the `prior-attempt-` prefix are reserved for the
++engine. Workflow validation rejects them in stage `inputs` and `produces`, and
++the live engine repeats that check at entry so programmatically constructed
++workflows fail before checkout or stage invocation. The near-miss role
++`prior-attempt` is not reserved.
++
+ On **escalated**: the engine advances the tier ladder toward L1 (strongest)
+ and re-runs the gate against the latest stage output at the stronger tier. If
+ no stronger tier exists (already at L1, or the gate used inline seats with no
