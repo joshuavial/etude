@@ -474,6 +474,74 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T05:05:02Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "state populated-repo count-parity cross-ref explicitly",
+            "add --force-with-present-origin manual scenario",
+            "dedicated byte-identity assertion for legacy strings"
+          ],
+          "timestamp": "2026-06-07T05:11:20Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "add manual --force with present origin scenario"
+          ],
+          "timestamp": "2026-06-07T05:11:20Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "assert exact dry-run force-missing note string in unit test",
+            "comment explaining statusConfigured reuse in dry-run preview"
+          ],
+          "timestamp": "2026-06-07T05:11:20Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T05:11:20Z"
     }
   ]
 }
