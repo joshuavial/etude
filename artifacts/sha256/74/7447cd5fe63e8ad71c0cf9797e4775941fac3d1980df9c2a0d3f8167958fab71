@@ -1,0 +1,118 @@
+✓ etude-qih · Add etude log session-narration command   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Deferred Phase-C extra from etude-n0t. A new read-only 'etude log' command that narrates a session/cohort as a timeline across runs (refs/etude/runs/*), retros (refs/etude/retros/*), and gate attempts — a legible chronological view of captured work. Read-side over existing refs (like run list/show + retro list/show); no mutation. Tier 2 (read-only product CLI).
+
+DESIGN
+## Plan
+
+**Approach:** Add a new top-level read-only `etude log` command that unions the run refs (refs/etude/runs/*) and retro refs (refs/etude/retros/*), reads each manifest, emits one chronologically-sorted event per ref, and prints a legible timeline table. It is pure read-side over existing refs — same construction as `run list`/`retro list` (refstore.Store.List + ReadFile("manifest.json") + runmanifest.ParseJSON). No new storage, no mutation. Mirror run/retro list conventions exactly (out/errOut injection, cobra.NoArgs, SilenceUsage/Errors, tabwriter table, "no X found" empty case exit 0, malformed manifest => non-zero + named ref + nothing to stdout).
+
+**Command surface (minimal, justified):**
+- `etude log [flags]` — registered top-level via newLogCommand(out, errOut) in root.go (alphabetical: between init and prime). Args: cobra.NoArgs (read-only by construction; no positional).
+- Flags (small, coherent set; defer speculative options):
+  - `--kind <run|retro>` (repeatable, StringArray): include only these event kinds. Default empty = all kinds. Validate against the closed set {run, retro}; unknown value => error before any git call.
+  - `--subject <id>` (repeatable, StringArray): include only events whose subject set contains the id. For a run event the subject is its own run id; for a retro event the subjects are its subject_run.N and bead.N ref values (reuse retro.go's subject-extraction logic). Default empty = no subject filter.
+  - `--limit <n>` (Int, default 0 = unlimited): cap to the most-recent N events AFTER sort (tail of the chronological list). Reject negative.
+  Explicitly DEFERRED (state in docs "Current limits"): time-range filters (--since/--until), workflow-type filter, and --json machine output. Keep v1 focused on the union+sort+render core.
+
+**Timeline event model:**
+- Event = { Timestamp time.Time; Kind string ("run"|"retro"); ID string (ref id, ref minus prefix); Summary string }.
+- Build: list runs prefix + retros prefix; for each ref ReadFile manifest.json + ParseJSON.
+  - run event: Timestamp = manifest.Created; Kind = "run"; ID = run id; Summary = manifest.Workflow + " (" + len(Stages) + " stages)". (Workflow distinguishes normal runs from workflow-typed records.)
+  - retro event: Timestamp = manifest.Created; Kind = "retro"; ID = retro id; Summary = scope=<Refs["scope"]> trigger=<Refs["trigger"]> subjects=<comma-joined subject_run.N/bead.N via the existing retroSubjectsList helper>. (Trim trailing empty fields so blanks never print.)
+- Sort key: manifest.Created (top-level), ascending (oldest first — a narration reads forward in time). Justification: Created is the single timestamp every parseable manifest is guaranteed to have (ParseJSON requires RFC3339 `created`; Validate rejects zero Created), it is uniform across run and retro manifests, and it is what run list/retro list already display. Per-stage/per-gate Timestamps are NOT used as the sort key because retros and runs do not share a comparable per-stage clock and using them would make the union incoherent. Ties (equal Created) broken deterministically by (Kind, ID) ascending so output is stable and testable.
+
+**Gate attempts — IN SCOPE? NO (grounded in actual storage).** Investigated: GateAttempt is a field on the run manifest (Manifest.Gates []GateAttempt, manifest_version 3), NOT an independently-queryable ref. The only ref namespaces are refs/etude/runs, refs/etude/evals, refs/etude/retros (refstore.go). Gates therefore have no standalone identity to narrate as first-class timeline rows, and each gate's Timestamp is on a different clock dimension than the run/retro Created sort key. DECISION for v1: do NOT emit gate attempts as a distinct event kind and do NOT invent a gate ref namespace. The run event Summary MAY note gate presence (e.g. append "; N gates" when len(manifest.Gates) > 0) so gate activity is still legible from the timeline, without changing the sort model. State explicitly in docs that a dedicated gate-attempt timeline kind is deferred and would require either a gate ref namespace or a documented secondary sort over manifest.Gates[].Timestamp.
+
+**Output rendering:**
+- tabwriter table (2-space padding, same as run/retro list). Header: `TIMESTAMP\tKIND\tID\tSUMMARY`.
+- Row: `<Created RFC3339 UTC>\t<kind>\t<id>\t<summary>`. Timestamp formatted manifest.Created.UTC().Format(time.RFC3339) — identical to run/retro list.
+- Empty case: when the union (after filters) is empty, print `no events found` to stdout and exit 0 (mirrors `no runs found`/`no retros found`).
+- Malformed/missing manifest: if ReadFile or ParseJSON fails for any ref, return fmt.Errorf("<kind> %q: %w", id, err) — non-zero exit, names the offending ref id on stderr, nothing written to stdout (build the full event slice before writing any row, exactly like run list builds rows inside the writer loop but fails fast on first error).
+
+**Read-only guarantee (by construction):** The runner holds only refstore.New("") and an io.Writer; it calls only store.List + store.ReadFile + runmanifest.ParseJSON. No artifactstore.New/AddContent, no WriteCommit/WriteManifestTree/retro.Writer, no git update-ref. Args are cobra.NoArgs. A test asserts a fresh repo's ref set is byte-identical before/after `etude log` (compare `git for-each-ref refs/etude` output, or run list/retro list counts).
+
+**Tests (internal/cli/log_test.go, mirror run_test.go/retro_test.go style; use execute(), initCaptureRepo, capture/retro capture to seed):**
+- TestLogIsRegisteredSubcommand: `log --help` exits 0, mentions "log".
+- TestLogZeroEvents: empty repo => stdout contains "no events found", exit 0, stderr empty.
+- TestLogRunsAndRetrosUnioned: seed 2 runs + 1 retro; assert header columns TIMESTAMP/KIND/ID/SUMMARY present and one row per ref with correct kind label.
+- TestLogChronologicalOrder: seed records with controlled Created (use a clock seam / fixed GIT_AUTHOR_DATE or capture ordering) and assert ascending-by-timestamp order with deterministic (kind,id) tiebreak.
+- TestLogKindFilter: `--kind retro` yields only retro rows; `--kind run` only runs; invalid `--kind bogus` => non-zero, names allowed set, nothing on stdout.
+- TestLogSubjectFilter: retro captured with --subject-run X appears for `--subject X`; unrelated id filtered out; a run with id X also matches `--subject X`.
+- TestLogLimit: `--limit 1` returns only the most-recent event; negative limit rejected.
+- TestLogMalformedManifest: corrupt one run manifest blob (write invalid JSON to the ref tree) => non-zero exit, error names the run id, stdout empty.
+- TestLogReadOnly: snapshot `git for-each-ref refs/etude` before/after `etude log`; assert unchanged.
+- Reuse RFC3339/tabwriter field-parsing assertions from run_test.go.
+
+**Docs (Docs phase, after Verify):**
+- Regenerate generated CLI pages: `make docs` (produces docs/cli/etude_log.md) so cmd/gen-docs TestDriftGuard + `make docs-check` pass. Commit the generated page.
+- README.md: add an `etude log` line to the implemented list (~line 27) AND to the `## CLI` usage block (~line 80, e.g. `./bin/etude log`) AND to the implemented-surface paragraph (~line 38-42) — `make docs-reality` requires an `etude log` USAGE mention in README.md.
+- docs/README.md index: add `- [Log](log.md) - narrate runs and retros as a chronological timeline.` (docs-reality requires the command name `log` in the index).
+- Hand-written guide docs/log.md (repo convention: run.md/retro.md exist as per-command guides): document synopsis, the event model, sort key (Created ascending, (kind,id) tiebreak), the table format, --kind/--subject/--limit flags, empty case, malformed-manifest failure mode, the read-only guarantee, and a "Current limits" section listing deferred gate-attempt kind, time-range filters, workflow filter, and --json.
+- Add `make docs-reality` + `make docs-check` to the Verify/Docs checklist; expect TestDriftGuard to fail until `make docs` is run.
+
+**File-level scope (1 bead = 1 commit):**
+- internal/cli/log.go — NEW: newLogCommand + logRunner{store, stdout} + list/build/render + event type + filters.
+- internal/cli/root.go — MODIFY: register cmd.AddCommand(newLogCommand(out, errOut)) (alphabetical between init and prime).
+- internal/cli/log_test.go — NEW: tests above.
+- docs/cli/etude_log.md — NEW (generated by `make docs`; do not hand-edit).
+- docs/log.md — NEW: hand-written guide.
+- docs/README.md — MODIFY: add Log index entry.
+- README.md — MODIFY: add `etude log` to implemented list, CLI usage block, and surface paragraph.
+- (Reuse, do not duplicate: retroSubjectsList from retro.go for retro subjects; runsPrefix/retrosPrefix consts.)
+
+**Risks / reviewer disagreement points:**
+- Sort direction: ascending (oldest-first narration) vs descending (newest-first, like a log tail). Chose ascending for a forward-reading narrative; a reviewer may prefer newest-first or a `--reverse` flag. Defensible either way — documented and tiebroken deterministically.
+- Gate attempts excluded as a first-class kind. A reviewer may argue gate Timestamps should appear as their own rows. Grounded rebuttal: no gate ref namespace exists; surfacing gate count in the run Summary preserves legibility without inventing storage or a second sort axis. Deferral is stated in docs.
+- evals namespace (refs/etude/evals/*) is NOT included — the bead scopes the narration to runs + retros + (derived) gates. Note this explicitly; adding evals later is additive.
+- Whether to fail-fast on a single malformed manifest vs skip-and-warn. Chose fail-fast to match run list/retro list exactly (consistency over partial output).
+
+**Capture:**
+- inputs: bead etude-qih description + parent etude-n0t context; read internal/cli/run.go, retro.go, root.go, prime.go, run_test.go, root_test.go; internal/refstore/store.go; internal/runmanifest/manifest.go (Manifest/Stage/GateAttempt schema + ParseJSON/parseTime); cmd/gen-docs/main.go + main_test.go (TestDriftGuard); scripts/docs-reality-check.sh; docs/run.md, docs/README.md, README.md.
+- output: bead --design field.
+---
+## PLAN-GATE CORRECTION (Tier-1 gate, 3-seat: codex BLOCK verified-true, gemini+Opus GO)
+codex caught one real scope omission, verified against source: adding a top-level command also REGENERATES the root page docs/cli/etude.md (its SEE ALSO list, lines 23-34, lists every top-level command alphabetically; `etude log` inserts between `etude init` and `etude prime`). `make docs` therefore modifies BOTH docs/cli/etude_log.md AND docs/cli/etude.md, so TestDriftGuard / docs-check fail unless docs/cli/etude.md is also committed.
+
+FILE SCOPE AMENDED — add to the commit:
+- docs/cli/etude.md — MODIFY (regenerated SEE ALSO entry for `etude log`; do not hand-edit, produced by `make docs`).
+
+All other plan decisions stand unchanged (storage grounding, Created sort + (Kind,ID) tiebreak, --kind/--subject/--limit surface, read-only-by-construction, empty + fail-fast-malformed parity, docs-reality README/index requirements). Per gate seats: docs must explicitly spell out (a) gate-attempt kind deferred, (b) `--limit` = tail-after-ascending-sort semantics.
+
+NOTES
+## Implement
+
+**Implemented:**
+- NEW internal/cli/log.go: newLogCommand(out, errOut), logRunner{store, stdout}, logEvent type (Timestamp/Kind/ID/Summary/subjectIDs), buildEvents() union over runsPrefix+retrosPrefix, filter/limit/render. Reuses runsPrefix/retrosPrefix consts and retroSubjectsList from retro.go. Read-only by construction (only List/ReadFile/ParseJSON).
+- MODIFY internal/cli/root.go: cmd.AddCommand(newLogCommand(out, errOut)) inserted alphabetically between init and prime.
+- NEW internal/cli/log_test.go: 17 tests covering registration, zero events, union, chronological order, (kind,id) tiebreak, kind filter (run/retro/invalid), subject filter (matched/unmatched), limit (1/0/negative), malformed manifest (named error + empty stdout), read-only ref-set snapshot, RFC3339 UTC timestamp format, run summary stage count.
+
+**Key decisions:**
+- subjectIDs unexported field on logEvent used for retro subject-filter matching (not serialised)
+- seedRunWithTimestamp/seedRetroWithTimestamp use artifactstore.New()+WriteManifestTree for valid content-addressed manifests with controlled Created timestamps
+- Seeding helpers chdir(t, repo) to match the execution model of other test helpers
+
+**Checks run:**
+- go build ./...: PASS
+- go test ./internal/cli/... ./internal/retro/... ./internal/runmanifest/...: PASS (all 17 TestLog* pass; all existing tests unaffected)
+- gofmt -l: CLEAN (fixed alignment spacing in var block)
+- go vet ./...: CLEAN
+- go test ./...: ONLY FAILURE is TestDriftGuard in cmd/gen-docs (docs/cli/etude.md stale + docs/cli/etude_log.md missing) — exactly as expected per plan
+
+**Changed files:**
+- /Users/jv/projects/etude/internal/cli/log.go (NEW)
+- /Users/jv/projects/etude/internal/cli/root.go (MODIFY: +1 line)
+- /Users/jv/projects/etude/internal/cli/log_test.go (NEW)
+
+**Plan deviations:** None. Implemented exactly as specified including the PLAN-GATE CORRECTION (docs phase will regenerate both etude.md SEE ALSO and etude_log.md).
+
+**Capture:**
+- inputs: approved plan from bd show etude-qih --json; read run.go, retro.go, root.go, run_test.go, retro_test.go, root_test.go, capture_test.go
+- output: working tree diff (3 files: log.go NEW, root.go +1 line, log_test.go NEW) and these bead notes
+
+LABELS: phase:implement
+
