@@ -1,0 +1,21 @@
+# Verify artifact — etude-3a2 (scoped secret/env passthrough, SECURITY-CRITICAL)
+**Status: pass. Recommendation: proceed to Docs.**
+
+## Automated (all green)
+- go test ./internal/replay/... ./internal/liverun/... ./internal/cli/... ./internal/workflow/... ./internal/runmanifest/... → all ok
+- make lint clean; GOOS=windows+linux build OK
+- make docs → only docs/cli/etude_replay.md regenerated (--allow-env); make docs-reality OK (14 commands)
+
+## AC-to-test map
+- AC1 (operator declares which vars) → TestWorkflowEnvAllowlist_Parse/_RoundTrip/_ValidationRejects + TestExecRunner_EnvAllowlist_MarkerReachesRunner/_ForbiddenVarBlocked + TestResolveGateSeatPropagatesEnvAllowlist
+- AC2 (default hermetic) → TestExecRunner_EnvAllowlist_NilIsHermetic, TestResolveCheckRunnerIsHermetic, TestReplayAllowEnv (no-flag)
+- AC3 (audit names only) → TestManifestEnvAllowlist_* (round-trip/omitempty/no-version-bump/byte-stable) + P1 TestRunWorkflowEnvAllowlistPassthrough (value reaches runner, forbidden blocked, NAME in run show, VALUE absent from manifest bytes + run show)
+
+## Built-binary security proof (throwaway repo, non-secret marker, NO real credential)
+- Live run env_allowlist:[ETUDE_TEST_MARKER]: captured output MARKER=secretmarkerval FORBIDDEN=ABSENT (marker delivered, forbidden blocked).
+- CRITICAL leak grep: `secretmarkerval` ABSENT from `run show --json` AND `run show`; NAME ETUDE_TEST_MARKER present in both. Confirmed explicitly.
+- replay (no flag) → MARKER=ABSENT (hermetic); replay --allow-env → MARKER present; replay --record --allow-env → rejected "cannot be combined", exit 1.
+- Default-hermetic regression (no env_allowlist) → MARKER=ABSENT.
+
+## QA findings
+Matches approved plan file-for-file. Single shared allowlist drives passthrough + audit (cannot diverge). Values cross only into cmd.Env; never-log guardrail; reserved-name defense-in-depth (Validate reject + runtime skip); nil-allowlist byte-identical to prior hermetic behavior. Minor: two near-identical isValidEnvName helpers (acceptable package-local dup).

@@ -1,0 +1,1335 @@
+commit 61602305dcfd93a9f9329767231e17f71e2d6f50
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 09:41:52 2026 +0800
+
+    add scoped env/secret passthrough to live runners with names-only audit
+
+diff --git a/docs/cli/etude_replay.md b/docs/cli/etude_replay.md
+index 2436a78..e0804f5 100644
+--- a/docs/cli/etude_replay.md
++++ b/docs/cli/etude_replay.md
+@@ -11,6 +11,7 @@ etude replay <run> [<stage>] [flags]
+ ### Options
+ 
+ ```
++      --allow-env                pass the workflow env_allowlist vars to the runner (default: hermetic; cannot combine with --record)
+       --harness string           override harness name in recorded producer
+       --harness-version string   override harness version in recorded producer
+   -h, --help                     help for replay
+diff --git a/docs/plans/product/live-execution.md b/docs/plans/product/live-execution.md
+index 56e412a..9da94aa 100644
+--- a/docs/plans/product/live-execution.md
++++ b/docs/plans/product/live-execution.md
+@@ -1,8 +1,9 @@
+ # Live execution (`etude run`) — design
+ 
+-Status: mixed. §1 (live workflow orchestration) is **implemented** as of bead
+-etude-xin. §2 (live gate execution) is **implemented** as of bead etude-04i.
+-§3 (scoped secret passthrough) remains **planned**. Durable failed-stage
++Status: **all three sections implemented.** §1 (live workflow orchestration) is
++implemented as of bead etude-xin. §2 (live gate execution) is implemented as of
++bead etude-04i. §3 (scoped secret/env passthrough) is implemented as of bead
++etude-3a2. Decision 7 (hermetic-by-default) is realized. Durable failed-stage
+ status capture (decision 6 below) is deferred to bead etude-dp7.
+ 
+ Today etude supports both capture-and-replay and live orchestration: it records
+@@ -17,8 +18,7 @@ from execution. That consumer context is non-normative; everything below is an
+ etude feature in its own right.
+ 
+ What ships today vs. what is planned is marked per section. "Implemented" refers
+-to code under `internal/` on `main`; everything attributed to `etude run` (live)
+-is planned.
++to code under `internal/` on this branch.
+ 
+ ## Summary of decisions
+ 
+@@ -160,20 +160,36 @@ registry (`.etude/registry.yaml` — the renamed former `gates.yaml`).
+ 
+ ## 3. Scoped secret / env passthrough
+ 
+-**Planned (etude-3a2).** Secret passthrough is not yet built. Both live runs
+-and replay strip runner env to `PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`
+-— hermetic by default, unchanged from before etude-xin.
++**Implemented (etude-3a2).** An operator declares an explicit allowlist of env
++var names in `.etude/workflow.yaml`. Values are read from the orchestrator's
++process env at runner-construction time and passed to live stage runners and
++gate model seats. Deterministic gate checks are left hermetic. With no
++`env_allowlist` configured, behavior is unchanged: the runner receives only
++`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`.
++
++**Mechanism:**
++
++- Add `env_allowlist: [NAME, ...]` at the top level of `.etude/workflow.yaml`.
++  Each entry is an env var NAME (not a value). Reserved names (`PATH`,
++  `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow validation.
++- The allowlist names are resolved and passed to live stage runners and to gate
++  model seats. Deterministic gate checks are not affected and remain hermetic.
++- `etude replay <id> --allow-env` opts replay into the same passthrough;
++  default replay stays hermetic. `--record` and `--allow-env` cannot be combined.
++- Audit: the allowlist NAMES (never values) are recorded in the run manifest and
++  shown as `env allowlist:` in `etude run show`. The manifest records the
++  configured names (intent/policy); a name is passed to the child only when
++  present in the orchestrator's env — "listed" does not mean "value delivered".
++  Secret values never appear in the manifest or `etude run show` output. A
++  runner that echoes its own secret into its output is operator responsibility.
++
++See [docs/run.md](../run.md#env-passthrough) for user-facing documentation.
+ 
+-**Planned:** a configurable allowlist / secret-injection mechanism for runners
+-during live runs (opt-in for replay), e.g. `etude.runner.env-allowlist` or a
+-secrets file referenced from config. Keep hermetic-by-default; make the
+-passthrough explicit and auditable.
+-
+-### Acceptance criteria
++### Acceptance criteria (met)
+ 
+ - An operator declares exactly which env vars / secrets reach the runner.
+ - Default behavior remains hermetic (nothing beyond the current three vars).
+-- The passthrough is visible in run metadata for auditability.
++- The passthrough is visible in run metadata for auditability (names only).
+ 
+ ## Sequencing
+ 
+@@ -192,10 +208,9 @@ to `.etude/registry.yaml`; `phase_gates` migrated to per-stage `gate` blocks in
+ historical `gates.yaml` is deleted. The deterministic-check gate (verify stage)
+ and orchestration walk were proven live via `etude run` with a throwaway repo.
+ 
+-**Real-LLM end-to-end run is deferred to bead etude-s6z** (depends on
+-etude-2pc.2 + etude-3a2 secret passthrough): running the real `dev` stage runner
+-(`claude -p`) and model-seat gates (opus/codex/gemini) live requires secret
+-passthrough (§3), which is not yet built.
++**Real-LLM end-to-end run is deferred to bead etude-s6z** (now unblocked by
++etude-3a2): running the real `dev` stage runner (`claude -p`) and model-seat
++gates (opus/codex/gemini) live with real credentials is etude-s6z's scope.
+ 
+ A second, research-style workflow lands later as an explicit generality test
+ (etude-2pc.3).
+diff --git a/docs/run.md b/docs/run.md
+index febea46..e8217a4 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -77,6 +77,16 @@ stage: plan
+ The `refs:` block appears only when the run has external refs; its keys are
+ printed in sorted order.
+ 
++When the workflow's `env_allowlist` is non-empty, an `env allowlist:` line
++appears in the header immediately after `created:` (before `refs:` when present),
++listing the configured names (never values):
++
++```
++env allowlist:    ETUDE_TEST_MARKER, ANTHROPIC_API_KEY
++```
++
++See [Env passthrough](#env-passthrough) for details.
++
+ Per stage, the detail view shows:
+ 
+ - `produced_by`, `git sha`
+@@ -241,6 +251,48 @@ manifest (`manifest_version` 3); gate attempts appear after stages in
+ `etude run show`. No separate `etude capture-gate` call is required for live
+ runs.
+ 
++### Env passthrough
++
++By default, each stage runner receives a hermetic environment containing only
++`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
++vars (such as API keys) to live runners, declare an allowlist of names in
++`.etude/workflow.yaml`:
++
++```yaml
++env_allowlist: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
++```
++
++At run time, etude reads each listed name's value from the orchestrator's own
++process env and passes it to each stage runner and gate model seat. Values are
++never stored in the manifest or artifact files; only the names are recorded.
++
++**Scope.** The allowlist applies to live stage runners and gate model seats.
++Deterministic gate checks are always hermetic (they receive no allowlist entries
++regardless of configuration).
++
++**Validation.** Each entry must be a valid POSIX env var name
++(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
++`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
++
++**Audit.** The configured names (never values) appear in `etude run show` as an
++`env allowlist:` header line and in the run manifest (`env_allowlist` field).
++The manifest records the configured names as intent/policy: a name is only
++passed to the child process when it is present in the orchestrator's env —
++"listed" does not mean "value delivered". Secret values never appear in the
++manifest or `etude run show` output. If a runner echoes its own secret into its
++output artifact, that is operator responsibility; etude's guarantee is that
++values cross only into the child process environment.
++
++**Replay.** By default, `etude replay` stays hermetic (no passthrough). Pass
++`--allow-env` to load the workflow's `env_allowlist` and apply it during replay:
++
++```bash
++etude replay <run-id> --allow-env
++etude replay <run-id> <stage> --allow-env
++```
++
++`--allow-env` and `--record` cannot be combined (rejected with a clear error).
++
+ ### Forward replay
+ 
+ Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 3a477ff..6f00f7d 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -31,6 +31,9 @@ type replayRunner struct {
+ 	now func() time.Time
+ 	// timeout overrides the default ExecRunner timeout when non-zero.
+ 	timeout time.Duration
++	// envAllowlist holds the NAMES (never values) to pass through to runners
++	// when --allow-env is set. Nil/empty means hermetic (default).
++	envAllowlist []string
+ }
+ 
+ func newReplayCommand(out, errOut io.Writer) *cobra.Command {
+@@ -44,6 +47,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 	var runnerSpec string
+ 	var outputPath string
+ 	var record bool
++	var allowEnv bool
+ 	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
+ 	var timeoutFlag time.Duration
+ 
+@@ -59,6 +63,31 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 		RunE: func(cmd *cobra.Command, args []string) error {
+ 			r.timeout = timeoutFlag
+ 
++			// --record + --allow-env is rejected: replay --record passes values
++			// to the runner but does not record the allowlist names in the audit
++			// manifest. Use etude run for live runs with audited env passthrough.
++			if record && allowEnv {
++				return fmt.Errorf("--record and --allow-env cannot be combined: use etude run for live runs with audited env passthrough")
++			}
++
++			// When --allow-env is set, load the workflow to get the allowlist
++			// names and set them on the runner. Values are never stored here.
++			if allowEnv {
++				root, rootErr := repoRoot(cmd.Context())
++				if rootErr != nil {
++					return rootErr
++				}
++				wfBytes, wfErr := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
++				if wfErr != nil {
++					return fmt.Errorf("load workflow for --allow-env: %w", wfErr)
++				}
++				wf, wfErr := workflow.ParseYAML(wfBytes)
++				if wfErr != nil {
++					return fmt.Errorf("parse workflow: %w", wfErr)
++				}
++				r.envAllowlist = wf.EnvAllowlist
++			}
++
+ 			if len(args) == 1 {
+ 				// Forward replay: error on single-stage-only flags.
+ 				for _, flag := range []string{"record", "output", "skill-id", "skill-repo", "skill-version", "model", "harness", "harness-version"} {
+@@ -91,6 +120,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 	cmd.Flags().StringVar(&runnerSpec, "runner", "", "runner command spec (e.g. ./run.sh)")
+ 	cmd.Flags().StringVar(&outputPath, "output", "", "write output to this file instead of stdout")
+ 	cmd.Flags().BoolVar(&record, "record", false, "persist the replay output as a new linked run")
++	cmd.Flags().BoolVar(&allowEnv, "allow-env", false, "pass the workflow env_allowlist vars to the runner (default: hermetic; cannot combine with --record)")
+ 	cmd.Flags().StringVar(&skillVersion, "skill-version", "", "override skill version in recorded producer")
+ 	cmd.Flags().StringVar(&skillID, "skill-id", "", "override skill id in recorded producer")
+ 	cmd.Flags().StringVar(&skillRepo, "skill-repo", "", "override skill repo in recorded producer")
+@@ -311,6 +341,7 @@ func (r *replayRunner) resolveRunner(ctx context.Context, spec string) (replay.R
+ 		Command:        strings.Fields(spec),
+ 		Timeout:        r.timeout,
+ 		MaxOutputBytes: 64 << 20,
++		EnvAllowlist:   r.envAllowlist,
+ 	}, nil
+ }
+ 
+@@ -338,6 +369,7 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
+ 			Command:        strings.Fields(runnerSpec),
+ 			Timeout:        timeout,
+ 			MaxOutputBytes: 64 << 20,
++			EnvAllowlist:   r.envAllowlist,
+ 		}
+ 		resolveRunner = func(string) (replay.Runner, error) { return er, nil }
+ 
+@@ -362,7 +394,7 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
+ 		resolveRunner = func(stageName string) (replay.Runner, error) {
+ 			for _, s := range wf.Stages {
+ 				if s.Name == stageName {
+-					return liverun.ResolveStageRunner(wf, reg, s, timeout)
++					return liverun.ResolveStageRunner(wf, reg, s, timeout, r.envAllowlist)
+ 				}
+ 			}
+ 			return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
+diff --git a/internal/cli/replay_test.go b/internal/cli/replay_test.go
+index 7b01464..3a5626b 100644
+--- a/internal/cli/replay_test.go
++++ b/internal/cli/replay_test.go
+@@ -940,3 +940,81 @@ func TestReplayForwardMissingRunErrors(t *testing.T) {
+ 		t.Errorf("stderr = %q, want 'not found'", stderr)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// --allow-env tests
++// ---------------------------------------------------------------------------
++
++// TestReplayAllowEnv covers three scenarios:
++//  1. Forward replay WITHOUT --allow-env: hermetic (marker absent from runner output).
++//  2. Forward replay WITH --allow-env: marker reaches runner.
++//  3. --record + --allow-env: rejected with a clear error.
++func TestReplayAllowEnv(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	repo, runID := captureStageForReplay(t) // also calls chdir(t, repo)
++
++	// workflow.yaml with env_allowlist — required for --allow-env to pick up names.
++	etDir := filepath.Join(repo, ".etude")
++	if err := os.MkdirAll(etDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	wfContent := "name: mywf\nenv_allowlist: [ETUDE_TEST_MARKER]\nstages:\n  - name: gen\n    skill: s\n    produces: output\n    inputs: [task]\n"
++	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(wfContent), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	// Runner writes the marker value (ABSENT when not set in child env).
++	scriptPath := filepath.Join(repo, "env-replay-runner.sh")
++	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s' \"${ETUDE_TEST_MARKER:-ABSENT}\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++
++	t.Setenv("ETUDE_TEST_MARKER", "replaymarker")
++	chdir(t, repo)
++
++	// Scenario 1: forward replay WITHOUT --allow-env → hermetic (marker absent).
++	{
++		var out, errOut bytes.Buffer
++		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++		cmd.SetArgs([]string{runID, "--runner", scriptPath})
++		if err := cmd.Execute(); err != nil {
++			t.Fatalf("without --allow-env: %v\nstderr: %s", err, errOut.String())
++		}
++		if strings.Contains(out.String(), "replaymarker") {
++			t.Errorf("without --allow-env: marker leaked into output: %q", out.String())
++		}
++		if !strings.Contains(out.String(), "ABSENT") {
++			t.Errorf("without --allow-env: expected ABSENT in output: %q", out.String())
++		}
++	}
++
++	// Scenario 2: forward replay WITH --allow-env → marker reaches runner.
++	{
++		var out, errOut bytes.Buffer
++		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++		cmd.SetArgs([]string{runID, "--runner", scriptPath, "--allow-env"})
++		if err := cmd.Execute(); err != nil {
++			t.Fatalf("with --allow-env: %v\nstderr: %s", err, errOut.String())
++		}
++		if !strings.Contains(out.String(), "replaymarker") {
++			t.Errorf("with --allow-env: expected marker in output: %q", out.String())
++		}
++	}
++
++	// Scenario 3: --record + --allow-env → rejected (single-stage form).
++	{
++		var out, errOut bytes.Buffer
++		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++		cmd.SetArgs([]string{runID, "gen", "--runner", scriptPath, "--record", "--allow-env"})
++		err := cmd.Execute()
++		if err == nil {
++			t.Fatal("--record --allow-env should return an error")
++		}
++		if !strings.Contains(err.Error(), "cannot be combined") {
++			t.Errorf("expected 'cannot be combined' in error: %v", err)
++		}
++	}
++}
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 8e6e24e..1b2e71c 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -93,8 +93,10 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
+ 		}
+ 	}
+ 
+-	// Build the runner factory.
+-	resolveRunner := buildRunnerFactory(wf, reg, runnerSpec, timeout)
++	// Build the runner factory. The same allowlist drives both runner passthrough
++	// and the audit field in engine.EnvAllowlist so the two stay in sync.
++	envAllowlist := wf.EnvAllowlist
++	resolveRunner := buildRunnerFactory(wf, reg, runnerSpec, timeout, envAllowlist)
+ 
+ 	var taskBytes []byte
+ 	if resumeID == "" && taskFile != "" {
+@@ -111,10 +113,11 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
+ 			return liverun.ResolveCheckRunner(reg, r, timeout)
+ 		},
+ 		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
+-			return liverun.ResolveGateSeat(reg, seatName, timeout)
++			return liverun.ResolveGateSeat(reg, seatName, timeout, envAllowlist)
+ 		},
+-		Tiers: liverun.ResolveTiers(reg),
+-		Root:  root,
++		Tiers:        liverun.ResolveTiers(reg),
++		Root:         root,
++		EnvAllowlist: envAllowlist,
+ 	}
+ 
+ 	opts := liverun.RunOptions{
+@@ -143,17 +146,20 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
+ 
+ // buildRunnerFactory returns a ResolveRunner factory. If runnerSpec is set,
+ // all stages use that command; otherwise stages resolve from workflow/registry.
+-func buildRunnerFactory(wf workflow.Workflow, reg registry.Registry, runnerSpec string, timeout time.Duration) func(workflow.Stage) (replay.Runner, error) {
++// envAllowlist is threaded to the ExecRunner so secrets reach the runner
++// (NAMES only from the caller; values read by ExecRunner from os.Environ).
++func buildRunnerFactory(wf workflow.Workflow, reg registry.Registry, runnerSpec string, timeout time.Duration, envAllowlist []string) func(workflow.Stage) (replay.Runner, error) {
+ 	if runnerSpec != "" {
+ 		r := &replay.ExecRunner{
+ 			Command:        strings.Fields(runnerSpec),
+ 			Timeout:        timeout,
+ 			MaxOutputBytes: 64 << 20,
++			EnvAllowlist:   envAllowlist,
+ 		}
+ 		return func(workflow.Stage) (replay.Runner, error) { return r, nil }
+ 	}
+ 	return func(stage workflow.Stage) (replay.Runner, error) {
+-		return liverun.ResolveStageRunner(wf, reg, stage, timeout)
++		return liverun.ResolveStageRunner(wf, reg, stage, timeout, envAllowlist)
+ 	}
+ }
+ 
+@@ -286,6 +292,10 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 	fmt.Fprintf(out, "workflow:         %s\n", m.Workflow)
+ 	fmt.Fprintf(out, "workflow version: %s\n", m.WorkflowVersion)
+ 	fmt.Fprintf(out, "created:          %s\n", m.Created.UTC().Format(time.RFC3339))
++	// Render allowlist NAMES (never values) for audit visibility.
++	if len(m.EnvAllowlist) > 0 {
++		fmt.Fprintf(out, "env allowlist:    %s\n", strings.Join(m.EnvAllowlist, ", "))
++	}
+ 
+ 	// Refs sorted by key for deterministic output.
+ 	if len(m.Refs) > 0 {
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 1836791..8cf0aca 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -929,6 +929,108 @@ stages:
+ 	}
+ }
+ 
++// TestRunWorkflowEnvAllowlistPassthrough is the P1 security integration test for
++// env_allowlist. It verifies that:
++// (a) an allowlisted var VALUE reaches the runner,
++// (b) a non-allowlisted var is blocked,
++// (c) the NAME appears in run show output,
++// (d) the VALUE never appears in manifest bytes or run show output.
++func TestRunWorkflowEnvAllowlistPassthrough(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	repo := initCaptureRepo(t)
++
++	content := `name: mywf
++env_allowlist: [ETUDE_TEST_MARKER]
++stages:
++  - name: stage-a
++    skill: env-test-skill
++    produces: plan
++    inputs: [task]
++`
++	etDir := filepath.Join(repo, ".etude")
++	if err := os.MkdirAll(etDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(content), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	// Runner writes marker|forbidden so each can be asserted independently.
++	scriptPath := filepath.Join(repo, "env-runner.sh")
++	script := "#!/bin/sh\nprintf '%s|%s' \"${ETUDE_TEST_MARKER:-ABSENT_MARKER}\" \"${ETUDE_TEST_FORBIDDEN:-ABSENT_FORBIDDEN}\" > \"$ETUDE_OUTPUT_FILE\"\n"
++	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
++		t.Fatal(err)
++	}
++
++	writeFile(t, repo, "task.txt", "hello")
++	chdir(t, repo)
++
++	t.Setenv("ETUDE_TEST_MARKER", "secretval")
++	t.Setenv("ETUDE_TEST_FORBIDDEN", "nope")
++
++	runID := "mywf-20260101T000000Z-envtest1"
++	_, stderr, err := execute("run", "mywf",
++		"--task", "task.txt",
++		"--run-id", runID,
++		"--runner", scriptPath,
++	)
++	if err != nil {
++		t.Fatalf("run returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	m := readRunManifest(t, repo, runID)
++	if len(m.Stages) != 1 {
++		t.Fatalf("manifest stages = %d, want 1", len(m.Stages))
++	}
++
++	// Read the stage output artifact to verify runner env.
++	artifactBytes, err := refstore.New(repo).ReadFile(
++		context.Background(),
++		"refs/etude/runs/"+runID,
++		m.Stages[0].Output.Path,
++	)
++	if err != nil {
++		t.Fatalf("ReadFile artifact: %v", err)
++	}
++	artifact := string(artifactBytes)
++
++	// (a) Allowlisted marker reached the runner.
++	if !strings.Contains(artifact, "secretval") {
++		t.Errorf("(a) marker did not reach runner: artifact = %q", artifact)
++	}
++	// (b) Non-allowlisted var was blocked.
++	if !strings.Contains(artifact, "ABSENT_FORBIDDEN") {
++		t.Errorf("(b) forbidden var reached runner: artifact = %q", artifact)
++	}
++
++	// (c) NAME "ETUDE_TEST_MARKER" appears in run show output.
++	showOut, showErr, err := execute("run", "show", runID)
++	if err != nil {
++		t.Fatalf("run show: %v\nstderr: %s", err, showErr)
++	}
++	if !strings.Contains(showOut, "ETUDE_TEST_MARKER") {
++		t.Errorf("(c) NAME missing from run show output:\n%s", showOut)
++	}
++
++	// (d) VALUE "secretval" must NEVER appear in manifest bytes or run show output.
++	manifestBytes, err := refstore.New(repo).ReadFile(
++		context.Background(),
++		"refs/etude/runs/"+runID,
++		"manifest.json",
++	)
++	if err != nil {
++		t.Fatalf("ReadFile manifest: %v", err)
++	}
++	if strings.Contains(string(manifestBytes), "secretval") {
++		t.Errorf("SECURITY (d): value 'secretval' found in manifest bytes:\n%s", manifestBytes)
++	}
++	if strings.Contains(showOut, "secretval") {
++		t.Errorf("SECURITY (d): value 'secretval' found in run show output:\n%s", showOut)
++	}
++}
++
+ // TestRunReservedWorkflowNames checks that 'show' and 'list' are rejected.
+ func TestRunReservedWorkflowNames(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 4b0ce72..670892c 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -78,6 +78,11 @@ type Engine struct {
+ 	Root string
+ 	// Now returns the current time. Defaults to time.Now when nil.
+ 	Now func() time.Time
++	// EnvAllowlist is the list of env var NAMES configured for passthrough to
++	// live runners.  It is written to every manifest for audit (NAMES only;
++	// VALUES are never stored).  The same list must drive both the runner
++	// closures (ResolveRunner/ResolveSeat) and this field so audit cannot lie.
++	EnvAllowlist []string
+ }
+ 
+ func (e *Engine) clock() time.Time {
+@@ -404,6 +409,7 @@ func (e *Engine) runAndCaptureStage(
+ 		Refs:            map[string]string{},
+ 		Stages:          newStages,
+ 		Gates:           gateAttempts,
++		EnvAllowlist:    e.EnvAllowlist,
+ 	}
+ 
+ 	newCommit, err = runmanifest.WriteManifestTree(
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index 7785b29..83d3f09 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -649,6 +649,7 @@ func (e *Engine) runGate(
+ 			Refs:            map[string]string{},
+ 			Stages:          completedStages,
+ 			Gates:           allAttempts,
++			EnvAllowlist:    e.EnvAllowlist,
+ 		}
+ 		newCommit2, err := runmanifest.WriteManifestTree(
+ 			ctx, e.Store, runsPrefix, manifest,
+diff --git a/internal/liverun/resolve.go b/internal/liverun/resolve.go
+index f232434..37a0b9b 100644
+--- a/internal/liverun/resolve.go
++++ b/internal/liverun/resolve.go
+@@ -30,7 +30,9 @@ func GenerateRunID(workflowName string) (string, error) {
+ 
+ // ResolveStageRunner returns a runner for the stage. It prefers stage.Runner,
+ // then wf.DefaultRunner. Returns an error when neither is configured.
+-func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration) (replay.Runner, error) {
++// envAllowlist is the list of env var NAMES (never values) to pass through to
++// the runner; nil/empty means hermetic (default, unchanged behavior).
++func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration, envAllowlist []string) (replay.Runner, error) {
+ 	r := stage.Runner
+ 	if r == nil {
+ 		r = wf.DefaultRunner
+@@ -52,6 +54,7 @@ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workf
+ 		Command:        strings.Fields(cmd),
+ 		Timeout:        timeout,
+ 		MaxOutputBytes: 64 << 20,
++		EnvAllowlist:   envAllowlist,
+ 	}, nil
+ }
+ 
+@@ -79,7 +82,10 @@ func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.D
+ // The runner is an ExecRunner built from the seat's Invoke command with
+ // Timeout and MaxOutputBytes set (matching buildRunnerFactory).
+ // SeatMeta carries the split provider name and model from Seat.Provider.
+-func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration) (replay.Runner, SeatMeta, error) {
++// envAllowlist is the list of env var NAMES (never values) to pass through to
++// the seat runner; nil/empty means hermetic (default, unchanged behavior).
++// Note: checks use ResolveCheckRunner (not this function) and remain hermetic.
++func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) (replay.Runner, SeatMeta, error) {
+ 	seat, ok := reg.Seats[seatName]
+ 	if !ok {
+ 		return nil, SeatMeta{}, fmt.Errorf("seat %q not found in registry", seatName)
+@@ -94,6 +100,7 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
+ 		Command:        strings.Fields(seat.Invoke),
+ 		Timeout:        timeout,
+ 		MaxOutputBytes: 64 << 20,
++		EnvAllowlist:   envAllowlist,
+ 	}
+ 	return runner, meta, nil
+ }
+diff --git a/internal/liverun/resolve_test.go b/internal/liverun/resolve_test.go
+index e87d1db..28cd45b 100644
+--- a/internal/liverun/resolve_test.go
++++ b/internal/liverun/resolve_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/joshuavial/etude/internal/registry"
++	"github.com/joshuavial/etude/internal/replay"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+ 	"github.com/joshuavial/etude/internal/workflow"
+ )
+@@ -40,7 +41,7 @@ func TestResolveStageRunnerInlineCommand(t *testing.T) {
+ 				Runner: &workflow.Runner{Command: "echo hello"}},
+ 		},
+ 	}
+-	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
++	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
+ 	if err != nil {
+ 		t.Fatalf("ResolveStageRunner: %v", err)
+ 	}
+@@ -57,7 +58,7 @@ func TestResolveStageRunnerDefaultRunner(t *testing.T) {
+ 			{Name: "plan", Skill: "my-skill", Produces: "plan"},
+ 		},
+ 	}
+-	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
++	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
+ 	if err != nil {
+ 		t.Fatalf("ResolveStageRunner with default: %v", err)
+ 	}
+@@ -73,7 +74,7 @@ func TestResolveStageRunnerNoRunnerError(t *testing.T) {
+ 			{Name: "plan", Skill: "my-skill", Produces: "plan"},
+ 		},
+ 	}
+-	_, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
++	_, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
+ 	if err == nil {
+ 		t.Fatal("expected error when no runner configured")
+ 	}
+@@ -92,7 +93,7 @@ func TestResolveStageRunnerByName(t *testing.T) {
+ 			"myrunner": {Provider: "test", Harness: "test", Invoke: "cat"},
+ 		},
+ 	}
+-	runner, err := ResolveStageRunner(wf, reg, wf.Stages[0], 10*time.Second)
++	runner, err := ResolveStageRunner(wf, reg, wf.Stages[0], 10*time.Second, nil)
+ 	if err != nil {
+ 		t.Fatalf("ResolveStageRunner by name: %v", err)
+ 	}
+@@ -101,6 +102,45 @@ func TestResolveStageRunnerByName(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// EnvAllowlist propagation tests
++// ---------------------------------------------------------------------------
++
++// TestResolveGateSeatPropagatesEnvAllowlist verifies that the envAllowlist passed
++// to ResolveGateSeat is set on the returned ExecRunner.
++func TestResolveGateSeatPropagatesEnvAllowlist(t *testing.T) {
++	reg := registry.Registry{
++		Seats: map[string]registry.Seat{
++			"myseat": {Provider: "test/model", Harness: "test", Invoke: "cat"},
++		},
++	}
++	wantAllowlist := []string{"ETUDE_TEST_MARKER"}
++	runner, _, err := ResolveGateSeat(reg, "myseat", 10*time.Second, wantAllowlist)
++	if err != nil {
++		t.Fatalf("ResolveGateSeat: %v", err)
++	}
++	er, ok := runner.(*replay.ExecRunner)
++	if !ok {
++		t.Fatalf("runner is %T, want *replay.ExecRunner", runner)
++	}
++	if len(er.EnvAllowlist) != 1 || er.EnvAllowlist[0] != "ETUDE_TEST_MARKER" {
++		t.Errorf("EnvAllowlist = %v, want [ETUDE_TEST_MARKER]", er.EnvAllowlist)
++	}
++}
++
++// TestResolveCheckRunnerIsHermetic verifies that ResolveCheckRunner returns an
++// execCheckRunner, which has no allowlist and never propagates parent env vars.
++func TestResolveCheckRunnerIsHermetic(t *testing.T) {
++	r := workflow.Runner{Command: "echo test"}
++	cr, err := ResolveCheckRunner(registry.Registry{}, r, 10*time.Second)
++	if err != nil {
++		t.Fatalf("ResolveCheckRunner: %v", err)
++	}
++	if _, ok := cr.(*execCheckRunner); !ok {
++		t.Errorf("ResolveCheckRunner returned %T, want *execCheckRunner", cr)
++	}
++}
++
+ func TestDeriveFrontier(t *testing.T) {
+ 	wf := workflow.Workflow{
+ 		Name: "mywf",
+diff --git a/internal/replay/exec_runner.go b/internal/replay/exec_runner.go
+index 0b963a5..630c256 100644
+--- a/internal/replay/exec_runner.go
++++ b/internal/replay/exec_runner.go
+@@ -48,6 +48,12 @@ type ExecRunner struct {
+ 	// file. Outputs exceeding the cap are rejected with ErrOutputTooLarge.
+ 	// Zero means unlimited (default, backward compatible).
+ 	MaxOutputBytes int64
++	// EnvAllowlist is the list of env var NAMES (never values) whose values
++	// are resolved from os.Environ() at run time and appended to the child's
++	// strict environment.  Nil/empty = current hermetic behavior (unchanged).
++	// Callers pass NAMES only; ExecRunner reads values itself so values never
++	// live in a caller-visible struct.
++	EnvAllowlist []string
+ }
+ 
+ // compile-time interface satisfaction assertion.
+@@ -127,13 +133,42 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		defer cancel()
+ 	}
+ 
+-	// Step 7: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
+-	pathVal := extractPATH(os.Environ())
++	// Step 7: build strict env — PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE,
++	// then any allowlisted names resolved from the orchestrator's own env.
++	//
++	// Reserved names (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) are always
++	// set from the base vars above; allowlist entries for these names are
++	// silently skipped so the allowlist cannot shadow or duplicate them.
++	// This skip is defense-in-depth: workflow.Validate already rejects
++	// reserved names in env_allowlist at parse time (fail-fast).
++	//
++	// SECURITY: cmd.Env is the ONLY place where allowlisted secret values
++	// cross the process boundary.  NEVER log cmd.Env, cmd.String(), or any
++	// other representation that includes cmd.Env — doing so would leak secret
++	// values to log sinks.  This comment is a durable guardrail for future
++	// maintainers; do not remove it.
++	environ := os.Environ()
+ 	env := []string{
+-		"PATH=" + pathVal,
++		"PATH=" + extractEnv(environ, "PATH"),
+ 		"ETUDE_INPUTS_DIR=" + inputsDir,
+ 		"ETUDE_OUTPUT_FILE=" + outputPath,
+ 	}
++	reservedEnv := map[string]bool{
++		"PATH":              true,
++		"ETUDE_INPUTS_DIR":  true,
++		"ETUDE_OUTPUT_FILE": true,
++	}
++	for _, name := range r.EnvAllowlist {
++		if reservedEnv[name] {
++			continue // defense-in-depth: cannot shadow the 3 base vars
++		}
++		if val, ok := lookupEnv(environ, name); ok {
++			env = append(env, name+"="+val)
++		}
++		// When a name is listed but not present in os.Environ(), it is silently
++		// skipped — the manifest records the configured NAMES (policy/intent),
++		// not which values were actually delivered.
++	}
+ 
+ 	var stdoutBuf, stderrBuf bytes.Buffer
+ 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+@@ -233,19 +268,26 @@ func resolveDir(path string) (string, error) {
+ 	return resolved, nil
+ }
+ 
+-// extractPATH returns the value of the PATH variable from the provided
+-// environment slice. It splits each entry on the FIRST '=' and matches
+-// by exact key "PATH" — using HasPrefix("PATH=") would match MYPATH=
+-// and similar variables.
+-func extractPATH(environ []string) string {
++// extractEnv returns the value of the given key from the provided environment
++// slice. It splits each entry on the FIRST '=' and matches by exact key —
++// using HasPrefix would match MYKEY= or KEYEXT= instead of the exact KEY.
++// Returns "" when the key is absent.
++func extractEnv(environ []string, key string) string {
++	val, _ := lookupEnv(environ, key)
++	return val
++}
++
++// lookupEnv returns the value and true when key is present in environ,
++// or ("", false) when absent. Matches by exact key (split on first '=').
++func lookupEnv(environ []string, key string) (string, bool) {
+ 	for _, entry := range environ {
+ 		idx := strings.IndexByte(entry, '=')
+ 		if idx < 0 {
+ 			continue
+ 		}
+-		if entry[:idx] == "PATH" {
+-			return entry[idx+1:]
++		if entry[:idx] == key {
++			return entry[idx+1:], true
+ 		}
+ 	}
+-	return ""
++	return "", false
+ }
+diff --git a/internal/replay/exec_runner_test.go b/internal/replay/exec_runner_test.go
+index 54ef5b3..fbc8d68 100644
+--- a/internal/replay/exec_runner_test.go
++++ b/internal/replay/exec_runner_test.go
+@@ -618,10 +618,10 @@ func TestExecRunner_ScratchSymlinksUnderWorktree(t *testing.T) {
+ 	}
+ }
+ 
+-// TestExecRunner_PATHExactKeyMatch proves that extractPATH uses exact key
+-// matching ("PATH") rather than HasPrefix("PATH"), which would accidentally
+-// return the value of PATHEXT=, MYPATH=, or PATH_X= instead.
+-func TestExecRunner_PATHExactKeyMatch(t *testing.T) {
++// TestExecRunner_ExtractEnvExactKeyMatch proves that extractEnv uses exact key
++// matching rather than HasPrefix, which would accidentally return the value of
++// PATHEXT=, MYPATH=, or PATH_X= instead of PATH.
++func TestExecRunner_ExtractEnvExactKeyMatch(t *testing.T) {
+ 	// Decoys placed BEFORE the real PATH= entry to ensure a HasPrefix("PATH")
+ 	// implementation would return the wrong value on the first match.
+ 	env := []string{
+@@ -630,9 +630,9 @@ func TestExecRunner_PATHExactKeyMatch(t *testing.T) {
+ 		"PATH=/real/bin",
+ 		"PATH_X=wrong-path-x",
+ 	}
+-	got := extractPATH(env)
++	got := extractEnv(env, "PATH")
+ 	if got != "/real/bin" {
+-		t.Errorf("extractPATH: want %q, got %q (decoy key matched instead of exact PATH=)", "/real/bin", got)
++		t.Errorf("extractEnv(PATH): want %q, got %q (decoy key matched instead of exact PATH=)", "/real/bin", got)
+ 	}
+ }
+ 
+@@ -753,6 +753,110 @@ func TestExecRunner_OutputWithinCap(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// EnvAllowlist tests
++// ---------------------------------------------------------------------------
++
++// TestExecRunner_EnvAllowlist_MarkerReachesRunner verifies that an allowlisted var
++// name is resolved from the parent environment and passed to the child process.
++func TestExecRunner_EnvAllowlist_MarkerReachesRunner(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	t.Setenv("ETUDE_TEST_MARKER", "secretval")
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `printf '%s' "$ETUDE_TEST_MARKER" > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command:      []string{scriptPath},
++		EnvAllowlist: []string{"ETUDE_TEST_MARKER"},
++	}
++	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run returned error: %v", err)
++	}
++	if string(res.Output) != "secretval" {
++		t.Errorf("output = %q, want %q", res.Output, "secretval")
++	}
++}
++
++// TestExecRunner_EnvAllowlist_ForbiddenVarBlocked verifies that a var NOT in the
++// allowlist does not reach the child process.
++func TestExecRunner_EnvAllowlist_ForbiddenVarBlocked(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	t.Setenv("ETUDE_TEST_FORBIDDEN", "nope")
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `printf '%s' "${ETUDE_TEST_FORBIDDEN:-ABSENT}" > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command:      []string{scriptPath},
++		EnvAllowlist: []string{"ETUDE_TEST_MARKER"}, // FORBIDDEN not listed
++	}
++	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run returned error: %v", err)
++	}
++	if string(res.Output) != "ABSENT" {
++		t.Errorf("output = %q, want ABSENT (forbidden var leaked)", res.Output)
++	}
++}
++
++// TestExecRunner_EnvAllowlist_NilIsHermetic verifies that nil EnvAllowlist gives
++// a hermetic environment where no extra parent vars reach the child.
++func TestExecRunner_EnvAllowlist_NilIsHermetic(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	t.Setenv("ETUDE_TEST_MARKER", "secretval")
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `printf '%s' "${ETUDE_TEST_MARKER:-ABSENT}" > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{Command: []string{scriptPath}} // EnvAllowlist nil → hermetic
++	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run returned error: %v", err)
++	}
++	if string(res.Output) != "ABSENT" {
++		t.Errorf("output = %q, want ABSENT (nil allowlist must be hermetic)", res.Output)
++	}
++}
++
++// TestExecRunner_EnvAllowlist_ReservedNameNotOverridable verifies that a reserved
++// name in the allowlist (ETUDE_OUTPUT_FILE) is skipped; the child still sees the
++// scratch path, not any value injected via the parent environment.
++func TestExecRunner_EnvAllowlist_ReservedNameNotOverridable(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++	t.Setenv("ETUDE_OUTPUT_FILE", "/attacker/path")
++
++	// Script echoes the ETUDE_OUTPUT_FILE path it sees, then writes to it.
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `printf '%s' "$ETUDE_OUTPUT_FILE" > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command:      []string{scriptPath},
++		EnvAllowlist: []string{"ETUDE_OUTPUT_FILE"}, // reserved — must be skipped
++	}
++	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
++	if err != nil {
++		t.Fatalf("Run returned error: %v", err)
++	}
++	// The child wrote its ETUDE_OUTPUT_FILE path to the output; it must not be the attacker path.
++	if strings.Contains(string(res.Output), "attacker") {
++		t.Errorf("reserved ETUDE_OUTPUT_FILE was overridden by allowlist — guard failed: output = %q", res.Output)
++	}
++}
++
+ // TestExecRunner_SpawnsSurvivingChild proves that WaitDelay prevents the run
+ // from hanging when the script backgrounds a long-lived child that holds
+ // inherited pipe write-ends open.
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 80789cd..1b94e43 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -48,6 +48,11 @@ type Manifest struct {
+ 	Refs       map[string]string
+ 	Stages     []Stage
+ 	Gates      []GateAttempt
++	// EnvAllowlist records the env var NAMES (never values) that were
++	// configured for passthrough to live runners during this run.
++	// Absent/nil/empty all mean "no passthrough" (semantically equivalent).
++	// Values are never stored here — only the configured names for audit.
++	EnvAllowlist []string
+ }
+ 
+ // GateAttempt records one full panel re-examination of one phase gate.
+@@ -238,6 +243,12 @@ func (m Manifest) Validate() error {
+ 		stageIndex[stage.Name] = stage
+ 	}
+ 
++	for _, name := range m.EnvAllowlist {
++		if !isValidEnvName(name) {
++			return fmt.Errorf("%w: env_allowlist entry %q is not a valid env var name", ErrInvalidManifest, name)
++		}
++	}
++
+ 	seenGateIDs := make(map[string]struct{}, len(m.Gates))
+ 	seenPhaseRound := make(map[string]struct{}, len(m.Gates))
+ 	for i, gate := range m.Gates {
+@@ -655,6 +666,25 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+ 	return paths
+ }
+ 
++// isValidEnvName reports whether name is a valid POSIX env var name:
++// [A-Za-z_][A-Za-z0-9_]* (non-empty; first char letter or underscore;
++// remaining chars letter, digit, or underscore; no = or control chars).
++func isValidEnvName(name string) bool {
++	if len(name) == 0 {
++		return false
++	}
++	r0 := rune(name[0])
++	if !((r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z') || r0 == '_') {
++		return false
++	}
++	for _, r := range name[1:] {
++		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
++			return false
++		}
++	}
++	return true
++}
++
+ // IsValidIdentifier reports whether value is a non-empty string using only
+ // the [A-Za-z0-9_.-] character set.
+ func IsValidIdentifier(value string) bool {
+@@ -775,6 +805,10 @@ type manifestJSON struct {
+ 	Refs       map[string]string `json:"refs"`
+ 	Stages     []stageJSON       `json:"stages"`
+ 	Gates      []gateJSON        `json:"gates,omitempty"`
++	// EnvAllowlist records the env var NAMES configured for passthrough (never
++	// values). Absent/null/empty all mean "no passthrough" (omitempty is correct;
++	// no manifest_version bump — additive leaf, same as occurred_at).
++	EnvAllowlist []string `json:"env_allowlist,omitempty"`
+ }
+ 
+ type gateJSON struct {
+@@ -949,6 +983,7 @@ func (m Manifest) toJSON() manifestJSON {
+ 		Refs:            refs,
+ 		Stages:          stages,
+ 		Gates:           gatesOut,
++		EnvAllowlist:    m.EnvAllowlist,
+ 	}
+ }
+ 
+@@ -1104,6 +1139,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
+ 		Refs:            refs,
+ 		Stages:          stages,
+ 		Gates:           gates,
++		EnvAllowlist:    m.EnvAllowlist,
+ 	}, nil
+ }
+ 
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 3446a05..db8a611 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1863,6 +1863,94 @@ func TestOccurredAtMalformedRejected(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// EnvAllowlist tests
++// ---------------------------------------------------------------------------
++
++// TestManifestEnvAllowlist_AbsentOmitted verifies no env_allowlist key in JSON
++// when EnvAllowlist is nil.
++func TestManifestEnvAllowlist_AbsentOmitted(t *testing.T) {
++	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	if strings.Contains(string(b), "env_allowlist") {
++		t.Errorf("env_allowlist key present when nil:\n%s", b)
++	}
++}
++
++// TestManifestEnvAllowlist_EmptyOmitted verifies no env_allowlist key when the
++// field is an empty slice (omitempty semantics).
++func TestManifestEnvAllowlist_EmptyOmitted(t *testing.T) {
++	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	m.EnvAllowlist = []string{}
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	if strings.Contains(string(b), "env_allowlist") {
++		t.Errorf("env_allowlist key present when empty slice:\n%s", b)
++	}
++}
++
++// TestManifestEnvAllowlist_Present verifies env_allowlist round-trips and contains
++// only NAMES (never values).
++func TestManifestEnvAllowlist_Present(t *testing.T) {
++	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	m.EnvAllowlist = []string{"FOO", "BAR"}
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	if !strings.Contains(string(b), `"env_allowlist"`) {
++		t.Fatalf("env_allowlist key missing:\n%s", b)
++	}
++	// Paranoia: no secret values should appear in the manifest bytes.
++	if strings.Contains(string(b), "secretval") {
++		t.Errorf("value leaked into manifest bytes")
++	}
++	got, err := ParseJSON(b)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if len(got.EnvAllowlist) != 2 || got.EnvAllowlist[0] != "FOO" || got.EnvAllowlist[1] != "BAR" {
++		t.Errorf("round-trip EnvAllowlist = %v, want [FOO BAR]", got.EnvAllowlist)
++	}
++}
++
++// TestManifestEnvAllowlist_NoVersionBump verifies manifest_version stays 2
++// when env_allowlist is present (additive omitempty field, no version bump).
++func TestManifestEnvAllowlist_NoVersionBump(t *testing.T) {
++	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	m.EnvAllowlist = []string{"FOO"}
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	if !strings.Contains(string(b), `"manifest_version": 2`) {
++		t.Errorf("manifest_version != 2 with env_allowlist:\n%s", b)
++	}
++}
++
++// TestManifestEnvAllowlist_ByteStable verifies two JSON() calls on the same
++// manifest with env_allowlist produce identical bytes.
++func TestManifestEnvAllowlist_ByteStable(t *testing.T) {
++	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
++	m.EnvAllowlist = []string{"FOO", "BAR"}
++	b1, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON first: %v", err)
++	}
++	b2, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON second: %v", err)
++	}
++	if string(b1) != string(b2) {
++		t.Errorf("JSON not byte-stable:\nfirst:\n%s\nsecond:\n%s", b1, b2)
++	}
++}
++
+ // TestOccurredAtExistingManifestNoKey verifies that a manifest document that
+ // predates the occurred_at field (no key present) still decodes and validates
+ // successfully, with OccurredAt left as the zero time.
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index 721b256..5108174 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -27,6 +27,15 @@ var specialRoles = map[string]bool{
+ 	"repo-state": true,
+ }
+ 
++// reservedEnvNames are the three env var names that ExecRunner always controls.
++// They must not appear in env_allowlist (fail-fast at validation; the runtime
++// reserved-skip in ExecRunner is defense-in-depth only).
++var reservedEnvNames = map[string]bool{
++	"PATH":              true,
++	"ETUDE_INPUTS_DIR":  true,
++	"ETUDE_OUTPUT_FILE": true,
++}
++
+ // validEvalMethods is the closed set of eval method strings.
+ var validEvalMethods = map[string]bool{
+ 	"rubric":    true,
+@@ -102,6 +111,11 @@ type Workflow struct {
+ 	// methods apply the correct defaults and never require callers to nil-check
+ 	// the pointer.
+ 	Retros *RetrosConfig
++	// EnvAllowlist is the optional list of env var NAMES (never values) whose
++	// values are passed through to live stage runners and model seat runners.
++	// Replay stays hermetic unless --allow-env is passed.  Checks always remain
++	// hermetic regardless of this list.  Nil/empty means no passthrough (default).
++	EnvAllowlist []string
+ }
+ 
+ // RetrosConfig holds the parsed retros: configuration block.  Fields use
+@@ -299,6 +313,9 @@ func (w Workflow) Validate() error {
+ 	if err := validateRetros(w); err != nil {
+ 		return err
+ 	}
++	if err := validateEnvAllowlist(w.EnvAllowlist); err != nil {
++		return err
++	}
+ 	if w.DefaultRunner != nil {
+ 		if err := validateRunner("default_runner", w.DefaultRunner); err != nil {
+ 			return err
+@@ -487,6 +504,45 @@ func validateRetros(w Workflow) error {
+ 	return nil
+ }
+ 
++// validateEnvAllowlist validates each entry is a valid POSIX env var name
++// ([A-Za-z_][A-Za-z0-9_]*), is not one of the three reserved names that
++// ExecRunner always controls, and that there are no duplicates.
++func validateEnvAllowlist(names []string) error {
++	seen := make(map[string]bool, len(names))
++	for _, name := range names {
++		if !isValidEnvNameWorkflow(name) {
++			return fmt.Errorf("%w: env_allowlist entry %q is not a valid env var name ([A-Za-z_][A-Za-z0-9_]*)", ErrInvalidWorkflow, name)
++		}
++		if reservedEnvNames[name] {
++			return fmt.Errorf("%w: env_allowlist entry %q is reserved (controlled by etude; cannot be in allowlist)", ErrInvalidWorkflow, name)
++		}
++		if seen[name] {
++			return fmt.Errorf("%w: duplicate env_allowlist entry %q", ErrInvalidWorkflow, name)
++		}
++		seen[name] = true
++	}
++	return nil
++}
++
++// isValidEnvNameWorkflow reports whether name is a valid POSIX env var name:
++// [A-Za-z_][A-Za-z0-9_]* — non-empty, first char letter or underscore,
++// remaining chars letter, digit, or underscore.  No = or control chars.
++func isValidEnvNameWorkflow(name string) bool {
++	if len(name) == 0 {
++		return false
++	}
++	r0 := rune(name[0])
++	if !((r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z') || r0 == '_') {
++		return false
++	}
++	for _, r := range name[1:] {
++		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
++			return false
++		}
++	}
++	return true
++}
++
+ // validateStageName applies the manifest identifier charset to stage names:
+ // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
+ // rule is kept as a local per-rune predicate (isIdentChar) rather than calling
+@@ -647,6 +703,9 @@ type workflowYAML struct {
+ 	DefaultRunner yaml.Node   `yaml:"default_runner,omitempty"`
+ 	Stages        []stageYAML `yaml:"stages"`
+ 	Retros        yaml.Node   `yaml:"retros,omitempty"`
++	// EnvAllowlist is a plain []string: absent/null/empty all mean "no
++	// passthrough", so omitempty is correct and no yaml.Node machinery is needed.
++	EnvAllowlist []string `yaml:"env_allowlist,omitempty"`
+ }
+ 
+ // stageYAML is the decode/encode counterpart to Stage.  Runner and Gate are
+@@ -751,7 +810,7 @@ func (w Workflow) toYAML() workflowYAML {
+ 		}
+ 		stages = append(stages, sy)
+ 	}
+-	out := workflowYAML{Name: w.Name, Stages: stages}
++	out := workflowYAML{Name: w.Name, Stages: stages, EnvAllowlist: w.EnvAllowlist}
+ 	if w.DefaultRunner != nil {
+ 		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
+ 		var n yaml.Node
+@@ -932,7 +991,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 		}
+ 		stages = append(stages, st)
+ 	}
+-	w := Workflow{Name: d.Name, Stages: stages}
++	w := Workflow{Name: d.Name, Stages: stages, EnvAllowlist: d.EnvAllowlist}
+ 	drn, err := decodeRunnerNode(d.DefaultRunner)
+ 	if err != nil {
+ 		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 327c07e..ce33a01 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -2073,6 +2073,92 @@ retros:
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// EnvAllowlist tests
++// ---------------------------------------------------------------------------
++
++// TestWorkflowEnvAllowlist_Parse verifies env_allowlist parses from YAML.
++func TestWorkflowEnvAllowlist_Parse(t *testing.T) {
++	input := `name: w
++env_allowlist: [FOO, BAR]
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++    inputs: [task]
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML: %v", err)
++	}
++	if len(w.EnvAllowlist) != 2 || w.EnvAllowlist[0] != "FOO" || w.EnvAllowlist[1] != "BAR" {
++		t.Errorf("EnvAllowlist = %v, want [FOO BAR]", w.EnvAllowlist)
++	}
++}
++
++// TestWorkflowEnvAllowlist_ValidationRejects verifies invalid names are rejected by Validate.
++func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
++	cases := []struct {
++		name  string
++		names []string
++	}{
++		{"contains equals", []string{"FOO=bar"}},
++		{"empty string", []string{""}},
++		{"starts with digit", []string{"1FOO"}},
++		{"reserved PATH", []string{"PATH"}},
++		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
++		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
++		{"duplicate", []string{"FOO", "FOO"}},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			w := minimalWorkflow()
++			w.EnvAllowlist = tc.names
++			if err := w.Validate(); err == nil {
++				t.Errorf("expected error for %v, got nil", tc.names)
++			}
++		})
++	}
++}
++
++// TestWorkflowEnvAllowlist_AbsentStaysAbsent verifies no env_allowlist key in YAML
++// output when the field is nil.
++func TestWorkflowEnvAllowlist_AbsentStaysAbsent(t *testing.T) {
++	w := minimalWorkflow()
++	out, err := w.YAML()
++	if err != nil {
++		t.Fatalf("YAML: %v", err)
++	}
++	if strings.Contains(string(out), "env_allowlist") {
++		t.Errorf("env_allowlist key should be absent when nil:\n%s", out)
++	}
++}
++
++// TestWorkflowEnvAllowlist_RoundTrip verifies env_allowlist survives YAML().ParseYAML()
++// and that two encodings produce identical bytes.
++func TestWorkflowEnvAllowlist_RoundTrip(t *testing.T) {
++	w := minimalWorkflow()
++	w.EnvAllowlist = []string{"FOO", "BAR_BAZ"}
++	out, err := w.YAML()
++	if err != nil {
++		t.Fatalf("YAML: %v", err)
++	}
++	got, err := ParseYAML(out)
++	if err != nil {
++		t.Fatalf("ParseYAML round-trip: %v", err)
++	}
++	if len(got.EnvAllowlist) != 2 || got.EnvAllowlist[0] != "FOO" || got.EnvAllowlist[1] != "BAR_BAZ" {
++		t.Errorf("round-trip EnvAllowlist = %v, want [FOO BAR_BAZ]", got.EnvAllowlist)
++	}
++	out2, err := got.YAML()
++	if err != nil {
++		t.Fatalf("YAML second encode: %v", err)
++	}
++	if string(out) != string(out2) {
++		t.Errorf("YAML not byte-stable:\nfirst:\n%s\nsecond:\n%s", out, out2)
++	}
++}
++
+ // TestNudgeRoundTripExplicitConfig asserts a workflow with an explicit
+ // retros.nudge block survives YAML().ParseYAML() losslessly.
+ func TestNudgeRoundTripExplicitConfig(t *testing.T) {

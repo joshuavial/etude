@@ -1,0 +1,339 @@
+◐ etude-3a2 · Scoped secret/env passthrough to runners for live execution   [● P2 · IN_PROGRESS]
+Owner: joshuavial · Type: feature
+Created: 2026-06-29 · Updated: 2026-06-30
+
+DESCRIPTION
+Allowlist/secret-injection so live runners that call LLMs get scoped credentials while replay stays hermetic-by-default. e.g. etude.runner.env-allowlist or a referenced secrets file; opt-in for replay. AC: operator declares exactly which env vars/secrets reach the runner; default stays hermetic (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE only); passthrough visible in run metadata for audit. Design: docs/plans/product/live-execution.md §3.
+
+DESIGN
+## Plan — Scoped secret/env passthrough to runners (etude-3a2)
+
+### Goal
+Let an operator declare EXACTLY which env var names reach live runners (so LLM
+stage runners + model-seat gates get credentials), keep replay + checks
+hermetic-by-default, and record the passed NAMES (never values) in run metadata
+for audit. Implements live-execution.md §3.
+
+### BUILD-vs-DEFER premise check (P2)
+BUILD. Premise holds and the dependency chain is shipped: §1 live orchestration
+(etude-xin) and §2 gate execution (etude-04i) are implemented on this branch;
+the chokepoint (`replay.ExecRunner` strict env) exists; `cmd.Env` replace-
+semantics verified empirically below. There is a concrete consumer blocked on
+this: etude-s6z (real-LLM live run). Not speculative.
+
+### Empirical proof of the core mechanism (Go 1.26.1, darwin)
+A scratch repro confirmed `exec.Cmd.Env` REPLACES the inherited environment:
+with `cmd.Env = [PATH=…, ETUDE_OUTPUT_FILE=…, ALLOWED_TOKEN=<v>]`, a child
+`/usr/bin/env` showed ALLOWED_TOKEN but a var set in the parent process
+(`FORBIDDEN_TOKEN`) did NOT leak. So appending only allowlisted `NAME=value`
+entries (resolved by exact-key match from `os.Environ()`) is sufficient; nothing
+else crosses. This is the whole design in one fact.
+
+### Approach (committed decisions)
+
+**1. Where the allowlist is declared — workflow-level list of NAMES.**
+Add a top-level `env_allowlist: [NAME, ...]` to `.etude/workflow.yaml` (sibling
+of `default_runner`). It is a list of env var NAMES whose VALUES are read from
+the orchestrator's own process env at runner-construction time.
+- Chosen over a `name=value` secrets file: a file is a NEW on-disk secret store
+  (leak/gitignore surface, parsing, value custody). Names-only defers value
+  custody to the operator's existing secret manager (direnv/CI). Less code,
+  smaller blast radius, and the names (not secret) are git-tracked → auditable
+  in version control, matching decision 7's "explicit, auditable allowlist".
+- Chosen over per-seat registry fields: a single run-level list satisfies the AC
+  ("operator declares exactly which vars reach the runner") with far less
+  threading. Per-seat granularity is YAGNI for this bead (scope fence: just the
+  allowlist + audit). Noted as a future option, not built.
+
+**2. How it threads to ExecRunner without changing replay's hermetic default.**
+Add `EnvAllowlist []string` (names) to `replay.ExecRunner`, default nil = current
+behavior EXACTLY. In Step 7 (build strict env), after the 3 base vars, for each
+name in `EnvAllowlist` resolve its value from `os.Environ()` (generalize
+`extractPATH` → `extractEnv(environ, key)`, exact-key match) and append
+`NAME=value` only when present. ExecRunner reads VALUES itself from its own
+process env; callers pass NAMES only — values never live in a struct that is
+serialized or logged. Reserved names (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE)
+are skipped so the allowlist cannot shadow/duplicate them (reserved-key guard,
+runbook defect #1).
+
+**3. Scope of secrets — stage runners + gate MODEL SEATS; checks stay hermetic.**
+Model seats call LLMs, so `ResolveGateSeat` sets `EnvAllowlist` on its ExecRunner.
+Deterministic checks (`execCheckRunner` in gate.go) are left UNCHANGED — no
+allowlist field — so checks remain hermetic (they should not need secrets).
+
+**4. Replay opt-in — `etude replay --allow-env`, default hermetic.**
+Replay (forward and single-stage) defaults to no allowlist (unchanged hermetic
+behavior). A new `--allow-env` bool flag makes replay load `wf.EnvAllowlist` and
+thread it into the runners it constructs. `ReplayForward` does NOT persist a
+manifest (it streams output), so no audit field applies there; single-stage
+`replay --record` audit recording is out of scope (replay is the hermetic
+consumer; default stays off).
+
+**5. Audit record (AC3) — run-level `env_allowlist` NAMES in the manifest.**
+Add optional `Manifest.EnvAllowlist []string` (NAMES only). The live engine
+holds the same list (`Engine.EnvAllowlist`, set from `wf.EnvAllowlist` in the
+CLI) and writes it into every incremental manifest it constructs (engine.go
+runAndCaptureStage + gate.go runGate). The SAME list drives both passthrough and
+audit (single source in cli/run.go), so the audit cannot lie. `run show` renders
+the names; `run show --json` already emits raw manifest bytes.
+
+**Defect #5 (optional manifest field, absent/null/empty + round-trip + version):**
+`env_allowlist` is a leaf `[]string` with `json:"env_allowlist,omitempty"`.
+Unlike the `retros:` block, its three states are SEMANTICALLY EQUIVALENT (absent
+= null = empty = "no passthrough"), so collapsing empty/null→absent on encode is
+correct, not a bug — no `yaml.Node`/presence-bit machinery needed. NO
+manifest_version bump (follows the `occurred_at` precedent: additive omitempty
+field; accepted within existing versions 0/2/3). Live runs are version 2/3
+already. Round-trip: present-names re-encode byte-stable; absent stays absent.
+
+### Plan-gate round 1 folded optionals (all GO, no required changes)
+gemini GO, codex GO, opus GO (opus security-traced every etude path value-free). Folded: (a) workflow.Validate REJECTS the 3 reserved names (PATH/ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE) with a clear error — fail-fast, not just a silent runtime skip (codex+opus); the runtime reserved-skip stays as defense-in-depth. (b) REJECT `etude replay --record --allow-env` together with a clear error — closes opus's audit gap (that path would pass values to the runner but not record the names); replay's other paths (forward, single-stage without --record) keep --allow-env. (c) Add a comment in exec_runner.go Step 7 warning future maintainers NEVER to log `cmd.Env`/`cmd.String()` (gemini durable guardrail). (d) Doc sentence: the manifest audit records the CONFIGURED allowlist names (policy/intent), and a name is only appended to the child env when present in os.Environ() — "listed" ≠ "value delivered" (opus audit-honesty nuance).
+
+### Files (exact)
+- `internal/replay/exec_runner.go` — add `EnvAllowlist []string` field; Step 7
+  append allowlisted `NAME=value` from `os.Environ()` (skip reserved names);
+  generalize `extractPATH` → `extractEnv(environ, key)`. Default nil = unchanged.
+- `internal/liverun/resolve.go` — `ResolveStageRunner(..., envAllowlist []string)`
+  and `ResolveGateSeat(..., envAllowlist []string)` set `ExecRunner.EnvAllowlist`;
+  `ResolveCheckRunner` UNCHANGED (checks hermetic).
+- `internal/liverun/engine.go` — add `Engine.EnvAllowlist []string`; set
+  `EnvAllowlist: e.EnvAllowlist` in the `runmanifest.Manifest{…}` built in
+  runAndCaptureStage (~ln 399).
+- `internal/liverun/gate.go` — set `EnvAllowlist: e.EnvAllowlist` in the
+  `runmanifest.Manifest{…}` built in runGate (~ln 644). execCheckRunner unchanged.
+- `internal/cli/run.go` — read `wf.EnvAllowlist`; thread into `buildRunnerFactory`
+  (override ExecRunner + ResolveStageRunner), into the `ResolveSeat` closure
+  (ResolveGateSeat), and into `engine.EnvAllowlist`; render names in
+  `printRunDetail`.
+- `internal/cli/replay.go` — add `--allow-env` flag; when set load wf.EnvAllowlist
+  and pass to ResolveStageRunner in the forward + single-stage runner closures;
+  default off. REJECT `--record` + `--allow-env` together with a clear error (fold b:
+  avoids passing values without recording the audit names).
+- `internal/workflow/workflow.go` — add `Workflow.EnvAllowlist []string`,
+  `workflowYAML` `env_allowlist,omitempty`, toYAML/toWorkflow wiring, and
+  Validate (each entry a valid env name `[A-Za-z_][A-Za-z0-9_]*`, no `=`/control,
+  reject duplicates, and REJECT the 3 reserved names PATH/ETUDE_INPUTS_DIR/
+  ETUDE_OUTPUT_FILE with a clear error — fold a, fail-fast).
+- `internal/runmanifest/manifest.go` — add `Manifest.EnvAllowlist`,
+  `manifestJSON` `env_allowlist,omitempty`, toJSON/toManifest wiring, light
+  Validate (valid env-name charset, no control chars). No version change.
+- docs — see Docs blast radius below.
+
+### Validation
+- `make lint` (gofmt + go vet) + `go build ./...` + `go test ./...`.
+- `GOOS=windows GOARCH=amd64 go build ./...` (no new platform symbols expected,
+  but ExecRunner is core — confirm).
+- `make docs` then `git status` to capture the true generated-doc blast radius
+  (expect `docs/cli/etude_replay.md` from the new `--allow-env` flag).
+
+### Test plan (hermetic — use a NON-SECRET marker var, never a real credential)
+P1 proof lives in the CLI integration tests below.
+- `internal/replay/exec_runner_test.go` (`t.Setenv` for isolation):
+  - allowlisted marker reaches runner: env `ETUDE_TEST_MARKER=val`,
+    `EnvAllowlist=["ETUDE_TEST_MARKER"]`, script writes `$ETUDE_TEST_MARKER` →
+    output == val.
+  - non-allowlisted var does NOT reach runner: env `ETUDE_TEST_FORBIDDEN=x`,
+    allowlist excludes it, script writes `${ETUDE_TEST_FORBIDDEN:-ABSENT}` →
+    "ABSENT".
+  - empty/nil allowlist = hermetic (default unchanged): marker set, allowlist
+    nil → "ABSENT".
+  - reserved name not overridable: allowlist `["ETUDE_OUTPUT_FILE"]` → child's
+    ETUDE_OUTPUT_FILE still the scratch path.
+- `internal/liverun/resolve_test.go` / gate test: `ResolveGateSeat` propagates
+  EnvAllowlist to the seat ExecRunner; checks stay hermetic (a configured marker
+  does NOT reach a check runner).
+- `internal/workflow/workflow_test.go`: parse `env_allowlist`; reject bad names
+  (`FOO=bar`, empty, control char, dup); YAML round-trip byte-stable; absent
+  stays absent.
+- `internal/runmanifest/manifest_test.go`: round-trip env_allowlist
+  absent/null/empty/present; assert NO manifest_version change; JSON byte-stable
+  (defect #5).
+- `internal/cli/run_test.go` (P1 integration): live `etude run` with a workflow
+  declaring `env_allowlist: [ETUDE_TEST_MARKER]`, a marker AND a forbidden var in
+  env, inline runner script emitting both → assert marker REACHED the runner,
+  forbidden did NOT, and `run show` records the NAME `ETUDE_TEST_MARKER` while the
+  VALUE never appears in manifest/`run show` output (grep-assert value absent).
+- `internal/cli/replay_test.go`: replay forward WITHOUT `--allow-env` → marker
+  absent (hermetic default); WITH `--allow-env` → marker present. No real secret.
+
+### Security analysis (value-leak prevention — SECURITY-CRITICAL)
+- Values are read by ExecRunner from `os.Environ()` and placed ONLY into
+  `cmd.Env` (the child process env). They are never stored in ExecRunner-returned
+  structs, the manifest, or artifacts.
+- The manifest/audit stores NAMES only (`EnvAllowlist []string`); `run show`
+  prints names. Test grep-asserts the VALUE never appears in manifest bytes or
+  `run show`.
+- etude never injects allowlisted values into stdout/stderr or the stage output
+  file. Captured stage output (`res.Output`) and gate `raw_output`
+  (stdout+stderr) are the RUNNER's bytes; if a runner echoes its own secret that
+  is operator behavior, not etude recording it — documented as operator
+  responsibility. etude's own guarantee: values cross only into `cmd.Env`.
+- ExecRunner error messages include stderr (line ~160) — that is the runner's
+  stderr, not the allowlist values; etude adds no value to it.
+- Gate CHECK raw_output cannot contain etude-injected secrets because checks get
+  no allowlist (hermetic).
+- Reserved-name guard prevents an allowlist entry from shadowing
+  PATH/ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE.
+
+### Docs blast radius
+- `docs/plans/product/live-execution.md` §3: status planned → IMPLEMENTED;
+  document the mechanism (workflow `env_allowlist`, replay `--allow-env`, audit
+  field).
+- `docs/run.md`: document `env_allowlist` in workflow.yaml, `replay --allow-env`,
+  and the audit names in `run show`.
+- Generated CLI docs: `make docs` regenerates `docs/cli/etude_replay.md` (new
+  `--allow-env` flag). `etude run` gains no flag (reads workflow.yaml), so its
+  page and the root `cli/etude.md` SEE ALSO are unaffected — confirm via
+  `git status` after `make docs`.
+- Manifest schema doc (if a manifest field reference exists): note the optional
+  `env_allowlist` field. Confirm during Docs phase.
+
+### Risks
+- Low. Default path is byte-for-byte unchanged (nil allowlist). Main risk is a
+  value-leak regression — mitigated by the grep-assert leak test + reserved-name
+  guard. Threading touches several construction sites; a single shared list in
+  cli/run.go keeps passthrough and audit in sync.
+
+### Capture
+- inputs: bead etude-3a2 description + ACs; live-execution.md §3 + decision 7;
+  exec_runner.go, engine.go, resolve.go, gate.go, replay_forward.go,
+  cli/run.go, cli/replay.go, workflow.go, registry.go, manifest.go;
+  review-gate-runbook.md (P1, defect #1/#5/#6, Security lens); empirical
+  cmd.Env repro (Go 1.26.1).
+- output: bead --design field
+
+
+
+NOTES
+Plan gate attempt 1 (Tier 1, security-critical): GO unanimous. opus security-traced all etude paths value-free. Folded: reject reserved names at workflow.Validate; reject replay --record+--allow-env; never-log-cmd.Env comment; audit=intent-not-delivery doc note. result: pass
+Implement gate attempt 1 (Tier 1, security-critical): GO unanimous. NOTE: dev-coder initially shipped production code WITHOUT the test plan; orchestrator caught the missing tests at scope-check and had them added (incl. the P1 value-leak grep-assert). opus adversarial leak-trace found NO etude-controlled value-leak path; security test genuinely proves it. Minor optionals (shared isValidEnvName helper, control-char case) noted non-blocking. result: pass
+Verify gate: attempt 1 (gemini GO, opus GO, codex BLOCK — wanted built-binary raw-manifest-blob value-absence proof). Resolved with NO code change: built bin/etude live run + 'git cat-file -p refs/etude/runs/<id>:manifest.json' grep → NAME present (count 1), secret VALUE absent (count 0); also P1 unit test reads raw manifest blob via refstore.ReadFile + run show --json is verbatim manifest. attempt 2 PASS (Tier 1 unanimous). Security leak guarantee proven at unit + CLI + raw-git-blob levels.
+Docs gate attempt 1 (Tier 3, single Opus): GO. live-execution.md §3→implemented (all 3 sections now implemented in header); docs/run.md Env passthrough section accurate + security-correct (values never recorded, listed≠delivered, runner-echo=operator responsibility); no over-claim (real-LLM dev run still etude-s6z); docs-reality green. Fixed env-allowlist header wording. result: pass
+
+LABELS: phase:review
+
+PARENT
+  ↑ ○ etude-2pc: (EPIC) Live execution: drive and gate workflows, not just replay ● P1
+
+DEPENDS ON
+  → ✓ etude-2pc.1: Schema + registry foundation: per-stage runner + gate blocks, shared seat/runner registry ● P1
+
+BLOCKS
+  ← ○ etude-s6z: Drive the real dev workflow live end-to-end with real-LLM stage runners + model-seat gates (post-etude-3a2) ● P2
+
+COMMENTS
+  2026-06-30 01:21 joshuavial
+    ## Verify
+    
+    Status: pass
+    Recommendation: proceed to Docs
+    
+    Automated tests:
+    - changes: tests already present (added during Implement). No new test files needed; coverage adequate and verified.
+    - commands:
+      - go test -count=1 ./internal/replay/... ./internal/liverun/... ./internal/cli/... ./internal/workflow/... ./internal/runmanifest/...
+      - make lint (gofmt + go vet)
+      - GOOS=windows GOARCH=amd64 go build ./... ; GOOS=linux GOARCH=amd64 go build ./...
+      - make docs ; make docs-reality
+    - result: ALL PASS. Suites green (replay/liverun/cli/workflow/runmanifest). lint clean. Both cross-platform builds OK. make docs regenerated only docs/cli/etude_replay.md (the --allow-env flag); docs-reality OK (14 commands match shipped CLI).
+    
+    AC-to-test map:
+    - AC1 (operator declares exactly which vars reach the runner):
+      - workflow parse: TestWorkflowEnvAllowlist_Parse, _RoundTrip, _AbsentStaysAbsent (internal/workflow/workflow_test.go)
+      - validation (rejects bad names / reserved / dup): TestWorkflowEnvAllowlist_ValidationRejects
+      - passthrough proof: TestExecRunner_EnvAllowlist_MarkerReachesRunner + TestExecRunner_EnvAllowlist_ForbiddenVarBlocked (internal/replay/exec_runner_test.go); seat propagation TestResolveGateSeatPropagatesEnvAllowlist (internal/liverun/resolve_test.go)
+    - AC2 (default stays hermetic):
+      - TestExecRunner_EnvAllowlist_NilIsHermetic (nil allowlist = hermetic); TestResolveCheckRunnerIsHermetic (checks never get allowlist); replay default-off TestReplayAllowEnv scenario 1
+    - AC3 (passthrough visible in run metadata for audit, NAMES only):
+      - manifest round-trip + omitempty + no version bump: TestManifestEnvAllowlist_AbsentOmitted/_EmptyOmitted/_Present/_NoVersionBump/_ByteStable (internal/runmanifest/manifest_test.go)
+      - end-to-end NAME-in-audit / VALUE-never-leaked: TestRunWorkflowEnvAllowlistPassthrough (internal/cli/run_test.go) asserts (a) marker value reaches runner, (b) forbidden blocked, (c) NAME in run show, (d) VALUE absent from manifest bytes AND run show
+    - Fold (b) replay --record + --allow-env rejected: TestReplayAllowEnv scenario 3
+    
+    Manual tests:
+    - required: yes (SECURITY-CRITICAL end-to-end leak proof with built binary)
+    - reason: must prove the value-leak guarantee through the real bin/etude, not just unit tests.
+    - result: PASS. Built bin/etude, throwaway temp git repo, marker ETUDE_TEST_MARKER=secretmarkerval, forbidden ETUDE_TEST_FORBIDDEN=shouldnotleak (NO real credential). Transcript:
+      - run secwf (env_allowlist:[ETUDE_TEST_MARKER]): captured stage output = "MARKER=secretmarkerval FORBIDDEN=ABSENT" -> marker reached runner, forbidden blocked.
+      - run show shows "env allowlist: ETUDE_TEST_MARKER" (NAME); run show --json contains NAME ETUDE_TEST_MARKER.
+      - LEAK CHECK (explicit grep for VALUE): grep "secretmarkerval" -> ABSENT from run show --json AND ABSENT from run show (human). NAME present. PASS.
+      - replay <id> (no --allow-env): "MARKER=ABSENT FORBIDDEN=ABSENT" -> hermetic.
+      - replay <id> --allow-env: "MARKER=secretmarkerval FORBIDDEN=ABSENT" -> marker present (opt-in works).
+      - replay <id> gen --record --allow-env: rejected, "--record and --allow-env cannot be combined..."; exit code 1 (hard fail).
+      - default-hermetic regression (workflow with NO env_allowlist): "MARKER=ABSENT FORBIDDEN=ABSENT" -> marker does not reach runner.
+      - temp dir cleaned up.
+    
+    QA findings:
+    - correctness: Implementation matches the approved plan exactly across all named files. Single shared allowlist in cli/run.go drives both passthrough (ExecRunner/ResolveStageRunner/ResolveGateSeat) and audit (engine.EnvAllowlist -> manifest), so audit cannot diverge from behavior. ExecRunner reads VALUES itself from os.Environ(); callers pass NAMES only. cmd.Env is the sole boundary crossing.
+    - coverage: Adequate. Unit (exec_runner), propagation (resolve), workflow parse/validate, manifest round-trip, P1 CLI integration value-leak grep-assert, replay opt-in + record-rejection. All ACs mapped.
+    - regressions: None. nil-allowlist path is byte-identical to prior hermetic behavior (proven by NilIsHermetic + default-hermetic manual regression). Checks remain hermetic (no allowlist field on execCheckRunner).
+    - code quality: Defense-in-depth reserved-name guard at both workflow.Validate (fail-fast) and ExecRunner Step 7 (runtime skip). Durable NEVER-log-cmd.Env guardrail comment present. omitempty correct for semantically-equivalent absent/null/empty; no manifest_version bump (additive leaf). Minor: two near-identical isValidEnvName helpers (workflow + runmanifest packages) — acceptable package-local duplication, non-blocking.
+    - risks: None outstanding. Operator-echoed secrets in runner output are documented as operator responsibility; etude's guarantee (values cross only into cmd.Env, never recorded) holds and is proven.
+    
+    Capture:
+    - inputs: approved plan (--design) and Implement artifact/diff (uncommitted working tree)
+    - output: append-only Verify note
+  2026-06-30 01:34 joshuavial
+    ## Docs
+    
+    Changed: yes
+    Files:
+    - docs/plans/product/live-execution.md (planning doc — untracked new file, part of implementation set, not in pre-existing-dirty list)
+    - docs/run.md (clean tracked file, modified in docs phase)
+    
+    Rationale:
+    - docs/plans/product/live-execution.md §3: updated Planned→Implemented (etude-3a2); documented the mechanism (env_allowlist in workflow.yaml, replay --allow-env, names-only audit, security boundary). Top status header updated to 'all three sections implemented'; decision 7 noted as realized. Sequencing note updated: etude-3a2 shipped, etude-s6z is now unblocked.
+    - docs/run.md: added 'env allowlist:' run-show note (captured from real binary run), new '### Env passthrough' section (mechanism, scope, validation, audit, replay --allow-env, security note), cross-reference in Show section.
+    - Generated docs/cli/etude_replay.md: already updated during implementation (--allow-env flag); make docs produced zero additional diff.
+    - Over-claim check: CLEAN. Real-LLM end-to-end run (etude-s6z) explicitly called out as etude-s6z scope, not this bead.
+    
+    Policy check:
+    - policy applied: inferred from docs layout (planning docs in docs/plans, hand-written guides in docs/, generated CLI refs in docs/cli)
+    - shipped docs describe implemented behavior only
+    - planning material (§3 planning content) updated to reflect implemented state; planning document retained as planning doc (marked with 'design' header)
+    - generated references (docs/cli/etude_replay.md) updated through the repo workflow (make docs); zero additional diff
+    - hand-written guides (docs/run.md) updated separately from generated references
+    
+    Capture:
+    - inputs: Verify artifact, approved plan (--design), current working tree diff
+    - output: docs diff (docs/plans/product/live-execution.md + docs/run.md)
+  2026-06-30 01:41 joshuavial
+    ## Final Review
+    
+    Recommendation: close
+    
+    Reviewed:
+    - plan artifact (--design)
+    - implementation diff (uncommitted working tree)
+    - verify artifact
+    - docs artifact
+    
+    Coherence: final diff matches the approved plan exactly. env_allowlist NAMES at workflow top level; ExecRunner.EnvAllowlist nil-default-hermetic, resolves values from os.Environ() into cmd.Env only (extractPATH generalized to extractEnv/lookupEnv); reserved-name guard at workflow.Validate (fail-fast) + Step 7 (defense-in-depth); checks hermetic (ResolveCheckRunner unchanged); replay --allow-env opt-in, --record+--allow-env rejected; single shared allowlist in cli/run.go drives passthrough + audit; manifest env_allowlist names-only, omitempty, NO version bump. No drift.
+    
+    Docs review:
+    - policy applied: repo layout convention (planning in docs/plans, guides in docs/, generated refs in docs/cli)
+    - user-facing changes documented: yes (docs/run.md Env passthrough section; live-execution.md S3 planned->implemented; generated docs/cli/etude_replay.md --allow-env)
+    - shipped docs describe implemented and verified behavior only: pass (real-LLM run correctly deferred to etude-s6z, no over-claim)
+    - planned material remains in planning docs: pass
+    - generated references handled separately: pass (make docs zero additional diff; docs-reality OK)
+    - docs disposition: close
+    
+    Re-confirm green:
+    - go test -count=1 (replay/liverun/cli/workflow/runmanifest): ALL PASS
+    - make lint (gofmt + go vet): clean
+    - make docs: zero additional diff
+    - make docs-reality: OK (14 commands)
+    
+    Security final sweep: PASS. No etude-controlled path records a secret VALUE. Values cross only into cmd.Env (exec_runner.go Step 7); never stored in any returned struct, manifest, or artifact. Manifest/run show emit NAMES only. P1 test TestRunWorkflowEnvAllowlistPassthrough greps raw manifest blob (refstore ReadFile) + run show for value-absence ('secretval' must not appear) and asserts name present + forbidden var blocked. NEVER-log-cmd.Env guardrail comment present and durable.
+    
+    Findings: none
+    
+    Commit readiness:
+    - one atomic commit appropriate; all changed files belong to this bead
+    - IN-SCOPE (must stage): internal/replay/exec_runner.go(+_test), internal/liverun/{resolve,engine,gate}.go(+resolve_test), internal/cli/{run,replay}.go(+_test), internal/workflow/workflow.go(+_test), internal/runmanifest/manifest.go(+_test), docs/plans/product/live-execution.md, docs/run.md, docs/cli/etude_replay.md
+    - MUST NOT stage (pre-existing/unrelated): .gitignore, docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt
+    - index currently clean (nothing staged); no stray scratch files in repo root
+    
+    Capture:
+    - inputs: all phase artifacts + final diff + re-run test/lint/docs/docs-reality + security sweep
+    - output: append-only Final Review note
+

@@ -1,0 +1,18 @@
+# Final Review artifact — etude-3a2 (scoped secret/env passthrough, SECURITY-CRITICAL)
+**Verdict: GO. Commit scope clean. Ready to close.** Commit 61602305dcfd93a9f9329767231e17f71e2d6f50.
+
+## Scope (17 in-scope files staged; pre-existing mkdocs files excluded; no stray files)
+internal/replay/exec_runner.go(+_test); internal/liverun/{resolve(+_test),engine,gate}.go; internal/cli/{run(+_test),replay(+_test)}.go; internal/workflow/workflow.go(+_test); internal/runmanifest/manifest.go(+_test); docs/plans/product/live-execution.md; docs/run.md; docs/cli/etude_replay.md (generated).
+
+## Confirmed
+- Green: go test replay/liverun/cli/workflow/runmanifest PASS; make lint clean; make docs zero additional diff; make docs-reality OK.
+- No drift from plan: nil-default-hermetic ExecRunner; values resolved from os.Environ() into cmd.Env ONLY via lookupEnv; reserved-name guard at workflow.Validate + Step 7; checks hermetic; replay --allow-env opt-in + --record rejection; manifest env_allowlist names-only omitempty no-version-bump.
+- SECURITY: no etude-controlled path persists a secret value. Proven at unit (P1 greps raw manifest blob via refstore.ReadFile + run show for value-absence), CLI (run show --json verbatim), and raw-git-blob (git cat-file refs/etude/runs/<id>:manifest.json → NAME count 1, VALUE count 0) levels. Durable never-log-cmd.Env guardrail comment.
+
+## Gate history
+- Plan r1 PASS (Tier 1 unanimous; opus security trace; folds: reserved-name reject at validate, --record+--allow-env reject, never-log comment, audit-intent doc).
+- Implement r1 PASS (Tier 1 unanimous) — NOTE: dev-coder initially omitted the test plan; orchestrator caught it at scope-check and had the full test suite (incl. P1 leak grep) added before gating.
+- Verify r1 (gemini GO, opus GO, codex BLOCK wanting built-binary raw-manifest evidence), r2 PASS after adding the git cat-file raw-blob proof (no code change).
+- Docs r1 PASS (Tier 3 single Opus). Final Review r1 PASS (Tier 3 single Opus / dev-pr-reviewer).
+
+## Deferred (non-blocking): consolidate two isValidEnvName helpers (future cleanup); etude-s6z (real-LLM dev run, now UNBLOCKED by this bead).
