@@ -1,0 +1,2112 @@
+diff --git a/docs/plans/README.md b/docs/plans/README.md
+index af86085..13ae761 100644
+--- a/docs/plans/README.md
++++ b/docs/plans/README.md
+@@ -27,18 +27,23 @@ behavior.
+ 
+ - [Dogfood plan index](dogfood/README.md) - dogfood process notes used while
+   building `etude`.
++- [Supervisor runbook](dogfood/supervisor-runbook.md) - the worker-lane +
++  supervisor model: where a phase artifact lands, the two commands that
++  advance a phase, and the `etude gate` contract.
+ - [Dev workflow audit](dogfood/dev-workflow-audit.md) - audit of the current
+   Claude dev workflow and recommended dogfood workflow shape for building
+   `etude`.
+-- [Review gate process](dogfood/review-gate-process.md) - four-reviewer gate
+-  process for advancing dogfood workflow phases without human approval gates.
+-- [Review gate runbook](dogfood/review-gate-runbook.md) - operational checklist
+-  for running the four-reviewer gate.
++- [Review gate process](dogfood/review-gate-process.md) - the gate policy:
++  the stage's tier votes, humans do not approve, a seat that cannot complete is
++  never a pass.
++- [Review gate runbook](dogfood/review-gate-runbook.md) - how to judge an
++  artifact at a gate: review lenses, gate weight, prompt template, result
++  classification, and the recurring defect classes.
+ - [Verify phase design](dogfood/verify-phase-design.md) - decision and public
+   contract for consolidating test writing, manual testing, and QA under one
+   Verify gate.
+-- [Dogfood capture protocol](dogfood/capture-protocol.md) - temporary manual
+-  capture rules for treating one bead as one future `etude` run.
++- [Dogfood retro capture](dogfood/retro-capture.md) - retro triggers, artifact
++  shape, and links required when capturing a retro with `etude retro`.
+ - [Docs freshness checklist](dogfood/docs-checklist.md) - shipped-docs checks
+   for Docs and Final Review phases.
+ - [Backlog operating model](dogfood/backlog-operating-model.md) - working rules
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index 5987e06..31c005b 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -3,66 +3,68 @@
+ These notes describe how this repo is using planned `etude` concepts while the
+ product is still being built. They are not shipped user-facing behavior.
+ 
++A bead is worked by a **worker lane** and advanced by a **supervisor** who runs
++each phase gate with a command. Start at the
++[Supervisor runbook](supervisor-runbook.md) — it owns the operational loop and
++is the specification for `etude gate`.
++
+ ## Session Boot
+ 
+-After a context clear or when starting a new ticket, boot into productive state:
++After a context clear or when starting a new ticket:
+ 
+ 1. Run `bd prime`.
+ 2. Run `bd ready` and pick the next unblocked bead.
+-3. Inspect recent dogfood runs with `etude run list` and `etude run show <run-id>`
+-   (recent closed beads are captured as `refs/etude/runs/*`, including their gate
+-   reviewer records) to recover what shipped and how it was reviewed — not only `bd`.
+-4. Read this index.
+-5. Read [Review gate runbook](review-gate-runbook.md).
+-6. For workflow shape, read [Verify phase design](verify-phase-design.md).
+-7. Work the bead through `plan -> implement -> verify -> docs -> final review`.
+-8. Before advancing any phase gate, run the three-reviewer process from
+-   [Review gate process](review-gate-process.md).
+-9. After a gate passes and optional improvements are handled or deferred,
+-   continue to the next workflow step without waiting for another prompt unless
+-   blocked.
+-10. At bead close, run `scripts/dogfood-close.sh <bead> <commit> <verify> <review> [gate-dir]`
+-    as the terminal step. A bead is not complete until this exits 0.
++3. Inspect recent runs with `etude run list` and `etude run show <bead>` — the
++   run refs under `refs/etude/runs/*` carry each bead's stages and its gate
++   reviewer records, so recover what shipped and how it was reviewed from there,
++   not only from `bd`.
++4. Read the [Supervisor runbook](supervisor-runbook.md).
++5. Read the [Review gate runbook](review-gate-runbook.md) for how to judge an
++   artifact, and [Verify phase design](verify-phase-design.md) for the workflow
++   shape.
++6. Work the bead through `plan -> implement -> verify -> docs -> final review`,
++   running the per-phase loop from the supervisor runbook at every boundary.
++7. After a gate passes and optional improvements are folded in or deferred to a
++   named bead, continue to the next phase without waiting for another prompt
++   unless blocked.
+ 
+-For the compact operational checklists, see [Dogfood Checklists](checklists.md).
++## Index
+ 
+-- [Dogfood Checklists](checklists.md) - compact index of commands and links for the three high-frequency flows (Session Boot, Gate Execution, Close).
+-- [Dev workflow audit](dev-workflow-audit.md) - current agent workflow gaps and
+-  recommended dogfood workflow shape.
+-- [Review gate process](review-gate-process.md) - three-reviewer gate process
+-  for advancing workflow phases.
+-- [Review gate runbook](review-gate-runbook.md) - operational checklist for
+-  running the three-reviewer gate.
++- [Supervisor runbook](supervisor-runbook.md) - the worker-lane + supervisor
++  model: where a phase artifact lands, the two commands that advance a phase,
++  the `etude gate` contract, the seat envelope contract, and stop-the-line.
++- [Review gate process](review-gate-process.md) - the gate policy: seats vote,
++  humans do not approve, a seat that cannot complete is not a pass.
++- [Review gate runbook](review-gate-runbook.md) - how to judge: review lenses,
++  gate weight, prompt template, result classification, degraded gate policy, and
++  the recurring defect classes each phase gate should look for.
+ - [Verify phase design](verify-phase-design.md) - public Verify phase contract
+   and internal test/QA lane design.
+-- [Dogfood capture protocol](capture-protocol.md) - temporary manual capture
+-  rules for treating one bead as one future `etude` run.
+ - [Docs freshness checklist](docs-checklist.md) - Docs and Final Review checks
+   that keep shipped docs aligned with implemented behavior.
+ - [Backlog operating model](backlog-operating-model.md) - how to choose next
+   beads from the issue graph without confusing epics, product work, and polish.
+ - [Phase 0 critical path](phase0-critical-path.md) - current default order for
+-  the core schema, storage, manual capture, run inspection, and sync work.
++  the core schema, storage, capture, run inspection, and sync work.
+ - [Writing style guide](writing-style-guide.md) - writing expectations for
+   dogfood planning docs and docs verification.
++- [Dev workflow audit](dev-workflow-audit.md) - agent workflow gaps and the
++  recommended dogfood workflow shape.
+ - [Dogfood process retro](dogfood-process-retro.md) - retrospective on early
+   dogfood workflow issues and process improvements.
+ - [Retro impact ledger](retro-ledger.md) - inventory of every retro performed
+-  and the concrete process improvements each produced (the manual stand-in until
+-  retros become a first-class etude artifact).
++  and the concrete process improvements each produced.
+ - [Wide retro analysis](wide-retro-analysis.md) - cross-retro scratchpad for the
+-  dogfood completeness failure and the `etude-8hq` enforcement phase.
+-- [Artifacts](artifacts/) - committed dogfood capture artifacts for external
+-  files or large outputs that are referenced from bead notes.
++  completeness failure and the `etude-8hq` enforcement phase.
++- [Artifacts](artifacts/) - committed artifacts for external files or large
++  outputs referenced from bead notes.
+ 
+-## Dogfood Scripts
++## Scripts
+ 
+ | Script | Purpose |
+ |--------|---------|
+-| `scripts/dogfood-close.sh` | Orchestrate the full bead-close sequence: preflight, capture run, capture gate records, terminal completeness audit. Run this to close a bead. |
+-| `scripts/dogfood-capture.sh` | Capture a closed bead's dev-workflow phases as an etude run and push the ref. |
+-| `scripts/dogfood-gate-capture.sh` | Append a structured gate attempt to a bead's run and push. |
+-| `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
++| `scripts/dogfood-gate-capture.sh` | Append a hand-assembled gate attempt to a bead's run and push it. The bootstrap path: used before `etude gate` exists, and when a documented seat exception means a verdict was genuinely produced out-of-band. See [Supervisor runbook — The bootstrap path](supervisor-runbook.md#the-bootstrap-path). |
++| `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. Run via `make dogfood-audit`. |
+ | `scripts/docs-reality-check.sh` | Guard against doc/CLI drift (also run via `make docs-reality`). |
+ | `scripts/backfill-gate-records.sh` | One-time backfill of missing gate records. |
+ | `scripts/retro-meta-index.sh` | Read-only cross-retro index: aggregates failure modes, root causes, follow-up beads, and durable-changes timeline across all current cadence-retro sidecars. Run via `make retro-index`; `--json` for machine form. Standalone analysis tool — not wired into any gate. |
+diff --git a/docs/plans/dogfood/capture-protocol.md b/docs/plans/dogfood/capture-protocol.md
+deleted file mode 100644
+index 8f08976..0000000
+--- a/docs/plans/dogfood/capture-protocol.md
++++ /dev/null
+@@ -1,690 +0,0 @@
+-# Dogfood Capture Protocol
+-
+-Status: dogfood process note. The capture commands are SHIPPED — `etude capture`
+-records stage artifacts and `etude capture-gate` records review-gate reviewer
+-records — so each closed bead is captured as a real `refs/etude/runs/*` run
+-(manifest_version 2/3, producer + gate metadata). This defines the protocol the
+-dogfood workflow follows.
+-
+-## Decision
+-
+-Use one bead as one `etude` run.
+-
+-`scripts/dogfood-capture.sh` captures the bead's plan/implement/verify/review
+-stages into `refs/etude/runs/<bead>`; `scripts/dogfood-gate-capture.sh` appends
+-each review-gate attempt as a structured `GateAttempt`. The bead, git history,
+-and these dogfood planning docs remain the human-readable mirror. Each workflow
+-phase records a first-draft artifact, a provenance envelope, and review-gate
+-results; remaining capture gaps (retros as first-class artifacts and external
+-import) are still planned, not yet shipped.
+-
+-**Batch capture is now shipped.** `etude capture-run <spec.yaml>` writes a
+-complete multi-stage run from a single YAML spec in one operation. Artifact
+-paths in the spec are relative to and confined within the spec file's directory.
+-The command is create-only: it will not overwrite an existing run ref. The
+-dogfood scripts that produce stage artifacts can use `capture-run` to record an
+-entire bead run at once instead of calling `etude capture` once per stage.
+-
+-Captured phase artifacts are append-only after review starts. If a phase fails
+-review or must be redone, create a new attempt entry instead of editing the
+-reviewed artifact in place.
+-
+-## Run Mapping
+-
+-Each bead maps to one future `etude` run:
+-
+-- run id: bead id
+-- run title: bead title
+-- run status: bead status
+-- run parent: parent bead or epic
+-- run dependencies: dependency edges recorded by beads
+-- run start: timestamp when the bead is claimed
+-- run end: timestamp when the bead is closed or deferred
+-- source repo: current git remote and branch
+-
+-The bead remains the task tracker. `etude` later imports captured artifacts; it
+-does not replace bead status, priorities, dependencies, or ownership.
+-
+-## Stage Names
+-
+-Use these stage names for dogfood capture:
+-
+-1. `plan`
+-2. `implement`
+-3. `verify`
+-4. `docs`
+-5. `final-review`
+-6. `retro`, when a triggered or manual retro is produced
+-
+-The first five stages are the normal linear bead workflow described in
+-[Dev Workflow Audit](dev-workflow-audit.md). `retro` is an optional triggered
+-artifact described in the product planning note for
+-[Retrospectives](../product/retrospectives.md).
+-
+-See [Retro Capture](#retro-capture) for the manual dogfood rules that make a
+-`retro` stage reconstructable without making it part of the normal blocking
+-phase sequence.
+-
+-## Storage Rules
+-
+-Use the most structured existing store for each artifact:
+-
+-| Artifact | Temporary storage | Mutability |
+-|---|---|---|
+-| Plan artifact | bead `design` field | mutable until plan review starts, append-only afterward |
+-| Capture envelope | bead note/comment | append-only after review starts |
+-| Implementation artifact | git diff or commit plus bead note summary | append-only through commits and notes |
+-| Verify artifact | bead note/comment | append-only |
+-| Docs artifact | git diff or commit plus bead note summary | append-only through commits and notes |
+-| Final review artifact | bead note/comment | append-only |
+-| Retro artifact | bead note/comment or planning file linked from a note | append-only after capture |
+-| Reviewer results | bead note/comment | append-only |
+-| Large outputs | file path, screenshot path, log path, or external reference recorded in bead notes | preserve by reference |
+-
+-For retro artifact details, see [Retro Capture](#retro-capture).
+-
+-Planning-only beads still have an implementation artifact. The artifact is the
+-planning note created or changed under `docs/plans/`, not shipped
+-documentation.
+-
+-Do not move planning material into implemented docs just to make it easier to
+-capture. The documentation policy in this repo still applies: shipped docs
+-describe implemented behavior, and plans live under `docs/plans/`.
+-
+-## Capture Envelope
+-
+-Every stage artifact records this envelope before review:
+-
+-```text
+-## Capture: <stage> attempt <n>
+-
+-Stage: plan | implement | verify | docs | final-review | retro
+-Attempt: <integer starting at 1 for this stage>
+-Bead: <id and title>
+-Runner: <agent, tool, skill, or human>
+-Runner version: <model, skill revision, CLI version, or unknown>
+-Started at: <ISO-8601 timestamp or best available timestamp>
+-Started git SHA: <git rev-parse HEAD>
+-Started dirty state:
+-<git status --short output, or "clean">
+-
+-Inputs:
+-- <stable references to bead fields, prior artifacts, files, commands, prompts>
+-
+-Output artifact:
+-- <bead field, note, commit, diff, file path, or external reference>
+-
+-Ended at: <ISO-8601 timestamp or best available timestamp>
+-Ended git SHA: <git rev-parse HEAD>
+-Ended dirty state:
+-<git status --short output, or "clean">
+-
+-Approval surface:
+-- <chat, tmux pane, PR comment, local file, or other surface>
+-
+-Review gate:
+-- required: yes | no
+-- attempt: <gate attempt number, when applicable>
+-- result: pending | pass | rerun required | escalated | not applicable
+-```
+-
+-The envelope records references rather than copying large artifacts. For exact
+-review, the gate prompt must include the full current artifact text or exact
+-changed excerpts, following [Review Gate Runbook](review-gate-runbook.md).
+-
+-Example:
+-
+-```text
+-## Capture: implement attempt 1
+-
+-Stage: implement
+-Attempt: 1
+-Bead: etude-dogfood-capture-protocol - Define manual etude capture protocol
+-Runner: codex
+-Runner version: GPT-5.5
+-Started at: 2026-05-19T10:14:00+12:00
+-Started git SHA: abc1234
+-Started dirty state:
+-clean
+-
+-Inputs:
+-- bead description from etude-dogfood-capture-protocol
+-- docs/plans/dogfood/dev-workflow-audit.md
+-- docs/plans/dogfood/verify-phase-design.md
+-
+-Output artifact:
+-- docs/plans/dogfood/capture-protocol.md
+-- docs/plans/README.md
+-- docs/plans/dogfood/README.md
+-
+-Ended at: 2026-05-19T10:42:00+12:00
+-Ended git SHA: abc1234
+-Ended dirty state:
+- M docs/plans/README.md
+- M docs/plans/dogfood/README.md
+-?? docs/plans/dogfood/capture-protocol.md
+-
+-Approval surface:
+-- Codex chat
+-
+-Review gate:
+-- required: yes
+-- attempt: 1
+-- result: pending
+-```
+-
+-## Attempt Rules
+-
+-Attempts are counted per stage.
+-
+-- The first artifact for a stage is attempt `1`.
+-- If review blocks and required changes alter the artifact, the next reviewed
+-  artifact is attempt `2`.
+-- If a tool fails before producing a reviewable artifact, record a short
+-  blocked note but do not increment the stage attempt unless the partial output
+-  is used as an artifact.
+-- Gate reruns are counted separately inside the stage attempt.
+-
+-This keeps the future import model simple: stage attempts are artifact
+-versions; gate attempts are reviews of one artifact version.
+-
+-## Verify Failure And Blocked Results
+-
+-Each completed Verify artifact is captured, regardless of status.
+-
+-- `pass` becomes a Verify stage attempt whose recommendation is to proceed to
+-  Docs.
+-- `fail` becomes a Verify stage attempt whose recommendation is to return to
+-  Implement.
+-- `blocked` becomes a Verify stage attempt whose recommendation is to collect
+-  missing input and rerun Verify.
+-
+-When Verify returns `fail`, the subsequent implementation fix is a new
+-Implement stage attempt. Do not hide implementation changes inside Verify.
+-
+-When Verify returns `blocked`, record the missing input in the Verify artifact.
+-After the input is supplied, create a new Verify attempt that references the
+-prior blocked attempt and the newly supplied input.
+-
+-## Internal Loops
+-
+-Internal specialist loops are captured as references inside the parent stage,
+-not as top-level stages.
+-
+-For Verify, record:
+-
+-- test-writer lane output, including test files changed and commands run
+-- QA lane output and status recommendation
+-- manual-test lane output, when required
+-- internal loop count, when QA sends work back to test-writer before the final
+-  Verify artifact
+-
+-Only the final parent Verify artifact goes through the three-reviewer gate. If
+-an internal lane reveals required implementation work, Verify returns `fail`
+-and the bead moves back to Implement.
+-
+-**A built-binary manual test for a command that WRITES to `refs/etude/*` (or
+-any persistent repo state) MUST run in a throwaway repo, never the working
+-repo.** Build the binary, then exercise it against a fresh `mktemp -d` + `git
+-init` repo seeded with just the runs/artifacts the test needs. `etude bench`,
+-`etude replay --record`, and `etude capture` all record new runs/evals into
+-`refs/etude/runs|evals/*`; running them against the working repo during a manual
+-test pollutes real dogfood data with throwaway runs (observed: a first
+-`etude bench` manual test recorded 12 junk replay runs + eval results into the
+-working repo that had to be hand-deleted). The manual test is still required —
+-it catches stateful/integration bugs that static code review cannot (the
+-`etude bench` cohort-recursion bug — bench re-benchmarking its own recorded
+-replays — was invisible to the review seats and only surfaced from running
+-the built binary twice). Isolate it; do not skip it.
+-
+-For planning-only beads, Verify may record that test-writer and manual-test
+-lanes were not applicable. QA still checks that the planning artifact is in the
+-right location, links resolve, changed docs follow the writing style guide, and
+-planned behavior is not described as shipped behavior.
+-
+-## Retro Capture
+-
+-Retros are optional, triggered artifacts. They explain what happened in a run,
+-phase, gate sequence, or workflow, but they do not replace the gate result,
+-test result, or bead status that established what passed or failed.
+-
+-**Cadence retros require a `--meta-file` sidecar** (etude-8hq.3): from
+-2026-05-27 onward every `--trigger cadence-retro` capture must include
+-`--meta-file` with the 7-key convention. See
+-`docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
+-etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
+-
+-#### Cadence subjects without run refs
+-
+-When a cadence cohort covers a bead that has **no `refs/etude/runs/<id>`** —
+-for example, a data-backfill bead, an allowlisted bead, or any bead that was
+-never run through the dev-workflow — record that bead as `--bead <id>` (which
+-writes a `bead.N` ref in the manifest), NOT as `--subject-run <id>`.
+-
+-Using `--subject-run <id>` requires a valid run ref to exist
+-(`internal/cli/retro.go:471-474`); it will fail if the run has not been
+-captured yet. The `--bead` flag records the bead identity without requiring a
+-run ref.
+-
+-The consistency guard (check (g)) treats both `subject_run.*` and `bead.*`
+-refs equally as "subject present in refs", so using `--bead` for these cases
+-produces a clean audit result. The canonical example is `etude-nm6`
+-(gate-record backfill, allowlisted), which has no run ref and must be recorded
+-via `--bead etude-nm6` when it appears as a cohort subject.
+-
+-Manual dogfood capture supports these retro triggers now:
+-
+-- **End-of-run retro**: after a bead closes, summarize what changed, what gates
+-  found, and which process improvements should be considered.
+-- **Repeated gate-block retro**: after the same phase gate receives repeated
+-  `BLOCK` results, analyze why the artifact kept failing review.
+-- **Blocked-state retro**: when a run is blocked by missing context, auth,
+-  quota, tool access, or human input, record the blocker and prevention path.
+-- **Failed Verify retro**: when Verify returns `fail`, capture whether the
+-  failure came from implementation quality, test inadequacy, plan defects, or
+-  missing workflow rules.
+-- **Manual retro**: when the user or workflow operator explicitly requests one
+-  for a bead, phase, gate sequence, or workflow issue.
+-
+-For manual dogfood capture, "repeated" is operator judgment unless a later
+-workflow config defines a threshold. The trigger names below intentionally use
+-manual event names: `end-of-run` maps to the product note's `close` trigger,
+-and `repeated-gate-block` maps to the product note's `repeated-block` trigger.
+-The remaining manual trigger names match the product planning note.
+-
+-Post-bench retros and configurable automatic retro policies are product design
+-work for later `etude` commands. While dogfooding manually, mention those ideas
+-only as planned behavior and do not capture them as if `etude bench` or
+-automated retro policies already exist.
+-
+-### Retro Artifact Shape
+-
+-Store manual retros as append-only bead notes or as planning files under
+-`docs/plans/dogfood/` linked from a bead note. Use this schema:
+-
+-```text
+-## Retro: <scope> attempt <n>
+-
+-Scope: run | phase | gate | workflow
+-Trigger: end-of-run | repeated-gate-block | blocked-state | failed-verify | manual
+-Attempt: <integer starting at 1 for this retro scope and trigger>
+-Bead: <id and title>
+-Related stage: <stage name, or "run">
+-Related gate attempts: <reviewer result note refs, or "not applicable">
+-Related commits or diffs: <commit hashes, diff refs, or "not applicable">
+-
+-Inputs:
+-- <phase artifacts, gate results, command logs, git state, linked issues>
+-
+-Summary:
+-<concise narrative of what happened>
+-
+-Timeline or key events:
+-- <event>
+-
+-Failure modes:
+-- <category and evidence, or "none">
+-
+-Root causes:
+-- <process, skill, tool, context, or planning cause>
+-
+-Worked well:
+-- <practice worth preserving>
+-
+-Recommendations:
+-- <proposed change and target artifact path>
+-
+-Follow-up refs:
+-- <beads, PRs, docs, skills, workflow config, or "none">
+-
+-Decision/status:
+-accepted | deferred | superseded | informational
+-
+-Capture:
+-- follows the standard capture envelope for `retro`
+-```
+-
+-When the retro attempt count is unclear, preserve the artifact anyway and use
+-bead note append order or timestamps as the practical ordering source.
+-
+-The field names intentionally mirror the product planning note for
+-[Retrospectives](../product/retrospectives.md), but this protocol is only the
+-manual capture contract. It does not imply an implemented `etude retro`
+-command.
+-
+-### Retro Links
+-
+-Every retro must link back to stable run evidence:
+-
+-- the bead id and title for the future run id
+-- the triggering phase or gate attempt, when relevant
+-- reviewer result notes for repeated gate-block retros
+-- the failed Verify artifact for failed-Verify retros
+-- the blocker note or user-input request for blocked-state retros
+-- commits, diffs, logs, screenshots, or artifact paths used as evidence
+-
+-Retros may propose follow-up beads, but they should not silently create broad
+-work. If a recommendation is accepted into active work, link the new bead or
+-commit from the retro's `follow-up refs`.
+-
+-### Retro Gates
+-
+-Retros do not gate the normal `plan -> implement -> verify -> docs ->
+-final-review` sequence. They are explanatory artifacts that can be produced
+-after a close, after a repeated blocker, or on request.
+-
+-If a later bead makes a retro itself the artifact under review, that bead uses
+-the normal three-reviewer gate for its own phase. Otherwise, retro capture does
+-not block product work from advancing.
+-
+-### Retro Import
+-
+-Future import should treat retro notes and linked retro files as `retro` stage
+-attempts attached to the same run manifest as the bead. Import should preserve:
+-
+-- scope and trigger
+-- links to related phase attempts and gate attempts
+-- source bead note or file path
+-- commits, diffs, logs, and linked issues referenced as inputs
+-- decision/status and follow-up refs
+-
+-If a retro references planned behavior, import should keep that text as a
+-planning artifact. It must not promote the retro into shipped user-facing docs.
+-
+-## Review Gate Capture
+-
+-After every phase gate, append reviewer results to the bead notes:
+-
+-```text
+-<Stage> gate attempt <n> for stage attempt <m>:
+-- Gemini Pro: GO | BLOCK | failed (<reason>)
+-- Claude Opus: GO | BLOCK | failed (<reason>)
+-- fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
+-- required changes incorporated: <summary or none>
+-- optional improvements handled: <summary or deferred bead>
+-- result: pass | rerun required | escalated
+-```
+-
+-Optional improvements from `GO` reviewers are handled before advancing or
+-explicitly deferred to a named follow-up bead.
+-
+-Reviewer auth, quota, model access, allowance, timeout, or tooling failures are
+-captured as reviewer failures. They do not count as `GO`.
+-
+-Gate results are ALSO captured STRUCTURALLY via `etude capture-gate` (append-only,
+-one `GateAttempt` per gate attempt on the bead's run ref) — this is now the
+-durable, import-ready source of truth for reviewer seats/verdicts/rounds/provenance,
+-with the prose block above kept as the human-readable mirror. Use
+-`scripts/dogfood-gate-capture.sh <bead-id> <gate.json>`; the gate-file shape,
+-reviewer-seat harness/provider/model conventions, and the per-outcome verdict
+-mapping (incl. `failure_note` for failed/empty/malfunction/disregarded) live in
+-[review-gate-runbook.md](review-gate-runbook.md#structured-capture-etude-capture-gate).
+-This replaces the prior need to hand-parse prose gate summaries on import.
+-
+-The normal `plan`, `implement`, `verify`, `docs`, and `final-review` stages go
+-through the three-reviewer gate. Retro artifacts do not gate the main workflow
+-unless a later bead explicitly makes a retro the artifact being advanced.
+-For retro-specific interpretation of gate results, see
+-[Retro Capture](#retro-capture).
+-
+-## Import Path
+-
+-When `etude import` or equivalent local tooling exists, import dogfood beads as
+-runs by reading:
+-
+-1. bead metadata for run identity, status, ownership, dependencies, and
+-   timestamps
+-2. bead `design` for the Plan artifact
+-3. append-only bead notes for capture envelopes, Verify, Final Review, reviewer
+-   results, and retros
+-4. git commits and diffs referenced by implementation and docs notes
+-5. referenced files for large outputs, screenshots, logs, or manual-test
+-   evidence
+-
+-Import should preserve original timestamps and stage attempt numbers. It should
+-store imported artifacts under `refs/etude/*` as immutable blobs and create a
+-manifest that links each stage attempt to the exact source reference used
+-during manual capture.
+-
+-If a bead lacks enough data to reconstruct a stage, import should mark that
+-stage as incomplete instead of inventing missing artifacts.
+-
+-## Checklist
+-
+-At the start of a bead:
+-
+-- claim the bead
+-- record the starting git SHA and dirty state
+-- confirm the parent, dependencies, and phase labels
+-
+-For each phase:
+-
+-- write the first-draft artifact to its temporary storage location
+-- append or update the capture envelope before review starts
+-- run the review gate defined in [Review Gate Process](review-gate-process.md)
+-- append reviewer results
+-- handle optional improvements or defer them to named beads
+-- advance to the next phase only after the gate passes
+-
+-At bead close:
+-
+-Compact close checklist: [Dogfood Checklists](checklists.md#close).
+-
+-Run `scripts/dogfood-close.sh` as the **terminal close step**. It captures the
+-run, captures gate records, pushes the etude ref, and runs the completeness
+-audit. The bead is **not complete** until it exits 0.
+-
+-```bash
+-scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+-```
+-
+-Then:
+-
+-- run `git status`
+-- commit and push repository changes
+-- run `bd dolt push` for bead storage
+-
+-See [Dogfood Close Gate](#dogfood-close-gate) below for the full contract.
+-
+-## Dogfood Close Gate
+-
+-`scripts/dogfood-close.sh` is the one command to run at bead close. It
+-orchestrates the full close sequence and acts as the terminal blocking gate.
+-
+-### Contract
+-
+-```
+-scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+-```
+-
+-- `<bead-id>` — the bead to close (also the run id and ref).
+-- `<commit-sha>` — the implement-stage commit (passed to `dogfood-capture.sh`).
+-- `<verify-file>` — path to the Verify-stage artifact.
+-- `<review-file>` — path to the Final-Review-stage artifact.
+-- `[gate-dir]` — OPTIONAL directory of `*.json` GateAttempt files (one per gate
+-  attempt, shape per [Review Gate Runbook](review-gate-runbook.md) "Structured
+-  capture"). If omitted, the terminal audit will fail check (b) for a
+-  non-allowlisted bead — which is the correct loud signal that gate records are
+-  missing.
+-
+-### Orchestration order
+-
+-1. **Preflight (no mutation):** validate arg count; check artifact files exist;
+-   verify `refs/etude/runs/<bead>` does NOT already exist (capture-run is
+-   create-only — fail before side effects). If `<bead>` is in
+-   `scripts/dogfood-completeness-allow.txt`, print a bypass notice.
+-2. **Capture the run:** calls `scripts/dogfood-capture.sh` — creates
+-   `refs/etude/runs/<bead>` and pushes it.
+-3. **Capture gate records:** for each `<gate-dir>/*.json` in sorted (lexical)
+-   order, calls `scripts/dogfood-gate-capture.sh` — appends the gate and
+-   re-pushes the ref. If no gate-dir, skips this step.
+-4. **Terminal gate:** runs `scripts/dogfood-completeness-audit.sh --bead <bead>`
+-   and propagates its exit code verbatim. Exit 0 = complete; exit 1 = hard gap
+-   (missing-run / gateless-run / unpushed-ref) — wrapper fails loudly with the
+-   audit's GAP lines.
+-
+-The wrapper does no git ref mutation itself — all mutation happens inside the
+-already-tested capture scripts. See the audit's `--bead` mode note in the
+-[Dogfood Completeness Audit](#dogfood-completeness-audit) section below for the
+-exact hard checks (a), (b), (d).
+-
+-### What BLOCKS vs WARNS
+-
+-- **BLOCK (hard, exit 1):** (a) run ref missing; (b) run has no gate records;
+-  (d) run ref not pushed to origin; (f) a *post-convention* cadence retro (manifest
+-  `created` on/after the `CADENCE_SIDECAR_CUTOFF` instant) missing a valid 7-key
+-  `retro-meta` sidecar — batch modes only, not `--bead`.
+-- **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue; (f) a
+-  *pre-convention* cadence retro lacking the sidecar (one summarizing line — the
+-  backfill worklist for etude-8hq.5); (g) retro subject consistency — cadence retro
+-  body title claims a subject id absent from the manifest's `subject_run.*`/`bead.*`
+-  refs (where-possible parse; retros with no parseable id-list are silently skipped).
+-  (c)/(f)/(g) run in batch modes only, not `--bead` — deadlock avoidance.
+-
+-### Bypass and defer policy
+-
+-For non-code or exceptional beads, add the bead to the allowlist
+-`scripts/dogfood-completeness-allow.txt` with a written reason. The wrapper
+-inherits the audit's bypass behavior: an allowlisted bead is reported as
+-`bypass: <id> — <reason>` and does not cause exit 1. See the
+-[Allowlist](#allowlist) subsection for the full policy and format.
+-
+-Use sparingly. Every bypass is visible in the audit output on every run.
+-
+-### `.beads/hooks/pre-push` enforcement
+-
+-A dogfood enforcement block appended after the bd-managed markers in
+-`.beads/hooks/pre-push` provides a hard backstop for code pushes. It reads the
+-push refs that git feeds on stdin and classifies them:
+-
+-- **Exempt** (exit 0, no audit): every non-deletion ref matches `refs/etude/*`
+-  or `refs/tags/*`. This lets `dogfood-capture.sh` and `dogfood-gate-capture.sh`
+-  push their `refs/etude/runs/<bead>` refs unhindered (no recursion, no
+-  deadlock).
+-- **Blocked** (exit 1): any `refs/heads/*` (code push) when
+-  `scripts/dogfood-completeness-audit.sh --last 9` exits non-zero. The push is
+-  rejected with the audit GAP lines visible.
+-- **Allowed** (exit 0): code push where the audit exits 0.
+-- **Deletion lines** (`local-oid` all-zeros): skipped — not new code.
+-
+-**Escape hatch:** `git push --no-verify` bypasses all hooks. Use only for
+-genuine emergencies; the batch sweep and allowlist remain the audit-of-record.
+-
+-**Precondition:** the `--last 9` window must be clean (every in-window closed
+-bead is captured or allowlisted) before this hook can land. Run
+-`make dogfood-audit` to verify before pushing.
+-
+-## Dogfood Completeness Audit
+-
+-`scripts/dogfood-completeness-audit.sh` mechanically checks whether closed
+-beads have their dogfood artifacts. It is the reusable scripted version of the
+-manual B16 completeness check from the retro ledger.
+-
+-### Usage
+-
+-```
+-scripts/dogfood-completeness-audit.sh [--bead <id>]
+-                                       [--last <N>] [--since <date>]
+-                                       [--quiet] [--json]
+-```
+-
+-- `--bead <id>`: Audit exactly one closed bead. This is the mode called by
+-  `scripts/dogfood-close.sh` at close time (see [Dogfood Close Gate](#dogfood-close-gate)).
+-  Hard checks only for that bead; no window or cadence check.
+-- `--last <N>` (default 9): Audit the N most-recently-closed in-scope beads.
+-- `--since <date>`: Audit beads closed on/after an ISO date (YYYY-MM-DD).
+-- `--quiet`: Suppress per-check PASS lines; still print gaps and summary.
+-- `--json`: Emit `{"checks":N,"gaps":[...],"exit":N}` for the gate.
+-
+-### What it checks
+-
+-For each in-scope, non-allowlisted bead:
+-
+-- **(a) Run ref present** (hard, both modes): `refs/etude/runs/<id>` must
+-  exist in the local git repo.
+-- **(b) Gated run has gate records** (hard, both modes): the run's
+-  `manifest.json` must have at least one entry in `gates[]`. Read via
+-  `git cat-file -p <ref>:manifest.json`.
+-- **(c) Cadence retro not overdue** (WARN only, batch mode only): if 3 or
+-  more in-scope beads are not covered by any cadence-retro ref, prints a
+-  warning. Never affects the exit code. Not run in `--bead` mode (a cadence
+-  retro is written AFTER the cohort's third bead closes, so gating an
+-  individual close on its existence is a deadlock).
+-- **(d) Refs pushed** (hard): in batch mode, every `refs/etude/{runs,retros}/*`
+-  must be present on origin with a matching SHA. In `--bead` mode, only that
+-  bead's own run ref is checked.
+-- **(e) Docs drift** (WARN only, both modes): in batch mode runs
+-  `make docs-check` and `make docs-reality` and warns on failure. In `--bead`
+-  mode, warns only if the manifest's `git_sha` touched `docs/`.
+-- **(f) Bypass report**: always prints allowlisted beads with their reasons so
+-  exceptions are visible. Never affects exit.
+-- **(g) Retro subject consistency** (WARN only, batch mode only): for each
+-  cadence-retro ref, parses the subject id-list from the retro body's title
+-  line (the last parenthetical group, split on `/`/`,`, all tokens matching
+-  `[a-z0-9]+(\.[a-z0-9]+)*`). Compares claimed ids against the manifest's
+-  `subject_run.*` and `bead.*` refs. Warns if any claimed id is absent. Retros
+-  whose title has no parseable id-list (workflow retros, date parentheticals)
+-  are silently skipped — "where possible". Never blocks. Use `--bead` with
+-  `bead.*` for subjects without run refs (see
+-  [Cadence subjects without run refs](#cadence-subjects-without-run-refs)).
+-
+-### Exit codes
+-
+-- `0` — all hard checks passed (warnings are allowed).
+-- `1` — one or more hard gaps found.
+-- `2` — usage error or environment problem (build failed, no closed beads).
+-
+-### Allowlist
+-
+-`scripts/dogfood-completeness-allow.txt` lists beads that are exempt from the
+-run-ref / gates checks. Format:
+-
+-```
+-<bead-id>  # reason
+-```
+-
+-Blank lines and `#` comment lines are ignored. A bypassed bead is always
+-reported in the output (`bypass: <id> — <reason>`) but does not cause a
+-non-zero exit.
+-
+-**How to add a bypass:** add a line with the bead id and a written reason,
+-then commit the change. Every bypass is visible in the audit output on every
+-run. Use sparingly — only for legitimate exceptions such as epic/rollup beads,
+-pre-dogfood-habit beads, and deferred beads. A missing reason or an
+-over-broad entry obscures real gaps.
+-
+-Seeded exceptions (at the time this was written): epic/rollup beads
+-(`etude-14r`, `etude-roadmap.1`, `etude-roadmap.2`, etc.), the
+-`etude-nm6` backfill task, two deferred beads (`etude-8b7`, `etude-9ey`),
+-and all pre-dogfood-habit infra/process/docs beads closed before run capture
+-began.
+-
+-### Routine use
+-
+-For a routine completeness sweep:
+-
+-```bash
+-scripts/dogfood-completeness-audit.sh --last 9
+-```
+-
+-For a sweep of all post-habit work since a specific date:
+-
+-```bash
+-scripts/dogfood-completeness-audit.sh --since 2026-05-18
+-```
+-
+-For the close-gate check (called by `etude-8hq.1` wiring):
+-
+-```bash
+-scripts/dogfood-completeness-audit.sh --bead <id>
+-```
+-
+-## Open Questions
+-
+-- The first `etude import` implementation should decide whether to preserve
+-  bead note text verbatim as one artifact per note or parse capture envelopes
+-  into separate structured artifacts. Owner: Phase 0 import work.
+-- The workflow skill update should decide the exact label transitions for
+-  `phase:plan`, `phase:implement`, `phase:verify`, `phase:docs`,
+-  `phase:review`, and `phase:complete`. Owner:
+-  `etude-overhaul-dev-workflow-skill`.
+diff --git a/docs/plans/dogfood/checklists.md b/docs/plans/dogfood/checklists.md
+deleted file mode 100644
+index bec5fb0..0000000
+--- a/docs/plans/dogfood/checklists.md
++++ /dev/null
+@@ -1,79 +0,0 @@
+-# Dogfood Checklists
+-
+-This is an INDEX of the high-frequency dogfood operations — commands and links
+-to the authoritative rationale. It is NOT a second copy of the rules; each step
+-points at the command or the runbook section that owns it. The long runbook and
+-capture protocol keep the rationale.
+-
+----
+-
+-## Session Boot
+-
+-Source of truth: [README.md — Session Boot](README.md#session-boot).
+-
+-1. `bd prime` — boot context.
+-2. `bd ready` — pick the next unblocked bead.
+-3. `etude run list` / `etude run show <run-id>` — recover what shipped and how
+-   it was reviewed from `refs/etude/runs/*`.
+-4. Read the [Dogfood Plans index](README.md), the
+-   [Review Gate Runbook](review-gate-runbook.md), and the
+-   [Verify Phase Design](verify-phase-design.md).
+-5. Confirm phase labels on the claimed bead — see
+-   [Checklist — At the start of a bead](capture-protocol.md#checklist).
+-6. Record the starting git SHA and dirty state — see
+-   [Capture Envelope](capture-protocol.md#capture-envelope).
+-7. Work the bead through `plan → implement → verify → docs → final-review`.
+-8. At each phase gate run the [Gate Execution](#gate-execution) checklist below;
+-   at close run the [Close](#close) checklist below.
+-
+----
+-
+-## Gate Execution
+-
+-Source of truth: [Review Gate Runbook](review-gate-runbook.md).
+-
+-1. Pick the tier (Tier 1 full / Tier 2 two-seat / Tier 3 single) — see
+-   [Gate Weight](review-gate-runbook.md#gate-weight). Highest-risk surface
+-   determines the tier; when unsure go heavier; escalate to Tier 1 if shipped
+-   behavior, schema, or storage is in scope.
+-2. Apply all four review lenses per seat — see
+-   [Reviewer Roles (review lenses)](review-gate-runbook.md#reviewer-roles-review-lenses).
+-   Do not restate the lenses here; that section is the authoritative source.
+-3. Collect the exact current artifacts for the prompt — see
+-   [Gate Inputs](review-gate-runbook.md#gate-inputs).
+-4. Dispatch seats with the per-seat invocation pattern — see
+-   [Invocation](review-gate-runbook.md#invocation). Snapshot changed files to
+-   `/tmp` with `cp --parents` before dispatch.
+-5. Classify the result; empirically reproduce disputed BLOCKs — see
+-   [Result Classification](review-gate-runbook.md#result-classification).
+-6. Record the prose gate note — see
+-   [Recording Results](review-gate-runbook.md#recording-results).
+-7. Capture the structured gate record:
+-   `scripts/dogfood-gate-capture.sh <bead-id> <gate.json>` — see
+-   [Structured capture (`etude capture-gate`)](review-gate-runbook.md#structured-capture-etude-capture-gate).
+-   The structured record is the durable source of truth; do not skip this step.
+-
+----
+-
+-## Close
+-
+-Source of truth: [Capture Protocol — Checklist](capture-protocol.md#checklist)
+-and [Dogfood Close Gate](capture-protocol.md#dogfood-close-gate).
+-
+-1. Run the terminal close command (captures run + gate records + completeness
+-   audit). The bead is **not complete** until it exits 0:
+-   ```
+-   scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+-   ```
+-   See [Dogfood Close Gate](capture-protocol.md#dogfood-close-gate) for the
+-   full contract.
+-2. `git status` — confirm the working tree.
+-3. Commit and `git push` repository changes. The pre-push hook is the hard
+-   backstop — see
+-   [`.beads/hooks/pre-push` enforcement](capture-protocol.md#beadshookspre-push-enforcement).
+-4. `bd dolt push` — push bead storage.
+-5. `make dogfood-audit` — batch completeness sweep (`--last 9`). Must be clean
+-   before a code push can land.
+-6. Exceptional / non-code bead: add an entry to
+-   `scripts/dogfood-completeness-allow.txt` with a written reason — see
+-   [Allowlist](capture-protocol.md#allowlist).
+diff --git a/docs/plans/dogfood/retro-capture.md b/docs/plans/dogfood/retro-capture.md
+new file mode 100644
+index 0000000..2506efc
+--- /dev/null
++++ b/docs/plans/dogfood/retro-capture.md
+@@ -0,0 +1,156 @@
++# Retro Capture
++
++Status: planning note. Extracted from the retired dogfood capture protocol in
++`etude-9uf.2` — this material describes how retros are captured with the
++existing `etude retro` command and is unaffected by the move to supervised
++worker lanes. For how a bead is worked and gated, see the
++[Supervisor runbook](supervisor-runbook.md).
++
++
++Retros are optional, triggered artifacts. They explain what happened in a run,
++phase, gate sequence, or workflow, but they do not replace the gate result,
++test result, or bead status that established what passed or failed.
++
++**Cadence retros require a `--meta-file` sidecar** (etude-8hq.3): from
++2026-05-27 onward every `--trigger cadence-retro` capture must include
++`--meta-file` with the 7-key convention. See
++`docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
++etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
++
++#### Cadence subjects without run refs
++
++When a cadence cohort covers a bead that has **no `refs/etude/runs/<id>`** —
++for example, a data-backfill bead, an allowlisted bead, or any bead that was
++never run through the dev-workflow — record that bead as `--bead <id>` (which
++writes a `bead.N` ref in the manifest), NOT as `--subject-run <id>`.
++
++Using `--subject-run <id>` requires a valid run ref to exist
++(`internal/cli/retro.go:471-474`); it will fail if the run has not been
++captured yet. The `--bead` flag records the bead identity without requiring a
++run ref.
++
++The consistency guard (check (g)) treats both `subject_run.*` and `bead.*`
++refs equally as "subject present in refs", so using `--bead` for these cases
++produces a clean audit result. The canonical example is `etude-nm6`
++(gate-record backfill, allowlisted), which has no run ref and must be recorded
++via `--bead etude-nm6` when it appears as a cohort subject.
++
++Manual dogfood capture supports these retro triggers now:
++
++- **End-of-run retro**: after a bead closes, summarize what changed, what gates
++  found, and which process improvements should be considered.
++- **Repeated gate-block retro**: after the same phase gate receives repeated
++  `BLOCK` results, analyze why the artifact kept failing review.
++- **Blocked-state retro**: when a run is blocked by missing context, auth,
++  quota, tool access, or human input, record the blocker and prevention path.
++- **Failed Verify retro**: when Verify returns `fail`, capture whether the
++  failure came from implementation quality, test inadequacy, plan defects, or
++  missing workflow rules.
++- **Manual retro**: when the user or workflow operator explicitly requests one
++  for a bead, phase, gate sequence, or workflow issue.
++
++For manual dogfood capture, "repeated" is operator judgment unless a later
++workflow config defines a threshold. The trigger names below intentionally use
++manual event names: `end-of-run` maps to the product note's `close` trigger,
++and `repeated-gate-block` maps to the product note's `repeated-block` trigger.
++The remaining manual trigger names match the product planning note.
++
++Post-bench retros and configurable automatic retro policies are product design
++work for later `etude` commands. While dogfooding manually, mention those ideas
++only as planned behavior and do not capture them as if `etude bench` or
++automated retro policies already exist.
++
++### Retro Artifact Shape
++
++Store manual retros as append-only bead notes or as planning files under
++`docs/plans/dogfood/` linked from a bead note. Use this schema:
++
++```text
++## Retro: <scope> attempt <n>
++
++Scope: run | phase | gate | workflow
++Trigger: end-of-run | repeated-gate-block | blocked-state | failed-verify | manual
++Attempt: <integer starting at 1 for this retro scope and trigger>
++Bead: <id and title>
++Related stage: <stage name, or "run">
++Related gate attempts: <reviewer result note refs, or "not applicable">
++Related commits or diffs: <commit hashes, diff refs, or "not applicable">
++
++Inputs:
++- <phase artifacts, gate results, command logs, git state, linked issues>
++
++Summary:
++<concise narrative of what happened>
++
++Timeline or key events:
++- <event>
++
++Failure modes:
++- <category and evidence, or "none">
++
++Root causes:
++- <process, skill, tool, context, or planning cause>
++
++Worked well:
++- <practice worth preserving>
++
++Recommendations:
++- <proposed change and target artifact path>
++
++Follow-up refs:
++- <beads, PRs, docs, skills, workflow config, or "none">
++
++Decision/status:
++accepted | deferred | superseded | informational
++
++Capture:
++- follows the standard capture envelope for `retro`
++```
++
++When the retro attempt count is unclear, preserve the artifact anyway and use
++bead note append order or timestamps as the practical ordering source.
++
++The field names intentionally mirror the product planning note for
++[Retrospectives](../product/retrospectives.md), but this protocol is only the
++manual capture contract. It does not imply an implemented `etude retro`
++command.
++
++### Retro Links
++
++Every retro must link back to stable run evidence:
++
++- the bead id and title for the future run id
++- the triggering phase or gate attempt, when relevant
++- reviewer result notes for repeated gate-block retros
++- the failed Verify artifact for failed-Verify retros
++- the blocker note or user-input request for blocked-state retros
++- commits, diffs, logs, screenshots, or artifact paths used as evidence
++
++Retros may propose follow-up beads, but they should not silently create broad
++work. If a recommendation is accepted into active work, link the new bead or
++commit from the retro's `follow-up refs`.
++
++### Retro Gates
++
++Retros do not gate the normal `plan -> implement -> verify -> docs ->
++final-review` sequence. They are explanatory artifacts that can be produced
++after a close, after a repeated blocker, or on request.
++
++If a later bead makes a retro itself the artifact under review, that bead uses
++the normal phase gate for its own phase, at the tier its stage declares. Otherwise, retro capture does
++not block product work from advancing.
++
++### Retro Import
++
++Future import should treat retro notes and linked retro files as `retro` stage
++attempts attached to the same run manifest as the bead. Import should preserve:
++
++- scope and trigger
++- links to related phase attempts and gate attempts
++- source bead note or file path
++- commits, diffs, logs, and linked issues referenced as inputs
++- decision/status and follow-up refs
++
++If a retro references planned behavior, import should keep that text as a
++planning artifact. It must not promote the retro into shipped user-facing docs.
++
+diff --git a/docs/plans/dogfood/retro-ledger.md b/docs/plans/dogfood/retro-ledger.md
+index 229451c..ca9b7bb 100644
+--- a/docs/plans/dogfood/retro-ledger.md
++++ b/docs/plans/dogfood/retro-ledger.md
+@@ -4,6 +4,15 @@ Status: dogfood planning material (not shipped user docs). An INVENTORY — not
+ new retro and not re-analysis — of every retrospective performed during the
+ `etude` dogfood effort and the concrete improvements each produced.
+ 
++> **Retired tooling in these entries.** Some entries below record improvements
++> that landed as scripts the supervised worker-lane model has since removed. The
++> retroactive run-capture and bead-close scripts were retired in `etude-9uf`, and
++> those entries now name the mechanism rather than the file; the finding each
++> retro produced is unchanged. References to `dogfood-completeness-audit.sh` and
++> its allowlist are still accurate as written and are deliberately left alone —
++> bead `etude-9uf.4` replaces that audit and owns its own sweep, so their
++> presence here is a deferral, not an oversight.
++
+ ## How to read this
+ 
+ Retro lessons on this project take **three forms**, because most retros did NOT
+@@ -101,7 +110,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
+   doc-gate "reason only from the inlined note" rule (25565d9).
+ - **Evidence lesson:** the etude-bench-command cohort-recursion bug (bench
+   re-benchmarking its own replays) surfaced ONLY from running the built binary
+-  twice. Artifacts: scripts/dogfood-capture.sh, capture-protocol.md, runbook.
++  twice. Artifacts: the retroactive run-capture script, the capture protocol,
++  and the runbook (the first two retired in etude-9uf).
+ 
+ ### B4. Phase 4 retro (2026-05-25) — commit a74ded5
+ - **Findings/changes:** /tmp snapshots must preserve directory structure
+@@ -199,7 +209,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
+ - **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect Classes"
+   item 4). Counter reset.
+ - **Follow-up beads:** etude-jb7 noted a symlink-path-traversal residual (operator
+-  authors the spec) + the dogfood-capture.sh rewire onto capture-run — both deferred.
++  authors the spec) + the retroactive run-capture script's rewire onto capture-run
++  (that script was retired in etude-9uf) — both deferred.
+ 
+ ### B11. Cadence retro (2026-05-26) — post sweep-tail + Phase-C-extra-1 (quk/f6h/egg)
+ - **Trigger/scope:** 3-ticket cadence after the 2 sweep loose-ends (etude-quk dead
+@@ -257,7 +268,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
+ ### B13. Cadence retro (2026-05-26) — Phase-C follow-up backlog (094/21z/sb4 + 9ey defer)
+ - **Trigger/scope:** 3-ticket cadence closing out the Phase-C follow-up backlog —
+   etude-094 (capture-run symlink-traversal hardening), etude-21z (rewire
+-  dogfood-capture.sh from 4 `capture` calls onto one `capture-run` spec), etude-sb4
++  the retroactive run-capture script from 4 `capture` calls onto one `capture-run`
++  spec; that script was retired in etude-9uf), etude-sb4
+   (document the recommended retro-meta sidecar convention) — plus the etude-9ey DEFER.
+ - **Findings/changes:** added a new **"Plan-Phase Discipline"** section to
+   `review-gate-runbook.md` with two items:
+@@ -493,7 +505,8 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
+   rule). This cohort tested whether prose fixes the omission — and the answer is no:
+   the durable fix is mechanical. 8hq.4 built a read-only audit (run+gate+pushed+cadence+
+   docs checks, with a per-bead strict mode); 8hq.1 put it on the critical path two ways
+-  — a `dogfood-close.sh` wrapper (ergonomics) AND a `.beads/hooks/pre-push` hook that
++  — a bead-close wrapper script (ergonomics; retired in etude-9uf) AND a
++  `.beads/hooks/pre-push` hook that
+   EXEMPTS `refs/etude/*` pushes and BLOCKS `refs/heads/*` code pushes when the batch
+   audit fails. The proof it works: this very retro was triggered by the audit's own WARN,
+   and the 8hq.1 code push was gated live by the hook before it was allowed.
+diff --git a/docs/plans/dogfood/review-gate-process.md b/docs/plans/dogfood/review-gate-process.md
+index 1bca86a..be129ca 100644
+--- a/docs/plans/dogfood/review-gate-process.md
++++ b/docs/plans/dogfood/review-gate-process.md
+@@ -1,60 +1,65 @@
+ # Review Gate Process
+ 
+-Status: planning note. This defines the dogfood gate process to use while
+-building `etude`.
++Status: planning note. This defines the gate policy to use while building
++`etude`.
+ 
+ ## Decision
+ 
+ Do not use human approval as the workflow gate.
+ 
+-Every phase gate must pass a three-reviewer panel:
+-
+-- Gemini Pro
+-- Claude Opus
+-- a fresh GPT-5.5 xhigh agent (codex)
+-
+-Independent means the reviewer evaluates the supplied gate prompt and artifacts
+-without relying on hidden implementation context. Each reviewer uses a
+-non-interactive prompt invocation that receives only the gate prompt and
+-repository files. The GPT-5.5 seat must be fresh: start a new isolated agent
+-with no carry-over conversation context from earlier work on the bead.
+-
+-When the gate orchestrator is Claude Code (i.e. you are running inside a Claude
+-session), the Claude Opus seat MUST be run as a fresh in-harness Task sub-agent
+-(`subagent_type` general-purpose or equivalent, `model: opus`, given only the
+-gate prompt as context), NOT the external `claude -p` CLI. A nested `claude` CLI
+-spawned from inside a Claude session fails auth (`401 Invalid authentication
+-credentials`); the in-harness sub-agent is authenticated and equivalent. Only
+-use the external `claude -p` CLI for the Claude seat when the orchestrator is
+-not Claude. See [Review Gate Runbook](review-gate-runbook.md) for the exact
+-invocation and the canonical three-seat command lines.
+-
+-The gate passes only when all three reviewers give a clear `GO`.
+-
+-If any reviewer gives `BLOCK`, the blocking feedback must be incorporated and
+-the same gate must be run again with all three reviewers. Do not advance the
+-workflow on partial approval.
+-
+-If any reviewer cannot complete because of auth, quota, model access,
+-allowance, timeout, or tooling failure, stop and escalate to the user. A failed
+-reviewer invocation is not a `GO` and must not be skipped.
++Every phase gate must pass the panel its stage declares. The stage's
++`gate.tier` in `.etude/workflow.yaml` names a tier; `tiers.<L>.seats` in
++`.etude/registry.yaml` names that tier's seats. **This document deliberately does
++not restate the seat list** — a second copy of it drifts from the config, and the
++config is what runs.
++
++A seat is a MODEL identity that reviews the shared gate prompt and votes
++GO/BLOCK. Seats are never role personas with different briefs: the redundancy
++comes from model diversity, so every seat at a gate gets the identical prompt.
++
++Independent means the seat evaluates the supplied prompt and artifacts without
++relying on hidden implementation context. Each seat is a non-interactive
++invocation receiving only that prompt, and must be fresh — no carry-over
++conversation context from earlier work on the bead.
++
++The gate passes only on a UNANIMOUS `GO` from the tier's seats (registry
++`quorum: unanimous`).
++
++If any seat gives `BLOCK`, the blocking feedback must be incorporated and the
++same gate run again with all of the tier's seats. Do not advance on partial
++approval, and never drop a seat or lower a tier to get past a BLOCK.
++
++**Seat invocation exception.** The `opus` seat's registry `invoke` is
++`claude -p --model opus`, which fails to authenticate when the orchestrator is
++itself a Claude Code session — the host session's credentials are not exposed to
++a subprocess. In that case the seat is run as a fresh in-harness sub-agent
++(`subagent_type` general-purpose, `model: opus`) given only the gate prompt, or
++via the substitute named in the registry. This exception currently lives in a
++registry comment rather than in code, so a machine running the gate cannot honour
++it and will fail the seat closed; bead `etude-pqv` makes registry exceptions
++machine-honored. See
++[Supervisor runbook — Degraded gates and stop-the-line](supervisor-runbook.md#degraded-gates-and-stop-the-line).
++
++If any seat cannot complete because of auth, quota, model access, allowance,
++timeout, or tooling failure, stop and escalate. A failed seat invocation is not a
++`GO` and must not be skipped.
+ 
+ **Degraded gate (bounded exception).** The strict rule above is the default. The
+-one exception: a SINGLE reviewer with a reproducible, root-caused TOOLING outage
+-(not substantive dissent) may be `disregarded` and the gate may pass on the other
+-three unanimous substantive `GO`s — under the explicit conditions, reroll bar,
++one exception: a SINGLE seat with a reproducible, root-caused TOOLING outage
++(not substantive dissent) may be `disregarded` and the gate may pass on the
++remaining unanimous substantive `GO`s — under the explicit conditions, reroll bar,
+ authorization (orchestrator inside an autonomous `/loop`, else escalate to the
+ user), and structured recording defined in the runbook's **Degraded Gate
+ Policy**. A substantive `BLOCK` is never bypassed.
+ 
+ If the same gate receives `BLOCK` results through attempt 4 (the initial run
+-plus three reruns), escalate to the user with the reviewer feedback and a
+-proposed resolution. The user can provide direction, but the gate still
+-requires a clean three-reviewer `GO` before the workflow advances.
++plus three reruns), escalate to the user with the seat feedback and a proposed
++resolution. The user can provide direction, but the gate still requires a clean
++unanimous `GO` from the tier's seats before the workflow advances.
+ 
+ ## Gate Semantics
+ 
+-**Review lenses.** Every reviewer seat applies the same four review lenses
++**Review lenses.** Every seat applies the same four review lenses
+ (Spec Adversary, Runtime Verifier, Docs/Reality Checker, Security/Data-Integrity
+ Checker). Lenses are the shared checklist each seat runs; seats are the redundancy.
+ See [Reviewer Roles (review lenses)](review-gate-runbook.md#reviewer-roles-review-lenses)
+@@ -72,19 +77,19 @@ Optional improvements are not blockers and do not require rerunning the review
+ gate. They must still be implemented before advancing to the next phase unless
+ they are explicitly recorded as deferred to a named follow-up bead.
+ 
+-The orchestrating agent must:
++The supervisor must:
+ 
+-- wait for all three reviewers to finish
+-- treat any missing reviewer result as a process blocker
++- wait for all of the tier's seats to finish
++- treat any missing seat result as a process blocker
+ - incorporate all required changes from every `BLOCK`
+-- rerun the full three-reviewer gate after changes
+-- after a clean three-reviewer `GO`, incorporate optional improvements or
++- rerun the full gate, with all of the tier's seats, after changes
++- after a clean unanimous `GO`, incorporate optional improvements or
+   explicitly defer them to a named follow-up bead
+-- record the reviewer identities, results, and change summary in the bead
++- record the seat identities, results, and change summary on the run ref
+ - count reruns so repeated blocks can be escalated with context
+ 
+-Every rerun is a full re-examination of the updated artifact by all three
+-reviewers. Prior `GO` results do not carry over after any required-change
++Every rerun is a full re-examination of the updated artifact by all of the
++tier's seats. Prior `GO` results do not carry over after any required-change
+ rerun.
+ 
+ For rerun counting, the same gate means one phase attempt for one bead. The
+@@ -101,7 +106,7 @@ When a phase is blocked on human input:
+ - record what input is missing
+ - request the input from the user
+ - incorporate the supplied input into the artifact or workflow state
+-- rerun the three-reviewer gate
++- rerun the gate
+ 
+ ## Approval Surface
+ 
+@@ -109,5 +114,4 @@ The approval surface is where review artifacts and reviewer results are shown.
+ It can be a tmux pane, chat message, PR comment, local file, or another
+ configured surface.
+ 
+-The approval surface is informational. It does not replace the three-reviewer
+-gate.
++The approval surface is informational. It does not replace the gate.
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index ad7c014..8dece69 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -1,16 +1,20 @@
+ # Review Gate Runbook
+ 
+-Status: planning note. This is the operational checklist for running the
+-three-reviewer dogfood gate defined in [Review Gate Process](review-gate-process.md).
++Status: planning note. This is the judgement reference for the phase gate whose
++policy is defined in [Review Gate Process](review-gate-process.md).
+ 
+ ## Purpose
+ 
+-The review gate process defines the policy. This runbook defines how to execute
+-it consistently.
++The review gate process defines the policy. The
++[Supervisor runbook](supervisor-runbook.md) defines the mechanics — the two
++commands that advance a phase, the seat envelope contract, and what lands in the
++run ref. THIS runbook defines how to JUDGE: what a seat should look at, how to
++weight a gate, how to write the prompt, how to classify a result, and the
++recurring defect classes each phase gate should hunt for.
+ 
+-Use this runbook for every phase gate while dogfooding `etude`.
+-
+-Compact gate checklist: [Dogfood Checklists](checklists.md#gate-execution). This runbook is the rationale/reference.
++That split matters. The mechanics are becoming a command (`etude gate`), so they
++belong in one place that the command is written against. The judgement is
++model-independent and hard-won, and it stays here.
+ 
+ ## Reviewer Roles (review lenses)
+ 
+@@ -53,7 +57,7 @@ observed guard/behavior; for round-trip, before/after bytes.
+ (anthropic/claude-opus-4-7). Each runs the
+ SAME full lens checklist. Execution constraints (codex large-input hang, gemini
+ GrepTool cross-file bleed) affect HOW a seat applies
+-lenses — see Per-seat execution constraints under Invocation. They are NOT a
++lenses — see Per-seat execution constraints below. They are NOT a
+ reason to specialize seats to different lenses.
+ 
+ **Scope-fence.** The 1-bead-1-commit / scope discipline is a cross-lens
+@@ -65,14 +69,20 @@ Runtime Verifier ← #7, P1; Docs/Reality ← #6, Epic-Close; Security/Data-Inte
+ 
+ ## Gate Weight
+ 
+-Match the gate weight to the bead's risk. Pick the tier from the highest-risk
+-surface the bead touches; when unsure, go heavier. Every tier still requires a
+-UNANIMOUS pass of its seats — no tier advances on partial approval — and every
+-seat failure (auth/quota/tool/empty) still escalates per Waiting And Status.
++**The tier and its seats come from config, not from this document.** Each stage's
++`gate.tier` in `.etude/workflow.yaml` names a tier; `tiers.<L>.seats` in
++`.etude/registry.yaml` names that tier's seats. Tier numbers are inverted by
++weight: L1 is the heaviest, L4 the lightest. Do not restate the seat lists here —
++a second copy drifts from the config, and the config is what actually runs.
++
++Every tier requires a UNANIMOUS pass of its seats (registry `quorum`) — none
++advances on partial approval — and every seat failure (auth/quota/tool/empty) is
++never a pass.
+ 
+-**Tier 1 — Full three-seat gate** (Gemini Pro + in-harness Claude Opus + fresh
+-GPT-5.5 xhigh). The default and required tier for anything that can
+-affect users, data, or future compatibility:
++What this section owns is the RISK MAPPING: which surface deserves which weight.
++
++**Heaviest (L1)** — anything that can affect users, data, or future
++compatibility:
+ 
+ - product code and public CLI behavior;
+ - manifest, artifact, ref, workflow, or eval schema/format/storage changes;
+@@ -80,33 +90,32 @@ affect users, data, or future compatibility:
+ - any change that could lose or corrupt data, or break backward compatibility;
+ - docs that claim NEW shipped behavior (reviewers must verify docs against code).
+ 
+-Examples this tier caught real bugs on: `etude sync`, refstore hardening.
++Examples this weight caught real bugs on: `etude sync`, refstore hardening.
++
++**Strong (L2)** — the heavy-QA panel. The PLAN and VERIFY phase gates, and any
++change touching product/CLI behavior, schema/format, `refs/etude/*`, or docs
++claiming new shipped behavior.
+ 
+-**Tier 2 — Lightened two-seat gate** (in-harness Claude Opus + fresh GPT-5.5
+-xhigh — the two highest-signal seats; drop the slower Gemini seat).
+-Use for LOW-RISK code changes that touch none of the Tier-1 surfaces: small
+-polish, localized refactors, validation tightening, or test strengthening on an
+-existing, already-gated component. Example: tightening `capture --git-sha`
+-validation + adding a table test.
++**Medium (L3)** — the IMPLEMENT phase gate, and low-risk localized refactors,
++validation tightening, or test strengthening on an already-gated component.
++Example: tightening `capture --git-sha` validation plus a table test.
+ 
+-**Tier 3 — Single-seat gate** (in-harness Claude Opus). Use only for changes with
+-NO shipping-code change: test-only additions (e.g. godoc `Example` functions) or
+-docs/planning-notes-only changes. Examples: internal API examples, a deferred-
+-decisions planning note.
++**Light (L4)** — the DOCS and FINAL REVIEW phase gates, and changes with no
++shipping-code change: test-only additions or docs/planning-only changes.
+ 
+-Escalation is mandatory and overrides the tier: if a bead picked for Tier 2/3
+-turns out to touch a Tier-1 surface, or ANY reviewer (or the orchestrator) finds
+-it changes shipped behavior/schema/storage or could lose data, STOP and rerun at
+-Tier 1. Tier choice is recorded in the gate attempt note (e.g. "gate: Tier 2
+-(Opus + Codex) — low-risk capture polish, no Tier-1 surface").
++**The stage's `gate.tier` is a FLOOR, never a ceiling.** If a bead whose stage
++declares a lighter tier turns out to touch a heavier surface — or any seat or the
++supervisor finds it changes shipped behavior, schema, or storage, or could lose
++data — STOP and re-gate at the heavier tier. Going down is never available: there
++is no flag to ask `etude gate` for a lighter panel than the stage declares, and
++hand-lowering one in a bootstrap gate record is the thing this whole model exists
++to make impossible.
+ 
+ **Lightweight artifact (composes with any tier):** for docs/planning-only work,
+ narrow the gate prompt and evidence to the actual changed files/diffs and have
+ the phase owner state why product/manual tests are not relevant. This is about
+ the prompt scope, independent of how many seats the tier uses.
+ 
+-All tiers record reviewer results with the normal gate attempt note format.
+-
+ ## Gate Inputs
+ 
+ Before launching reviewers, collect exact current artifacts:
+@@ -135,17 +144,20 @@ to — resolved only after re-reading the runbook and rerunning with the full ru
+ If unsure a paraphrase is complete, tell the seat to verify it against the named
+ source rather than treating the paraphrase as authoritative.
+ 
+-## Invocation
++## Per-seat execution constraints
+ 
+-Run the three reviewers in parallel:
++WHO dispatches the seats, and how a verdict reaches the run ref, is the
++[Supervisor runbook](supervisor-runbook.md)'s subject — a gate resolves its tier
++from `.etude/workflow.yaml`, its seats from `.etude/registry.yaml`, and hands
++every seat the identical shared prompt.
+ 
+-- Gemini Pro
+-- Claude Opus
+-- a fresh GPT-5.5 xhigh agent (codex)
++What follows is how each seat BEHAVES once invoked. It is the accumulated list
++of ways a seat produces a wrong or missing verdict, and it is the design brief
++for a seat adapter: an adapter that ignores these reproduces the same failures
++with a JSON envelope wrapped around them.
+ 
+-Each reviewer should run as a non-interactive prompt invocation that receives
+-only the gate prompt and repository files. They must not rely on hidden
+-implementation context.
++Each seat runs as a non-interactive invocation receiving only the shared gate
++prompt. Seats must not rely on hidden implementation context.
+ 
+ **Reviewer seats MUST NOT mutate the working tree.** A pre-commit gate reviews
+ UNCOMMITTED work, so any `git checkout`/`git restore`/`git stash`/`git reset` a
+@@ -257,6 +269,11 @@ orchestrator is Claude Code.
+ 
+ ### Example launch pattern
+ 
++These are the invocations a seat ADAPTER wraps. The adapter's added job is the
++envelope: read the shared prompt from `$ETUDE_INPUTS_DIR`, run the command
++below, and write `{"verdict": ...}` to `$ETUDE_OUTPUT_FILE` (see
++[Supervisor runbook — The seat contract](supervisor-runbook.md#the-seat-contract)).
++
+ ```text
+ Gemini Pro:     GEMINI_CLI_TRUST_WORKSPACE=true gemini --skip-trust \
+                 -m gemini-3.1-pro-preview -p "<gate prompt>"
+@@ -275,15 +292,21 @@ directory" without `--skip-trust` (+ `GEMINI_CLI_TRUST_WORKSPACE=true`), and
+ `--skip-git-repo-check`. Omitting them costs a guaranteed failed reroll on the
+ first gate of every fresh environment. (etude-8ub)
+ 
+-Do not advance until all three reviewers return.
++Do not advance until every one of the tier's seats returns.
+ 
+-## Gate Orchestration (Claude Code)
++## Supervisor discipline
+ 
+-When Claude Code drives the loop, the orchestrator's own discipline is as
+-load-bearing as the panel. These rules were distilled from the etude-2pc
+-live-execution epic, where the panel never shipped a defect but several
+-sub-agent handoffs silently failed and were caught ONLY by independent
+-orchestrator verification. Treat them as mandatory, not optional.
++`etude gate` takes over the mechanical half of running a gate: resolving the
++tier and its seats, building the shared prompt, dispatching, synthesizing, and
++writing the record. What it does NOT take over is everything below — verifying
++that the artifact under review is the real one, keeping scratch out of the repo,
++and keeping a bead's commit to that bead. Those stay the supervisor's job, and
++they are as load-bearing as the panel.
++
++These rules were distilled from the etude-2pc live-execution epic, where the
++panel never shipped a defect but several sub-agent handoffs silently failed and
++were caught ONLY by independent orchestrator verification. Treat them as
++mandatory, not optional.
+ 
+ ### Pre-gate verification (do this BEFORE dispatching any gate)
+ 
+@@ -353,13 +376,11 @@ only your reviewer-seat verdict.
+ 
+ Process:
+ - no human approval gates
+-- gate passes only if Gemini Pro, Claude Opus, and fresh GPT-5.5 xhigh
+-  all return clear GO
++- gate passes only if EVERY seat in the stage's tier returns a clear GO
+ - any BLOCK requires incorporating required feedback and rerunning the full
+   gate
+-- reviewer auth/quota/model/tool failure escalates to the user and cannot be
+-  skipped
+-- optional improvements from GO reviewers must be implemented before advancing
++- seat auth/quota/model/tool failure escalates and cannot be skipped
++- optional improvements from GO seats must be implemented before advancing
+   or explicitly deferred to a named follow-up bead
+ 
+ Review artifacts:
+@@ -402,19 +423,26 @@ described in the In-harness Claude rule above, not the external `claude -p` CLI.
+ 
+ ## Waiting And Status
+ 
+-While reviewers are running:
++`etude gate` waits on its own seats and classifies a seat that produces no usable
++envelope (`empty`, `malfunction`, `failed`) without the supervisor watching a
++process. What still needs judgement is what to do about a seat that keeps
++failing.
+ 
+-- report which reviewers have returned
+-- report which reviewers are still pending
+-- do not infer failure from silence while a process is still running
+-- if a reviewer exits with auth, quota, model access, allowance, timeout, or
+-  tooling failure, stop and escalate to the user
++A failed invocation is never a `GO`. A gate with too few usable verdicts
++escalates, and escalation exits non-zero.
+ 
+-A failed invocation is not a `GO`. Any seat's failure to run still escalates.
++When a seat is run out-of-band (the bootstrap path — see the
++[Supervisor runbook](supervisor-runbook.md#the-bootstrap-path)), the supervisor
++watches it directly:
+ 
+-Default wait heuristic: poll quietly for at least 10 minutes before treating a
+-silent reviewer as suspect. If the process is still alive after that, inspect
+-the process state and escalate to the user rather than killing or skipping it.
++- report which seats have returned and which are still pending
++- do not infer failure from silence while a process is still running
++- if a seat exits with auth, quota, model access, allowance, timeout, or tooling
++  failure, stop and escalate rather than proceeding without it
++
++Default wait heuristic: wait at least 10 minutes before treating a silent seat as
++suspect. If the process is still alive after that, inspect its state and escalate
++rather than killing or skipping it.
+ 
+ Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
+ hangs, empties, or errors twice in a session, stop blind rerun/kill cycles and
+@@ -428,12 +456,12 @@ around it.
+ 
+ ## Result Classification
+ 
+-After all three reviewers return:
++After every seat in the tier returns:
+ 
+-- all three `GO`: gate passes after optional improvements are handled
++- all `GO`: gate passes after optional improvements are handled
+ - any `BLOCK`: gate fails; incorporate all required changes and rerun the full
+   gate
+-- any reviewer failure: gate is incomplete; escalate to the user
++- any seat failure: gate is incomplete; escalate
+ 
+ **Reviewer failure / tooling outage.** A reviewer failure (auth/quota/empty/hang/
+ tool error) makes the gate INCOMPLETE — escalate, never treat as `GO`. The single
+@@ -528,14 +556,18 @@ docs/plans/product/gate-reviewer-record-schema.md).
+ 
+ ## Reruns
+ 
+-Every rerun is a full re-examination by all three reviewers. Prior `GO` results
+-do not carry over.
++Every rerun is a full re-examination by ALL of the tier's seats. Prior `GO`
++results do not carry over.
+ 
+ Prior reviewer results are context only on rerun. They explain why the artifact
+ changed, but they never count toward the new gate.
+ 
+ For rerun counting, the same gate means one phase attempt for one bead. The
+-counter resets when the phase gate passes.
++counter resets when the phase gate passes. `etude gate` derives the round from
++the attempts already on the run, so the count is a property of the record rather
++than of anyone's memory — which also means a rerun is visible in
++`etude run show` as a `rerun` attempt followed by a later one, not as a silently
++overwritten verdict.
+ 
+ **Incorporating a PLAN-gate BLOCK: distinguish a missing detail from a
+ conceptual contradiction.** A missing-detail BLOCK ("add validation X",
+@@ -582,8 +614,15 @@ plus three reruns), escalate to the user with:
+ - remaining disagreement or blocker
+ - proposed resolution
+ 
+-The user can provide direction, but the gate still needs a clean
+-three-reviewer `GO` before advancing.
++The user can provide direction, but the gate still needs a clean unanimous `GO`
++from the tier's seats before advancing.
++
++**Watch the AGGREGATE, not just the round.** Each round being individually
++justified — a real issue, a cheap fix — is not licence to keep going. By the
++third consecutive BLOCK on DISTINCT issues, stop re-gating and ask whether the
++sub-feature the seats keep blocking needs to exist at all: repeated blocks are
++evidence about the premise, not only about the artifact. Splitting is the wrong
++default there, because the child inherits the premise that is failing.
+ 
+ ## Scope Discipline (implement → gate)
+ 
+@@ -888,7 +927,7 @@ weaker design.** *(lens: Spec Adversary)*
+   re-deriving the premise from the actual scripts: the hook needs NO bead id (it
+   runs the BATCH `--last 9` audit), and it does NOT recurse because it can EXEMPT
+   pushes whose refs are all `refs/etude/*` (verified: `core.hooksPath=.beads/hooks`,
+-  and `dogfood-capture.sh`/`dogfood-gate-capture.sh` push only `refs/etude/runs/*`).
++  and the capture scripts push only `refs/etude/runs/*`).
+   Both stated reasons were false. The plan was amended to the hybrid (wrapper +
+   pre-push hook) the bead actually needed.
+ - **How to apply:** when a plan says "rejected (b) because X," do not accept X — go
+@@ -953,67 +992,41 @@ passes on `make reconcile` exit 0 + the holistic README/index read.
+ 
+ ## Recording Results
+ 
+-Record gate results in bead notes:
+-
+-```text
+-<Phase> gate attempt <n>:
+-- Gemini Pro: GO | BLOCK | failed (<reason>)
+-- Claude Opus: GO | BLOCK | failed (<reason>)
+-- fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
+-- required changes incorporated: <summary or none>
+-- optional improvements handled: <summary or deferred bead>
+-- result: pass | rerun required | escalated
+-```
++**The structured `GateAttempt` on the run ref is the record.** `etude gate`
++writes it as part of running the gate — the supervisor does not author it, and
++cannot record a gate that did not run. That is the point of the whole model: the
++old protocol asked an agent to remember to write down what it had just done, and
++across 14 consecutive beads (`etude-2ku` through `etude-kig`) it quietly stopped
++doing so while still capturing the runs. The gap was only found by a QA sweep
++weeks later and backfilled under `etude-nm6`. A rule that depends on remembering
++is a rule that is already broken.
+ 
+-Example safe append:
++Prose gate notes on the bead are an optional human-readable mirror, never the
++source of truth. If you write one, keep it short and point at the run:
+ 
+ ```bash
+-bd update <id> --append-notes "$(cat <<'EOF'
+-Implement gate attempt 2:
+-- Gemini Pro: GO
+-- Claude Opus: GO
+-- fresh GPT-5.5 xhigh: GO
+-- required changes incorporated: none
+-- optional improvements handled: clarified runbook examples
+-- result: pass
+-EOF
+-)"
++bd update <id> --append-notes "verify gate r2: pass (opus GO, codex GO); see etude run show <id>"
+ ```
+ 
+ If the phase artifact has its own review-gate section, append reviewer results
+ after review completes. Do not edit the original artifact body just to insert
+ post-review data.
+ 
+-### Structured capture (`etude capture-gate`)
+-
+-The prose block above is the human-readable mirror; the **structured record is
+-the durable source of truth**. After each gate ATTEMPT concludes (one panel
+-re-examination of one phase at one round), also record it as a `GateAttempt` on
+-the bead's etude run:
+-
+-1. Author a gate-attempt JSON (the orchestrator already holds every seat's
+-   verdict, feedback, provider, and model at gate time).
+-2. Run `scripts/dogfood-gate-capture.sh <bead-id> <gate.json>`. It builds etude
+-   fresh, fetches the run ref, appends via `etude capture-gate`, VERIFIES the
+-   local manifest (`manifest_version` 3 + the gate present) BEFORE pushing, then
+-   pushes `refs/etude/runs/<bead-id>`.
+-
+-> **Do NOT skip this — it has been silently dropped before.** A 2026-05-27
+-> dogfooding QA pass found that `etude-2ku` through `etude-kig` (14 review-/
+-> Phase-C beads) have ZERO gate records, even though the earlier beads (and
+-> `etude-egg`/`f6h`/`quk`) do — the orchestrator captured the *runs* but quietly
+-> stopped capturing the *gates* mid-stream. Treat gate capture as mandatory per
+-> attempt, and sanity-check after closing a bead with
+-> `etude run show <bead> | grep -c gate`. The 14-bead historical gap was
+-> backfilled 2026-05-27 (35 GateAttempt records, etude-nm6) from the recorded
+-> gate histories; the going-forward rule is: every gate attempt gets a record.
+->
++### The record shape
++
++The shape below is what `etude gate` writes and what `etude capture-gate`
++accepts, so a record is identical whichever path produced it. Authoring one by
++hand is the bootstrap path only — see
++[Supervisor runbook — The bootstrap path](supervisor-runbook.md#the-bootstrap-path)
++for when that is legitimate and what it obliges you to write down.
++
+ > **Mechanical completeness check:** `scripts/dogfood-completeness-audit.sh`
+-> automates the B16 completeness check (run ref present, gates non-empty,
+-> refs pushed). Run `scripts/dogfood-completeness-audit.sh --last 9` for a
+-> batch sweep, or `--bead <id>` per close. See
+-> [Dogfood Completeness Audit](capture-protocol.md#dogfood-completeness-audit)
+-> in the capture protocol for full usage and the allowlist mechanism.
++> checks whether closed beads have their run refs, gate records, and pushed
++> refs. Run `make dogfood-audit` for a batch sweep, or `--bead <id>` per close.
++> Its "run ref present" and "gates non-empty" checks become structurally true
++> once a phase can only advance through `etude gate`; the check that keeps
++> earning its place is refs-pushed, because an unpushed ref is invisible until
++> the worktree is gone.
+ 
+ Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
+ COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose
+diff --git a/docs/plans/dogfood/supervisor-runbook.md b/docs/plans/dogfood/supervisor-runbook.md
+new file mode 100644
+index 0000000..c3e9a3d
+--- /dev/null
++++ b/docs/plans/dogfood/supervisor-runbook.md
+@@ -0,0 +1,313 @@
++# Supervisor Runbook
++
++Status: planning note. This describes how a bead is worked while `etude` is
++still being built. It is not shipped user-facing behavior.
++
++This runbook replaces the manual capture protocol. Under that protocol the agent
++did the work, closed the bead, and a script then *reconstructed* five stage
++artifacts from the bead's `design` field and `git show <sha>`. Recording was
++reconstruction, so it was skippable — and skipped: of the run refs under
++`refs/etude/runs/`, all but one are named after a bead id, captured after the
++fact rather than produced by a run. A large completeness audit existed to police
++that gap.
++
++The replacement has two moving parts. A **worker lane** does the producing work.
++A **supervisor** advances each phase boundary with one command that runs the
++gate for real. The supervisor cannot record a gate it did not run, so the audit
++shrinks to the two checks that caught real misses.
++
++This is deliberately not live `etude run`: the producing step stays outside
++etude until caller-cwd runner mode lands (GH #15). What changes is that gating
++stops being a manual reconstruction and becomes a command.
++
++---
++
++## The two roles
++
++**Worker lane.** A claude worker on its own workmux worktree, running the
++`etude-loop` skill, works one bead through `plan → implement → verify → docs →
++review`. It produces each phase's artifact and nothing else: it does not run its
++own gate, does not write verdicts, and does not decide whether a phase advances.
++
++**Supervisor.** Holds the bead board and advances each phase boundary. It never
++produces the artifact under review and never writes a verdict by hand. Its whole
++job at a boundary is two commands: record the stage, then run the gate.
++
++The split is what makes the record trustworthy. A single agent that produces an
++artifact, judges it, and writes down the judgement is recording its own opinion.
++Here the artifact comes from the worker, the verdict comes from the seats, and
++the supervisor only carries them to the run ref.
++
++---
++
++## Where a phase artifact lands
++
++`.etude/tmp/<bead>/<phase>.md`, in the worker's worktree.
++
++That path is gitignored scratch on purpose. The durable record is the run ref:
++`etude capture` content-addresses the artifact into `refs/etude/runs/<bead>`, so
++the bytes that were gated are recoverable from git forever without a single
++planning file landing in the repo tree. Phase artifacts are never committed.
++
++The same rule covers gate prompts and raw reviewer output. They inline the full
++artifact, so committing them duplicates content the run ref already holds.
++
++---
++
++## The per-phase loop
++
++The worker writes `.etude/tmp/<bead>/<phase>.md`. Then the supervisor runs:
++
++```bash
++# 1. record the stage — creates the run ref on the first capture of the bead
++etude capture <phase> --run <bead> \
++    --output <role>=.etude/tmp/<bead>/<phase>.md \
++    --workflow default --workflow-version default-v1 \
++    --harness claude-code --model <model> --skill-id <the stage's skill>
++
++# 2. run the gate for real
++etude gate --run <bead> --stage <phase> --artifact .etude/tmp/<bead>/<phase>.md
++```
++
++`<role>` is the stage's `produces` value in `.etude/workflow.yaml` (`plan`,
++`diff`, `verify`, `docs-diff`, `review`). `--skill-id` is that stage's `skill`.
++
++**Exit 0** — the gate passed. Advance to the next phase.
++
++**Non-zero** — the gate did not pass. The supervisor hands the printed
++`required` items back to the worker verbatim, the worker redoes the phase, and
++the supervisor captures the new artifact under a rerun stage name and gates
++again:
++
++```bash
++etude capture <phase>.r2 --run <bead> --output <role>=... [...]
++etude gate --run <bead> --stage <phase> --artifact ...
++```
++
++The rerun stage name matches the convention `etude run`'s own gate uses for a
++re-driven stage. `etude gate` derives the round from the attempts already on the
++run, so the second attempt records as round 2 without being told.
++
++**Verify the ref after every capture.** `git show-ref refs/etude/runs/<bead>`
++before moving on. The run ref is the whole durable record; a capture that
++reported success but left no ref is worth catching at the boundary rather than
++at close.
++
++---
++
++## `etude gate`
++
++> This section is the contract bead `etude-9uf.1` implements. Until that bead
++> lands, use the bootstrap path below. When it lands, this section is amended in
++> the same bead to describe what shipped, and any wording here that reads as
++> "future" is corrected then — `scripts/docs-reality-check.sh` flags a
++> `docs/plans/**` line that calls a shipped command unimplemented, which is what
++> keeps this document and the command from drifting apart.
++
++```
++etude gate --run <id> --stage <name> --artifact <file>
++```
++
++What it does, in order:
++
++1. **Resolve the stage.** Look up `<name>` in `.etude/workflow.yaml`. An unknown
++   stage is a clear error and a non-zero exit, with nothing recorded.
++2. **Read that stage's gate block** — `gate.tier`, `gate.abstraction`,
++   `gate.checks`.
++3. **Resolve the tier's seats** from `.etude/registry.yaml` (`tiers.<L>.seats`).
++   The tier is read from config, never from a flag: there is no way to ask for a
++   lighter panel than the stage's gate declares.
++4. **Require the run ref to exist.** `refs/etude/runs/<id>` must already be
++   there, created by the first `etude capture` for the bead. A missing run ref
++   is a clear error and a non-zero exit. The gate does not create runs — a gate
++   attaches to work that was recorded, and auto-creating the run would let a
++   gate exist with nothing to review.
++5. **Derive the round** from the attempts already recorded for that phase, so a
++   re-gate after a worker fix is round N+1.
++6. **Run the checks, then the seats,** both against the same shared prompt. A
++   check is deterministic and its exit code is the verdict: 0 passes, anything
++   else blocks.
++7. **Synthesize one verdict** with the existing fail-closed algorithm: any
++   failing check is a not-pass; fewer than `min(2, len(seats))` usable seat
++   verdicts is `escalated`; otherwise the seats must clear the pass threshold,
++   which defaults to 1.0 — unanimous, matching the registry's `quorum`.
++8. **Append one `GateAttempt`** to the run ref with per-seat verdicts, raw
++   output and session evidence.
++9. **Print** the synthesized verdict and each blocking seat's `required` items.
++10. **Exit 0 only on `pass`.** `rerun` and `escalated` exit non-zero, so a
++    supervisor cannot advance past a failed gate by missing a line of output.
++
++There is no rerun loop. `etude run`'s gate re-invokes the stage runner and
++re-reviews its new output; a supervised lane has no runner to re-invoke, so a
++not-pass returns to the supervisor, who returns it to the worker.
++
++### The record must match the bootstrap path
++
++Both `etude gate` and `etude capture-gate` write `GateAttempt` records to the
++same run ref, so they must write the *same* record: same field set, same
++`gate_id` convention (`<phase>.r<round>`), same verdict vocabulary, same
++`failure_note` rules. `etude gate` should build the record through the same
++construction path `capture-gate` uses rather than a parallel one, so the two
++cannot drift and a run's history reads the same regardless of which path wrote
++each entry.
++
++---
++
++## The seat contract
++
++A seat is invoked as a subprocess with a deliberately small environment:
++`PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, plus any variable NAMES listed
++in the workflow's `env_allowlist`. The shared prompt is materialized as a file
++under `$ETUDE_INPUTS_DIR`. The seat MUST write a JSON verdict envelope to
++`$ETUDE_OUTPUT_FILE`:
++
++```json
++{
++  "verdict": "go",
++  "required": [],
++  "optional": [],
++  "session": {"session_id": "", "transcript_path": ""}
++}
++```
++
++Nothing else is read. A seat that writes prose to stdout and leaves
++`$ETUDE_OUTPUT_FILE` untouched is recorded `empty`; a seat that writes non-JSON
++is recorded `malfunction`. Neither is a pass.
++
++**So a seat's registry `invoke` must name an adapter, not a bare model CLI.** A
++bare `claude -p` or `codex exec` writes prose to stdout and satisfies none of
++this. The adapter's job is small: read the prompt from `$ETUDE_INPUTS_DIR`, run
++the model CLI, turn the reply into the envelope, write it to
++`$ETUDE_OUTPUT_FILE`. `examples/research/approve-seat.sh` is the minimal shipped
++example of a conformant seat.
++
++Changing an `invoke` to point at an adapter does not change the panel: the seat
++identities, the tiers they belong to, and the quorum are the same. Only the
++invocation becomes contract-conformant.
++
++**Credentials.** The environment is hermetic, so a model CLI that reads its
++credentials from the user's home directory sees nothing unless `env_allowlist`
++carries `HOME`. `env_allowlist` holds NAMES only — values are resolved at run
++time and are never written to the manifest, a log, or a gate record.
++
++---
++
++## The shared prompt
++
++Every seat at a gate receives the identical prompt. Seats are model identities
++voting on one prompt; they are never role personas with different briefs. That
++is the whole basis of the redundancy — divergence is supposed to come from
++model diversity, not from having asked two reviewers different questions.
++
++The prompt carries the reviewer role, the phase, the decision standard, the
++stage's `gate.abstraction` prose, the bead's acceptance criteria, and the
++artifact inlined in full.
++
++`gate.abstraction` is the altitude control: it is what stops a plan gate from
++blocking on implementation minutiae, or an implement gate from re-litigating the
++design. It is per-stage config, so it is the workflow that decides how each
++phase is judged.
++
++For what a good prompt contains and the failure modes of a bad one, see
++[Review gate runbook — Gate Inputs](review-gate-runbook.md#gate-inputs) and
++[Reviewer Prompt Template](review-gate-runbook.md#reviewer-prompt-template). The
++short version: inline the whole artifact, never a summary; include the unchanged
++code an invariant depends on; and never mechanically truncate the thing under
++review.
++
++---
++
++## Degraded gates and stop-the-line
++
++**A seat that cannot run is never a pass.** Not an implicit one, not a silent
++one. A gate with too few usable verdicts escalates, and escalation exits
++non-zero.
++
++There is one documented seat exception, and it is live today. The `opus` seat's
++registry invocation is `claude -p --model opus`, which fails to authenticate
++when the orchestrator is itself Claude Code — the host session's credentials are
++not exposed to a subprocess, and the CLI reports that it is not logged in. The
++registry records the workaround in a comment: run that seat as an in-harness
++sub-agent instead.
++
++That exception lives in prose, not in code, so `etude gate` cannot honour it. It
++resolves the `invoke` string verbatim, the seat fails, and the gate escalates —
++which is the correct fail-closed behavior for a machine that has been handed a
++rule it cannot read. Bead `etude-pqv` covers making registry exceptions
++machine-honored. Until it lands, a supervisor that is itself a Claude Code
++session runs the opus seat out-of-band and records it via the bootstrap path
++below, writing down which seat could not be invoked and why.
++
++The bounded exception for *disregarding* a seat — the conditions, the reroll
++bar, who authorizes it, and how it is recorded — is unchanged and lives in
++[Review gate runbook — Degraded Gate Policy](review-gate-runbook.md#degraded-gate-policy).
++Note that `etude gate` does not implement it: its synthesis escalates on
++insufficient usable seats rather than passing on the remainder. Disregarding a
++seat is an orchestrator judgement, so it is recorded through the bootstrap path
++with `decision.degraded_reason` stating the evidence.
++
++---
++
++## The bootstrap path
++
++```bash
++scripts/dogfood-gate-capture.sh <bead-id> <gate.json>
++```
++
++This appends a hand-assembled `GateAttempt` to the run ref and pushes it. It
++builds etude fresh, fetches the ref so the optimistic-concurrency check guards a
++stale tip, verifies the local manifest before pushing, and only then pushes.
++
++It survives this epic because it is the only path available in two cases:
++
++1. before `etude gate` exists, and
++2. when a documented seat exception makes a seat un-invokable as a subprocess,
++   so the verdict is genuinely produced out-of-band.
++
++Using it obliges the supervisor to write down, in the gate record, which seat
++could not be invoked and why. A hand-assembled record with no such note is a
++record of a gate nobody can check.
++
++For the `GateAttempt` field shape, the per-seat `harness`/`provider`/`model`
++conventions, and the verdict-to-`failure_note` rules, see
++[Review gate runbook — Recording Results](review-gate-runbook.md#recording-results)
++and `docs/gates.md`.
++
++---
++
++## What the supervisor may not do
++
++- Lower a tier, or drop a seat, to get past a BLOCK. The tier comes from
++  `workflow.yaml` and its seats from `registry.yaml`; a bead that turns out to
++  touch a heavier surface escalates upward, never down.
++- Substitute its own judgement for a seat verdict.
++- Record a gate it did not run.
++- Advance a phase whose gate exited non-zero.
++
++A BLOCK is information. The response is to fix the work.
++
++---
++
++## Session boot
++
++1. `bd prime`, then `bd ready` — pick the next unblocked bead.
++2. `etude run list` and `etude run show <bead>` — recover what shipped on recent
++   beads and how it was reviewed, from the run refs rather than from `bd` alone.
++3. Read this runbook, then
++   [Review gate runbook](review-gate-runbook.md) for how to judge, and
++   [Verify phase design](verify-phase-design.md) for the workflow shape.
++4. Hand the bead to a worker lane and run the per-phase loop above.
++
++## Close
++
++1. Every phase gate for the bead exited 0.
++2. `make test` and `make lint` green — these are the verify stage's
++   `gate.checks` in `workflow.yaml`, so `etude gate` runs them at that boundary
++   rather than leaving them to memory.
++3. One bead, one commit, one short sentence. Stage paths explicitly.
++4. `bd close <id> --reason "<what landed> <sha>"` — the reason is the durable
++   record once the session is gone.
++5. Push the branch and push `refs/etude/runs/<bead>`. An unpushed run ref is
++   lost when the worktree is removed, which is one of the two conditions the
++   completeness check still enforces.
++6. A retro every three closed beads, committed under `.etude/retros/`.
+diff --git a/docs/plans/dogfood/verify-phase-design.md b/docs/plans/dogfood/verify-phase-design.md
+index 139afef..8144b1c 100644
+--- a/docs/plans/dogfood/verify-phase-design.md
++++ b/docs/plans/dogfood/verify-phase-design.md
+@@ -10,7 +10,7 @@ Use one externally visible **Verify** phase.
+ Keep `dev-test-writer`, `dev-qa`, and manual testing as separate internal
+ specialists for now. Do not expose them as separate top-level gates. The user
+ sees one Verify artifact with a single status recommendation for the bead.
+-Advancement is controlled by the three-reviewer gate defined in
++Advancement is controlled by the phase gate defined in
+ [Review Gate Process](review-gate-process.md).
+ 
+ This keeps the workflow simple enough to dogfood while preserving useful
+@@ -24,7 +24,7 @@ The Verify phase answers one question:
+ > Is the implementation ready for documentation and final review?
+ 
+ Its output is a single approval artifact. Every Verify outcome is reviewed by
+-the three-reviewer panel defined in [Review Gate Process](review-gate-process.md).
++the seat panel defined in [Review Gate Process](review-gate-process.md).
+ The workflow moves phase only after Gemini Pro, Claude Opus, and a fresh GPT-5.5
+ xhigh agent all return `GO`.
+ 
+@@ -137,7 +137,7 @@ fixed in the current bead.
+ AI-driven browser testing, such as Playwright execution, is still a Verify
+ lane. If the test genuinely requires human execution, Verify returns `blocked`
+ with a request for the human manual-test input. After that input is supplied,
+-the Verify artifact is updated and the three-reviewer gate reruns.
++the Verify artifact is updated and the phase gate reruns.
+ 
+ ### QA Lane
+ 
+@@ -164,7 +164,7 @@ captured as an Implement artifact.
+ If Verify reveals that the approved plan was wrong or incomplete, use `blocked`
+ with a recommendation for human input and re-planning rather than routing the
+ problem to Implement. After the missing decision is supplied, rerun the
+-three-reviewer gate.
++phase gate.
+ 
+ ## Artifact Shape
+ 
+@@ -223,14 +223,14 @@ edited into the original Verify artifact body.
+ 
+ ## Failure Handling
+ 
+-Every Verify result goes through the three-reviewer gate:
++Every Verify result goes through the phase gate:
+ 
+-- if all three reviewers give `GO` on `pass`, move to `phase:docs`
+-- if all three reviewers give `GO` on `fail`, move back to `phase:implement`
+-- if all three reviewers give `GO` on `blocked`, remain in `phase:verify` with
++- if all of the tier's seats give `GO` on `pass`, move to `phase:docs`
++- if all of the tier's seats give `GO` on `fail`, move back to `phase:implement`
++- if all of the tier's seats give `GO` on `blocked`, remain in `phase:verify` with
+   the missing input or decision recorded
+ - if any reviewer gives `BLOCK`, incorporate required feedback and rerun the
+-  full three-reviewer gate
++  full phase gate
+ - if any reviewer cannot complete because of auth, quota, model access,
+   allowance, timeout, or tooling failure, stop and escalate to the user
+ - if the same gate receives `BLOCK` results through attempt 4 (the initial run
+@@ -251,7 +251,7 @@ When Verify is blocked:
+ - do not proceed to Docs
+ - leave the bead in `phase:verify` until unblocked
+ - after the missing input is supplied, update the Verify artifact and rerun the
+-  three-reviewer gate
++  phase gate
+ 
+ ## Workflow Implications
+ 
+diff --git a/docs/plans/product/etude-retro-command.md b/docs/plans/product/etude-retro-command.md
+index ba0c8d4..3dffbba 100644
+--- a/docs/plans/product/etude-retro-command.md
++++ b/docs/plans/product/etude-retro-command.md
+@@ -3,7 +3,7 @@
+ Status: planning note. This describes **planned** `etude retro` behavior. None of
+ the commands or storage layouts below are implemented yet. The companion
+ manual-capture contract that *is* in force today lives in
+-[Dogfood capture protocol — Retro Capture](../dogfood/capture-protocol.md#retro-capture);
++[Dogfood retro capture](../dogfood/retro-capture.md);
+ the product thesis is [Retrospectives](retrospectives.md). This note makes that
+ thesis concrete and reconciles it with the now-shipped `capture`, `run`,
+ `replay`, `eval`, and `bench` surfaces. It is the concrete plan that
+@@ -91,7 +91,7 @@ but persists via `refstore.WriteCommit` directly to its own namespace
+   `media_type:"text/markdown; charset=utf-8"`) — content-addressed in the
+   artifact store exactly like a captured plan/verify artifact. **The body
+   carries the FULL manual retro schema** defined in
+-  [capture-protocol.md — Retro Capture](../dogfood/capture-protocol.md#retro-capture),
++  [retro-capture.md](../dogfood/retro-capture.md),
+   which is the authoritative schema: `scope`, `trigger`, `attempt`, `bead`,
+   `related stage`, `related gate attempts`, `related commits/diffs`, `inputs`,
+   `summary`, `timeline/key events`, `failure modes`, `root causes`,
