@@ -1,0 +1,12 @@
+# Verify — etude-9ey (cross-retro meta index)
+Dogfood-layer read-only script. New scripts/retro-meta-index.sh + test + Makefile targets + docs.
+## Premise (now holds — was deferred for no data)
+13 META=Y cadence retros now carry 7-key sidecars (8hq.5 backfill + B18/B19/B20); convention pinned (8hq.3). The deferral's 3 reasons (zero retros / empty+schema-free / no convention) are all resolved.
+## Checks (runtime-verified)
+- `make retro-index-test` → 35/35 pass.
+- `make retro-index` → exit 0, "Retros indexed: 13"; recurrence presented HONESTLY (header note: exact-string match → singletons expected; 0 recurring today). Useful slices: 24 follow-up beads (1 bead in 2 retros — cross-retro signal), 31 durable-changes timeline by original_event_date.
+- SUPERSESSION exclusion confirmed: superseded 20260526 predecessors ABSENT; 20260527 successors PRESENT; 40 refs − 17 superseded → 13 current cadence indexed. Skip is UNCONDITIONAL, before the trigger filter (mirrors audit check (c), not check (f)'s pre-cutoff-conditional skip).
+- READ-ONLY: no git mutation ops; NOT wired into the pre-push hook or dogfood-close. `make dogfood-audit`/`docs-reality`/`reconcile` green. Deterministic (run twice identical).
+## Layer
+Dogfood SCRIPT, not an etude-core command — preserves etude core's schema-agnostic posture (2ku/8hq.3); core never parses the 7-key sidecar.
+## Result: PASS

@@ -1,0 +1,1083 @@
+commit 7b6fcccd33bd0ebf97a70d6ba3555cf6e144a5e5
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 18:43:59 2026 +0800
+
+    add cross-retro meta index aggregating cadence sidecars
+
+diff --git a/Makefile b/Makefile
+index e07d542..6a08333 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@ BIN_DIR := bin
+ VERSION ?= dev
+ DOCS_DIR := docs/cli
+ 
+-.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test
++.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test
+ 
+ build:
+ 	mkdir -p $(BIN_DIR)
+@@ -54,3 +54,11 @@ dogfood-audit-test:
+ # Fixture-based tests for dogfood-close.sh and the pre-push enforcement block.
+ dogfood-close-test:
+ 	@bash scripts/dogfood-close_test.sh
++
++# Read-only cross-retro failure-mode / root-cause index over current cadence retros.
++retro-index:
++	@bash scripts/retro-meta-index.sh
++
++# Fixture-based tests for retro-meta-index.sh.
++retro-index-test:
++	@bash scripts/retro-meta-index_test.sh
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index 81870dd..749f28d 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -65,3 +65,4 @@ For the compact operational checklists, see [Dogfood Checklists](checklists.md).
+ | `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
+ | `scripts/docs-reality-check.sh` | Guard against doc/CLI drift (also run via `make docs-reality`). |
+ | `scripts/backfill-gate-records.sh` | One-time backfill of missing gate records. |
++| `scripts/retro-meta-index.sh` | Read-only cross-retro index: aggregates failure modes, root causes, follow-up beads, and durable-changes timeline across all current cadence-retro sidecars. Run via `make retro-index`; `--json` for machine form. Standalone analysis tool — not wired into any gate. |
+diff --git a/docs/retro.md b/docs/retro.md
+index af83ea7..4f5a573 100644
+--- a/docs/retro.md
++++ b/docs/retro.md
+@@ -103,6 +103,11 @@ renders the sidecar in a `--- retro meta ---` section after the body (see
+ [Show a retro](#show-a-retro)), and `retro list` flags its presence in the
+ `META` column.
+ 
++For cadence retros that follow the 7-key convention below, `make retro-index`
++runs `scripts/retro-meta-index.sh` — a read-only dogfood-layer aggregation that
++emits a cross-retro index of failure modes, root causes, follow-up beads, and a
++durable-changes timeline across all current (non-superseded) cadence-retro refs.
++
+ #### Cadence retro-meta convention (dogfood)
+ 
+ The schema of the JSON is not interpreted by etude — it is stored verbatim for
+diff --git a/scripts/retro-meta-index.sh b/scripts/retro-meta-index.sh
+new file mode 100644
+index 0000000..fee696a
+--- /dev/null
++++ b/scripts/retro-meta-index.sh
+@@ -0,0 +1,372 @@
++#!/usr/bin/env bash
++#
++# retro-meta-index.sh — read-only cross-retro failure-mode / root-cause index.
++#
++# Aggregates the 7-key retro-meta sidecars from all CURRENT (non-superseded)
++# cadence-retro refs into a markdown report (stdout) or machine-readable JSON
++# (--json mode). Mutates nothing: no git writes, no ref changes, no bd calls.
++#
++# Usage:
++#   bash scripts/retro-meta-index.sh [--json] [--quiet] [--help]
++#
++# Options:
++#   --json    Emit machine-readable JSON instead of markdown.
++#   --quiet   Suppress informational lines; only emit the report.
++#   --help    Show this help and exit 0.
++#
++# Exit codes:
++#   0  success (report emitted; zero retros found is still a success)
++#   1  unexpected error (git unavailable, python3 unavailable)
++#   2  usage error
++#
++# NOTE on exact-string tallying:
++#   failure_modes and root_causes are free-text prose sentences. "Recurrence"
++#   means the identical string appears verbatim in >=2 retro sidecars. Given
++#   that human-written sentences rarely match exactly, most entries today have
++#   count=1 (singletons). The report presents all entries honestly: a summary
++#   line states the count of recurring (>=2) entries, then lists ALL entries
++#   attributed to their source retro(s).
++#
++# Style mirrors scripts/dogfood-completeness-audit.sh:
++#   set -euo pipefail, repo-root cd, git for-each-ref + git cat-file + python3.
++set -euo pipefail
++
++REPO_ROOT="$(git rev-parse --show-toplevel)"
++cd "$REPO_ROOT"
++
++# ---------------------------------------------------------------------------
++# Argument parsing
++# ---------------------------------------------------------------------------
++emit_json=false
++quiet=false
++
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --json)   emit_json=true; shift ;;
++    --quiet)  quiet=true; shift ;;
++    --help|-h)
++      sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
++      exit 0 ;;
++    *)
++      echo "retro-meta-index: unknown option: $1" >&2
++      echo "Usage: bash scripts/retro-meta-index.sh [--json] [--quiet] [--help]" >&2
++      exit 2 ;;
++  esac
++done
++
++# ---------------------------------------------------------------------------
++# Temp files — cleaned up on exit
++# ---------------------------------------------------------------------------
++retro_jsonl_file="$(mktemp)"
++py_script_file="$(mktemp)"
++trap 'rm -f "$retro_jsonl_file" "$py_script_file"' EXIT
++
++# ---------------------------------------------------------------------------
++# Build superseded-set — identical pattern to dogfood-completeness-audit.sh:380-395.
++# One pass over refs/etude/retros: collect every non-empty refs.supersedes value.
++# ---------------------------------------------------------------------------
++declare -A superseded_set   # bare-retro-id -> 1
++
++while IFS= read -r retro_ref; do
++  sup_val="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null | python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++v=m.get('refs',{}).get('supersedes','')
++if v:
++    print(v)
++" 2>/dev/null || true)"
++  if [[ -n "$sup_val" ]]; then
++    superseded_set["$sup_val"]=1
++  fi
++done < <(git for-each-ref refs/etude/retros --format='%(refname)' 2>/dev/null || true)
++
++# ---------------------------------------------------------------------------
++# Collect all current cadence-retro sidecars.
++# For each ref:
++#   1. SKIP unconditionally if its bare id is in superseded_set (mirror audit :413-414).
++#      Applied BEFORE the trigger filter.
++#   2. Read manifest; keep only trigger==cadence-retro (mirror audit :491).
++#   3. Find output.role==retro-meta stage; read the blob (mirror audit :524-554).
++# ---------------------------------------------------------------------------
++# Accumulate sidecar data as JSONL; aggregate in one python3 pass below.
++
++while IFS= read -r retro_ref; do
++  retro_short="${retro_ref#refs/etude/retros/}"
++
++  # Skip unconditionally if superseded — mirror check (c) at audit:413-414,
++  # NOT the pre-cutoff-conditional skip from check (f) at audit:519.
++  [[ -v "superseded_set[$retro_short]" ]] && continue
++
++  manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
++
++  # Keep only cadence-retro trigger (mirror audit :491)
++  trigger="$(python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++print(m.get('refs',{}).get('trigger',''))
++" <<< "$manifest_data" 2>/dev/null || echo "")"
++  [[ "$trigger" == "cadence-retro" ]] || continue
++
++  # Find retro-meta stage and read sidecar blob (mirror audit :524-554)
++  sidecar_line="$(python3 -c "
++import json,sys,subprocess
++ref='$retro_ref'
++rid='$retro_short'
++m=json.load(sys.stdin)
++stages=m.get('stages',[])
++meta_stage=None
++for s in stages:
++    if s.get('output',{}).get('role','')=='retro-meta':
++        meta_stage=s
++        break
++if meta_stage is None:
++    sys.exit(0)
++blob_path=meta_stage.get('output',{}).get('path','')
++if not blob_path:
++    sys.exit(0)
++try:
++    result=subprocess.run(
++        ['git','cat-file','-p',ref+':'+blob_path],
++        capture_output=True,text=True,timeout=10
++    )
++    if result.returncode!=0:
++        sys.exit(0)
++    sidecar=json.loads(result.stdout)
++except Exception:
++    sys.exit(0)
++if not isinstance(sidecar,dict):
++    sys.exit(0)
++out={'retro_id':rid,'sidecar':sidecar}
++print(json.dumps(out))
++" <<< "$manifest_data" 2>/dev/null || true)"
++
++  if [[ -n "$sidecar_line" ]]; then
++    printf '%s\n' "$sidecar_line" >> "$retro_jsonl_file"
++  fi
++done < <(git for-each-ref refs/etude/retros --format='%(refname)' 2>/dev/null || true)
++
++# ---------------------------------------------------------------------------
++# Write the aggregation+emission python script to a temp file, then run it
++# with the JSONL file on stdin. This avoids the heredoc vs stdin-redirect
++# conflict (a heredoc always wins over < redirection).
++# ---------------------------------------------------------------------------
++cat > "$py_script_file" << 'PYEOF'
++import json, sys, collections
++
++emit_json_arg = sys.argv[1].lower() == "true"
++
++# Read JSONL from stdin
++entries = []
++for line in sys.stdin:
++    line = line.strip()
++    if not line:
++        continue
++    try:
++        entries.append(json.loads(line))
++    except json.JSONDecodeError:
++        continue
++
++# Sort entries by (original_event_date, retro_id) for deterministic ordering
++def sort_key(e):
++    s = e.get("sidecar", {})
++    return (s.get("original_event_date", ""), e.get("retro_id", ""))
++
++entries.sort(key=sort_key)
++
++retros_indexed = len(entries)
++
++# Collect date range
++dates = [
++    e["sidecar"]["original_event_date"]
++    for e in entries
++    if e.get("sidecar", {}).get("original_event_date")
++]
++date_from = min(dates) if dates else ""
++date_to   = max(dates) if dates else ""
++
++# ---------------------------------------------------------------------------
++# Tally failure_modes by exact string
++# ---------------------------------------------------------------------------
++fm_tally  = collections.Counter()
++fm_retros = collections.defaultdict(list)
++for e in entries:
++    rid = e["retro_id"]
++    for val in e.get("sidecar", {}).get("failure_modes", []):
++        if isinstance(val, str) and val:
++            fm_tally[val] += 1
++            fm_retros[val].append(rid)
++
++# ---------------------------------------------------------------------------
++# Tally root_causes by exact string
++# ---------------------------------------------------------------------------
++rc_tally  = collections.Counter()
++rc_retros = collections.defaultdict(list)
++for e in entries:
++    rid = e["retro_id"]
++    for val in e.get("sidecar", {}).get("root_causes", []):
++        if isinstance(val, str) and val:
++            rc_tally[val] += 1
++            rc_retros[val].append(rid)
++
++# ---------------------------------------------------------------------------
++# Follow-up beads index: bead_id -> [retro_id, ...]
++# ---------------------------------------------------------------------------
++bead_retros = collections.defaultdict(list)
++for e in entries:
++    rid = e["retro_id"]
++    for val in e.get("sidecar", {}).get("follow_up_beads", []):
++        if isinstance(val, str) and val:
++            bead_retros[val].append(rid)
++
++# ---------------------------------------------------------------------------
++# Durable changes timeline: ordered by (original_event_date, retro_id)
++# Inherits sort order from entries.
++# ---------------------------------------------------------------------------
++durable_timeline = []
++for e in entries:
++    rid = e["retro_id"]
++    oed = e.get("sidecar", {}).get("original_event_date", "")
++    for val in e.get("sidecar", {}).get("durable_changes", []):
++        if isinstance(val, str) and val:
++            durable_timeline.append({"value": val, "original_event_date": oed, "retro": rid})
++
++# ---------------------------------------------------------------------------
++# Sort helpers: count desc, then lexical asc (deterministic)
++# ---------------------------------------------------------------------------
++def sorted_tally(tally, retros_map):
++    items = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
++    return [{"value": v, "count": c, "retros": sorted(retros_map[v])} for v, c in items]
++
++sorted_fm    = sorted_tally(fm_tally, fm_retros)
++sorted_rc    = sorted_tally(rc_tally, rc_retros)
++sorted_beads = sorted(
++    [{"bead": b, "retros": sorted(rs)} for b, rs in bead_retros.items()],
++    key=lambda x: x["bead"]
++)
++
++# ---------------------------------------------------------------------------
++# JSON output
++# ---------------------------------------------------------------------------
++if emit_json_arg:
++    out = {
++        "retros_indexed": retros_indexed,
++        "date_range": {"from": date_from, "to": date_to},
++        "failure_modes": sorted_fm,
++        "root_causes": sorted_rc,
++        "follow_up_beads": sorted_beads,
++        "durable_changes": durable_timeline,
++    }
++    print(json.dumps(out, indent=2, ensure_ascii=False))
++    sys.exit(0)
++
++# ---------------------------------------------------------------------------
++# Markdown output
++# ---------------------------------------------------------------------------
++SEPARATOR = "-" * 72
++
++def recurring_count(tally):
++    return sum(1 for c in tally.values() if c >= 2)
++
++fm_recurring  = recurring_count(fm_tally)
++rc_recurring  = recurring_count(rc_tally)
++total_fm      = len(fm_tally)
++total_rc      = len(rc_tally)
++total_beads   = len(bead_retros)
++total_durable = len(durable_timeline)
++
++# Header
++print("# Cross-Retro Meta-Index")
++print("")
++print("> NOTE: Recurrence is tallied by **exact string match** (verbatim prose).")
++print("> Human-written sentences rarely match identically across retros, so most")
++print("> entries today have count=1 (singletons). This is expected and honest.")
++print("> Fuzzy / semantic grouping is a future enhancement if a signal appears.")
++print("")
++print(f"**Retros indexed:** {retros_indexed}")
++if date_from and date_to:
++    print(f"**Date range:** {date_from} – {date_to}")
++print(f"**Failure modes:** {total_fm} distinct across {retros_indexed} retros; "
++      f"{fm_recurring} recurring (count ≥2)")
++print(f"**Root causes:** {total_rc} distinct; {rc_recurring} recurring (count ≥2)")
++print(f"**Follow-up beads:** {total_beads} distinct bead(s) named")
++print(f"**Durable changes:** {total_durable} entries in timeline")
++print("")
++
++# ---------------------------------------------------------------------------
++# Failure modes
++# ---------------------------------------------------------------------------
++print(SEPARATOR)
++print("## Failure Modes")
++print("")
++print(f"{total_fm} distinct failure modes across {retros_indexed} retros; "
++      f"{fm_recurring} recurring (count ≥2).")
++print("")
++if not sorted_fm:
++    print("_No failure modes recorded._")
++else:
++    for item in sorted_fm:
++        marker = "**[RECURRING]** " if item["count"] >= 2 else ""
++        retro_list = ", ".join(f"`{r}`" for r in item["retros"])
++        print(f"- {marker}(count={item['count']}) {item['value']}")
++        print(f"  - retros: {retro_list}")
++print("")
++
++# ---------------------------------------------------------------------------
++# Root causes
++# ---------------------------------------------------------------------------
++print(SEPARATOR)
++print("## Root Causes")
++print("")
++print(f"{total_rc} distinct root causes across {retros_indexed} retros; "
++      f"{rc_recurring} recurring (count ≥2).")
++print("")
++if not sorted_rc:
++    print("_No root causes recorded._")
++else:
++    for item in sorted_rc:
++        marker = "**[RECURRING]** " if item["count"] >= 2 else ""
++        retro_list = ", ".join(f"`{r}`" for r in item["retros"])
++        print(f"- {marker}(count={item['count']}) {item['value']}")
++        print(f"  - retros: {retro_list}")
++print("")
++
++# ---------------------------------------------------------------------------
++# Follow-up beads
++# ---------------------------------------------------------------------------
++print(SEPARATOR)
++print("## Follow-Up Beads Index")
++print("")
++print(f"{total_beads} distinct bead(s) named across retros.")
++print("")
++if not sorted_beads:
++    print("_No follow-up beads recorded._")
++else:
++    for item in sorted_beads:
++        count = len(item["retros"])
++        marker = "**[MULTI-RETRO]** " if count >= 2 else ""
++        retro_list = ", ".join(f"`{r}`" for r in item["retros"])
++        print(f"- {marker}`{item['bead']}` (named by {count} retro(s)): {retro_list}")
++print("")
++
++# ---------------------------------------------------------------------------
++# Durable changes timeline
++# ---------------------------------------------------------------------------
++print(SEPARATOR)
++print("## Durable Changes Timeline")
++print("")
++print(f"{total_durable} durable change(s), ordered by original_event_date.")
++print("")
++if not durable_timeline:
++    print("_No durable changes recorded._")
++else:
++    prev_date = None
++    for item in durable_timeline:
++        d = item["original_event_date"]
++        if d != prev_date:
++            print(f"### {d or '(no date)'}")
++            prev_date = d
++        print(f"- [{item['retro']}] {item['value']}")
++    print("")
++PYEOF
++
++python3 "$py_script_file" "$emit_json" < "$retro_jsonl_file"
+diff --git a/scripts/retro-meta-index_test.sh b/scripts/retro-meta-index_test.sh
+new file mode 100644
+index 0000000..5223a56
+--- /dev/null
++++ b/scripts/retro-meta-index_test.sh
+@@ -0,0 +1,643 @@
++#!/usr/bin/env bash
++#
++# retro-meta-index_test.sh — fixture-based tests for scripts/retro-meta-index.sh.
++#
++# Creates a throwaway git repo (no origin needed — retro-meta-index.sh is
++# read-only and never checks remote refs), seeds cadence-retro refs with
++# retro-meta sidecars, and asserts aggregation output.
++#
++# Run directly:
++#   bash scripts/retro-meta-index_test.sh
++#
++# Or via make:
++#   make retro-index-test
++#
++# Requires: bash 4+ (associative arrays), git, python3.
++# Does NOT mutate any real repo data.
++#
++# Test cases:
++#   (1) Two current cadence retros with sidecars — both aggregated.
++#   (2) Superseded retro excluded — its content does NOT appear.
++#   (3) Non-cadence trigger (process-retro) excluded.
++#   (4) No-sidecar cadence retro excluded (no stage, no error).
++#   (5) Follow-up bead named by 2 retros — count=2 / MULTI-RETRO.
++#   (6) Durable-changes timeline ordered by original_event_date.
++#   (7) Deterministic output — two runs produce identical output.
++#   (8) --json mode — valid JSON, correct retros_indexed.
++#   (9) Empty corpus — exits 0, zero retros.
++#  (10) Dangling supersedes (names non-existent id) — no crash.
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++INDEX="$SCRIPT_DIR/retro-meta-index.sh"
++
++# ---------------------------------------------------------------------------
++# Test harness helpers (mirroring dogfood-completeness-audit_test.sh style)
++# ---------------------------------------------------------------------------
++pass_count=0
++fail_count=0
++current_test=""
++
++t_start() {  # <test-name>
++  current_test="$1"
++  echo "--- TEST: $current_test"
++}
++t_pass() {
++  (( pass_count++ )) || true
++  echo "    PASS: $current_test"
++}
++t_fail() {  # <reason>
++  (( fail_count++ )) || true
++  echo "    FAIL: $current_test — $1" >&2
++}
++
++assert_exit() {  # <expected-exit> <actual-exit> [<extra-context>]
++  local expected="$1" actual="$2" ctx="${3:-}"
++  if [[ "$actual" -eq "$expected" ]]; then
++    t_pass
++  else
++    t_fail "expected exit $expected, got $actual${ctx:+ ($ctx)}"
++  fi
++}
++
++assert_output_contains() {  # <pattern> <output>
++  if grep -qE "$1" <<< "$2"; then
++    t_pass
++  else
++    t_fail "expected pattern '$1' not found in output"
++  fi
++}
++
++assert_output_not_contains() {  # <pattern> <output>
++  if ! grep -qE "$1" <<< "$2"; then
++    t_pass
++  else
++    t_fail "pattern '$1' found but should be absent"
++  fi
++}
++
++# ---------------------------------------------------------------------------
++# Fixture setup — throwaway git repo (no remote needed)
++# ---------------------------------------------------------------------------
++tmpdir="$(mktemp -d)"
++trap 'rm -rf "$tmpdir"' EXIT
++
++work_repo="$tmpdir/work"
++git init "$work_repo" --quiet
++cd "$work_repo"
++git config user.email "test@test.com"
++git config user.name "Test"
++touch README.md
++git add README.md
++git commit -m "init" --quiet
++INITIAL_SHA="$(git rev-parse HEAD)"
++
++# ---------------------------------------------------------------------------
++# Seed helper: cadence retro WITH retro-meta sidecar.
++# Mirrors seed_cadence_retro_with_meta from dogfood-completeness-audit_test.sh.
++#
++# Usage: seed_cadence_retro_with_meta <retro-id> <created> <sidecar-json> [subject-run ...]
++# ---------------------------------------------------------------------------
++seed_cadence_retro_with_meta() {
++  local retro_id="$1"; shift
++  local created="$1"; shift
++  local sidecar_json="$1"; shift
++
++  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
++  local i=1
++  for run in "$@"; do
++    refs_json="${refs_json},\"subject_run.$i\":\"$run\""
++    (( i++ )) || true
++  done
++  refs_json="${refs_json}}"
++
++  # Write sidecar blob and compute content-addressed path
++  local sidecar_blob_sha
++  sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
++  local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
++
++  # Build manifest with retro stage + retro-meta stage
++  local manifest
++  manifest="$(python3 -c "
++import json
++sidecar_path = '$sidecar_path'
++sidecar_sha  = '$sidecar_blob_sha'
++m = {
++    'manifest_version': 2,
++    'run_id': '$retro_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '$created',
++    'refs': json.loads('''$refs_json'''),
++    'stages': [
++        {
++            'stage': 'retro',
++            'produced_by': 'retro',
++            'git_sha': '',
++            'inputs': [],
++            'output': {
++                'role': 'retro',
++                'artifact': sidecar_sha,
++                'path': 'artifacts/sha256/' + sidecar_sha[:2] + '/placeholder',
++                'media_type': 'text/markdown; charset=utf-8',
++                'storage': 'content',
++                'size': 0
++            }
++        },
++        {
++            'stage': 'retro-meta',
++            'produced_by': 'retro',
++            'git_sha': '',
++            'inputs': [],
++            'output': {
++                'role': 'retro-meta',
++                'artifact': sidecar_sha,
++                'path': sidecar_path,
++                'media_type': 'application/json',
++                'storage': 'content',
++                'size': len('$sidecar_json'.encode())
++            }
++        }
++    ]
++}
++print(json.dumps(m))
++")"
++
++  local manifest_blob_sha
++  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++
++  # Build tree: manifest.json + sidecar at content-addressed path
++  local tree_sha
++  tree_sha="$(python3 -c "
++import subprocess
++manifest_blob = '$manifest_blob_sha'
++sidecar_blob  = '$sidecar_blob_sha'
++sidecar_path  = '$sidecar_path'
++parts = sidecar_path.split('/')
++level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
++r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
++tree3 = r3.stdout.strip()
++level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
++r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
++tree2 = r2.stdout.strip()
++level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
++r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
++tree1 = r1.stdout.strip()
++level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
++level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
++r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
++print(r0.stdout.strip())
++")"
++
++  local commit_sha
++  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
++  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
++}
++
++# ---------------------------------------------------------------------------
++# Seed helper: superseding retro WITH sidecar.
++# Mirrors seed_superseding_retro from dogfood-completeness-audit_test.sh.
++#
++# Usage: seed_superseding_retro <new-id> <supersedes-id> <created> <trigger> <sidecar-json> [subject-run ...]
++# ---------------------------------------------------------------------------
++seed_superseding_retro() {
++  local new_id="$1"; shift
++  local supersedes_id="$1"; shift
++  local created="$1"; shift
++  local trigger="$1"; shift
++  local sidecar_json="$1"; shift
++
++  local refs_json
++  refs_json="$(python3 -c "
++import json, sys
++refs = {'scope': 'cohort', 'trigger': '$trigger', 'supersedes': '$supersedes_id'}
++i = 1
++for run in sys.argv[1:]:
++    refs['subject_run.' + str(i)] = run
++    i += 1
++print(json.dumps(refs))
++" "$@")"
++
++  if [[ -n "$sidecar_json" ]]; then
++    local sidecar_blob_sha
++    sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
++    local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
++
++    local manifest
++    manifest="$(python3 -c "
++import json
++sidecar_path = '$sidecar_path'
++sidecar_sha  = '$sidecar_blob_sha'
++m = {
++    'manifest_version': 2,
++    'run_id': '$new_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '$created',
++    'refs': json.loads('''$refs_json'''),
++    'stages': [
++        {
++            'stage': 'retro-meta',
++            'produced_by': 'retro',
++            'git_sha': '',
++            'inputs': [],
++            'output': {
++                'role': 'retro-meta',
++                'artifact': sidecar_sha,
++                'path': sidecar_path,
++                'media_type': 'application/json',
++                'storage': 'content',
++                'size': len('$sidecar_json'.encode())
++            }
++        }
++    ]
++}
++print(json.dumps(m))
++")"
++
++    local manifest_blob_sha
++    manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++
++    local tree_sha
++    tree_sha="$(python3 -c "
++import subprocess
++manifest_blob = '$manifest_blob_sha'
++sidecar_blob  = '$sidecar_blob_sha'
++sidecar_path  = '$sidecar_path'
++parts = sidecar_path.split('/')
++level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
++r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
++tree3 = r3.stdout.strip()
++level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
++r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
++tree2 = r2.stdout.strip()
++level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
++r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
++tree1 = r1.stdout.strip()
++level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
++level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
++r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
++print(r0.stdout.strip())
++")"
++
++    local commit_sha
++    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
++    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
++  else
++    # No sidecar — simple manifest, no stages
++    local manifest
++    manifest="$(python3 -c "
++import json
++m = {
++    'manifest_version': 2,
++    'run_id': '$new_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '$created',
++    'refs': json.loads('''$refs_json'''),
++    'stages': []
++}
++print(json.dumps(m))
++")"
++    local blob_sha tree_sha commit_sha
++    blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++    tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
++    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
++    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
++  fi
++}
++
++# Seed helper: cadence retro WITHOUT a retro-meta stage (no sidecar)
++seed_cadence_retro_no_sidecar() {  # <retro-id> <created>
++  local retro_id="$1" created="$2"
++  local manifest
++  manifest="$(python3 -c "
++import json
++m = {
++    'manifest_version': 2,
++    'run_id': '$retro_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '$created',
++    'refs': {'scope': 'cohort', 'trigger': 'cadence-retro'},
++    'stages': []
++}
++print(json.dumps(m))
++")"
++  local blob_sha tree_sha commit_sha
++  blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++  tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
++  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
++  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
++}
++
++# Seed helper: non-cadence retro (process-retro) with sidecar
++seed_process_retro_with_sidecar() {  # <retro-id> <created> <sidecar-json>
++  local retro_id="$1" created="$2" sidecar_json="$3"
++  local sidecar_blob_sha sidecar_path
++  sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
++  sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
++  local manifest
++  manifest="$(python3 -c "
++import json
++sidecar_path = '$sidecar_path'
++sidecar_sha  = '$sidecar_blob_sha'
++m = {
++    'manifest_version': 2,
++    'run_id': '$retro_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '$created',
++    'refs': {'scope': 'cohort', 'trigger': 'process-retro'},
++    'stages': [
++        {
++            'stage': 'retro-meta',
++            'produced_by': 'retro',
++            'git_sha': '',
++            'inputs': [],
++            'output': {
++                'role': 'retro-meta',
++                'artifact': sidecar_sha,
++                'path': sidecar_path,
++                'media_type': 'application/json',
++                'storage': 'content',
++                'size': 0
++            }
++        }
++    ]
++}
++print(json.dumps(m))
++")"
++  local manifest_blob_sha
++  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++  local tree_sha
++  tree_sha="$(python3 -c "
++import subprocess
++manifest_blob = '$manifest_blob_sha'
++sidecar_blob  = '$sidecar_blob_sha'
++sidecar_path  = '$sidecar_path'
++parts = sidecar_path.split('/')
++level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
++r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
++tree3 = r3.stdout.strip()
++level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
++r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
++tree2 = r2.stdout.strip()
++level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
++r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
++tree1 = r1.stdout.strip()
++level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
++level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
++r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
++print(r0.stdout.strip())
++")"
++  local commit_sha
++  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
++  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
++}
++
++# Helper: run the index script and capture output + exit code
++run_index() {  # [args...]
++  local rc=0
++  output="$(bash "$INDEX" "$@" 2>&1)" || rc=$?
++  echo "$output"
++  return "$rc"
++}
++
++echo ""
++echo "=== retro-meta-index_test.sh ==="
++echo ""
++
++# ===========================================================================
++# TEST (9): Empty corpus — zero refs, exits 0
++# ===========================================================================
++t_start "empty-corpus exits 0"
++rc=0; out="$(run_index)" || rc=$?
++assert_exit 0 "$rc"
++
++t_start "empty-corpus zero retros"
++assert_output_contains "Retros indexed.*0" "$out"
++
++t_start "empty-corpus no failure modes"
++assert_output_contains "_No failure modes recorded._" "$out"
++
++# ===========================================================================
++# Seed fixtures
++# ===========================================================================
++
++# Retro A — date 2026-05-10 — shared failure mode + unique content
++SIDECAR_A='{"retro_type":"cadence","original_event_date":"2026-05-10","failure_modes":["shared failure mode","only in A"],"root_causes":["shared root cause","unique root cause A"],"follow_up_beads":["etude-shared-bead","etude-bead-a"],"decisions":["decision A"],"durable_changes":["durable change A1","durable change A2"]}'
++seed_cadence_retro_with_meta \
++  "retro-test-a" "2026-05-10T10:00:00Z" "$SIDECAR_A" "run-a1"
++
++# Retro B — date 2026-05-15 — shared failure mode + unique content
++SIDECAR_B='{"retro_type":"cadence","original_event_date":"2026-05-15","failure_modes":["shared failure mode","only in B"],"root_causes":["shared root cause","unique root cause B"],"follow_up_beads":["etude-shared-bead","etude-bead-b"],"decisions":["decision B"],"durable_changes":["durable change B1"]}'
++seed_cadence_retro_with_meta \
++  "retro-test-b" "2026-05-15T10:00:00Z" "$SIDECAR_B" "run-b1"
++
++# OLD retro (superseded) — same date as A but will be excluded
++SIDECAR_OLD='{"retro_type":"cadence","original_event_date":"2026-05-10","failure_modes":["OLD ONLY failure mode"],"root_causes":[],"follow_up_beads":["etude-old-bead"],"decisions":[],"durable_changes":["OLD durable change"]}'
++seed_cadence_retro_with_meta \
++  "retro-old-superseded" "2026-05-09T00:00:00Z" "$SIDECAR_OLD"
++
++# NEW retro that supersedes OLD — date 2026-05-20
++SIDECAR_NEW='{"retro_type":"cadence","original_event_date":"2026-05-20","failure_modes":["NEW superseding failure mode"],"root_causes":[],"follow_up_beads":["etude-new-bead"],"decisions":[],"durable_changes":["NEW durable change"]}'
++seed_superseding_retro \
++  "retro-new-supersedes-old" "retro-old-superseded" "2026-05-20T10:00:00Z" "cadence-retro" "$SIDECAR_NEW"
++
++# Process-retro (non-cadence) with sidecar — should be excluded
++SIDECAR_PROC='{"retro_type":"process","original_event_date":"2026-05-12","failure_modes":["process retro failure"],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":["process durable"]}'
++seed_process_retro_with_sidecar \
++  "retro-process-noncadence" "2026-05-12T10:00:00Z" "$SIDECAR_PROC"
++
++# Cadence retro without sidecar — should be excluded (no error)
++seed_cadence_retro_no_sidecar "retro-no-sidecar" "2026-05-11T10:00:00Z"
++
++# Retro with dangling supersedes (names a non-existent id) — must not crash
++SIDECAR_DANGLING='{"retro_type":"cadence","original_event_date":"2026-05-22","failure_modes":["dangling superseder failure"],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
++seed_superseding_retro \
++  "retro-dangling-supersedes" "retro-nonexistent-id-xyz" "2026-05-22T10:00:00Z" "cadence-retro" "$SIDECAR_DANGLING"
++
++echo ""
++echo "--- Seeded fixtures:"
++git for-each-ref refs/etude/retros --format='  %(refname)' 2>/dev/null
++echo ""
++
++# ===========================================================================
++# TEST (1): Two current retros aggregated (A + B, not OLD)
++# ===========================================================================
++t_start "two-current-retros retros-indexed line"
++rc=0; out="$(run_index)" || rc=$?
++assert_exit 0 "$rc"
++# A, B, NEW, DANGLING = 4 current cadence retros with sidecars
++assert_output_contains "Retros indexed.*4" "$out"
++
++t_start "two-current-retros failure-mode from A appears"
++assert_output_contains "only in A" "$out"
++
++t_start "two-current-retros failure-mode from B appears"
++assert_output_contains "only in B" "$out"
++
++t_start "two-current-retros durable-change from A appears"
++assert_output_contains "durable change A1" "$out"
++
++t_start "two-current-retros durable-change from B appears"
++assert_output_contains "durable change B1" "$out"
++
++# ===========================================================================
++# TEST (2): Superseded retro excluded
++# ===========================================================================
++t_start "superseded-excluded OLD failure mode absent"
++assert_output_not_contains "OLD ONLY failure mode" "$out"
++
++t_start "superseded-excluded OLD bead absent"
++assert_output_not_contains "etude-old-bead" "$out"
++
++t_start "superseded-excluded OLD durable change absent"
++assert_output_not_contains "OLD durable change" "$out"
++
++t_start "superseded-excluded NEW failure mode present"
++assert_output_contains "NEW superseding failure mode" "$out"
++
++t_start "superseded-excluded NEW bead present"
++assert_output_contains "etude-new-bead" "$out"
++
++# ===========================================================================
++# TEST (3): Non-cadence (process-retro) excluded
++# ===========================================================================
++t_start "non-cadence process-retro failure mode absent"
++assert_output_not_contains "process retro failure" "$out"
++
++t_start "non-cadence process-retro durable change absent"
++assert_output_not_contains "process durable" "$out"
++
++# ===========================================================================
++# TEST (4): No-sidecar cadence retro excluded (no error)
++# ===========================================================================
++t_start "no-sidecar exits 0"
++assert_exit 0 "$rc"
++
++# ===========================================================================
++# TEST (5): Follow-up bead named by 2 retros — MULTI-RETRO
++# ===========================================================================
++t_start "multi-retro bead MULTI-RETRO marker"
++assert_output_contains "MULTI-RETRO.*etude-shared-bead" "$out"
++
++t_start "multi-retro bead count=2 retros listed"
++# etude-shared-bead is in A and B
++assert_output_contains "retro-test-a" "$out"
++assert_output_contains "retro-test-b" "$out"
++
++# ===========================================================================
++# TEST (5b): Failure mode and root cause recurring (count ≥2)
++# ===========================================================================
++t_start "recurring-failure-mode count=2"
++assert_output_contains "count=2.*shared failure mode" "$out"
++
++t_start "recurring-failure-mode RECURRING marker"
++assert_output_contains "\[RECURRING\].*shared failure mode" "$out"
++
++t_start "recurring-root-cause count=2"
++assert_output_contains "count=2.*shared root cause" "$out"
++
++t_start "summary line reports recurring failure modes"
++assert_output_contains "1 recurring" "$out"
++
++# ===========================================================================
++# TEST (6): Durable-changes timeline ordered by original_event_date
++# ===========================================================================
++t_start "timeline A before B (dates 2026-05-10 before 2026-05-15)"
++# A's durable changes (2026-05-10) must appear before B's (2026-05-15)
++pos_a="$(grep -n "durable change A" <<< "$out" | head -1 | cut -d: -f1)"
++pos_b="$(grep -n "durable change B" <<< "$out" | head -1 | cut -d: -f1)"
++if [[ -n "$pos_a" && -n "$pos_b" && "$pos_a" -lt "$pos_b" ]]; then
++  t_pass
++else
++  t_fail "A changes (line $pos_a) not before B changes (line $pos_b)"
++fi
++
++t_start "timeline date headings present"
++assert_output_contains "### 2026-05-10" "$out"
++assert_output_contains "### 2026-05-15" "$out"
++
++# ===========================================================================
++# TEST (7): Deterministic output — two runs produce identical output
++# ===========================================================================
++t_start "deterministic output"
++out1="$(run_index)"
++out2="$(run_index)"
++if [[ "$out1" == "$out2" ]]; then
++  t_pass
++else
++  t_fail "two runs produced different output"
++fi
++
++# ===========================================================================
++# TEST (8): --json mode — valid JSON, correct retros_indexed
++# ===========================================================================
++t_start "json-mode exits 0"
++rc=0; json_out="$(run_index --json)" || rc=$?
++assert_exit 0 "$rc"
++
++t_start "json-mode valid JSON"
++if python3 -c "import json,sys; json.loads(sys.stdin.read())" <<< "$json_out"; then
++  t_pass
++else
++  t_fail "output is not valid JSON"
++fi
++
++t_start "json-mode retros_indexed=4"
++indexed="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read())['retros_indexed'])" <<< "$json_out")"
++if [[ "$indexed" == "4" ]]; then
++  t_pass
++else
++  t_fail "expected retros_indexed=4, got $indexed"
++fi
++
++t_start "json-mode follow_up_beads sorted"
++bead_order="$(python3 -c "
++import json,sys
++d=json.loads(sys.stdin.read())
++beads=[b['bead'] for b in d['follow_up_beads']]
++print('sorted' if beads==sorted(beads) else 'unsorted')
++" <<< "$json_out")"
++if [[ "$bead_order" == "sorted" ]]; then
++  t_pass
++else
++  t_fail "follow_up_beads not sorted"
++fi
++
++t_start "json-mode failure_modes count-desc sorted"
++order_check="$(python3 -c "
++import json,sys
++d=json.loads(sys.stdin.read())
++fms=d['failure_modes']
++counts=[f['count'] for f in fms]
++ok=all(counts[i]>=counts[i+1] for i in range(len(counts)-1))
++print('ok' if ok else 'not-sorted')
++" <<< "$json_out")"
++if [[ "$order_check" == "ok" ]]; then
++  t_pass
++else
++  t_fail "failure_modes not sorted count-desc"
++fi
++
++# ===========================================================================
++# TEST (10): Dangling supersedes — no crash
++# ===========================================================================
++t_start "dangling-supersedes no crash"
++rc=0; out_dangle="$(run_index 2>&1)" || rc=$?
++assert_exit 0 "$rc"
++
++t_start "dangling-supersedes retro itself included"
++assert_output_contains "dangling superseder failure" "$out_dangle"
++
++# ===========================================================================
++# Summary
++# ===========================================================================
++echo ""
++echo "=== RESULTS: $pass_count passed, $fail_count failed ==="
++if [[ "$fail_count" -gt 0 ]]; then
++  exit 1
++fi
++echo "ALL TESTS PASSED"

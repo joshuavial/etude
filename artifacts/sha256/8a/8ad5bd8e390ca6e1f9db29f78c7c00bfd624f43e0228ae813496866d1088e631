@@ -1,0 +1,143 @@
+## Plan
+
+**Premise now HOLDS (BUILD, not DEFER).** The old design field recommended DEFER on
+three gates — all THREE are now resolved, verified against the live corpus:
+1. ~~ZERO retros~~ → **13 META=Y `trigger==cadence-retro` retros exist** (`etude retro list`
+   → 13 cadence rows with META=Y: the 8hq.3 backfill + 12 supersede-backfills from etude-8hq.5).
+   `make dogfood-audit` shows all 13 `PASS (f) cadence-sidecar valid` and `0 warning(s)`.
+2. ~~empty + schema-free sidecars~~ → real 7-key sidecars carry rich content
+   (e.g. `refs/etude/retros/retro-cohort-etude-8hq.4-…` lists 3 `failure_modes`, 3
+   `root_causes`, 4 `durable_changes`).
+3. ~~no stable convention / singular-vs-plural contradiction~~ → resolved by etude-sb4
+   (closed) + pinned by etude-8hq.3: the 7-key schema (`retro_type`, `original_event_date`,
+   `failure_modes[]`, `root_causes[]`, `follow_up_beads[]`, `decisions[]`, `durable_changes[]`)
+   in `scripts/retro-meta-cadence.example.json` + `docs/retro.md:117-133`, enforced by
+   `dogfood-completeness-audit.sh` check (f). This is exactly the "revisit once sidecar
+   data exists" trigger the 8hq phase set up.
+
+**Approach:** Build a read-only DOGFOOD-LAYER aggregation script,
+`scripts/retro-meta-index.sh`, that enumerates current cadence-retro sidecars and emits a
+cross-retro index of recurring failure modes / root causes / follow-up beads / durable
+changes. Read-only: no writes, no ref mutation. Mirrors the structure, build pattern
+(`DOGFOOD_AUDIT_ETUDE_BIN`-style optional prebuilt binary not needed — it reads git
+directly via `git for-each-ref` + `git cat-file`, same as the audit), and test harness of
+the existing dogfood scripts.
+
+**THE LAYER DECISION — dogfood script, NOT etude core. Rationale:**
+- etude core is **deliberately schema-agnostic** about retro-meta sidecars: etude-2ku stores
+  them verbatim and only runs `json.Valid` — no key is ever interpreted
+  (`internal/cli/retro.go` `retroCaptureRunner.run`; `docs/retro.md:100,108`). etude-8hq.3
+  deliberately kept the 7-key convention AND its enforcement in the DOGFOOD layer
+  (`dogfood-completeness-audit.sh` check (f)), NOT in etude core, *precisely to preserve
+  that posture* — and that posture is WHY 9ey was deferred originally.
+- An `etude retro index` core command/flag that PARSES the specific 7-key dogfood schema
+  (`failure_modes`/`root_causes`/…) would re-introduce schema-knowledge into core — the exact
+  thing 8hq.3 avoided, inverting etude-2ku's "store verbatim, don't interpret" stance.
+- The useful aggregation (failure-mode / root-cause recurrence) is INHERENTLY tied to the
+  dogfood 7-key schema. A schema-agnostic core aggregation (tally arbitrary top-level keys
+  without blessing the 7-key shape) was weighed and REJECTED: it cannot produce the
+  failure-mode/root-cause index the bead asks for without knowing those key names — so the
+  value lives in the dogfood layer regardless. Keep core untouched.
+- This is consistent with the family `dogfood-completeness-audit.sh` / `dogfood-close.sh` /
+  `dogfood-capture.sh` — all dogfood-layer shell scripts that read etude refs from git.
+
+**What it produces (output shape):** Readable markdown to stdout by default; `--json` for a
+machine-readable object. The index aggregates across all CURRENT cadence-retro sidecars:
+
+- **Failure modes** — each distinct `failure_modes` string with a count and the contributing
+  retro ref ids, sorted by count desc then string lexical. (Strings are free-text sentences,
+  so "recurrence" = the same string appearing in ≥2 retros; the report headlines entries with
+  count ≥2 as "recurring" and lists singletons below.)
+- **Root causes** — same treatment over `root_causes`.
+- **Follow-up beads** — each `follow_up_beads` id with the retro(s) that spawned it (a
+  spun-off-work index).
+- **Durable changes timeline** — `durable_changes` entries ordered by each retro's
+  `original_event_date` (then ref id), each annotated with its source retro — a
+  "what actually changed, and when" timeline.
+- **Header/summary** — N retros indexed, date range (min/max `original_event_date`), counts.
+
+`--json` shape (stable, sorted): `{"retros_indexed":N, "date_range":{"from":…,"to":…},
+"failure_modes":[{"value":…,"count":N,"retros":[…]}…], "root_causes":[…],
+"follow_up_beads":[{"bead":…,"retros":[…]}…], "durable_changes":[{"value":…,
+"original_event_date":…,"retro":…}…]}`. Deterministic ordering throughout (the audit's
+discipline) so output is diffable.
+
+**Reading mechanism + supersession (reuse the audit's proven logic):**
+1. Build the **superseded-set** FIRST, identical to `dogfood-completeness-audit.sh:380-395`:
+   one `git for-each-ref refs/etude/retros` pass, read each manifest's
+   `refs.supersedes` (verbatim bare retro id), collect non-empty values into a set. Empty/
+   absent → skip; dangling supersedes → collected harmlessly (membership-only, never
+   dereferenced). Live corpus currently has 17 superseded ids — these MUST be excluded so the
+   index reflects only CURRENT retros, not the superseded backfill predecessors.
+2. For each `refs/etude/retros/*`: skip if its bare id ∈ superseded-set (mirror audit
+   :413-414/:518-519/:629-630); read `manifest.json`; keep only `refs.trigger=="cadence-retro"`
+   (mirror audit :491).
+3. Find the `output.role=="retro-meta"` stage, read its `output.path` blob via
+   `git cat-file -p <ref>:<path>`, `json.loads`. This is exactly the audit's check (f)
+   sidecar-read (`dogfood-completeness-audit.sh:524-554`) and verified end-to-end against a
+   real ref in planning.
+4. Tally the four key arrays + collect `original_event_date`. A retro missing the retro-meta
+   stage, or with a non-conforming sidecar, contributes NOTHING and is never an error (the
+   index is read-side and advisory; check (f) is the gate that enforces conformance).
+
+**Files:**
+- `scripts/retro-meta-index.sh` — NEW. The read-only aggregation. `set -euo pipefail`; arg
+  parse for `--json` (+ `--quiet`/help to match house style); superseded-set pass; per-retro
+  read+tally (python3 for JSON, same as audit); markdown + `--json` emitters with deterministic
+  sort. NO writes, NO ref mutation, NO `bd` dependency.
+- `scripts/retro-meta-index_test.sh` — NEW. Hermetic fixture test mirroring
+  `scripts/dogfood-completeness-audit_test.sh`: throwaway git repo + bare origin, REUSE the
+  `seed_cadence_retro_with_meta` and `seed_superseding_retro` helper patterns
+  (audit_test.sh:204-316, :978-1086) to seed retros with sidecars, then assert the aggregation
+  output (counts, recurring detection, supersession exclusion, ordering).
+- `Makefile` — add a `retro-index` target (`@bash scripts/retro-meta-index.sh`) + a
+  `retro-index-test` target (`@bash scripts/retro-meta-index_test.sh`), both added to `.PHONY`,
+  mirroring `dogfood-audit` / `dogfood-audit-test` (`Makefile:6,47-52`).
+- `docs/plans/dogfood/README.md` — add a row to the "Dogfood Scripts" table (:60-67) describing
+  `retro-meta-index.sh`; optionally cross-link from the `retro-ledger.md` line (:50-52) since
+  the index automates the failure-mode/root-cause slice of that manual inventory.
+- `docs/retro.md` — extend the existing "failure-mode indexing" mention (:101,:109) with a
+  short pointer that the dogfood `make retro-index` realizes it over the 7-key sidecars
+  (dogfood-layer, schema-agnostic core preserved).
+
+**Tests:**
+- Recurring failure mode: seed ≥2 retros sharing one `failure_modes` string + unique ones →
+  shared string headlined with count≥2 and BOTH retro ids; uniques listed as singletons.
+- Root-cause aggregation: same, over `root_causes`.
+- Follow-up-bead index: a `follow_up_beads` id appears with its source retro(s).
+- Durable-changes timeline ordered by `original_event_date`.
+- **Supersession exclusion** (the load-bearing case): seed an OLD pre-convention retro + a NEW
+  retro whose `refs.supersedes` names it (via `seed_superseding_retro`) → the OLD ref's content
+  is EXCLUDED; only the NEW ref's content appears. Guards against double-counting superseded
+  predecessors.
+- Non-cadence trigger (e.g. `process-retro`) ignored.
+- Retro with NO retro-meta stage contributes nothing, no error (graceful).
+- `--json` emits valid, deterministically-ordered JSON.
+- Empty corpus → "no cadence retros with sidecars" + exit 0.
+- Dangling supersedes (names a non-existent id) → no crash.
+
+**Docs:**
+- Update `docs/plans/dogfood/README.md` Dogfood Scripts table (new script row).
+- Update `docs/retro.md` failure-mode-indexing pointer to name `make retro-index`.
+- NO etude-core docs change and NO generated CLI reference change — this is a dogfood script,
+  not an etude command/flag, so `make docs` / `docs-reality-check.sh` are untouched (preserves
+  the schema-agnostic core posture). `make docs-reality` should still pass unchanged.
+
+**Risks:**
+- Low — read-only aggregation, no ref mutation, no gate dependency. Main correctness invariant
+  is supersession exclusion (covered by a dedicated test); reuse the audit's exact superseded-set
+  code so behavior matches the enforcement gate. Secondary: free-text sidecar strings dedupe only
+  on exact match — acceptable and documented (the index is advisory analysis, not a normalized
+  taxonomy; normalization would be a separate follow-up if a usage signal appears).
+
+**Capture:**
+- inputs: bead etude-9ey (description + OLD DEFER design field); deps etude-2ku (verbatim
+  storage), etude-sb4 (schema standardization), etude-8hq.5 (backfill + supersession-aware audit);
+  files read — `internal/cli/retro.go` (schema-agnostic posture), `docs/retro.md:71-167`
+  (7-key convention + enforcement), `scripts/retro-meta-cadence.example.json`,
+  `scripts/dogfood-completeness-audit.sh:367-595` (superseded-set + check (f) sidecar read),
+  `scripts/dogfood-completeness-audit_test.sh:204-316,:978-1086` (seed helpers), `Makefile:6,32-56`,
+  `docs/plans/dogfood/README.md`, `docs/plans/dogfood/retro-ledger.md`; live verification —
+  `etude retro list` (13 META=Y cadence), `make dogfood-audit` (all PASS, 0 warn), a real
+  retro-meta blob read, 17 superseded ids counted.
+- output: bead --design field (this; OVERWRITES the prior DEFER recommendation).
