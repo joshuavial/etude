@@ -1,0 +1,859 @@
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 2a93a28..e4fce77 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -202,12 +202,32 @@ func (e *Engine) clock() time.Time {
+ // Run executes the workflow, capturing each stage incrementally via CAS.
+ // If opts.ResumeID is non-empty, resumes an existing partial run from its frontier.
+ func (e *Engine) Run(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
++	// ParseYAML calls Workflow.Validate, but Engine also accepts programmatic
++	// workflows. Enforce the engine-owned rerun input namespace here, before a
++	// checkout or runner invocation, so both entry paths fail at the same seam.
++	if err := validatePriorAttemptRoleCollisions(wf); err != nil {
++		return err
++	}
+ 	if opts.ResumeID != "" {
+ 		return e.resume(ctx, out, wf, opts.ResumeID)
+ 	}
+ 	return e.startFresh(ctx, out, wf, opts)
+ }
+ 
++func validatePriorAttemptRoleCollisions(wf workflow.Workflow) error {
++	for i, stage := range wf.Stages {
++		if workflow.IsPriorAttemptRole(stage.Produces) {
++			return fmt.Errorf("%w: stage[%d] produces role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, stage.Produces)
++		}
++		for j, role := range stage.Inputs {
++			if workflow.IsPriorAttemptRole(role) {
++				return fmt.Errorf("%w: stage[%d] input[%d] role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, j, role)
++			}
++		}
++	}
++	return nil
++}
++
+ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
+ 	runID := opts.RunID
+ 	if runID == "" {
+@@ -340,6 +360,10 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
+ 			refByPath[inp.Path] = inp
+ 		}
+ 		refByPath[ms.Output.Path] = ms.Output
++		if ms.Log != nil {
++			ref := *ms.Log
++			refByPath[ref.Path] = ref
++		}
+ 		if ms.Producer.Session != nil && ms.Producer.Session.TranscriptArtifact != nil {
+ 			ref := *ms.Producer.Session.TranscriptArtifact
+ 			refByPath[ref.Path] = ref
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index 37ae7d0..10746b7 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -539,10 +539,12 @@ func TestEngineResumeRetriesZeroSeatEscalationWithoutRerunningProducer(t *testin
+ 		Store: refstore.New(repo),
+ 		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+ 			producerCalls++
+-			return &replay.StubRunner{
+-				CannedOutput:    []byte("captured plan"),
+-				CannedMediaType: "text/plain; charset=utf-8",
+-			}, nil
++			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++				return replay.RunResult{
++					Output: []byte("captured plan"), Log: []byte("captured runner log"),
++					MediaType: "text/plain; charset=utf-8", Producer: req.Producer,
++				}, nil
++			}), nil
+ 		},
+ 		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+ 			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+@@ -924,6 +926,35 @@ func TestProducerSession_WithoutTranscriptIsNotApplicable(t *testing.T) {
+ 	}
+ }
+ 
++func TestEngineRejectsPriorAttemptRoleBeforeRunnerInvocation(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		edit func(*workflow.Workflow)
++	}{
++		{name: "produces exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempts" }},
++		{name: "produces evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
++		{name: "input exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
++		{name: "input evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			wf := workflow.Workflow{Name: "mywf", Stages: []workflow.Stage{{Name: "plan", Produces: "plan", Skill: "sk"}}}
++			tc.edit(&wf)
++			runnerCalls := 0
++			e := &Engine{ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++				runnerCalls++
++				return &replay.StubRunner{CannedOutput: []byte("unexpected")}, nil
++			}}
++			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{})
++			if !errors.Is(err, workflow.ErrInvalidWorkflow) || !strings.Contains(err.Error(), "reserved for gate reruns") {
++				t.Fatalf("error = %v, want reserved-role workflow error", err)
++			}
++			if runnerCalls != 0 {
++				t.Fatalf("runner calls = %d, want 0", runnerCalls)
++			}
++		})
++	}
++}
++
+ func TestProducerSession_ExplicitInlineSessionPopulatesEvidenceAndLog(t *testing.T) {
+ 	for _, tc := range []struct {
+ 		name    string
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index b465439..65dc8f2 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -10,6 +10,7 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"sort"
+ 	"strings"
+ 	"time"
+ 
+@@ -348,6 +349,192 @@ func buildGateFeedback(checkBlocks []string, seatBlockRequired map[string][]stri
+ 	return []byte(sb.String())
+ }
+ 
++type priorAttemptsIndex struct {
++	Version  int                    `json:"version"`
++	Attempts []priorAttemptEvidence `json:"attempts"`
++}
++
++type priorAttemptEvidence struct {
++	Stage                     string                  `json:"stage"`
++	Round                     int                     `json:"round"`
++	SessionID                 string                  `json:"session_id,omitempty"`
++	ResumedSession            bool                    `json:"resumed_session"`
++	OutputDigest              string                  `json:"output_digest"`
++	OutputRole                string                  `json:"output_role"`
++	LogDigest                 string                  `json:"log_digest,omitempty"`
++	LogRole                   string                  `json:"log_role,omitempty"`
++	TranscriptDigest          string                  `json:"transcript_digest,omitempty"`
++	TranscriptRole            string                  `json:"transcript_role,omitempty"`
++	TranscriptRetrievalStatus string                  `json:"transcript_retrieval_status,omitempty"`
++	TranscriptRedactionStatus string                  `json:"transcript_redaction_status,omitempty"`
++	KillingVerdict            priorAttemptGateVerdict `json:"killing_verdict"`
++}
++
++type priorAttemptGateVerdict struct {
++	GateID string                    `json:"gate_id"`
++	Status runmanifest.GateStatus    `json:"status"`
++	Seats  []priorAttemptSeatVerdict `json:"seats"`
++}
++
++type priorAttemptSeatVerdict struct {
++	Seat     string                  `json:"seat"`
++	Verdict  runmanifest.SeatVerdict `json:"verdict"`
++	Required []string                `json:"required,omitempty"`
++}
++
++func filterPriorAttemptInputs(refs []runmanifest.ArtifactRef, inputs []replay.RunInput) ([]runmanifest.ArtifactRef, []replay.RunInput) {
++	filteredRefs := make([]runmanifest.ArtifactRef, 0, len(refs))
++	for _, ref := range refs {
++		if !workflow.IsPriorAttemptRole(ref.Role) {
++			filteredRefs = append(filteredRefs, ref)
++		}
++	}
++	filteredInputs := make([]replay.RunInput, 0, len(inputs))
++	for _, input := range inputs {
++		if !workflow.IsPriorAttemptRole(input.Role) {
++			filteredInputs = append(filteredInputs, input)
++		}
++	}
++	return filteredRefs, filteredInputs
++}
++
++func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []runmanifest.GateAttempt, as *artifactstore.Store) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
++	killingGates := make([]runmanifest.GateAttempt, 0)
++	for _, gate := range gates {
++		if gate.Phase == phase && gate.Status == runmanifest.GateStatusRerun {
++			killingGates = append(killingGates, gate)
++		}
++	}
++	sort.SliceStable(killingGates, func(i, j int) bool { return killingGates[i].Round < killingGates[j].Round })
++
++	index := priorAttemptsIndex{Version: 1, Attempts: make([]priorAttemptEvidence, 0, len(killingGates))}
++	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
++	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
++	files := as.Files()
++	seenSessions := make(map[string]bool)
++
++	for _, gate := range killingGates {
++		if len(gate.ReviewedStages) == 0 {
++			return nil, nil, fmt.Errorf("prior attempts: gate %s has no reviewed stage", gate.GateID)
++		}
++		reviewed := gate.ReviewedStages[0]
++		stage, ok := stageByName(stages, reviewed.Stage)
++		if !ok {
++			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s", gate.GateID, reviewed.Stage)
++		}
++		attemptNumber := len(index.Attempts) + 1
++		attempt := priorAttemptEvidence{
++			Stage:        stage.Name,
++			Round:        gate.Round,
++			OutputDigest: stage.Output.Artifact,
++			OutputRole:   fmt.Sprintf("prior-attempt-%d-output", attemptNumber),
++			KillingVerdict: priorAttemptGateVerdict{
++				GateID: gate.GateID,
++				Status: gate.Status,
++				Seats:  make([]priorAttemptSeatVerdict, 0, len(gate.Seats)),
++			},
++		}
++		for _, seat := range gate.Seats {
++			attempt.KillingVerdict.Seats = append(attempt.KillingVerdict.Seats, priorAttemptSeatVerdict{
++				Seat: seat.Seat, Verdict: seat.Verdict, Required: append([]string(nil), seat.Required...),
++			})
++		}
++
++		var err error
++		refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, stage.Output, attempt.OutputRole)
++		if err != nil {
++			return nil, nil, err
++		}
++		if stage.Log != nil {
++			attempt.LogDigest = stage.Log.Artifact
++			attempt.LogRole = fmt.Sprintf("prior-attempt-%d-log", attemptNumber)
++			refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *stage.Log, attempt.LogRole)
++			if err != nil {
++				return nil, nil, err
++			}
++		}
++
++		if session := stage.Producer.Session; session != nil {
++			attempt.SessionID = session.SessionID
++			sessionID := session.SessionID
++			nonBlankSessionID := strings.TrimSpace(sessionID) != ""
++			attempt.ResumedSession = nonBlankSessionID && seenSessions[sessionID]
++			if nonBlankSessionID {
++				seenSessions[sessionID] = true
++			}
++			attempt.TranscriptRetrievalStatus = session.RetrievalStatus
++			attempt.TranscriptRedactionStatus = session.RedactionStatus
++			if err := validatePriorTranscriptEvidence(session); err != nil {
++				return nil, nil, fmt.Errorf("prior attempts: stage %s: %w", stage.Name, err)
++			}
++			if session.TranscriptArtifact != nil {
++				attempt.TranscriptDigest = session.TranscriptArtifact.Artifact
++				attempt.TranscriptRole = fmt.Sprintf("prior-attempt-%d-transcript", attemptNumber)
++				refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *session.TranscriptArtifact, attempt.TranscriptRole)
++				if err != nil {
++					return nil, nil, err
++				}
++			}
++		}
++		index.Attempts = append(index.Attempts, attempt)
++	}
++
++	indexBytes, err := json.MarshalIndent(index, "", "  ")
++	if err != nil {
++		return nil, nil, fmt.Errorf("encode prior attempts: %w", err)
++	}
++	indexBytes = append(indexBytes, '\n')
++	artifact, err := as.AddContent("prior-attempts", "application/json", indexBytes)
++	if err != nil {
++		return nil, nil, fmt.Errorf("store prior attempts: %w", err)
++	}
++	indexRef := runmanifest.ArtifactFromManifestArtifact(artifact)
++	refs = append([]runmanifest.ArtifactRef{indexRef}, refs...)
++	inputs = append([]replay.RunInput{{Role: indexRef.Role, MediaType: indexRef.MediaType, Content: indexBytes}}, inputs...)
++	return refs, inputs, nil
++}
++
++func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, bool) {
++	for i := len(stages) - 1; i >= 0; i-- {
++		if stages[i].Name == name {
++			return stages[i], true
++		}
++	}
++	return runmanifest.Stage{}, false
++}
++
++func appendPriorAttemptArtifact(refs []runmanifest.ArtifactRef, inputs []replay.RunInput, files map[string][]byte, source runmanifest.ArtifactRef, role string) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
++	content, ok := files[source.Path]
++	if !ok {
++		return nil, nil, fmt.Errorf("prior attempts: artifact %s is not materialized", source.Artifact)
++	}
++	ref := source
++	ref.Role = role
++	return append(refs, ref), append(inputs, replay.RunInput{Role: role, MediaType: ref.MediaType, Content: content}), nil
++}
++
++func validatePriorTranscriptEvidence(session *runmanifest.SessionEvidence) error {
++	if session == nil {
++		return nil
++	}
++	if session.TranscriptArtifact == nil {
++		switch {
++		case session.RetrievalStatus == runmanifest.SessionEvidenceFailed && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
++			return nil
++		case session.RetrievalStatus == runmanifest.SessionEvidenceRetrievalImported && session.RedactionStatus == runmanifest.SessionEvidenceFailed:
++			return fmt.Errorf("transcript redaction failed; refusing rerun without safely scanned evidence")
++		case session.RetrievalStatus == runmanifest.SessionEvidenceNotApplicable && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
++			return nil
++		default:
++			return fmt.Errorf("invalid transcript evidence state without artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
++		}
++	}
++	if session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
++		return fmt.Errorf("invalid transcript evidence state with artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
++	}
++	return nil
++}
++
+ // storeRawOutput adds raw bytes to the artifact store and returns the artifact.
+ // Returns nil when content is empty (no artifact stored).
+ func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artifactstore.ManifestArtifact {
+@@ -718,9 +905,12 @@ func (e *Engine) runGate(
+ 	reviewedStageName := initialOutputStage
+ 	reviewedOutputRef := initialOutputRef
+ 	reviewedOutputContent := initialOutputContent
+-	// inputRefs/runInputs grow each RERUN as gate-feedback is appended.
+-	inputRefs := append([]runmanifest.ArtifactRef(nil), baseInputRefs...)
+-	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
++	// Ordinary inputs retain the workflow inputs plus cumulative gate feedback.
++	// A recovered rerun Stage may also carry an older engine-owned prior bundle;
++	// strip that reserved namespace and rebuild it from durable Stage/Gate history.
++	ordinaryInputRefs, ordinaryRunInputs := filterPriorAttemptInputs(baseInputRefs, baseRunInputs)
++	inputRefs := append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...)
++	runInputs := append([]replay.RunInput(nil), ordinaryRunInputs...)
+ 
+ 	thisAttempts := make([]runmanifest.GateAttempt, 0)
+ 
+@@ -830,13 +1020,20 @@ func (e *Engine) runGate(
+ 					fmt.Errorf("store gate feedback: %w", err)
+ 			}
+ 			feedbackRef := runmanifest.ArtifactFromManifestArtifact(feedbackArt)
+-			inputRefs = append(inputRefs, feedbackRef)
+-			runInputs = append(runInputs, replay.RunInput{
++			ordinaryInputRefs = append(ordinaryInputRefs, feedbackRef)
++			ordinaryRunInputs = append(ordinaryRunInputs, replay.RunInput{
+ 				Role:      "gate-feedback",
+ 				MediaType: "text/markdown; charset=utf-8",
+ 				Content:   feedbackBytes,
+ 			})
+ 
++			priorRefs, priorInputs, err := buildPriorAttemptInputs(stage.Name, completedStages, allAttempts, as)
++			if err != nil {
++				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent, err
++			}
++			inputRefs = append(append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...), priorRefs...)
++			runInputs = append(append([]replay.RunInput(nil), ordinaryRunInputs...), priorInputs...)
++
+ 			globalRound++
+ 			tierRound++
+ 
+diff --git a/internal/liverun/gate_test.go b/internal/liverun/gate_test.go
+index e302e0b..07ba44c 100644
+--- a/internal/liverun/gate_test.go
++++ b/internal/liverun/gate_test.go
+@@ -4,11 +4,14 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
++	"github.com/joshuavial/etude/internal/artifactstore"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/replay"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+@@ -535,17 +538,21 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	// Stage runner: 1st call = original; 2nd call = rerun (must see gate-feedback input).
+ 	stageCallCount := 0
+ 	var rerunSawFeedback bool
++	var rerunInputs []replay.RunInput
+ 	resolveStage := func(stage workflow.Stage) (replay.Runner, error) {
+ 		call := stageCallCount
+ 		stageCallCount++
+ 		if call == 0 {
+-			return &replay.StubRunner{CannedOutput: []byte("plan v1"), CannedMediaType: "text/plain; charset=utf-8"}, nil
++			return &stageEvidenceRunner{
++				output: []byte("plan v1"), log: []byte("runner log"), transcript: []byte("transcript"), sessionID: "session-1",
++			}, nil
+ 		}
+ 		// Rerun: return a runner that inspects inputs.
+ 		return &feedbackCheckRunner{
+ 			output:      []byte("plan v2"),
+ 			mediaType:   "text/plain; charset=utf-8",
+ 			sawFeedback: &rerunSawFeedback,
++			captured:    &rerunInputs,
+ 		}, nil
+ 	}
+ 
+@@ -587,6 +594,7 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 	if !rerunSawFeedback {
+ 		t.Error("rerun stage runner did not receive gate-feedback input")
+ 	}
++	assertPriorAttemptInputs(t, rerunInputs)
+ 
+ 	m := readLiveManifest(t, repo, runID)
+ 
+@@ -615,15 +623,23 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
+ 		if s.Name == "plan.r2" {
+ 			foundRerunStage = true
+ 			hasFeedback := false
++			priorRoles := map[string]bool{}
+ 			for _, inp := range s.Inputs {
+ 				if inp.Role == "gate-feedback" {
+ 					hasFeedback = true
+-					break
++				}
++				if workflow.IsPriorAttemptRole(inp.Role) {
++					priorRoles[inp.Role] = true
+ 				}
+ 			}
+ 			if !hasFeedback {
+ 				t.Error("plan.r2 stage has no gate-feedback input")
+ 			}
++			for _, role := range []string{"prior-attempts", "prior-attempt-1-output", "prior-attempt-1-log", "prior-attempt-1-transcript"} {
++				if !priorRoles[role] {
++					t.Errorf("plan.r2 stage has no %s input", role)
++				}
++			}
+ 			// chain role unchanged: output role is still "plan".
+ 			if s.Output.Role != "plan" {
+ 				t.Errorf("plan.r2 output role = %q, want plan", s.Output.Role)
+@@ -653,11 +669,15 @@ type feedbackCheckRunner struct {
+ 	output      []byte
+ 	mediaType   string
+ 	sawFeedback *bool
++	captured    *[]replay.RunInput
+ }
+ 
+ func (r *feedbackCheckRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	if r.captured != nil {
++		*r.captured = append([]replay.RunInput(nil), req.Inputs...)
++	}
+ 	for _, inp := range req.Inputs {
+-		if inp.Role == "gate-feedback" {
++		if inp.Role == "gate-feedback" && r.sawFeedback != nil {
+ 			*r.sawFeedback = true
+ 			break
+ 		}
+@@ -665,6 +685,346 @@ func (r *feedbackCheckRunner) Run(_ context.Context, req replay.RunRequest) (rep
+ 	return replay.RunResult{Output: r.output, MediaType: r.mediaType, Producer: req.Producer}, nil
+ }
+ 
++type stageEvidenceRunner struct {
++	output     []byte
++	log        []byte
++	transcript []byte
++	sessionID  string
++}
++
++func (r *stageEvidenceRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	if err := os.WriteFile(filepath.Join(req.ScratchDir, "stage-transcript.txt"), r.transcript, 0o600); err != nil {
++		return replay.RunResult{}, err
++	}
++	return replay.RunResult{
++		Output: r.output,
++		Log:    r.log,
++		Producer: runmanifest.Producer{
++			Harness: runmanifest.Harness{Name: "stub"},
++			Skill:   req.Producer.Skill,
++		},
++		Session: &replay.SessionInfo{SessionID: r.sessionID, TranscriptPath: "stage-transcript.txt"},
++	}, nil
++}
++
++func assertPriorAttemptInputs(t *testing.T, inputs []replay.RunInput) {
++	t.Helper()
++	byRole := make(map[string][]byte, len(inputs))
++	for _, input := range inputs {
++		byRole[input.Role] = input.Content
++	}
++	wantIndex := `{
++  "version": 1,
++  "attempts": [
++    {
++      "stage": "plan",
++      "round": 1,
++      "session_id": "session-1",
++      "resumed_session": false,
++      "output_digest": "7ba7dc833f225079fec28c951951783c7362bbc50857e0f71ceb6d5b71eb1041",
++      "output_role": "prior-attempt-1-output",
++      "log_digest": "a18c461b8e1526a691a4fa19184dd5dff12ed156f9f2b59d2c1efe0d7ff043b9",
++      "log_role": "prior-attempt-1-log",
++      "transcript_digest": "54e6289e14c7b0e7ad9acc2dfc4c1e3d027d0eef7f5c4c3fe7c292761d0e06a6",
++      "transcript_role": "prior-attempt-1-transcript",
++      "transcript_retrieval_status": "imported",
++      "transcript_redaction_status": "passed",
++      "killing_verdict": {
++        "gate_id": "plan.r1",
++        "status": "rerun",
++        "seats": [
++          {
++            "seat": "seatA",
++            "verdict": "block",
++            "required": [
++              "fix the plan"
++            ]
++          },
++          {
++            "seat": "seatB",
++            "verdict": "block",
++            "required": [
++              "fix the plan"
++            ]
++          }
++        ]
++      }
++    }
++  ]
++}
++`
++	if got := string(byRole["prior-attempts"]); got != wantIndex {
++		t.Fatalf("prior-attempts index:\n%s\nwant:\n%s", got, wantIndex)
++	}
++	for role, want := range map[string]string{
++		"prior-attempt-1-output":     "plan v1",
++		"prior-attempt-1-log":        "runner log",
++		"prior-attempt-1-transcript": "transcript",
++	} {
++		if got := string(byRole[role]); got != want {
++			t.Fatalf("input %s = %q, want %q", role, got, want)
++		}
++	}
++}
++
++func TestValidatePriorTranscriptEvidenceStateMachine(t *testing.T) {
++	artifact := &runmanifest.ArtifactRef{Artifact: strings.Repeat("a", 64)}
++	tests := []struct {
++		name    string
++		session *runmanifest.SessionEvidence
++		wantErr string
++	}{
++		{name: "missing session is no transcript", session: nil},
++		{name: "no transcript", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}},
++		{name: "retrieval failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceFailed, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}},
++		{name: "imported and scanned", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed, TranscriptArtifact: artifact}},
++		{name: "redaction failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceFailed}, wantErr: "redaction failed"},
++		{name: "success missing artifact", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceRetrievalImported, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed}, wantErr: "without artifact"},
++		{name: "artifact retrieval failed", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceFailed, RedactionStatus: runmanifest.SessionEvidenceNotApplicable, TranscriptArtifact: artifact}, wantErr: "with artifact"},
++		{name: "mixed absent state", session: &runmanifest.SessionEvidence{RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceRedactionPassed}, wantErr: "without artifact"},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			err := validatePriorTranscriptEvidence(tc.session)
++			if tc.wantErr == "" && err != nil {
++				t.Fatalf("validate: %v", err)
++			}
++			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
++				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
++			}
++		})
++	}
++}
++
++func TestFilterPriorAttemptInputsPreservesOrdinaryAndFeedback(t *testing.T) {
++	refs := []runmanifest.ArtifactRef{
++		{Role: "task"}, {Role: "prior-attempts"}, {Role: "prior-attempt-1-output"}, {Role: "gate-feedback"},
++	}
++	inputs := []replay.RunInput{
++		{Role: "task"}, {Role: "prior-attempts"}, {Role: "prior-attempt-1-output"}, {Role: "gate-feedback"},
++	}
++	gotRefs, gotInputs := filterPriorAttemptInputs(refs, inputs)
++	if len(gotRefs) != 2 || gotRefs[0].Role != "task" || gotRefs[1].Role != "gate-feedback" {
++		t.Fatalf("filtered refs = %#v", gotRefs)
++	}
++	if len(gotInputs) != 2 || gotInputs[0].Role != "task" || gotInputs[1].Role != "gate-feedback" {
++		t.Fatalf("filtered inputs = %#v", gotInputs)
++	}
++}
++
++func TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs(t *testing.T) {
++	as := artifactstore.New()
++	outputArtifact, err := as.AddContent("plan", "text/plain", []byte("same output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
++	noTranscriptSession := func(id string) *runmanifest.SessionEvidence {
++		return &runmanifest.SessionEvidence{SessionID: id, RetrievalStatus: runmanifest.SessionEvidenceNotApplicable, RedactionStatus: runmanifest.SessionEvidenceNotApplicable}
++	}
++	stages := []runmanifest.Stage{
++		{Name: "plan", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession("shared-session")}},
++		{Name: "plan.r2", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession("shared-session")}},
++		{Name: "plan.r3", Output: output, Producer: runmanifest.Producer{Session: noTranscriptSession(" shared-session ")}},
++		{Name: "plan.r4", Output: output},
++	}
++	gates := []runmanifest.GateAttempt{
++		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
++		{GateID: "plan.r2", Phase: "plan", Round: 2, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r2"}}},
++		{GateID: "plan.r3", Phase: "plan", Round: 3, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r3"}}},
++		{GateID: "plan.r4", Phase: "plan", Round: 4, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r4"}}},
++	}
++	refs, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
++	if err != nil {
++		t.Fatalf("buildPriorAttemptInputs: %v", err)
++	}
++	if len(refs) != 5 || len(inputs) != 5 {
++		t.Fatalf("refs/inputs = %d/%d, want index plus four outputs", len(refs), len(inputs))
++	}
++	var index priorAttemptsIndex
++	if err := json.Unmarshal(inputs[0].Content, &index); err != nil {
++		t.Fatalf("decode index: %v", err)
++	}
++	if len(index.Attempts) != 4 || index.Attempts[0].ResumedSession || !index.Attempts[1].ResumedSession || index.Attempts[2].ResumedSession || index.Attempts[3].ResumedSession {
++		t.Fatalf("resumed flags = %#v", index.Attempts)
++	}
++	if index.Attempts[3].SessionID != "" {
++		t.Fatalf("nil Session encoded session_id = %q", index.Attempts[3].SessionID)
++	}
++	for i := 1; i <= 4; i++ {
++		ref := refs[i]
++		if ref.Artifact != output.Artifact || ref.Role != fmt.Sprintf("prior-attempt-%d-output", i) {
++			t.Fatalf("output ref[%d] = %#v", i, ref)
++		}
++	}
++}
++
++func TestGateRerunStopsBeforeRunnerWhenPriorTranscriptRedactionFailed(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	stageCalls := 0
++	block := envelopeJSON("block", []string{"fix it"})
++	ss := &stubSeats{responses: [][]byte{block, block}}
++	two := 2
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			return &stageEvidenceRunner{
++				output: []byte("plan"), transcript: []byte("api_key=abcdefghijklmnop"), sessionID: "unsafe-session",
++			}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &two})
++	runID := "mywf-20260101T000000Z-redaction-stop"
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha})
++	if err == nil || !strings.Contains(err.Error(), "transcript redaction failed") {
++		t.Fatalf("Run error = %v, want transcript redaction failure", err)
++	}
++	if stageCalls != 1 {
++		t.Fatalf("stage calls = %d, want 1", stageCalls)
++	}
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Stages) != 1 || len(m.Gates) != 1 || m.Gates[0].Status != runmanifest.GateStatusRerun {
++		t.Fatalf("durable state = stages:%d gates:%#v", len(m.Stages), m.Gates)
++	}
++	if session := m.Stages[0].Producer.Session; session == nil || session.RedactionStatus != runmanifest.SessionEvidenceFailed {
++		t.Fatalf("session = %#v, want persisted redaction failure", session)
++	}
++}
++
++func TestGateRerunReportsTranscriptRetrievalFailureAndContinues(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	block := envelopeJSON("block", []string{"fix it"})
++	goResult := envelopeJSON("go", nil)
++	ss := &stubSeats{responses: [][]byte{block, block, goResult, goResult}}
++	stageCalls := 0
++	var rerunInputs []replay.RunInput
++	two := 2
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			if stageCalls == 1 {
++				return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++					return replay.RunResult{
++						Output:   []byte("plan v1"),
++						Producer: runmanifest.Producer{Harness: runmanifest.Harness{Name: "stub"}, Skill: req.Producer.Skill},
++						Session:  &replay.SessionInfo{SessionID: "missing-transcript", TranscriptPath: "missing.txt"},
++					}, nil
++				}), nil
++			}
++			return &feedbackCheckRunner{output: []byte("plan v2"), captured: &rerunInputs}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &two})
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: "mywf-20260101T000000Z-retrieval-continues", GitSHA: sha,
++	}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if stageCalls != 2 {
++		t.Fatalf("stage calls = %d, want 2", stageCalls)
++	}
++	var index priorAttemptsIndex
++	for _, input := range rerunInputs {
++		if input.Role == "prior-attempts" {
++			if err := json.Unmarshal(input.Content, &index); err != nil {
++				t.Fatal(err)
++			}
++		}
++		if strings.Contains(input.Role, "transcript") {
++			t.Fatalf("unexpected transcript input %q after retrieval failure", input.Role)
++		}
++	}
++	if len(index.Attempts) != 1 || index.Attempts[0].TranscriptRetrievalStatus != runmanifest.SessionEvidenceFailed || index.Attempts[0].TranscriptRole != "" {
++		t.Fatalf("index attempts = %#v", index.Attempts)
++	}
++}
++
++func TestGateThirdAttemptReceivesRebuiltHistoryAndResumedSession(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	block := envelopeJSON("block", []string{"fix it"})
++	goResult := envelopeJSON("go", nil)
++	ss := &stubSeats{responses: [][]byte{block, block, block, block, goResult, goResult}}
++	stageCalls := 0
++	var thirdInputs []replay.RunInput
++	three := 3
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
++			stageCalls++
++			if stageCalls <= 2 {
++				return &stageEvidenceRunner{
++					output: []byte(fmt.Sprintf("plan v%d", stageCalls)),
++					log:    []byte(fmt.Sprintf("log v%d", stageCalls)), transcript: []byte(fmt.Sprintf("transcript v%d", stageCalls)), sessionID: "shared-session",
++				}, nil
++			}
++			return &feedbackCheckRunner{output: []byte("plan v3"), captured: &thirdInputs}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, ""}}),
++		Root:  repo,
++		Now:   fixedClock(),
++	}
++	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &three})
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: "mywf-20260101T000000Z-third-attempt", GitSHA: sha,
++	}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	var index priorAttemptsIndex
++	roleCounts := make(map[string]int)
++	feedbackCount := 0
++	for _, input := range thirdInputs {
++		roleCounts[input.Role]++
++		if input.Role == "gate-feedback" {
++			feedbackCount++
++		}
++		if input.Role == "prior-attempts" {
++			if err := json.Unmarshal(input.Content, &index); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if feedbackCount != 2 || roleCounts["prior-attempts"] != 1 {
++		t.Fatalf("feedback/prior index counts = %d/%d", feedbackCount, roleCounts["prior-attempts"])
++	}
++	if len(index.Attempts) != 2 || index.Attempts[0].ResumedSession || !index.Attempts[1].ResumedSession {
++		t.Fatalf("attempt index = %#v", index.Attempts)
++	}
++	for _, role := range []string{
++		"prior-attempt-1-output", "prior-attempt-1-log", "prior-attempt-1-transcript",
++		"prior-attempt-2-output", "prior-attempt-2-log", "prior-attempt-2-transcript",
++	} {
++		if roleCounts[role] != 1 {
++			t.Errorf("input role %s count = %d, want 1", role, roleCounts[role])
++		}
++	}
++}
++
++type runnerFunc func(context.Context, replay.RunRequest) (replay.RunResult, error)
++
++func (f runnerFunc) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	return f(ctx, req)
++}
++
+ // ---------------------------------------------------------------------------
+ // AC4: escalation advances tier; terminal escalation → GateEscalationError.
+ // ---------------------------------------------------------------------------
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index 1fcf936..0d29938 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -28,6 +28,13 @@ var specialRoles = map[string]bool{
+ 	"repo-state": true,
+ }
+ 
++// IsPriorAttemptRole reports whether role belongs to the engine-owned input
++// namespace used to hand prior stage attempts to gate reruns. Workflows may
++// not declare these roles because the engine injects them dynamically.
++func IsPriorAttemptRole(role string) bool {
++	return role == "prior-attempts" || strings.HasPrefix(role, "prior-attempt-")
++}
++
+ // reservedEnvNames are the four env var names that ExecRunner always controls.
+ // They must not appear in env_allowlist (fail-fast at validation; the runtime
+ // reserved-skip in ExecRunner is defense-in-depth only).
+@@ -341,6 +348,9 @@ func (w Workflow) Validate() error {
+ 		if err := validateRoleToken(prefix+".produces", s.Produces); err != nil {
+ 			return err
+ 		}
++		if IsPriorAttemptRole(s.Produces) {
++			return fmt.Errorf("%w: %s produces role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, s.Produces)
++		}
+ 		// A reserved special role (task, repo-state) is an implicit input
+ 		// available to every stage; a stage producing one is meaningless, so
+ 		// reject it rather than let it slip through as a no-op.
+@@ -366,6 +376,9 @@ func (w Workflow) Validate() error {
+ 			if err := validateRoleToken(fmt.Sprintf("%s.input[%d]", prefix, j), inp); err != nil {
+ 				return err
+ 			}
++			if IsPriorAttemptRole(inp) {
++				return fmt.Errorf("%w: %s input[%d] role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, j, inp)
++			}
+ 			// Duplicate inputs within a stage are rejected: an input appearing
+ 			// twice gives no additional information and most likely indicates a
+ 			// copy-paste error.
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 54cebd2..dc2e29b 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -251,6 +251,10 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 		// Reserved produces roles
+ 		{"produces reserved role task", func(w *Workflow) { w.Stages[0].Produces = "task" }},
+ 		{"produces reserved role repo-state", func(w *Workflow) { w.Stages[0].Produces = "repo-state" }},
++		{"produces reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Produces = "prior-attempts" }},
++		{"produces reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
++		{"inputs reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
++		{"inputs reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
+ 	}
+ 
+ 	for _, tc := range cases {
+@@ -266,6 +270,17 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 	}
+ }
+ 
++func TestPriorAttemptRoleReservationAllowsNearMiss(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Produces = "prior-attempt"
++	if err := w.Validate(); err != nil {
++		t.Fatalf("Validate near-miss role: %v", err)
++	}
++	if IsPriorAttemptRole("prior-attempt") {
++		t.Fatal("prior-attempt must not be in the reserved namespace")
++	}
++}
++
+ func TestValidateRequiredStageName(t *testing.T) {
+ 	tests := []struct {
+ 		name    string
