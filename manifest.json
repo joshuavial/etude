@@ -121,6 +121,59 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:56:03Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "22e597b820cc6217d435cbfdba72cb34e25aa3458b7e5e56ece5854da552fc8c"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr/plan-gate-r2.md sha256 f7fa20f50e8cc7ca964212263d5eee56b9060d9dd59253bdbb200040ae0ea2b4"
+          ],
+          "timestamp": "2026-08-15T23:59:02Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a regression proving CLI --runner command override preserves a stage's caller workspace.",
+            "Document that a caller stage gate still reviews the pre-run detached checkout, not the newly committed caller tree.",
+            "Document the observable dirty-tree residual when a failing runner leaves changes behind.",
+            "packet path .etude/tmp/etude-5dr/plan-gate-r2.md sha256 f7fa20f50e8cc7ca964212263d5eee56b9060d9dd59253bdbb200040ae0ea2b4"
+          ],
+          "timestamp": "2026-08-15T23:59:02Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:59:02Z"
     }
   ]
 }
