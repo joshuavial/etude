@@ -1,0 +1,25 @@
+# Verify — etude-21z (rewrite dogfood-capture onto a single capture-run spec)
+
+Result: PASS.
+
+## Equivalence proof (the crux — independently reproduced by the orchestrator AND the Opus gate seat)
+Captured identical 5-artifact inputs BOTH ways into throwaway refs and diffed the raw manifest.json blobs (normalizing run_id + created + per-stage timestamp + refs.bead):
+- OLD path: 4 sequential `etude capture` append calls → refs/etude/runs/eq-old.
+- NEW path: the rewritten script's `capture-run` YAML spec → refs/etude/runs/eq-new.
+- `diff` → **EMPTY = EQUIVALENT**. Every load-bearing field matched: stage order plan/implement/verify/review; per-stage skill{id,repo=manual,version=manual}, model, produced_by=original, git_sha, harness/harness_version; input/output roles + content blobs (byte-identical git OIDs) + media_type; run-level workflow=default/v1/refs{bead}. diff.patch + plan.md de-dup to one content-addressed blob each despite feeding two stages.
+- Throwaway refs deleted; 0 eq-* refs remain; nothing pushed.
+
+## dir-dot extension fix (codex+gemini implement-gate BLOCK, fixed)
+The arg-file staging now derives the extension from the BASENAME (`${2##*/}` then `*.*` case), matching Go's filepath.Ext (dots in parent dirs ignored). Verified:
+- /tmp/x-verify.md → verify.md; /tmp/verifyfile → verify (no ext); /tmp/foo.bar/verify → verify (was the buggy verify.bar/verify); /tmp/x.txt → verify.txt; /tmp/a.b.c/report.markdown → verify.markdown.
+- Post-fix equivalence re-run: still EMPTY/EQUIVALENT for the normal .md case.
+
+## bash + behavior
+- `bash -n scripts/dogfood-capture.sh`: OK. `go build ./...`: clean (no Go change).
+- Preserved: arg interface `<bead> <commit> <verify> <review>`, `set -euo pipefail`, trap cleans bindir+specdir, fresh `go build`, `git push origin refs/etude/runs/<bead>`, the run-show summary. create-only documented in the header (errors if the ref exists; manual delete to re-capture).
+
+## Ultimate dogfood
+This very bead (etude-21z) was captured into refs/etude/runs/etude-21z by the REWRITTEN script — a real-bead end-to-end exercise of the new path.
+
+## Scope
+scripts/dogfood-capture.sh only (body + header comment). No Go/CLI change, no docs/cli regen. 1-bead=1-commit.

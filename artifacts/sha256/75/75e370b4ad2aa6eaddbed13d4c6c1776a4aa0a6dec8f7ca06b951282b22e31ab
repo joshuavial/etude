@@ -1,0 +1,198 @@
+## Plan
+
+**Approach:** Rewrite `scripts/dogfood-capture.sh` to emit ONE `capture-run`
+YAML spec describing all four dev-workflow stages and invoke `etude capture-run`
+once, replacing the 4 sequential `etude capture` append calls. Field-by-field
+the two paths build the SAME `runmanifest.Stage` struct, so the resulting
+manifest is equivalent (proven below). Same arg interface, same fresh build,
+same push, same summary. Path-confinement (etude-094) forces all five artifacts
+to be staged INTO the spec dir and referenced by relative basename.
+
+**Key fidelity finding — capture-run DOES inherit run-level -> stage.**
+`internal/cli/capture_run.go` buildStage() inherits run-level `git_sha`
+(L283-288), `harness`/`harness_version` (L305-313), and `model` (L315-319) to
+any stage that omits them; `skill.repo`/`skill.version` default to
+"manual"/"manual" (L291-298) matching the old script (which only set
+--skill-id). `produced_by` defaults to "original" (L277-280). Confirmed by
+`TestCaptureRunHappyPath3Stages` (stage 0 uses run-level model) and
+`TestCaptureRunRunLevelGitSHAAppliedToAllStages`. So: put shared
+harness/harness_version/git_sha at RUN level; set model PER STAGE (it varies:
+opus for plan/verify/review, sonnet for implement); set produced_by:original
+per stage (explicit, matches old --produced-by original); refs {bead:<bead>} at
+run level.
+
+**Equivalence proof (struct-level).** Old `capture` (capture.go:195-211) and
+new `capture-run` (capture_run.go:351-367) construct the identical
+`runmanifest.Stage{Name, ProducedBy, GitSHA, Skill{ID,Repo,Version},
+Producer{Harness{Name,Version}, Model, Skill}, Inputs, Output, Timestamp}`.
+Both read artifacts via inferMediaType + store.AddContent, so role +
+content-hash + media-type are byte-identical for the same file content.
+Run-level Workflow/WorkflowVersion: old script passes `--workflow default
+--workflow-version v1`; spec sets the same -> identical (NOT the capture-run
+"manual"/"manual-v1" defaults, because we set them explicitly).
+
+**Spec shape — `$specdir/run.yaml`** (heredoc; <bead>/<ver>/<commit> interpolated):
+```yaml
+run_id: <bead>
+workflow: default
+workflow_version: v1
+git_sha: <full-40-hex-commit>
+harness: claude-code
+harness_version: <claude --version, or unknown>
+refs:
+  bead: <bead>
+stages:
+  - stage: plan
+    produced_by: original
+    model: claude-opus-4-7
+    skill: {id: dev-planner}
+    inputs:  [{role: task, path: task.md}]
+    output:   {role: plan, path: plan.md}
+  - stage: implement
+    produced_by: original
+    model: claude-sonnet-4-6
+    skill: {id: dev-coder}
+    inputs:  [{role: plan, path: plan.md}]
+    output:   {role: diff, path: diff.patch}
+  - stage: verify
+    produced_by: original
+    model: claude-opus-4-7
+    skill: {id: dev-qa}
+    inputs:  [{role: diff, path: diff.patch}]
+    output:   {role: verify, path: verify.md}
+  - stage: review
+    produced_by: original
+    model: claude-opus-4-7
+    skill: {id: dev-pr-reviewer}
+    inputs:  [{role: diff, path: diff.patch}, {role: verify, path: verify.md}]
+    output:   {role: review, path: review.md}
+```
+(Stage `model` is per-stage because it varies; the rest inherit run-level. Could
+instead set model: claude-opus-4-7 at run level + a single sonnet override on
+implement — equivalent; per-stage is clearer.)
+
+**Artifact staging (relative-path mechanics).** capture-run REJECTS absolute
+paths and confines realpath to the spec dir. The old script used absolute
+`$tmp/...` AND the verify/review args are absolute (/tmp). So:
+- create a dedicated `specdir="$(mktemp -d)"` (add to the EXIT trap rm -rf).
+- write the 3 GENERATED artifacts directly into specdir by relative name:
+  `bd show <bead>` -> `$specdir/task.md`; bead design (python json extractor)
+  -> `$specdir/plan.md`; `git show <commit>` -> `$specdir/diff.patch`.
+- COPY the 2 ARG files in: `cp -- "$verify_file" "$specdir/verify.md"` and
+  `cp -- "$review_file" "$specdir/review.md"`. (Renaming to fixed basenames
+  keeps the spec stable regardless of the source filenames; content is what
+  the hash captures, so renaming is immaterial to equivalence.)
+- write `$specdir/run.yaml` referencing every artifact by BARE basename
+  (task.md, plan.md, diff.patch, verify.md, review.md). diff.patch feeds both
+  implement(output) and verify+review(input); plan.md feeds plan(output) and
+  implement(input) — same relative path each time, so capture-run de-dupes to
+  one content-addressed blob (artifactStore keys by hash), exactly as the old
+  4-call path did.
+- keep `bin="$bindir/etude"` fresh-build unchanged; invoke
+  `"$bin" capture-run "$specdir/run.yaml"`.
+
+**Create-only decision.** capture-run is create-only: it ERRORS with "run ...
+already exists" if `refs/etude/runs/<bead>` exists (capture_run.go:240-249;
+TestCaptureRunCreateOnlyCollision). The old 4-call path APPENDED, so a re-run
+silently produced a duplicated/8-stage manifest. Erroring on re-run is STRICTLY
+BETTER for a one-shot dogfood capture (no accidental double-capture); accept and
+document it in the header. If a legitimate re-capture is ever needed, delete the
+ref first (`git update-ref -d refs/etude/runs/<bead>` + delete on origin) — note
+this in the header comment, do not auto-delete.
+
+**Behavior preserved.** set -euo pipefail; arg interface `<bead> <commit>
+<verify-file> <review-file>`; `git rev-parse --verify <commit>^{commit}` ->
+full 40-hex; pre-check both arg files exist; fresh `go build -o $bin
+./cmd/etude`; EXIT trap cleans bindir+tmp/specdir; `git push origin
+refs/etude/runs/<bead>`; final `"$bin" run show <bead> | grep -E
+"stage:|model:|skill:"` summary.
+
+**Files:**
+- `scripts/dogfood-capture.sh` - rewrite the capture body (replace the 4
+  `capture` calls + tmp artifact layout with specdir staging + 1 `capture-run`);
+  update the header comment block (lines 3-23) to describe the
+  spec+capture-run+create-only flow instead of the "4-capture-call" sequence.
+
+**Tests:** This is a bash script (no Go unit test). Verify is a scripted
+equivalence check against a REAL recently-closed bead (etude-094), run in a
+THROWAWAY ref namespace so it never touches real refs/etude/runs/*:
+
+  # 0. pick a real closed bead + its commit, and have its verify/review md files
+  B=etude-094; C=$(git rev-parse --verify "<commit-of-094>^{commit}")
+  VF=/tmp/094-verify.md; RF=/tmp/094-review.md   # real artifacts
+  # 1. build etude fresh once
+  go build -o /tmp/etude-eq ./cmd/etude
+  # 2. OLD path -> ref refs/etude/runs/eq-old (4 capture calls, mirror old flags)
+  #    NEW path -> ref refs/etude/runs/eq-new (single capture-run on a spec dir)
+  #    For both, use run_id eq-old / eq-new so they live in throwaway refs.
+  # 3. extract both manifests and normalise timestamps, then diff:
+  for r in eq-old eq-new; do
+    /tmp/etude-eq run show "$r" --json 2>/dev/null \
+      | python3 -c 'import sys,json,re; d=json.load(sys.stdin); \
+        d.pop("created",None); d["run_id"]="RUN"; \
+        [s.update({"timestamp":"TS"}) for s in d.get("stages",[])]; \
+        print(json.dumps(d,sort_keys=True,indent=2))' > /tmp/$r.json
+  done
+  diff /tmp/eq-old.json /tmp/eq-new.json   # EXPECT: empty (modulo run_id/timestamps)
+  # 4. cleanup throwaway refs
+  git update-ref -d refs/etude/runs/eq-old; git update-ref -d refs/etude/runs/eq-new
+
+Acceptance: the diff is empty after normalising run_id + all timestamps. Stage
+names+order, per-stage skill{id,repo=manual,version=manual}, model, produced_by,
+git_sha, harness/harness_version, every input (role+content-hash+media_type) and
+output, and run-level workflow/workflow_version/refs must match. Also run the
+built script end-to-end on a throwaway run_id (manual CLI test per dev-workflow)
+and confirm `run show` summary + push succeed. NOTE: the real run-id collision
+means the equivalence harness MUST use eq-old/eq-new, not the real bead id; the
+`--run`/run_id is the only intentional difference and is normalised out.
+
+**Docs:**
+- No Go/CLI change -> no `docs/cli/*` regen, no `docs/capture-run.md` change.
+- Update the script's own header comment (the only doc that describes this
+  script's mechanics). No user-facing docs/*.md reference dogfood-capture.sh
+  mechanics beyond the script header.
+
+**Risks:**
+- Path confinement: must stage ALL FIVE artifacts into the spec dir by relative
+  name (the two /tmp arg files via cp); a stray absolute path -> capture-run
+  rejects. Mitigated by the explicit staging plan above.
+- Create-only behavior change (re-run errors instead of appending) — this is an
+  intended, safer behavior; documented in the header.
+- Unavoidable manifest difference: per-stage Timestamp + run-level Created are
+  wall-clock and will differ between any two captures (old vs new) — immaterial,
+  normalised out in the equivalence diff. No structural difference otherwise.
+- Tier: dev-tooling, likely Tier 2; plan gate may re-tier. 1 bead = 1 commit.
+
+**Capture:**
+- inputs: bead etude-21z description, scripts/dogfood-capture.sh,
+  internal/cli/capture_run.go, internal/cli/capture.go (stage build + defaults),
+  internal/cli/capture_run_test.go, docs/capture-run.md
+- output: bead --design field
+
+---
+## PLAN-GATE CORRECTION (3-seat: ALL THREE BLOCK'd — core design unanimously sound, VERIFICATION + one fidelity bug need fixing)
+The struct-equivalence/inheritance/path-staging/create-only/scope decisions are all confirmed correct by every seat. Three concrete defects to fix (all verified against source):
+
+**FIX 1 (Opus + codex) — the equivalence Verify uses a non-existent flag.** `etude run show` has NO `--json` flag (run.go:60-71: ExactArgs(1), zero flags; dogfood-gate-capture.sh:59 notes this). The Verify must instead diff the RAW manifest blobs: `git cat-file -p refs/etude/runs/<ref>:manifest.json` for each, normalize, then `diff`.
+
+**FIX 2 (codex) — media_type fidelity when staging the arg files.** The old `capture` infers media_type from the ORIGINAL arg path via inferMediaType (capture.go:588, extension-based: .txt→text/plain, .md/.markdown→text/markdown, default text/plain). Renaming the verify_file/review_file args to a fixed `verify.md`/`review.md` changes the inferred media_type for any non-.md arg (extensionless, .txt, …), making ArtifactRef.MediaType diverge even when content hashes match. FIX: when staging the two arg files, PRESERVE their source extension — `vext="${verify_file##*.}"` (guard the no-dot case: if "$vext" == "$verify_file" then no extension → stage with no extension) and stage as `verify.$vext` / `review.$rext`; reference that basename in the spec. The three GENERATED artifacts keep their fixed names (task.md/plan.md/diff.patch) — identical to the old script's $tmp/task.md, $tmp/plan.md, $tmp/diff.patch, so their media_type is already faithful.
+
+**FIX 3 (gemini) — the equivalence normalization misses refs.bead.** If the test captures into throwaway run-ids eq-old/eq-new with `--ref bead=eq-old` / `refs:{bead: eq-new}`, the manifests' `refs.bead` differ and the strict diff falsely fails. FIX: normalize ALL volatile fields before diffing — `run_id`, `created`, every stage `timestamp`, AND `refs.bead` (set each to a constant). (Alternatively decouple run-id from the bead ref so refs.bead matches; but normalizing all four is simplest/most robust.)
+
+## CORRECTED VERIFICATION (the Verify-phase equivalence proof)
+In a throwaway clone/worktree (do NOT pollute real refs), capture a real closed bead's artifacts BOTH ways into two run-ids (eq-old via the OLD 4-capture sequence; eq-new via the NEW capture-run script), each with the same artifact contents. Then:
+```
+for r in eq-old eq-new; do
+  git cat-file -p "refs/etude/runs/$r:manifest.json" | python3 -c '
+import sys,json
+m=json.load(sys.stdin)
+m["run_id"]="X"; m["created"]="T"
+if "refs" in m and "bead" in m["refs"]: m["refs"]["bead"]="X"
+for s in m.get("stages",[]): s["timestamp"]="T"
+json.dump(m,sys.stdout,indent=2,sort_keys=True)' > "/tmp/eq-$r.json"
+done
+diff /tmp/eq-eq-old.json /tmp/eq-eq-new.json && echo EQUIVALENT
+```
+Expect empty diff (EQUIVALENT). This compares stage order, per-stage skill{id,repo,version}/model/produced_by/git_sha/harness/harness_version, inputs (role+artifact hash+media_type), output (role+artifact hash+media_type), and run-level workflow/workflow_version — exactly the fidelity surface, including the artifact hashes + media_types that `run show` text would omit.
+
+All other plan decisions stand unchanged.

@@ -1,0 +1,14 @@
+# Final Review — etude-21z (rewrite dogfood-capture onto a single capture-run spec)
+
+Verdict: GO. Commit 4b078e8 "rewrite dogfood-capture onto a single capture-run spec".
+
+- Coherent: replaces the 4 sequential `etude capture` APPEND calls with one `etude capture-run` YAML spec (create-only), the batch mode etude-jb7 shipped. Builds the spec in a temp dir, stages all 5 artifacts there by relative basename (post etude-094 capture-run rejects absolute/escaping paths), and invokes capture-run once.
+- Fidelity proven: capture-run inherits run-level git_sha/harness/harness_version to stages and defaults skill.repo/version to manual/manual + produced_by to original (verified at capture_run.go:277-318), so the spec reproduces the old manifest exactly. The equivalence proof — capture identical artifacts both ways, normalize run_id/created/timestamps/refs.bead, diff manifest.json blobs — is EMPTY/EQUIVALENT, independently reproduced by the orchestrator and the Opus gate seat. Content blobs are byte-identical OIDs; diff.patch/plan.md de-dup correctly.
+- media_type faithful: arg files are staged preserving their source extension via a basename-only helper matching Go's filepath.Ext (dots in parent dirs ignored), so inferMediaType yields the same media_type as the old per-arg-path capture.
+- Behavior preserved: same arg interface, set -euo pipefail, trap (now cleans bindir+specdir), fresh build, push, run-show summary. create-only is a deliberate safety improvement over the old silent-append-duplicate behavior, documented in the header with the re-capture escape hatch.
+- Docs: the script's header comment is updated to the new flow; no user-facing docs describe its internals; one planning-doc line-number reference (gate-reviewer-record-schema.md:87) is stale on line number only — its semantic claim (review takes diff+verify) is still true — and is outside the approved 1-file scope. No docs/cli regen (no Go/CLI change). Justified no-docs.
+- Scope: scripts/dogfood-capture.sh only. 1-bead=1-commit.
+
+Gate history (3-seat):
+- Plan: ALL THREE seats BLOCK'd — unanimous that the DESIGN is sound but the VERIFICATION + one fidelity bug needed fixing. Opus+codex: the equivalence Verify used a non-existent `run show --json` (→ diff manifest blobs). codex: media_type fidelity — preserve arg-file extension. gemini: normalize refs.bead too. All three verified-true, all three fixed in the design.
+- Implement: codex+gemini BLOCK on the dir-dot extension edge (`${verify_file##*.}` reads a parent-dir dot → cp through a nonexistent subdir); Opus GO (real bug, but fails-loud + never triggers in dogfood). Fixed with a basename-only extractor; codex+gemini round-2 GO → UNANIMOUS. The fix was empirically re-verified (5 path shapes + re-run equivalence still EMPTY).
