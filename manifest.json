@@ -724,6 +724,76 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:15:14Z"
+    },
+    {
+      "gate_id": "plan.r8",
+      "phase": "plan",
+      "round": 8,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "avoid secret persistence on stdout/stderr",
+            "prove child termination on cancellation"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r8",
+            "artifact": "8f393b7f7cb292a69bb3d8d2f444fa121da4326ef5d35d1c4330f2020a7fa3a8",
+            "path": "artifacts/sha256/8f/8f393b7f7cb292a69bb3d8d2f444fa121da4326ef5d35d1c4330f2020a7fa3a8",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 337
+          },
+          "timestamp": "2026-08-16T00:20:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "prove agent discovery and tool isolation",
+            "define implement artifact semantics",
+            "enumerate every credential recipient"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r8",
+            "artifact": "f77ce3f4aa4ae9c3447a1fd18b102af1bde00ddb49904d021b1a2c715e1c424c",
+            "path": "artifacts/sha256/f7/f77ce3f4aa4ae9c3447a1fd18b102af1bde00ddb49904d021b1a2c715e1c424c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 375
+          },
+          "timestamp": "2026-08-16T00:22:30Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "STRICT plan gate remained blocked after the hard round cap; further adapter hardening would expand scope without an approved producer security contract."
+      },
+      "timestamp": "2026-08-16T00:23:50Z"
     }
   ]
 }
