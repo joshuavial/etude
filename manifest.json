@@ -1127,6 +1127,48 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T04:03:00Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "state failed-stage log omission consistently",
+            "explain transcript URI and path semantics and resolution"
+          ],
+          "raw_output": {
+            "role": "opus-docs-r1",
+            "artifact": "1d05ba100c23981369b98db0cc6da0eb876b01d501d3eb46303996681db868c0",
+            "path": "artifacts/sha256/1d/1d05ba100c23981369b98db0cc6da0eb876b01d501d3eb46303996681db868c0",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 331
+          },
+          "timestamp": "2026-08-16T04:18:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T04:19:00Z"
     }
   ]
 }
