@@ -1,0 +1,52 @@
+# etude-zdl final review
+
+ROLE: Perform FINAL REVIEW of the complete etude-zdl diff and verification record.
+
+ANCESTOR: etude-zdl (P3) closes four measured schema findings from etude-2pc.1: arbitrary seat modes, silent workflow node-encode omission, triplicated identifier policy, and a test no-op.
+
+MEASUREMENT: final code removes four silent error branches and two local predicate copies, delegates the third implementation, deletes the no-op, and rejects unsupported modes at both primary and fallback paths.
+
+BLAST RADIUS: none outside the repository. Eight tracked paths change: docs/init.md; registry code/test; workflow code/test; runmanifest wrapper; internal/ident code/test. No forbidden 9uf-owned file, CLI surface, storage/ref, host config, install, or external state changes.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: synchronous single-process validation and serialization only.
+
+DURABILITY CLASS: functions return values/errors; no changed path performs a durable write.
+
+COMPLETENESS ENUMERATION: closed-set validation for primary and fallback mode, empty/inheritance, three accepted values, exact matching, quoted whitespace/case rejects, Validate/ParseYAML seams, all four node encode sites and public propagation, all three identifier consumers, empty semantics and exact required error, valid YAML stability, docs, no-op removal, full tests/lint/docs checks, and forbidden-scope audit.
+
+TRUST BOUNDARY: strict operator-authored YAML remains trusted configuration. No new deserialization point or hostile-input defence.
+
+## Final behavior
+
+- Seat modes are optional but, when set, must match exactly `inline`, `diff-only`, or `inline-no-tools`; fallback mode follows the same rule and empty still inherits through `Seat.Invocations()`.
+- Workflow node encoding now fails closed with contextual errors rather than silently omitting stage runner, stage gate, default runner, or retros blocks.
+- `[A-Za-z0-9_.-]` is implemented once in leaf package `internal/ident`; registry/workflow use it and runmanifest preserves its public wrapper.
+- Blank stage names still return the existing field-specific `stage[0] name required` error before shared identifier validation.
+- The stale `_ = threshold` line is removed.
+
+## Final evidence
+
+- Focused ident/registry/workflow/runmanifest tests: PASS after every follow-up.
+- `make test`: PASS across all packages.
+- `make lint`: PASS.
+- `make docs`, `make docs-check`, `make docs-reality`: PASS; generated CLI docs unchanged.
+- `git diff --check`: PASS.
+- `rg isIdentChar internal`: zero definitions/calls.
+- Scope audit: only the eight declared paths are modified.
+- Non-CLI-facing classification: no command/flag/output/exit contract change; manual binary test not applicable.
+
+## Gate follow-ups folded
+
+- Removed the proposed synthetic encoder seam and kept direct propagation.
+- Established current mode authority and notified in-progress `etude-9uf.1` of exact spellings, fallback ordering, and inheritance.
+- Used quoted whitespace/case variants and independent primary/fallback error literals.
+- Cloned fallback slices in tests.
+- Proved the sole stage-name caller pre-rejects blank and pinned its exact required error.
+- Documented exact mode matching.
+- `etude-kcd` already tracks the gate packet builder's Go test extraction false negative.
+
+## Review focus
+
+Confirm acceptance is complete, valid behavior is preserved outside the intentional mode tightening, errors are no longer swallowed, no helper-layer regression exists, and scope is clean.

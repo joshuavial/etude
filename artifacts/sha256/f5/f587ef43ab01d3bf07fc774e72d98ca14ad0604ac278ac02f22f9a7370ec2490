@@ -1,0 +1,516 @@
+commit 00abf86cfc0a7880216d89527b616c5cf73cb18d
+Author: joshuavial <git@codewithjv.com>
+Date:   Sat Aug 15 14:52:19 2026 +0800
+
+    tighten registry and workflow schema handling
+
+diff --git a/docs/init.md b/docs/init.md
+index 18b9474..82eadae 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -193,9 +193,11 @@ Validation rules:
+ - **`quorum`** — if set, must be `"unanimous"` or `"majority"`.  Omitting it
+   is equivalent to `"unanimous"`.
+ - **`seats`** — `provider`, `harness`, and `invoke` are required per seat.
+-  `mode`, `model_fallbacks`, and `invocation_fallbacks` are optional. Each
++  `mode`, `model_fallbacks`, and `invocation_fallbacks` are optional. When set,
++  `mode` must match exactly `inline`, `diff-only`, or `inline-no-tools`. Each
+   invocation fallback requires its own `harness` and `invoke`; `mode` is
+-  optional. Seat and tier map keys must match `[A-Za-z0-9_.-]`.
++  optional and uses the same closed set. Seat and tier map keys must match
++  `[A-Za-z0-9_.-]`.
+ - **`tiers`** — `seats` is required and must be non-empty.  Every seat key in
+   a tier must reference a seat defined in the same file (intra-file check; no
+   cross-file resolution at schema time).  `name` and `use` are optional prose.
+diff --git a/internal/ident/ident.go b/internal/ident/ident.go
+new file mode 100644
+index 0000000..8845d43
+--- /dev/null
++++ b/internal/ident/ident.go
+@@ -0,0 +1,16 @@
++// Package ident defines the shared Etude identifier character policy.
++package ident
++
++// IsValid reports whether value is a non-empty string using only the
++// [A-Za-z0-9_.-] character set.
++func IsValid(value string) bool {
++	if value == "" {
++		return false
++	}
++	for _, r := range value {
++		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/internal/ident/ident_test.go b/internal/ident/ident_test.go
+new file mode 100644
+index 0000000..0389f7f
+--- /dev/null
++++ b/internal/ident/ident_test.go
+@@ -0,0 +1,29 @@
++package ident
++
++import "testing"
++
++func TestIsValid(t *testing.T) {
++	tests := []struct {
++		name  string
++		value string
++		want  bool
++	}{
++		{name: "empty", value: "", want: false},
++		{name: "lowercase", value: "abc", want: true},
++		{name: "uppercase", value: "ABC", want: true},
++		{name: "digits", value: "123", want: true},
++		{name: "all punctuation", value: "a_b-c.d", want: true},
++		{name: "dot only", value: ".", want: true},
++		{name: "unicode", value: "café", want: false},
++		{name: "slash", value: "a/b", want: false},
++		{name: "space", value: "a b", want: false},
++		{name: "other punctuation", value: "a@b", want: false},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := IsValid(tc.value); got != tc.want {
++				t.Fatalf("IsValid(%q) = %v, want %v", tc.value, got, tc.want)
++			}
++		})
++	}
++}
+diff --git a/internal/registry/registry.go b/internal/registry/registry.go
+index 7d9fda8..0e3dd2a 100644
+--- a/internal/registry/registry.go
++++ b/internal/registry/registry.go
+@@ -11,6 +11,7 @@ import (
+ 	"io"
+ 	"strings"
+ 
++	"github.com/joshuavial/etude/internal/ident"
+ 	"gopkg.in/yaml.v3"
+ )
+ 
+@@ -37,8 +38,8 @@ type Seat struct {
+ 	Harness string
+ 	// Invoke is the canonical non-interactive invocation string (required).
+ 	Invoke string
+-	// Mode is the per-seat execution constraint (optional, e.g. "inline",
+-	// "diff-only", "inline-no-tools").
++	// Mode is the per-seat execution constraint. It is optional; valid values
++	// are "inline", "diff-only", and "inline-no-tools".
+ 	Mode string
+ 	// ModelFallbacks is an ordered list of fallback model identifiers to try
+ 	// if the primary model is unavailable.
+@@ -57,6 +58,7 @@ type SeatInvocation struct {
+ 	// Invoke is the canonical non-interactive invocation string (required).
+ 	Invoke string
+ 	// Mode overrides the seat execution constraint for this candidate when set.
++	// It accepts the same closed set as Seat.Mode.
+ 	Mode string
+ }
+ 
+@@ -118,6 +120,9 @@ func (r Registry) Validate() error {
+ 		if strings.TrimSpace(seat.Invoke) == "" {
+ 			return fmt.Errorf("%w: seat[%q].invoke required", ErrInvalidRegistry, key)
+ 		}
++		if err := validateSeatMode(fmt.Sprintf("seat[%q].mode", key), seat.Mode); err != nil {
++			return err
++		}
+ 		for i, fallback := range seat.InvocationFallbacks {
+ 			if strings.TrimSpace(fallback.Harness) == "" {
+ 				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].harness required", ErrInvalidRegistry, key, i)
+@@ -125,6 +130,9 @@ func (r Registry) Validate() error {
+ 			if strings.TrimSpace(fallback.Invoke) == "" {
+ 				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].invoke required", ErrInvalidRegistry, key, i)
+ 			}
++			if err := validateSeatMode(fmt.Sprintf("seat[%q].invocation_fallbacks[%d].mode", key, i), fallback.Mode); err != nil {
++				return err
++			}
+ 		}
+ 	}
+ 	for key, tier := range r.Tiers {
+@@ -143,25 +151,27 @@ func (r Registry) Validate() error {
+ 	return nil
+ }
+ 
++func validateSeatMode(field, mode string) error {
++	switch mode {
++	case "", "inline", "diff-only", "inline-no-tools":
++		return nil
++	default:
++		return fmt.Errorf("%w: %s must be one of inline, diff-only, inline-no-tools, got %q", ErrInvalidRegistry, field, mode)
++	}
++}
++
+ // validateIdentKey checks that a map key matches the identifier charset
+ // [A-Za-z0-9_.-], mirroring the workflow stage-name rule.
+ func validateIdentKey(kind, key string) error {
+ 	if key == "" {
+ 		return fmt.Errorf("%w: %s key must not be empty", ErrInvalidRegistry, kind)
+ 	}
+-	for _, r := range key {
+-		if !isIdentChar(r) {
+-			return fmt.Errorf("%w: invalid %s key %q (must match [A-Za-z0-9_.-])", ErrInvalidRegistry, kind, key)
+-		}
++	if !ident.IsValid(key) {
++		return fmt.Errorf("%w: invalid %s key %q (must match [A-Za-z0-9_.-])", ErrInvalidRegistry, kind, key)
+ 	}
+ 	return nil
+ }
+ 
+-// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier charset.
+-func isIdentChar(r rune) bool {
+-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
+-}
+-
+ // YAML serializes the Registry to canonical YAML bytes.  Returns an error if
+ // the registry fails Validate.
+ func (r Registry) YAML() ([]byte, error) {
+diff --git a/internal/registry/registry_test.go b/internal/registry/registry_test.go
+index 3bd2f12..f33b2cd 100644
+--- a/internal/registry/registry_test.go
++++ b/internal/registry/registry_test.go
+@@ -451,6 +451,140 @@ func TestValidateRejectsInvalidInvocationFallback(t *testing.T) {
+ 	}
+ }
+ 
++func TestValidateAcceptsSupportedSeatModes(t *testing.T) {
++	for _, mode := range []string{"", "inline", "diff-only", "inline-no-tools"} {
++		t.Run("primary_"+mode, func(t *testing.T) {
++			r := Default()
++			s := r.Seats["opus"]
++			s.Mode = mode
++			r.Seats["opus"] = s
++			if err := r.Validate(); err != nil {
++				t.Fatalf("Validate rejected primary mode %q: %v", mode, err)
++			}
++		})
++		t.Run("fallback_"+mode, func(t *testing.T) {
++			r := Default()
++			s := r.Seats["opus"]
++			s.InvocationFallbacks = append([]SeatInvocation(nil), s.InvocationFallbacks...)
++			s.InvocationFallbacks[0].Mode = mode
++			r.Seats["opus"] = s
++			if err := r.Validate(); err != nil {
++				t.Fatalf("Validate rejected fallback mode %q: %v", mode, err)
++			}
++		})
++	}
++}
++
++func TestValidateRejectsInvalidSeatModes(t *testing.T) {
++	tests := []struct {
++		name   string
++		mode   string
++		mutate func(*Seat, string)
++		want   string
++	}{
++		{
++			name: "primary case variant",
++			mode: "Inline",
++			mutate: func(seat *Seat, mode string) {
++				seat.Mode = mode
++			},
++			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "Inline"`,
++		},
++		{
++			name: "primary whitespace",
++			mode: "inline ",
++			mutate: func(seat *Seat, mode string) {
++				seat.Mode = mode
++			},
++			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "inline "`,
++		},
++		{
++			name: "fallback case variant",
++			mode: "Diff-Only",
++			mutate: func(seat *Seat, mode string) {
++				seat.InvocationFallbacks[0].Mode = mode
++			},
++			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "Diff-Only"`,
++		},
++		{
++			name: "fallback whitespace",
++			mode: "diff-only ",
++			mutate: func(seat *Seat, mode string) {
++				seat.InvocationFallbacks[0].Mode = mode
++			},
++			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "diff-only "`,
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			r := Default()
++			s := r.Seats["opus"]
++			s.InvocationFallbacks = append([]SeatInvocation(nil), s.InvocationFallbacks...)
++			tc.mutate(&s, tc.mode)
++			r.Seats["opus"] = s
++			err := r.Validate()
++			if err == nil {
++				t.Fatal("Validate should reject an unsupported seat mode")
++			}
++			if !errors.Is(err, ErrInvalidRegistry) || !strings.Contains(err.Error(), tc.want) {
++				t.Fatalf("Validate error = %v, want ErrInvalidRegistry containing %q", err, tc.want)
++			}
++		})
++	}
++}
++
++func TestParseYAMLRejectsInvalidSeatModes(t *testing.T) {
++	tests := []struct {
++		name  string
++		input string
++		want  string
++	}{
++		{
++			name: "primary quoted whitespace",
++			input: `seats:
++  opus:
++    provider: anthropic/claude-opus
++    harness: claude-code
++    invoke: claude -p --model opus
++    mode: "inline "
++tiers:
++  L4:
++    seats: [opus]
++`,
++			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "inline "`,
++		},
++		{
++			name: "fallback case variant",
++			input: `seats:
++  opus:
++    provider: anthropic/claude-opus
++    harness: claude-code
++    invoke: claude -p --model opus
++    mode: inline
++    invocation_fallbacks:
++      - harness: agy
++        invoke: agy --model opus --print
++        mode: Inline
++tiers:
++  L4:
++    seats: [opus]
++`,
++			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "Inline"`,
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			_, err := ParseYAML([]byte(tc.input))
++			if err == nil {
++				t.Fatal("ParseYAML should reject an unsupported seat mode")
++			}
++			if !errors.Is(err, ErrInvalidRegistry) || !strings.Contains(err.Error(), tc.want) {
++				t.Fatalf("ParseYAML error = %v, want ErrInvalidRegistry containing %q", err, tc.want)
++			}
++		})
++	}
++}
++
+ // TestKnownFieldsRejectsUnknownTopLevel asserts KnownFields(true) at the top
+ // level of the registry document.
+ func TestKnownFieldsRejectsUnknownTopLevel(t *testing.T) {
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 174d6dc..a0177be 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -17,6 +17,7 @@ import (
+ 	"unicode/utf8"
+ 
+ 	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/ident"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ )
+ 
+@@ -815,15 +816,7 @@ func isValidEnvName(name string) bool {
+ // IsValidIdentifier reports whether value is a non-empty string using only
+ // the [A-Za-z0-9_.-] character set.
+ func IsValidIdentifier(value string) bool {
+-	if value == "" {
+-		return false
+-	}
+-	for _, r := range value {
+-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+-			return false
+-		}
+-	}
+-	return true
++	return ident.IsValid(value)
+ }
+ 
+ // IsValidRunID reports whether value is a valid run identifier: it must
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index 4d50d6d..c187584 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -11,6 +11,7 @@ import (
+ 	"io"
+ 	"strings"
+ 
++	"github.com/joshuavial/etude/internal/ident"
+ 	"gopkg.in/yaml.v3"
+ )
+ 
+@@ -430,10 +431,8 @@ func validateRunner(prefix string, r *Runner) error {
+ 		return fmt.Errorf("%w: %s: only one of name or command may be set", ErrInvalidWorkflow, prefix)
+ 	}
+ 	if r.Name != "" {
+-		for _, ch := range r.Name {
+-			if !isIdentChar(ch) {
+-				return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
+-			}
++		if !ident.IsValid(r.Name) {
++			return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
+ 		}
+ 	}
+ 	return nil
+@@ -545,15 +544,12 @@ func isValidEnvNameWorkflow(name string) bool {
+ 
+ // validateStageName applies the manifest identifier charset to stage names:
+ // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
+-// rule is kept as a local per-rune predicate (isIdentChar) rather than calling
+-// that exported helper: it is a whole-string check, and adding a sibling
+-// workflow->runmanifest import to dedupe one trivial fixed charset is not worth
+-// the coupling.
++// rule is shared with registry and runmanifest through internal/ident. Callers
++// must reject blank values first so they can preserve their field-specific
++// required-value error.
+ func validateStageName(field, value string) error {
+-	for _, r := range value {
+-		if !isIdentChar(r) {
+-			return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
+-		}
++	if !ident.IsValid(value) {
++		return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
+ 	}
+ 	return nil
+ }
+@@ -576,23 +572,20 @@ func validateRoleToken(field, value string) error {
+ 	return nil
+ }
+ 
+-// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier charset.
+-// Kept local (see validateStageName) rather than reusing runmanifest's exported
+-// whole-string IsValidIdentifier, to avoid a sibling-package import for one rule.
+-func isIdentChar(r rune) bool {
+-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
+-}
+-
+ // YAML serializes the Workflow to canonical YAML bytes.  Returns an error if
+ // the workflow fails Validate.
+ func (w Workflow) YAML() ([]byte, error) {
+ 	if err := w.Validate(); err != nil {
+ 		return nil, err
+ 	}
++	doc, err := w.toYAML()
++	if err != nil {
++		return nil, err
++	}
+ 	var buf bytes.Buffer
+ 	enc := yaml.NewEncoder(&buf)
+ 	enc.SetIndent(2)
+-	if err := enc.Encode(w.toYAML()); err != nil {
++	if err := enc.Encode(doc); err != nil {
+ 		return nil, err
+ 	}
+ 	if err := enc.Close(); err != nil {
+@@ -776,7 +769,7 @@ type nudgeYAML struct {
+ 	Threshold *int  `yaml:"threshold,omitempty"`
+ }
+ 
+-func (w Workflow) toYAML() workflowYAML {
++func (w Workflow) toYAML() (workflowYAML, error) {
+ 	stages := make([]stageYAML, 0, len(w.Stages))
+ 	for _, s := range w.Stages {
+ 		sy := stageYAML{
+@@ -792,9 +785,10 @@ func (w Workflow) toYAML() workflowYAML {
+ 		if s.Runner != nil {
+ 			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
+ 			var n yaml.Node
+-			if err := n.Encode(rn); err == nil {
+-				sy.Runner = n
++			if err := n.Encode(rn); err != nil {
++				return workflowYAML{}, fmt.Errorf("encode stage[%q].runner: %w", s.Name, err)
+ 			}
++			sy.Runner = n
+ 		}
+ 		if s.Gate != nil {
+ 			gy := gateYAML{
+@@ -808,9 +802,10 @@ func (w Workflow) toYAML() workflowYAML {
+ 				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
+ 			}
+ 			var n yaml.Node
+-			if err := n.Encode(gy); err == nil {
+-				sy.Gate = n
++			if err := n.Encode(gy); err != nil {
++				return workflowYAML{}, fmt.Errorf("encode stage[%q].gate: %w", s.Name, err)
+ 			}
++			sy.Gate = n
+ 		}
+ 		stages = append(stages, sy)
+ 	}
+@@ -818,9 +813,10 @@ func (w Workflow) toYAML() workflowYAML {
+ 	if w.DefaultRunner != nil {
+ 		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
+ 		var n yaml.Node
+-		if err := n.Encode(dr); err == nil {
+-			out.DefaultRunner = n
++		if err := n.Encode(dr); err != nil {
++			return workflowYAML{}, fmt.Errorf("encode default_runner: %w", err)
+ 		}
++		out.DefaultRunner = n
+ 	}
+ 	if w.Retros != nil {
+ 		ry := &retrosYAML{
+@@ -848,11 +844,12 @@ func (w Workflow) toYAML() workflowYAML {
+ 		// mapping node (Kind==MappingNode) — no document wrapper is added, so
+ 		// the result can be assigned to out.Retros directly.
+ 		var retrosNode yaml.Node
+-		if err := retrosNode.Encode(ry); err == nil {
+-			out.Retros = retrosNode
++		if err := retrosNode.Encode(ry); err != nil {
++			return workflowYAML{}, fmt.Errorf("encode retros: %w", err)
+ 		}
++		out.Retros = retrosNode
+ 	}
+-	return out
++	return out, nil
+ }
+ 
+ // decodeRetrosNode converts a yaml.Node captured for the retros: key into a
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 43b3691..01b7c3e 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -266,6 +266,21 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 	}
+ }
+ 
++func TestValidateEmptyStageNameKeepsRequiredError(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Name = ""
++	err := w.Validate()
++	if err == nil {
++		t.Fatal("Validate returned nil error")
++	}
++	if !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
++	}
++	if got, want := err.Error(), "invalid workflow: stage[0] name required"; got != want {
++		t.Fatalf("Validate error = %q, want %q", got, want)
++	}
++}
++
+ // TestValidateRejectsReservedProducesRole is a focused test that checks the
+ // "reserved" guard specifically — the table harness only asserts err != nil
+ // + errors.Is(ErrInvalidWorkflow); this test also asserts the error message
+@@ -1314,7 +1329,6 @@ stages:
+ 	if g.Abstraction != "review at design altitude" {
+ 		t.Fatalf("Abstraction = %q", g.Abstraction)
+ 	}
+-	_ = threshold
+ }
+ 
+ // TestGateParseTier parses a gate with a tier ref.

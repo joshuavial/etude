@@ -1,0 +1,83 @@
+✓ etude-zdl · Schema polish: validate Seat.Mode closed-set, surface toYAML node-encode errors, dedup isIdentChar   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-06-29 · Updated: 2026-08-15
+Close reason: Implemented exact seat-mode validation, propagated workflow node-encode errors, centralized identifier validation, removed the stale test no-op, and passed all strict gates.
+
+DESIGN
+# etude-zdl plan — registry mode validation and YAML error propagation
+
+ROLE: Review the PLAN phase for etude-zdl.
+
+ANCESTOR: etude-zdl (P3) closes four concrete schema-maintenance findings from etude-2pc.1: reject misspelled seat execution modes before runtime, stop silently dropping workflow node fields when YAML node encoding fails, remove the duplicated identifier-character predicate now shared by three schema consumers, and delete a leftover test no-op.
+
+MEASUREMENT: `Seat.Mode` and the newly added fallback mode currently accept arbitrary strings; `Workflow.toYAML` has four `if err == nil` branches that silently omit runner, gate, default-runner, or retros content; the exact `[A-Za-z0-9_.-]` predicate exists in registry, workflow, and runmanifest; `TestGateParseFullBlock` ends with an observable `_ = threshold` no-op after already asserting the value.
+
+BLAST RADIUS: none outside the repository. Expected tracked scope is registry validation/tests, workflow YAML encoding/tests, a small shared internal identifier helper plus runmanifest delegation/tests, `docs/init.md`, and deletion of the workflow-test no-op. No CLI commands, storage formats, refs, host config, installs, external state, or forbidden 9uf-owned files change.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: single-process validation and deterministic YAML construction. No new concurrent writer, retry loop, or external action.
+
+DURABILITY CLASS: validation results and serialized YAML are returned synchronously; there is no durable side effect until an existing caller chooses to write returned bytes. Errors fail closed before bytes are returned.
+
+COMPLETENESS ENUMERATION: mode validation covers primary `Seat.Mode`, every `SeatInvocation.Mode`, the empty/inherited case, all three accepted values, YAML parse validation, programmatic `Validate`, and docs. Node propagation covers stage runner, stage gate, workflow default runner, retros, the top-level `YAML` caller, contextual wrapping, and the final document encoder. Identifier dedup covers registry keys, workflow stage/runner names, runmanifest's exported compatibility wrapper, and the shared helper's charset tests.
+
+TRUST BOUNDARY: workflow and registry YAML remain operator-authored configuration parsed strictly. This is correctness validation, not hostile-input hardening; arbitrary same-process code execution is out of scope.
+
+## Plan
+
+1. Add the closed mode set `inline`, `diff-only`, and `inline-no-tools` in `internal/registry`. A repository-wide Go search confirms current `main` has no mode dispatch switch yet; the explicit bead acceptance and the three values already present in the canonical registry are therefore the current authority, and the arriving etude-9uf consumer must implement this schema contract. Empty remains valid because mode is optional and an empty fallback mode inherits the primary mode in `Seat.Invocations()`. Validate both the primary seat mode and each explicitly set fallback mode, with indexed contextual errors wrapping `ErrInvalidRegistry`.
+
+2. Change workflow's internal `toYAML` contract to return `(workflowYAML, error)`. Route all four yaml.Node construction sites through one encoder helper that returns the node or error. Wrap errors with the exact field context (`default_runner`, `stage[name].runner`, `stage[name].gate`, or `retros`) and propagate them from `Workflow.YAML()` before the outer document encoder runs.
+
+3. Keep the implementation direct: `toYAML()` returns `(workflowYAML, error)`, each existing `yaml.Node.Encode` call returns a context-wrapped error immediately, and public `YAML()` propagates it. Do not add an injectable encoder seam solely to force errors that the fixed serializable DTOs cannot currently produce.
+
+4. Add `internal/ident` with the single whole-string `[A-Za-z0-9_.-]`, non-empty predicate. Remove both local `isIdentChar` functions. Registry and workflow call the shared predicate; runmanifest keeps its public `IsValidIdentifier` API as a delegating compatibility wrapper. This is the third consumer anticipated by the bead and avoids a workflow-to-runmanifest sibling dependency. Preserve empty-string behavior explicitly: registry keys, workflow stage names, and named runners are already rejected as required before this predicate; runmanifest's exported predicate already rejects empty.
+
+5. Remove `_ = threshold` from `TestGateParseFullBlock`; its immediately preceding assertion already consumes `threshold`.
+
+## Planned regressions
+
+Planned regression: a registry table test accepts empty plus all three supported primary and fallback modes, and rejects representative unknown/whitespace variants through both `Validate()` and `ParseYAML()` with `ErrInvalidRegistry` and independent literal field-context assertions so rejection cannot occur at an earlier seam unnoticed.
+
+Planned regression: existing workflow tests exercise every node-bearing valid field and exact canonical output; they must remain byte-identical after `toYAML()` gains an error result. Because the four fixed DTO encodes cannot currently fail, no test-only production indirection will be added merely to synthesize an impossible value.
+
+Planned regression: shared identifier tests independently pin empty, ASCII accepted characters, Unicode, slash, spaces, and punctuation; existing workflow, registry, and runmanifest tests continue to prove caller-specific error and empty-string semantics.
+
+Planned regression: existing exact registry/workflow YAML golden and round-trip tests remain unchanged unless yaml.v3's canonical output actually changes; this plan intends no emitted-byte changes for valid inputs.
+
+## Docs impact plan
+
+- Update shipped `docs/init.md` validation rules to list the exact closed mode set and state that an omitted fallback mode inherits the primary mode.
+- No generated CLI docs should change because no command or flag changes. Run `make docs`, `make docs-check`, and `make docs-reality` in Verify.
+
+## Verification plan
+
+- Focused: `go test -count=1 ./internal/ident ./internal/registry ./internal/workflow ./internal/runmanifest`.
+- Required full gates: `make test` and `make lint`.
+- Documentation: `make docs`, `make docs-check`, `make docs-reality`, and zero unintended generated-doc diff.
+- Non-CLI-facing: no command, flag, stdout/stderr, or exit-code contract changes; manual built-binary testing is not required.
+
+## Scope fence
+
+Do not edit `docs/plans/dogfood/**`, `.etude/loop.local.md`, `scripts/dogfood-*.sh`, `internal/liverun/gate.go`, or any `internal/cli/gate.go`. Do not implement the separate `etude-9uf` gate consumer or pqv follow-up beads.
+
+
+NOTES
+Also (etude-2pc.1 verify-gate optional): remove leftover '_ = threshold' no-op in workflow_test.go TestGateParseFullBlock (~line 1322).
+Plan gate round 1 (L2): Opus PASS_WITH_FOLLOWUPS, Codex PASS. Plan gate round 2 after folding changes: Opus and Codex PASS_WITH_FOLLOWUPS. Implementation must use quoted whitespace and case-variant invalid-mode fixtures with independent primary/fallback context assertions, preserve empty identifier semantics, use literal identifier cases, and directly propagate node Encode errors without a test-only injection seam.
+Implement gate round 1 (L3): Opus PASS_WITH_FOLLOWUPS and Codex PASS. Folded all follow-ups: validateStageName has exactly one caller and follows a required nonblank check; mode tests clone fallback slices before mutation; workflow builds node DTOs before allocating the outer encoder. Packet extractor false-negative is already tracked by etude-kcd.
+Verify gate round 1 (L2): Opus PASS_WITH_FOLLOWUPS and Codex PASS. Full make test, make lint, docs generation/checks, docs reality, focused suites, diff checks, and identifier-dedup audit all passed. Folded the remaining comment documenting validateStageName's required nonblank caller precondition; intentionally kept direct node error propagation without a synthetic injection seam.
+Docs gate round 1 (L4): Opus PASS_WITH_FOLLOWUPS. Folded both requests: added a focused exact-error regression proving blank stage names retain the required-value error at the sole validateStageName call site, and documented that mode values match exactly. Focused tests, docs-check, docs-reality, and diff checks reran green.
+
+LABELS: phase:done
+
+DEPENDS ON
+  → ✓ etude-bke: Restore shared disk above Etude lane hard floor ● P1
+
+COMMENTS
+  2026-08-15 06:50 joshuavial
+    Final Opus follow-up: etude-a8x tracks making validateStageName blank handling self-contained for future callers. Current behavior is pinned by TestValidateEmptyStageNameKeepsRequiredError. Existing checked-in registry modes were audited and are all in the exact closed set (inline, diff-only, inline-no-tools); etude-9uf.1 already has the consumer contract.
+  2026-08-15 06:50 joshuavial
+    Strict final review passed on packet 310a880c26be5b6b964d8e928dd94b7ca891f440f17b146687a45deec1d8d44e. Opus returned PASS_WITH_FOLLOWUPS; etude-a8x records the future helper-contract improvement, and the checked-in registry audit found only valid exact modes. All plan, implementation, verification, docs, and review gate packets verify.
+

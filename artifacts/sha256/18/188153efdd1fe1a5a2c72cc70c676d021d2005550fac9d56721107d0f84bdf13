@@ -1,0 +1,53 @@
+# etude-zdl verify gate
+
+ROLE: Review the VERIFY phase for etude-zdl against its accepted schema and behavior-preservation contract.
+
+ANCESTOR: etude-zdl (P3) closes four measured schema findings from etude-2pc.1: invalid seat modes were accepted, workflow node-encode errors silently dropped fields, the identifier predicate had three implementations, and one test retained a no-op.
+
+MEASUREMENT: the final diff replaces four silent `if err == nil` paths, removes both local `isIdentChar` copies while delegating runmanifest's third copy, deletes `_ = threshold`, and adds closed validation where arbitrary primary/fallback modes were accepted.
+
+BLAST RADIUS: none outside the repository. Exactly eight declared paths change. No forbidden 9uf-owned file, CLI, storage/ref, host configuration, install, or external state is touched.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: deterministic single-process validation and YAML construction with no new writer or retry.
+
+DURABILITY CLASS: all changed operations synchronously return a value or error. No durable action occurs in this diff.
+
+COMPLETENESS ENUMERATION: primary/fallback modes; empty and three accepted values; case and quoted-whitespace rejects; Validate and ParseYAML contexts; stage runner/gate, default runner, and retros encode paths; public YAML propagation; registry/workflow/runmanifest identifier consumers; empty semantics; exact valid YAML; docs; no-op removal; full repository tests and lint.
+
+TRUST BOUNDARY: operator-authored strict YAML remains trusted configuration. This is correctness validation, not hostile-input hardening.
+
+## Verification evidence
+
+- Focused `go test -count=1 ./internal/ident ./internal/registry ./internal/workflow ./internal/runmanifest`: PASS.
+- `make test`: PASS for every repository package, including CLI and live-run consumers.
+- `make lint`: PASS (`gofmt -l` empty, `go vet ./...` green).
+- `make docs`: PASS; generated 24 command docs with no generated-doc diff.
+- `make docs-check`: PASS.
+- `make docs-reality`: PASS; all 14 shipped commands match documentation.
+- `git diff --check`: PASS.
+- `rg isIdentChar internal`: no definitions or calls remain.
+- Scope audit: only docs/init.md, registry code/test, runmanifest wrapper, workflow code/test, and internal/ident code/test are modified.
+
+## Negative-test seam proof
+
+- Programmatic mode rejection starts from a valid fresh `Default()` and mutates only mode.
+- The YAML whitespace case uses `mode: "inline "`, so yaml.v3 preserves the invalid trailing byte.
+- Case variants and primary/fallback errors use independent literal expectations naming `seat["opus"].mode` and `seat["opus"].invocation_fallbacks[0].mode`; an earlier shape error cannot satisfy them.
+- Tests clone the fallback slice before mutation, avoiding shared backing-array assumptions.
+
+## Identifier compatibility audit
+
+- `validateStageName` has exactly one caller. That caller rejects blank/whitespace stage names before applying the shared predicate, so the helper's non-empty rule cannot newly reject an optional value.
+- Named runners only call the shared predicate inside `if r.Name != ""`; unnamed command runners retain their existing path.
+- Registry preserves its explicit empty-key error before the shared predicate.
+- `runmanifest.IsValidIdentifier` already rejected empty and remains the exported wrapper; its existing literal predicate and run-ID tests pass unchanged.
+
+## YAML propagation audit
+
+All four former silent branches now return contextual wrapped errors, and `Workflow.YAML()` checks `toYAML()` before allocating or invoking the outer encoder. The internal DTO field types are fixed serializable structs, so no artificial injection seam was added. Existing workflow canonical output, round-trip, runner, gate, default-runner, and retros tests all pass, proving valid output did not change.
+
+## CLI classification
+
+Non-CLI-facing: no command, flag, stdout/stderr, exit code, or built-binary behavior changes. The changed schema APIs are covered by package and full repository tests; manual CLI proof is not applicable.
