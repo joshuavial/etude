@@ -424,6 +424,56 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T04:59:46Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "preview text for already-configured refspecs could differ from real run",
+            "unify arrow/em-dash punctuation in notes"
+          ],
+          "timestamp": "2026-06-07T05:05:02Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "base dry-run missing-remote preview on shared fmtRemoteNotFound text"
+          ],
+          "timestamp": "2026-06-07T05:05:02Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T05:05:02Z"
     }
   ]
 }
