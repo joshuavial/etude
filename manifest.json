@@ -928,6 +928,62 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T05:23:34Z"
+    },
+    {
+      "gate_id": "rebase-plan.r2",
+      "phase": "rebase-plan",
+      "round": 2,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "rebase-plan.r2",
+          "role": "plan",
+          "artifact": "c4c141a05492fa2879a2953fa3bb19fb6880e3b45687accc431d9836c349c50e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Check compatibility of fail-closed replay for legacy manifests with divergent per-stage SHAs.",
+            "Consider a future keep-ref for original commits made unreachable by supported caller history rewrites.",
+            "Validate recorded caller commits uniformly on resume as well as replay consumers."
+          ],
+          "timestamp": "2026-08-17T05:39:51Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Override mutable Git stat-policy configuration so same-size restored-mtime tracked rewrites cannot appear clean.",
+            "Enforce the v4 hermetic-stage SHA equals original-SHA topology during manifest validation.",
+            "Verify every completed caller stage names an existing commit before resume.",
+            "Verify every caller stage commit before selected-stage replay or bench, not only the selected caller stage.",
+            "Canonicalize relative Engine.Root before comparing it with the caller repository root."
+          ],
+          "timestamp": "2026-08-17T05:39:51Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T05:39:51Z"
     }
   ]
 }
