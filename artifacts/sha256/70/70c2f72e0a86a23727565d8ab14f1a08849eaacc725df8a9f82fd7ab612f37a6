@@ -1,0 +1,218 @@
+# etude-i19 — combined PLAN+IMPLEMENT+VERIFY gate brief
+
+PHASE: verify (plan and implement folded in — the design was specified by the
+operator, the diff is the artifact, and this is a single cohesive change)
+TIER: escalated per the bead — ref-namespace / git-plumbing config with a
+data-loss failure mode. Run as a TWO-seat gate (opus + codex) on operator
+direction: the registry's third seat invokes the `gemini` CLI, which returns
+`IneligibleTierError` for this account, and because that is a client/tier error
+every entry in the seat's `model_fallbacks` fails identically. Tracked as bead
+etude-3rq against the lane that owns `.etude/registry.yaml`. No seat was waived
+to clear a finding.
+
+ANCESTOR: bead **etude-i19**, P1 bug, filed from the root-cause investigation of
+bead etude-nad (P1). Goal: `etude init` registers
+`remote.<name>.fetch = +refs/etude/*:refs/etude/*`, which makes every local run
+ref a remote-tracking ref, so per `git-fetch(1)` — refs fetched due to an
+explicit configured refspec are subject to pruning — **any `git fetch --prune`
+deletes every run ref not yet pushed**. Measured against: a bare
+`git fetch --prune` in an etude-initialised repo must not delete local
+`refs/etude/*`; `etude sync` push and fetch must still work; existing repos must
+have a way to drop the dangerous refspec. This destroyed three recorded gate
+attempts during epic etude-9uf.
+
+BLAST RADIUS (FIVE files): `internal/cli/init.go`, `internal/cli/init_test.go`,
+`internal/cli/sync_test.go`, `docs/init.md`, `docs/sync.md`. The sync test is
+the regression a gate seat asked for, pinning that `etude sync` works with no
+configured etude fetch refspec — the assumption this whole bead rests on.
+Nothing outside this worktree; the tests create only self-contained throwaway
+repositories under `t.TempDir()`, auto-removed, and no test reads or writes the
+developer's real repositories, global git config, or any shared state. It changes the
+**git config `etude init` writes**, which is a behaviour change for every future
+`etude init` and (by design) a one-time mutation of already-initialised repos.
+It does not touch the stored manifest format, the ref layout, or any other
+command. `docs/init.md` was rebased onto `origin/main` (db84538) before editing
+because a sibling lane also edits it. Sibling lanes' files untouched
+(`internal/cli/gate.go`, `internal/liverun/**`, `.etude/registry.yaml`,
+`docs/plans/dogfood/**`, `scripts/dogfood-*.sh`, `internal/registry/**`).
+
+TOPOLOGY: several concurrent agent lanes, each a linked git worktree, all
+sharing ONE ref store in the common git dir. No daemon, no network peer. The
+destructive actor is an ordinary, non-malicious git process: `git fetch --prune`,
+run automatically by tooling such as `workmux remove --gone`. Because the ref
+store is shared, one lane running it destroys every other lane's unpushed run
+refs.
+
+DURABILITY / DELIVERY-CLASS: the change is to **local git config**, not to any
+run data. Each of the two writes is a single `git config` invocation, which git
+performs as an atomic rewrite of `.git/config` under an exclusive lock, so there
+is no partial state to observe within a step. Both are idempotent: a repeat run
+removes nothing and converges the push entry on itself. Both go through one
+helper that retries on a lock collision (git does NOT retry, and worktree lanes
+share one config file), with the child under `LC_ALL=C` so the collision message
+is stable regardless of locale.
+
+AUTHORITATIVE vs PROXY identity: an entry is identified as etude-registered by
+PARSING the refspec — `[+]<src>[:<dst>]` — and asking whether it has a
+destination at all and whether that destination lies inside `refs/etude/`. That
+is the authoritative property that makes an entry prunable. It is deliberately
+not a substring test: `:refs/etude/` misses a colonless spelling, and treating a
+colonless refspec as `dst = src` is WRONG for fetch, where no destination means
+the ref goes to `FETCH_HEAD` and no local ref is created — so such an entry is
+harmless and must not be removed. Removal then targets the exact values found,
+via an anchored alternation of `regexp.QuoteMeta`-escaped literals in one
+`--unset-all` call, so the set reported and the set removed cannot diverge and a
+sibling refspec cannot be caught by a loose pattern.
+
+COMPLETENESS-ENUMERATION: the guarded set is "every place a refspec into
+`refs/etude/*` can be written or left behind".
+
+| site | what it does now | covered? |
+|---|---|---|
+| `refspecAction` non-force path | removes hazardous fetch refspecs, then adds the push refspec | **yes** |
+| `refspecAction` --force path | previously returned silently and touched nothing; now still silent on the push refspec but **still removes** a hazardous fetch refspec | **yes** — a data-loss setting is not left in place because the caller passed `--force` |
+| `refspecAction` --dry-run path | previews `plan: remove <key> = <value>`, changes nothing; previewed on the force path too | **yes** |
+| `--remote <other>` | init configures exactly one remote, so it cannot REPAIR another remote's config | **warned, never edited** — the safety phase applies the same exact etude-owned-refspec check to EVERY remote and reports any it finds, naming the `--remote` value needed to repair each. It does not edit a remote it was not pointed at. |
+| remote missing entirely | refspec step skipped, as before | **warned** — run refs stay local-only |
+| push refspec absent | nothing removes it; init adds it | **warned** if still absent |
+| `etude sync` | passes `refs/etude/*:refs/etude/*` explicitly on its own fetch and push command lines (`internal/cli/sync.go:94`, `:263`) | unaffected — no config dependency |
+
+The set is closed for this command: `refspecAction` is the only site in
+`etude init` that writes remote refspec config, and the new `refspecSafetyAction`
+reports every residual exposure it cannot itself repair.
+
+IRREVERSIBLE SEQUENCES: 1
+
+IRREVERSIBLE SEQUENCE refspec-migration: 2 steps
+IRREVERSIBLE STEP refspec-migration.1: unset every value of the target remote's
+fetch-refspec config key whose destination is inside the etude ref namespace,
+leaving that key's other values and the remote's push-refspec key untouched.
+IRREVERSIBLE STEP refspec-migration.2: converge the target remote's push-refspec
+key on exactly one canonical etude push refspec, adding it when absent and
+collapsing duplicates when present.
+
+CRASH-PREFIX RESIDUALS:
+CRASH-PREFIX refspec-migration.1: the target remote no longer carries an
+etude-registered fetch refspec — the prune hazard is gone — and its push-refspec
+key is in whatever state it was already in, which may be absent or duplicated.
+The interrupted invocation prints nothing further and does NOT warn, because it
+never reaches the safety phase. Run refs are safe from pruning but may not reach
+the remote.
+
+Recovery depends on HOW the command is re-run, and the two paths differ:
+- A **non-force** re-run against the same remote performs step 2 and repairs the
+  residual silently.
+- A **`--force`** re-run does NOT. `--force` is silent on the push refspec by
+  long-standing design — it regenerates scaffold files and, since this bead, also
+  removes a hazardous fetch refspec, but it does not add the push refspec. An
+  operator who only ever runs `--force` therefore stays in prefix 1 indefinitely.
+
+That state is still REPORTED on every path: the safety phase runs regardless of
+`--force`, so each such run prints the missing-push warning. It is repaired by
+one non-force `etude init`. The residual is degraded-but-safe either way — the
+prune hazard is gone; only the convenience of run refs reaching the remote is
+missing — which is why removal is ordered first.
+CRASH-PREFIX refspec-migration.2: the target remote carries no etude-registered
+fetch refspec and exactly one canonical etude push refspec. Fully migrated.
+
+The ordering is deliberate and is the safe one: removal first means an
+interruption between the steps leaves the DANGEROUS setting gone and only a
+CONVENIENCE setting unset. The reverse order would leave a window in which run
+refs are still prunable. Both steps are local git-config edits this same tool
+previously made, each individually atomic under git's exclusive config lock, and
+each recoverable by re-running the command.
+
+TRUST BOUNDARY: none crossed. `etude init` runs in the operator's own repository
+under the operator's own account; the only inputs are the `--remote` name
+(already syntactically validated upstream) and the repo's existing local git
+config. No untrusted input, no network, no credential, no secret, no privilege
+change. The value-pattern passed to `git config` is a compile-time constant, not
+caller data.
+
+## The three things this must do (operator-specified)
+
+1. **Stop `init` writing the fetch refspec.**
+2. **Actively remove a previously-registered one, on every init run** — every
+   repo an older `etude init` has touched is exposed today and will never
+   self-heal.
+3. **Warn when the repo is not in the safe state**, rather than exiting quietly
+   on an exposed repo.
+
+## The one thing that must NOT happen — please check this specifically
+
+`init.go` writes **both** `remote.<name>.fetch` and `remote.<name>.push`.
+
+- The **fetch** refspec is the dangerous one: it makes local run refs prunable.
+- The **push** refspec must **stay**: it is what makes `git push origin` carry
+  run refs at all. Removing both would lose the same data by another route, and
+  a change that does so is wrong.
+
+The diff removes only from the fetch key (`fetchKey`), and
+`addRefspecIfAbsent(ctx, root, pushKey, pushVal)` is unchanged. Please verify
+that directly. `TestInitKeepsPushRefspecWhenRemovingFetchRefspec` pins it,
+asserting the push entry survives *and* that there is exactly one of it.
+
+## Behaviour-preserving invariants (confirm, don't reconstruct)
+
+1. `--unset-all` is only invoked when `findEtudeFetchRefspecs` already returned a
+   non-empty set, so git's exit-5 ("unset an option which does not exist") can
+   never fire.
+2. `findEtudeFetchRefspecs` is read-only and is the single source of the set for
+   both the dry-run preview and the real removal, so the preview cannot differ
+   from what happens.
+3. `gitGetAll` already maps git's exit-1 (key absent) to an empty list, so a
+   remote with no fetch key is not an error.
+4. `refspecSafetyAction` performs no writes at all — its output is identical
+   under `--dry-run` and a real run, and it runs on the force path too.
+5. `statusWarn` is uncounted, like `statusNote`, so the `init:` summary counts
+   are unchanged in meaning.
+6. The value-pattern `:refs/etude/` contains no regex metacharacters that could
+   widen the match (`/` and `:` are literal; there is no `.` or `*`).
+
+## Verification evidence
+
+New tests in `internal/cli/init_test.go`:
+
+- `TestInitLeavesRunRefsSafeFromFetchPrune` — the acceptance test. Stands up a
+  real bare remote, seeds the hazardous refspec, creates an **unpushed** run ref,
+  and runs a **real `git fetch --prune`**. It first asserts the ref IS pruned
+  (an embedded **negative control**, so the post-fix assertion cannot pass
+  vacuously), then runs `init`, re-creates the ref, prunes again, and asserts it
+  **survives**.
+- `TestInitKeepsPushRefspecWhenRemovingFetchRefspec` — push survives, exactly one entry.
+- `TestInitRemovesPreexistingEtudeFetchRefspec` — removal happens, the remote's
+  ordinary `refs/heads/*` refspec is untouched, the removal is reported.
+- `TestInitForceRemovesPreexistingEtudeFetchRefspec` — removal on the force path.
+- `TestInitDryRunPreviewsRemovalWithoutChangingConfig` — previews and mutates nothing.
+- `TestInitWarnsAboutHazardousFetchRefspecOnAnotherRemote` — warns, with the exact fix command.
+- `TestInitWarnsWhenRemoteMissing` — warns, with the exact fix command.
+- `TestInitEmitsNoWarningsWhenSafe` — no false warnings.
+
+Existing tests that asserted the OLD dangerous behaviour were updated, not
+deleted: they now assert the fetch key carries no etude entry, and the summary
+counts moved from `2 configured` to `1 configured` (push only).
+
+`make test`, `make lint`, `make docs-check` green repo-wide; results inlined in
+the packet's verify section. Independently corroborated live on the parent repo
+by the operator: unsetting only the etude fetch refspec left all 148
+`refs/etude/*` refs intact through a real `git fetch --prune`, with `etude sync`
+unaffected.
+
+## Disclosed limitation — please adjudicate explicitly
+
+A repo whose operator never re-runs `etude init` stays exposed. This bead's
+answer is the documented manual one-liner in `docs/init.md` plus the warnings,
+not an automatic repair from some other command. A read-only `etude doctor`
+health check that reports this (and other exposures) with exact remediation
+commands is tracked separately as bead **etude-ldf**. Acceptable scoping for
+THIS bead, or a blocker? Justify.
+
+## Seat substitution notice (for the record)
+
+The registry's `gemini` seat is currently unreachable: the `gemini` CLI returns
+`IneligibleTierError: This client is no longer supported for Gemini Code Assist
+for individuals`. That is a client/tier error, so every entry in the seat's
+`model_fallbacks` fails identically. The Gemini-family seat is therefore run as
+`agy` pinned to the exact model string `Gemini 3.1 Pro (High)` — same model
+family, equal-or-higher thinking. Filed as bead **etude-3rq** against the lane
+that owns `.etude/registry.yaml`.
