@@ -634,6 +634,54 @@
         "degraded_reason": "Gate did NOT pass. codex reproduced a real fail-open: the same last-wins arbitration flaw as round 5, one label over. No degraded pass was taken; the round is re-gated with both seats on the corrected code."
       },
       "timestamp": "2026-08-15T07:04:06Z"
+    },
+    {
+      "gate_id": "implement.r7",
+      "phase": "implement",
+      "round": 7,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r7",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:11:07Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "block",
+          "required": [
+            "Round 7 closed last-wins on VERDICT/BLOCKING but removed the implicit echo tolerance last-wins had been providing for the LABEL parsers: extract treated an echoed RETURN-template body as a real finding, so echo-the-template-then-answer-GO hit the GO-with-blocking refusal and produced no envelope. Reproduced against the real script. Fail-closed, but a false outage that escalates every gate rather than one seat, on a case the header declares supported."
+          ],
+          "timestamp": "2026-08-15T07:11:07Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Gate did NOT pass. codex GO, opus BLOCK on a false-outage regression introduced by the round-6 fix — the third appearance of the same last-wins/echo-tolerance family, this time in the GO direction. The round-6 opus seat had independently flagged the identical regression as a follow-up, so two opus seats converged on it. Both also flagged that the working tree DRIFTED mid-gate, which is why round 8 is run against a frozen tree with no edits between packet build and both verdicts."
+      },
+      "timestamp": "2026-08-15T07:11:07Z"
     }
   ]
 }
