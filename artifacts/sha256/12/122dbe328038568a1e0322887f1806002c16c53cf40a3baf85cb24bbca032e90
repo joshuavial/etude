@@ -1,0 +1,67 @@
+diff --git a/.claude/skills/dev-workflow/SKILL.md b/.claude/skills/dev-workflow/SKILL.md
+index 62aff43..f2bd1a6 100644
+--- a/.claude/skills/dev-workflow/SKILL.md
++++ b/.claude/skills/dev-workflow/SKILL.md
+@@ -91,6 +91,18 @@ Conventions:
+   Final Review, so every stage shares the base-commit sha; that is expected.
+ - Always pass `--workflow default --workflow-version v1` (consistent value, so
+   appends never conflict on run-level metadata).
++- Always pass `--harness claude-code --harness-version "$(claude --version)"`
++  to record the harness that executed the stage. Quote the command substitution —
++  `claude --version` prints `2.1.150 (Claude Code)`, so without quotes the spaces
++  split into stray argv words.
++- Pass `--model <model>` matching the agent that produced the stage. The recorded
++  model must be the actual model used (mixed opus/sonnet across phases), so
++  provenance and benchmarks are meaningful. Per-stage mapping:
++  - `plan`      (`dev-planner`)      → `--model claude-opus-4-7`
++  - `implement` (`dev-executor`)     → `--model claude-sonnet-4-6`
++  - `verify`    (`dev-qa`)           → `--model claude-opus-4-7`
++  - `docs`      (`dev-docs-writer`)  → `--model claude-sonnet-4-6`
++  - `review`    (`dev-pr-reviewer`)  → `--model claude-opus-4-7`
+ - If `etude` is not installed, skip capture and note the skip in the bead — the
+   gate flow itself does not depend on capture succeeding.
+ 
+@@ -116,13 +128,15 @@ etude capture plan --run <bead-id> \
+   --ref bead=<bead-id> \
+   --workflow default --workflow-version v1 \
+   --skill-id dev-planner \
++  --harness claude-code --harness-version "$(claude --version)" \
++  --model claude-opus-4-7 \
+   --message "<bead-id>: plan"
+ ```
+ 
+ Later phases follow the same shape with the stage's role/inputs from the table
+ (`--skill-id` = the phase agent: `dev-executor`, `dev-qa`, `dev-docs-writer`,
+-`dev-pr-reviewer`). After Final Review's capture, inspect the run with
+-`etude run show <bead-id>`.
++`dev-pr-reviewer`; `--model` = the per-stage model from the mapping above).
++After Final Review's capture, inspect the run with `etude run show <bead-id>`.
+ 
+ ## Auto Mode
+ 
+diff --git a/docs/capture.md b/docs/capture.md
+index 1cf2920..1c4e640 100644
+--- a/docs/capture.md
++++ b/docs/capture.md
+@@ -44,6 +44,9 @@ Useful flags:
+ --skill-repo manual
+ --skill-version manual
+ --message <text>
++--harness <name>
++--harness-version <version>
++--model <model-id>
+ ```
+ 
+ If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
+@@ -54,6 +57,11 @@ The other metadata defaults are `--workflow manual`,
+ `--workflow-version manual-v1`, `--produced-by original`,
+ `--skill-repo manual`, and `--skill-version manual`.
+ Use `--message` to override the Git commit message for the run ref update.
++`--harness`, `--harness-version`, and `--model` are optional; all default to
++empty string. They populate the run manifest's producer block (harness name,
++harness version, and model that produced the stage). When `--harness` is
++omitted, the harness sub-block is omitted from the manifest entirely; when
++`--model` is omitted, no model field is written.
+ 
+ ## Appending
+ 
