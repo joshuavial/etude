@@ -366,6 +366,64 @@
         "degraded_reason": "pilms down. codex + gemini independently caught the same lexical/fractional-seconds boundary bug. Adopted codex's stated sufficient fix: parse both created and cutoff to datetime instants (datetime.fromisoformat) instead of lexical string compare."
       },
       "timestamp": "2026-05-27T05:51:30Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T06:05:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T06:05:30Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T06:06:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. datetime-parse cutoff closed the r3 lexical boundary hole; both blockers confirmed GO."
+      },
+      "timestamp": "2026-05-27T06:06:30Z"
     }
   ]
 }
