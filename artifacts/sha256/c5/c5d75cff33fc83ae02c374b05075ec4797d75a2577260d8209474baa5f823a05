@@ -1,0 +1,133 @@
+# Implement — etude-9uf.1: `etude gate`
+
+## What the implementation taught us (spec corrections)
+
+**1. The `docs-reality` tripwire I claimed in bead .2 does not fire.** Bead .2's
+runbook asserted that `scripts/docs-reality-check.sh` would force this section to
+be amended once `gate` shipped. It would not have: check 3 only fires when a
+stale-claim phrase and an `etude <cmd>` mention land on the **same line**, and
+the runbook's phrasing ("Nothing in this section describes shipped behavior yet")
+never paired them. Verified by grep after shipping the command — zero hits.
+
+The runbook now says so in the section itself rather than quietly dropping the
+claim, and names what actually keeps it honest: the obligation on the
+implementing bead's verify phase to walk the contract item by item against the
+built binary. A discipline, not a tripwire. I did not manufacture a keyword pair
+to make the check fire — that would be gaming a check rather than having one.
+
+**2. The adapter must emit session evidence, and I had not implemented it.** The
+plan said adapters emit a `session` block; the first cut did not. Running the
+real command exposed it immediately: `ResolveGateSeat` sets
+`RequireSessionEvidence` for any non-deterministic seat, so
+`storeSeatSessionEvidence` downgraded a perfectly good codex `go` to
+`malfunction` — "agentic seat did not provide session evidence". A gate that
+discards every real seat's verdict is worse than no gate. Fixed: the adapter
+writes the model's raw reply as a transcript beside `$ETUDE_OUTPUT_FILE` and
+references it by basename, with a content-hash session id. Pinned by a
+regression in `scripts/seat-adapter_test.sh`.
+
+This is the one that justifies the "run it for real" rule: ten green Go tests did
+not catch it, because they stub the seat runner.
+
+**3. Registry quoting was a shell artifact encoded as a contract.**
+`TestMigrationCriticalSeatFieldsPreserved` asserted the codex invoke contained
+`model_reasoning_effort="xhigh"` **with quotes**. An invoke is split by
+`strings.Fields` before exec, so the quotes would reach codex as literal
+characters. The assertion now guards the *setting* (`=xhigh`, unquoted) and
+actively rejects the re-quoted form, with the reason written down. Verified
+against a live codex seat, which returned a usable verdict with the unquoted
+form. The test was also strengthened: every review seat must invoke through the
+adapter, because a bare CLI cannot satisfy the seat contract.
+
+## Changes
+
+**`internal/liverun/gate_once.go` (new).** `Engine.GateStage` — resolve run →
+resolve reviewed stage → derive round → compose shared prompt → run checks and
+seats → synthesize → append attempt → return outcome. Reuses `runGateChecks`,
+`runGateSeats`, `synthesizeVerdict`, `nextPhaseRound`, `latestStageForRole`
+unchanged; this is not a second seat path. Two exported sentinels,
+`ErrRunNotFound` and `ErrNoReviewableStage`, so callers can distinguish "you
+haven't captured yet" from a real failure.
+
+Writes through `runmanifest.Writer{Store}.Write` with an `ExpectedOld` CAS — the
+same call `capture-gate` uses — so the two paths produce interchangeable records,
+as the runbook requires.
+
+**`internal/cli/gate.go` (new).** Flags, config loading, exit-code mapping.
+`ErrGateNotPassed` carries the status. `anchorSeatCommands` resolves a
+repo-relative adapter path against the repo root, because exec resolves a
+relative program against the *caller's* cwd — without it, a gate run from a
+subdirectory fails every seat with a "file not found" that reads as an outage.
+
+**`scripts/seat-adapter.sh` (new).** The bridge from a model CLI to the envelope
+contract. Fail-closed; the only path writing `{"verdict":"go"}` is a reply that literally
+said `VERDICT: GO`. The first cut also accepted `PASS` and
+`PASS_WITH_FOLLOWUPS` as `go` — the implement gate BLOCKed on that, correctly:
+the prompt asks for `GO|BLOCK` and nothing else, so a near-miss token is a seat
+that did not answer the question asked, and near-misses are exactly where a
+lenient mapping lets an unclear answer through as a pass. Now rejected, with
+regressions for `PASS`, `PASS_WITH_FOLLOWUPS` and `APPROVED`. "Last VERDICT
+wins" so an echoed prompt template cannot shadow the real answer — codex does
+echo it, so this is a real case, not a hypothetical.
+
+**`scripts/seat-adapter_test.sh` (new) + `make seat-adapter-test`.** 17 checks:
+verdict parsing, eight fail-closed paths (including the three near-miss tokens),
+BLOCK-without-reason, session evidence, and refusal to run without the
+environment etude provides.
+
+**`.etude/registry.yaml`.** The three review seats' `invoke` now names the
+adapter. Seat identities, providers, models, tiers, quorum and fallbacks are
+unchanged — only the invocation becomes contract-conformant. `dev` is a stage
+runner, not a review seat, and is untouched.
+
+**`.etude/workflow.yaml`.** `env_allowlist: [HOME]` — the runner env is
+`PATH` + `ETUDE_*` only, so without it every real seat fails to authenticate.
+NAMES only; values are never recorded.
+
+**Docs.** `docs/cli/etude_gate.md` generated; README usage + implemented-surface
+list + example; `docs/gates.md` pointer. The supervisor runbook's contract
+section amended from prescriptive to shipped, carrying correction (1).
+
+**`internal/liverun/gate_once_test.go` (new).** Ten tests, listed in verify.
+
+## Live proof
+
+`etude gate` was run for real against this bead's own plan artifact, twice.
+
+The first run (before the session-evidence fix) recorded `plan.r3`:
+`opus: failed`, `codex: malfunction` ("agentic seat did not provide session
+evidence") → `escalated`. That is finding (2), caught by running it.
+
+After the fix, `plan.r4`:
+
+```
+gate plan.r4: escalated
+  opus (anthropic/claude-opus): failed
+    note: ... seat opus: model CLI exited non-zero
+  codex (openai/gpt-5.5): go
+recorded plan.r4 on refs/etude/runs/etude-9uf.1
+gate did not pass; the phase must not advance
+```
+
+Both attempts are on the run ref and are left there. They are truthful records of
+what the command did, and `plan.r4` is the disclosed limitation demonstrated
+rather than asserted: under a Claude Code supervisor the opus seat cannot
+authenticate as a subprocess, so an L2 gate escalates. Note what it did **not**
+do — it did not pass on codex's lone `go`. Exit non-zero.
+
+## Checks
+
+`make test` green · `make lint` clean · `make seat-adapter-test` all green ·
+`make docs-check` no diff · `make docs-reality` OK, 15 commands.
+
+Negative control: loosening `GateOutcome.Passed()` to accept `rerun` fails
+`TestGateStageBlockDoesNotPassAndCarriesRequired` and
+`TestGateStageFailingCheckDoesNotPass`, so the pass predicate is load-bearing.
+
+## Blast radius
+
+`internal/liverun` gains one exported method and two sentinels; nothing existing
+changed. `internal/cli` gains a command. The registry/workflow edits change how
+seats are invoked for **all** consumers of that config, including `etude run` —
+which is the point (a bare CLI never satisfied the seat contract), and the
+migration guard test now pins it.
