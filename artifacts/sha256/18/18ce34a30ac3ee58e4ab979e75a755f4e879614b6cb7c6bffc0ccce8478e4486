@@ -1,0 +1,22 @@
+## Design: etude retro command
+
+Deliverable: docs/plans/product/etude-retro-command.md (planning note, NOT shipped code). Indexed from docs/plans/README.md and docs/plans/product/README.md. This is the concrete implementation plan for etude-14r.
+
+**Storage model:** retro = content-addressed artifact in its OWN run under a new namespace refs/etude/retros/<retro-id>, reusing runmanifest.Manifest (one stage produced_by:retro; body is the stage output artifact). Subjects (covered runs/beads) recorded as manifest Refs + pinned pointer inputs ({run_id,stage,commit,artifact}, eval-style). A cohort retro = one retro doc citing many subjects; covered runs are never mutated. Chosen over a retro-stage-in-the-covered-run (can't span a cohort; mutates closed runs; risks replay contamination). Create-only; supersede = new id with Refs[supersedes].
+
+**Phased CLI:**
+- Phase A (works TODAY): etude capture retro --run <id> --produced-by retro --output retro=retro.md; etude run show/list. Single-run only.
+- Phase B (first slice): etude retro capture/list/show over refs/etude/retros/* — pure capture+walk, mirrors capture.go + run.go. The retrospectives.md run/phase/gate/bench verbs collapse into scopes/flags of capture.
+- Phase C: etude retro generate behind a retro.Generator seam.
+
+**Generate vs capture (Q1): CAPTURE-FIRST.** etude captures externally-produced retros; generation deferred to a retro.Generator interface mirroring replay.Runner / eval.Judge. generate = generator + Phase B capture path (as bench = Runner+Recorder+Judge+Writer).
+
+**Triggers:** non-gating advisory; retros: yaml config; only on_run_close defaults on; repeated-block/blocked/failed-verify/post_bench opt-in.
+
+**Open questions resolved:** repeated-block opt-in (default off, threshold 3); retros have NO evaluator (explanatory, not scored; body could later be an eval target); replay contamination prevented structurally (replay/bench walk refs/etude/runs/* only, never refs/etude/retros/*); failure-mode indexing deferred to a retro-meta JSON sidecar + query index.
+
+**Relationships:** implements etude-14r (legible session: retro list/show -> future etude log). post-bench retro real now (bench shipped): --scope bench retro citing cohort runs + eval-ids, enabling retro-coded root-cause cohort analysis.
+
+**Capture:**
+- inputs: bead etude-bjn/14r/jpf; docs/plans/product/retrospectives.md; docs/plans/dogfood/capture-protocol.md; internal/runmanifest/manifest.go; internal/cli/capture.go,run.go; internal/eval/result.go; internal/bench/{run,cohort}.go; internal/replay/runner.go; internal/eval/judge.go; docs/{run,bench}.md
+- output: docs/plans/product/etude-retro-command.md + bead --design

@@ -1,0 +1,44 @@
+✓ etude-bjn · Design etude retro command   [● P2 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: Closed
+
+DESCRIPTION
+Design the future etude retro CLI and manifest integration for generating, capturing, listing, and showing retrospective artifacts. Use docs/plans/retrospectives.md as the planning source. This should wait until manual retro capture semantics are defined.
+
+DESIGN
+## Design: etude retro command
+
+Deliverable: docs/plans/product/etude-retro-command.md (planning note, NOT shipped code). Indexed from docs/plans/README.md and docs/plans/product/README.md. This is the concrete implementation plan for etude-14r.
+
+**Storage model:** retro = content-addressed artifact in its OWN run under a new namespace refs/etude/retros/<retro-id>, reusing runmanifest.Manifest (one stage produced_by:retro; body is the stage output artifact). Subjects (covered runs/beads) recorded as manifest Refs + pinned pointer inputs ({run_id,stage,commit,artifact}, eval-style). A cohort retro = one retro doc citing many subjects; covered runs are never mutated. Chosen over a retro-stage-in-the-covered-run (can't span a cohort; mutates closed runs; risks replay contamination). Create-only; supersede = new id with Refs[supersedes].
+
+**Phased CLI:**
+- Phase A (works TODAY): etude capture retro --run <id> --produced-by retro --output retro=retro.md; etude run show/list. Single-run only.
+- Phase B (first slice): etude retro capture/list/show over refs/etude/retros/* — pure capture+walk, mirrors capture.go + run.go. The retrospectives.md run/phase/gate/bench verbs collapse into scopes/flags of capture.
+- Phase C: etude retro generate behind a retro.Generator seam.
+
+**Generate vs capture (Q1): CAPTURE-FIRST.** etude captures externally-produced retros; generation deferred to a retro.Generator interface mirroring replay.Runner / eval.Judge. generate = generator + Phase B capture path (as bench = Runner+Recorder+Judge+Writer).
+
+**Triggers:** non-gating advisory; retros: yaml config; only on_run_close defaults on; repeated-block/blocked/failed-verify/post_bench opt-in.
+
+**Open questions resolved:** repeated-block opt-in (default off, threshold 3); retros have NO evaluator (explanatory, not scored; body could later be an eval target); replay contamination prevented structurally (replay/bench walk refs/etude/runs/* only, never refs/etude/retros/*); failure-mode indexing deferred to a retro-meta JSON sidecar + query index.
+
+**Relationships:** implements etude-14r (legible session: retro list/show -> future etude log). post-bench retro real now (bench shipped): --scope bench retro citing cohort runs + eval-ids, enabling retro-coded root-cause cohort analysis.
+
+**Capture:**
+- inputs: bead etude-bjn/14r/jpf; docs/plans/product/retrospectives.md; docs/plans/dogfood/capture-protocol.md; internal/runmanifest/manifest.go; internal/cli/capture.go,run.go; internal/eval/result.go; internal/bench/{run,cohort}.go; internal/replay/runner.go; internal/eval/judge.go; docs/{run,bench}.md
+- output: docs/plans/product/etude-retro-command.md + bead --design
+
+NOTES
+DESIGN gate attempt 1: codex BLOCK (3 valid items); gemini GO, Opus GO (Opus flagged item 1 as non-blocking gap; codex escalated + caught 2 more). All real planning-note inaccuracies to fix: (1) STORAGE: note claims Phase B reuses storage 'unchanged' but refstore rejects retros/* (store.go:275) + runmanifest.Writer hardcodes runs/ (manifest.go:244) — Phase B must explicitly extend the refstore namespace allowlist + use refstore.WriteCommit directly for a retro writer (as eval.Writer does, result.go:339) + own read/list walk; drop 'applies unchanged'. (2) REF-KEY ENCODING: proposed Refs keys (subject_run:<id>, gate:<stage@attempt>) use :/@ but manifest ref KEYS only allow [A-Za-z0-9_.-] (manifest.go:141) — use valid keys (subject_run.1=, bead.1=, gate.1=) with punctuation only in VALUES. (3) SCHEMA: structured-artifact plan omits required capture-protocol.md fields (attempt, related stage/gate attempts, related commits/diffs, timeline, worked-well, follow-up-refs) — Phase B capture must preserve the manual Retro Capture schema EXACTLY (full set in body + sidecar, not a subset). -> revise to attempt 2.
+DESIGN gate attempt 2: PASS (3 substantive GO — codex flipped GO, gemini GO, Opus GO; pilms outage). All 3 attempt-1 blocks fixed + verified vs code: (1) storage overclaim removed — Phase B reuses the Manifest TYPE but not runmanifest.Writer (hardcodes runs/); needs refstore allowlist extension + refstore.WriteCommit writer (like eval) + own retros walk; (2) ref-key encoding now valid [A-Za-z0-9_.-] indexed keys (subject_run.1, gate.1=<stage>@<attempt> with @ in value); (3) schema = full capture-protocol.md field set (not a subset), cited as authoritative. Deliverable: docs/plans/product/etude-retro-command.md (planning note). This is the concrete implementation plan for etude-14r.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ✓ etude-phase3: Phase 3: evals and bench workflow ● P2
+
+DEPENDS ON
+  → ✓ etude-jpf: Define retro capture in dogfood protocol ● P1
+
