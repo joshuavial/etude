@@ -258,6 +258,74 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T01:16:19Z"
+    },
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "never-log-cmd.Env guard comment"
+          ],
+          "timestamp": "2026-06-30T00:35:25Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "audit=intent-not-delivery doc note",
+            "reject replay --record+--allow-env",
+            "reject reserved names at validate"
+          ],
+          "timestamp": "2026-06-30T00:35:25Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "reject reserved names at validation",
+            "allowed-vs-passed audit distinction"
+          ],
+          "timestamp": "2026-06-30T00:35:25Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T00:35:25Z"
     }
   ]
 }
