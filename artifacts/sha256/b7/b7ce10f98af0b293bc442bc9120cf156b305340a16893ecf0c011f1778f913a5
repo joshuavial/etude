@@ -1,0 +1,31 @@
+# etude-ldf offline-mirror verification
+
+This artifact supersedes the earlier network-probe verification after the
+operator resolved the design: doctor performs no authenticated or anonymous
+remote probe. It compares authoritative local `refs/etude/<kind>/*` only with
+the landed sibling mirror `refs/etude-mirror/<remote>/<kind>/*`.
+
+Authoritative evidence:
+
+- `go test ./internal/cli -run Doctor -count=1` PASS.
+- `make test` PASS across every package.
+- `make lint` PASS.
+- `make docs` and `make docs-check` PASS.
+- Windows cross-build PASS.
+- Git argv allowlist rejects `fetch`, `ls-remote`, `remote get-url`,
+  `update-ref`, and write-capable config calls.
+- A configured `ext::` transport that would create a marker is never executed;
+  doctor succeeds offline and the marker remains absent.
+- Whole-repository content/mode/mtime/ref snapshot is identical before and
+  after doctor.
+- Local-only, mirror-matching, mirror-newer/unknown, dangerous broad fetch,
+  missing reviewer, quoted invocation, dual malformed YAML, and terminal-control
+  scenarios have focused regressions.
+
+Doctor reports reachability as `NOT CHECKED`. Git does not record a reliable
+per-mirror fetch timestamp, so it reports last update as `NOT RECORDED` and says
+where staleness changes the conclusion: absent may already exist remotely,
+matching may since have changed, and differing may now have another direction.
+
+No credential-helper, SSH-config, host-key, remote-helper, URL rewrite, or
+advertisement code remains because none is reachable without a network probe.
