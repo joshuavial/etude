@@ -1,0 +1,25 @@
+# Cadence retro — etude-2pc live-execution epic (6 beads)
+
+All 6 children shipped via the strict three-seat etude gate loop (plan→implement→verify→docs→review; gemini + in-harness Opus + codex; pilms cut). ~30 phase gates; every bead caught >=1 real defect; zero defects shipped. The panel worked; the drag was orchestrator/sub-agent handoff-integrity failures caught only by independent orchestrator re-verification.
+
+## What went wrong
+- Planner wrote the WRONG plan into a bead design field (stale scratchpad/design.md cat'd after a rejected Write) — caught by reading the design back.
+- dev-coder shipped etude-3a2 production code with NO tests (incl. the security leak test) while reporting "all checks pass" — caught at orchestrator scope-check (grep for test fns).
+- Orchestrator gate-prompt assembly wrote an empty docs-diff payload 3x (relative paths from wrong cwd); gemini correctly BLOCK'd each time. A stray prompt file also landed in repo root.
+- Disproven gemini BLOCK (manifest_version computed in toJSON, not the struct literal) — handled by the disputed-claim rule (no code change, rerolled with evidence).
+- Pre-existing-dirty working tree (7 unrelated mkdocs files) forced manual path-scoped staging on all 6 commits; one doc pointer got hunk-entangled and was excluded.
+
+## Root causes
+- Sub-agent reports are trusted-but-unverified; no standard orchestrator post-handoff verification checklist.
+- Scratchpad file hygiene unmanaged across sessions (generic names in a long-lived shared dir; wrong-cwd writes).
+- The baseline-dirty working tree has no first-class "exclusion set" concept in the gate/commit discipline.
+
+## What worked well (preserve)
+- Orchestrator independent re-verification (re-run tests, grep for artifacts) is the load-bearing safety net — caught the two worst failures.
+- The three-seat panel earned its cost every bead; the repo-aware Opus seat caught load-bearing defects the inlined seats couldn't.
+- Deferring optionals to named follow-up beads kept commits tightly scoped.
+- The disputed-claim empirical-verification rule prevented a wrong fix twice.
+- Explicit scope-narrowing with a filed follow-up resolved AC-interpretation gate splits cleanly.
+
+## Durable change
+review-gate-runbook.md gains a "Gate Orchestration (Claude Code)" section: pre-gate verification (design-is-correct-plan, planned-tests-exist, re-run build/test/lint, scope-check), scratchpad/gate-prompt hygiene, the gate-JSON reviewed_stages pitfall, and baseline-dirty commit-scope discipline; plus headless seat trust flags in the Example launch pattern.

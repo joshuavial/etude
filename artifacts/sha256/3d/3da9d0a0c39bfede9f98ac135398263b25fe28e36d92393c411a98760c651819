@@ -1,0 +1,28 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-06-30",
+  "failure_modes": [
+    "planner-wrote-wrong-bead-design-field",
+    "coder-shipped-without-test-plan",
+    "orchestrator-empty-gate-prompt-payload",
+    "disproven-seat-block",
+    "pre-existing-dirty-commit-scope-hazard"
+  ],
+  "root_causes": [
+    "sub-agent reports trusted-but-unverified; no standard orchestrator post-handoff verification",
+    "scratchpad file hygiene unmanaged across sessions (generic names, wrong-cwd writes)",
+    "baseline-dirty working tree has no first-class exclusion-set concept in gate/commit discipline"
+  ],
+  "follow_up_beads": [
+    "etude-zdl", "etude-dp7", "etude-g12", "etude-j93", "etude-df4", "etude-aqh", "etude-s6z", "etude-8ub"
+  ],
+  "decisions": [
+    "orchestrator must independently verify sub-agent artifacts (design content, tests exist, green build) before every gate",
+    "run a cadence retro every 3 completed beads"
+  ],
+  "durable_changes": [
+    "review-gate-runbook.md: new Gate Orchestration (Claude Code) section (pre-gate verification, scratchpad hygiene, gate-JSON reviewed_stages pitfall, baseline-dirty commit scope)",
+    "review-gate-runbook.md: headless seat trust flags (gemini --skip-trust, codex --skip-git-repo-check) in Example launch pattern",
+    "scripts/dogfood-completeness-allow.txt: allowlist etude-2pc epic rollup"
+  ]
+}
