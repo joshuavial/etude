@@ -1,0 +1,17 @@
+# Final Review — etude-n0t (retro generate + Generator seam, Phase C)
+
+Verdict: GO — ready to commit. No blockers.
+
+1. **Coherence**: delivers the Phase C generate slice completely. `retro generate <scope>` resolves a generator (flag -> git config -> error), materializes each subject run's stage output+inputs, invokes the generator, routes the body through the shared `assembleAndWriteRetro`. Plan ↔ impl ↔ tests ↔ docs consistent. Both round-1 fixes present + test-covered: `generator` reserved key (TestRetroGenerate/CaptureGeneratorRefReserved); explicit `--stage` selection (Single/MultiStageNoStageFlag/MultiStageWithStageFlag/StageNotFound/AmbiguousStage). Dead `applyGenerateResultDefaults` gone (zero refs repo-wide).
+
+2. **Code quality**: `ExecGenerator` faithfully mirrors replay.ExecRunner/eval.ExecJudge — identical strict env (exact-key extractPATH; only PATH+ETUDE_INPUTS_DIR+ETUDE_OUTPUT_FILE), no shell (direct exec.CommandContext), symlink-safe Lstat+IsRegular output read, sentinel errors, ctx-precedence. Capture path refactored not altered (checkReservedRefs pre-write for both; assembleAndWriteRetro identical refs/manifest logic). Output-pointer guard present (retro.go:795). No dead code/misleading comments.
+
+3. **Docs accuracy**: docs/retro.md generate section accurate to shipped behavior (env contract, stage selection, provenance produced_via/generator, generator-resolution precedence). Config-driven triggers correctly marked "not yet implemented"; no sidecar/etude-log mentions. Generated etude_retro_generate.md + expectedCommands consistent; docs-check clean.
+
+4. **Scope/commit hygiene**: genuine 1-bead=1-commit; all 10 files belong to the generate slice; expectedCommands extended with only the one new page; no config/triggers/sidecar/etude-log creep.
+
+5. **Blockers**: none. Non-blocking follow-up: the CLI pointer-output guard (retro.go:795) has built-binary manual coverage but no Go unit test — worth a table-test if a future bead touches that path.
+
+Gate checks re-run green: go build, package tests, make lint, make docs-check.
+
+Commit: `add retro generate command with external generator seam` (landed as 4df5753).
