@@ -596,6 +596,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:33:00Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "883eccee0151cc37fbe2b8d7bf4724e020fce1afab0191a7169c719140c3337d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Sparse-checkout remains fail-closed and unsupported for caller mode.",
+            "packet path .etude/tmp/etude-5dr.4/verify-gate-r2.md sha256 dcb3305a97af5a9ae2f0427a2e11298155fa50ead79d141600df19ba63b79bdd"
+          ],
+          "timestamp": "2026-08-16T03:38:30Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/verify-gate-r2.md sha256 dcb3305a97af5a9ae2f0427a2e11298155fa50ead79d141600df19ba63b79bdd"
+          ],
+          "timestamp": "2026-08-16T03:38:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:38:30Z"
     }
   ]
 }
