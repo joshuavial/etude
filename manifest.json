@@ -394,6 +394,55 @@
         "degraded_reason": "Both seats BLOCK, recorded on receipt. codex: the retro the acceptance requires did not exist yet - now written and landed as 1694e14. opus: two findings, both verified before folding. The first is the one worth keeping: I wrote that beads .3 and .4 took '16 and 20' attempts when the manifest says 16 and 22, in the artifact whose own subject is measurement discipline, having written in its plan that recording a number the source cannot produce is the defect this epic spent four beads removing. Every count is now computed rather than typed. The second: a seat-granularity measurement the approved plan commits to was missing, now added - etude gate emitted 10 seat entries, the bootstrap appends carried 8. That recount surfaced two things nobody had flagged. Bootstrap appends RE-RECORD the codex verdicts etude gate already produced, so the manifest double-counts them at seat granularity, which belongs in etude-4ed. And the round numbering carries a machine-detectable fingerprint of the missing-record defect: .3's verify rounds run 1,3,4,5,6,7 and .4's run 1,3,4..11, every gap being a verdict appended later under a different id or never - three lines of arithmetic would have caught what six separate seats had to notice. Also folded: the zero-BLOCK contrast is hedged as n=1 on a bead selected for tractability, and the claim that no gate record captures the check working directory is evidenced rather than asserted."
       },
       "timestamp": "2026-08-15T18:03:23Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r3",
+          "role": "diff",
+          "artifact": "5fe2ecb954a8d0c6410671f1933448ed0dedab993ca645b1f2a1d359d4b62161"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The supervision-hazard evidence is currently false against the requested evidence set: in this supervisor worktree, 'grep -c retro_file internal/cli/retro.go' returns 6, not 0, and HEAD/origin/main are 1694e14 with 752be1a as an ancestor. The hazard is real historically because 1b837a1 lacks retro_file, but the artifact's present-tense claim that this worktree lacks the change is not verifiable and is contradicted by the provided worktree."
+          ],
+          "timestamp": "2026-08-15T18:15:08Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T18:15:08Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Seats SPLIT - opus GO, codex BLOCK - so no pass under unanimous quorum, and codex is right. My artifact asserted in the present tense that the supervisor worktree lacks the worker's change, evidenced by a grep returning 0. That was true when the verify gate ran (verify.r1, supervisor at 1b837a1) but is no longer reproducible: I have since rebased past 752be1a, the commit that introduced retro_file, so the same grep now returns 6. An artifact documenting a hazard must not itself go stale, so the claim is now pinned to the commit and timestamp. opus raised the same point as its first optional. Its second is the more valuable and is folded with evidence: the bootstrap path is LOSSY, not merely manual. The re-recorded codex entries carry no raw_output and no session where the r1 originals carry both, and they drop the r1 optionals; and verify.r2 - the ONLY verify attempt marked pass - carries no check.0/check.1 seats at all, so the record certifying verify as passing contains zero deterministic-check evidence and an auditor must know to read the ESCALATED attempt instead. That is the strongest argument yet that etude-4ed must COMPLETE the existing attempt in place rather than emit a second one, and it has been written onto that bead. Also folded: the 10-vs-16-and-22 attempt contrast is not like-for-like, so the artifact now quotes seat BLOCK verdicts instead (0 here, 8 on .3, 10 on .4); and the 21-optionals figure is named as derived from prose, which is itself the limitation it describes."
+      },
+      "timestamp": "2026-08-15T18:15:08Z"
     }
   ]
 }
