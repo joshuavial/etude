@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-hp7",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,38 @@
         "size": 824
       },
       "timestamp": "2026-05-26T14:59:55.409001Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T14:59:55Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-26T15:00:10Z"
     }
   ]
 }
