@@ -1,0 +1,20 @@
+# Resolution — etude-n9b.3
+
+Close this blocker as obsolete, not waived.
+
+ANCESTOR: `etude-n9b` (P1) delivers GitHub issue #16 through the authoritative
+configured L1 review panel. MEASUREMENT: the Gemini CLI repeatedly failed before
+packet review with `IneligibleTierError`; commit `770584b` removed that
+unreachable seat from both `.etude/registry.yaml` and `registry.Default()`, and
+the authoritative L1 panel is now exactly `[opus, codex]`.
+
+BLAST RADIUS: none: worktree and repo only.
+
+The blocker asked to restore a required Gemini seat. That premise no longer
+exists: Gemini was removed rather than waived, agy remains deliberately unused,
+and Opus plus Codex is the complete L1 panel. No product change belongs to this
+blocker bead; the registry removal is already on `origin/main` and is included
+inline for verification.
+
+No new tests: this is an evidence-only closure of an obsolete blocker. The
+registry-removal commit carried its own tests before landing on main.
