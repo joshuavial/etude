@@ -1,0 +1,4 @@
+# Verify — etude-bench-command.1 (bench cohort selection)
+Result: PASS. go test ./... green (internal/bench 20 tests); gofmt/vet/build clean.
+Coverage: qualifying selection; each skip reason (stage-missing, stage-ambiguous, invalid-git-sha [non-hex/39-char/uppercase], pointer-input, pointer-output); ordering Created DESC + RunID DESC tie-break; last<=0->ErrInvalidLast, last>avail->all; zero/zero-qualifying->empty-valid; corrupt manifest->error naming run. Opus mutation-verified: invalid-git-sha/ordering/pointer-input tests have teeth; no flakiness.
+No CLI surface (library) -> no built-binary manual test this slice.
