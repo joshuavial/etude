@@ -1,0 +1,49 @@
+Reading additional input from stdin...
+2026-09-06T23:36:49.923732Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 132 column 5
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/jv/projects/etude/.worktrees/audit-workflow-fixes
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07914-f1de-7d71-a0c8-ed5290c0d9d1
+--------
+user
+Independently review this plan at design/contract/behavior-preservation altitude. BLOCK only for missing requirements, observable regressions, or infeasible mechanisms; implementation details are optional. Review the complete inlined plan below. Do not edit files, run tools, or invoke agents. Return exactly four lines: VERDICT: GO or BLOCK; BLOCKING: numbered required changes or none; OPTIONAL: nonblocking followups or none; CONFIDENCE: high/medium/low.
+
+## etude-3343: bind gate bytes and permit corrected recapture
+
+- In `internal/liverun/gate_once.go`, immediately after resolving the latest output for `req.Stage.Produces`, hash `req.Artifact` and compare it with `reviewed.Output.Artifact`. Reject mismatch before checks, seats, scratch creation, or ref mutation. Give an actionable error to capture the corrected artifact first. Hash the actual byte slice subsequently used to build the prompt, avoiding a second read / TOCTOU.
+- For recapture, prefer digest-aware historical validation over automatic renaming. `capture.go` deliberately appends stages with repeated names; `runmanifest.Validate` currently indexes only the last stage by name, making an old gate invalid when a newer capture changes its output. Change that validation index to retain every occurrence and accept a reviewed reference with a digest only if a matching-name occurrence actually contains that digest. Keep validation of identifiers/digest format and existing digestless reference compatibility.
+- Why not auto `.rN` names only after gating: that gives capture history a naming state machine, may collide with explicit literal names, changes user-facing selection behavior, and still leaves imported duplicate-name histories broken. Digest-aware validation fixes the actual invalid assumption without mutating names or history. Repeated identical digests cannot uniquely identify producer metadata; this is a pre-existing schema limitation, not something to pretend this patch solves.
+- Reviewed-reference consumer inspection: `liverun.stageByReviewedRef` already walks backwards matching name AND output digest; preserve it. `cli/run.go` displays refs, `capture gate` serializes them. General manifest refs can refer to inputs/logs too, so do not narrow the generic validator to output-only. Supervised gates themselves always bind output.
+- Tests: mismatch causes zero check/seat invocations and unchanged run ref; equal bytes pass; full CLI capture A -> blocked gate -> same-name capture B -> successful gate, preserving both stage bytes and gate digests; JSON roundtrip with duplicate names and old digest; invalid/nonexistent digest remains rejected; existing prior-attempt evidence selects old output, not latest.
+
+
+warning: Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+codex
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: Add a test for digest-aware validation where the matching duplicate stage contains the digest only in an input/log ref, since generic refs must remain non-output-only.
+CONFIDENCE: medium
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Completed
+tokens used
+4,028
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: Add a test for digest-aware validation where the matching duplicate stage contains the digest only in an input/log ref, since generic refs must remain non-output-only.
+CONFIDENCE: medium

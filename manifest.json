@@ -176,6 +176,77 @@
         "degraded_reason": "Bootstrap auth-profile exception: standard Opus runner lacks active CLI profile and returns not logged in. Both external reviewers received the same plan-path prompt with the authenticated orchestrator environment; Codex could not read files under that prompt, so this attempt is not passed. Next retry inlines the plan."
       },
       "timestamp": "2026-09-06T23:37:20.503644Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "58ae302590eaaab69f7d5875f1b393fab3d6b28fc68c60ac6635e77a78997f0f"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "block",
+          "required": [
+            "1) Undefined behavior when the resolved latest output for `req.Stage.Produces` carries no digest (or no output exists at all). The plan preserves digestless compatibility in `runmanifest.Validate` but says nothing about the new gate-side check; if an absent/empty digest falls into the mismatch branch, every gate over a legacy or digestless manifest hard-fails before checks and seats. Specify pass-through (skip binding, proceed) for that case, and cover it in tests. 2) State the byte-equality contract between the hashed prompt bytes and the digest capture recorded. The plan asserts \"equal bytes pass\" but does not say that `req.Artifact` is the same canonical byte sequence `capture.go` digested (same hash, same normalization, single-blob vs multi-file/directory produces). If those differ by even trailing-newline normalization or a rendered prompt view, the check rejects universally — a total gate outage, not a targeted guard. Name the shared helper/canonicalization both sides use."
+          ],
+          "optional": [
+            "1) Consider recording the bound occurrence index (or capture sequence number) alongside name+digest on the gate, so the duplicate-identical-digest ambiguity you correctly call pre-existing narrows going forward instead of persisting. 2) Add a validator test for a reviewed reference whose digest matches an occurrence *after* the referencing stage — the all-occurrences index makes forward references acceptable where last-wins may have masked them; confirm that's intended rather than incidental. 3) The mismatch error should name both digests and the exact recapture command, not just \"capture the corrected artifact first\"."
+          ],
+          "raw_output": {
+            "role": "opus-transcript",
+            "artifact": "d5b881267c969bbd2c24aa089abf68f35f587c115a5ad6e2dd481756891ad9ab",
+            "path": "artifacts/sha256/d5/d5b881267c969bbd2c24aa089abf68f35f587c115a5ad6e2dd481756891ad9ab",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 1833
+          },
+          "timestamp": "2026-09-06T23:37:40.949085Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a test for digest-aware validation where the matching duplicate stage contains the digest only in an input/log ref, since generic refs must remain non-output-only."
+          ],
+          "raw_output": {
+            "role": "codex-transcript",
+            "artifact": "82fd38b5952a6faa7b533b9650814264566e0290a97a5bdec97c53768eaef4f7",
+            "path": "artifacts/sha256/82/82fd38b5952a6faa7b533b9650814264566e0290a97a5bdec97c53768eaef4f7",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 4115
+          },
+          "timestamp": "2026-09-06T23:37:04.923522Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Bootstrap authentication exception: standard Opus runner lacks active CLI profile. Both reviewers received identical inlined plan with the authenticated orchestrator environment. Opus BLOCK recorded; disputed digestless-output premise will be clarified with current source evidence."
+      },
+      "timestamp": "2026-09-06T23:38:31.663928Z"
     }
   ]
 }
