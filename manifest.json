@@ -809,6 +809,62 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T02:24:25Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "67c0cc4ef15193677ce32a9680cfb48f06a0ec2c2437605c109dfadce4d034c9"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "A future preflight could reject an already-dirty caller tree before invoking the runner.",
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r1.md sha256 6c90749e33beff244375db39f0fdb8e6e5442112f403d1b1c57f1dfd20fe3a4d"
+          ],
+          "timestamp": "2026-08-16T02:33:27Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Prevent ambient GIT_WORK_TREE and related repository-selection overrides from redirecting post-run inspection after canonical caller/root matching.",
+            "State the trusted inputs, trust root, untrusted effects, and excluded same-process hostile-code scope explicitly in the docs gate evidence.",
+            "Adjudicate committed clean-filter and replacement-ref scenarios with executable evidence or an enforced boundary."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/docs-gate-r1.md sha256 6c90749e33beff244375db39f0fdb8e6e5442112f403d1b1c57f1dfd20fe3a4d"
+          ],
+          "timestamp": "2026-08-16T02:33:27Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:33:27Z"
     }
   ]
 }
