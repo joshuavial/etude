@@ -250,6 +250,55 @@
       ],
       "decision": {},
       "timestamp": "2026-05-27T02:06:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.133.0"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "docs-drift WARN path has no test; DOCS_COMMIT fixture set-but-unused; also --last/--since mutual-exclusion not enforced"
+          ],
+          "timestamp": "2026-05-27T02:10:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "docs-drift WARN path untested (DOCS_COMMIT unused)"
+          ],
+          "timestamp": "2026-05-27T02:10:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-27T02:11:00Z"
     }
   ]
 }
