@@ -1,0 +1,7 @@
+# etude-5dr.3
+
+Ship GitHub issue #15 atomically: allow a producing stage to opt into
+`runner: {workspace: caller}`, record that choice and post-run provenance in the
+manifest, retain hermetic pinned gates, and fail closed before capture whenever
+the caller repository cannot be proven to be a clean committed state after the
+runner. Include a regression that proves the mutation guard fires.
