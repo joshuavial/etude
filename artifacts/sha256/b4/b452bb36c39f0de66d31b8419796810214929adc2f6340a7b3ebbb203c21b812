@@ -1,0 +1,28 @@
+# Verify — etude-8hq.6 (review gate → explicit reviewer lenses)
+
+Docs-only bead (Tier 3). No Go/script/generated-doc change.
+
+## Checks
+- `git status` → only `docs/plans/dogfood/review-gate-runbook.md` +
+  `review-gate-process.md` changed. No Go/scripts/generated files.
+- `make docs-reality` → OK (hand-written planning docs; no generated drift).
+- PRESERVE anchors all present + unweakened (additive diff): Gate Weight Tier 1/2/3
+  + "UNANIMOUS pass", Result Classification / disputed-claim empirical re-verify,
+  Degraded Gate Policy, Plan-Phase Discipline P1-P4 (prose verbatim, only lens-tagged),
+  Scope Discipline, Epic-Close, structured `capture-gate` recording.
+
+## What landed
+- A compact (~35-line) "Reviewer Roles (review lenses)" section: 4 lenses (Spec
+  Adversary, Runtime Verifier, Docs/Reality Checker, Security/Data-Integrity) as a
+  shared checklist EVERY seat applies (not one-per-seat — grounded in the runbook's
+  cross-lens catches #2/#7); seat→lens mapping (model identity is NOT the quality
+  mechanism); naming guard ("lenses" ≠ schema `reviewed_stages[].role`); scope-fence
+  as cross-lens; a lens block in the Reviewer Prompt Template.
+- Lens-tags on the 7 defect classes + P1-P4 (P1 → Spec Adversary per gate NIT).
+- Per-seat execution constraints cross-referenced, not duplicated.
+- The lens→rationale mapping line reconciled with the inline tags (#4 → Spec).
+
+## Result: PASS
+Plan gate (Tier 3, codex+opus): GO. Implement gate (Tier 3, opus single-seat): GO,
+with one trivial mapping/tag inconsistency (#4) fixed before commit. The deeper
+runbook-body compression is intentionally deferred to etude-8hq.7.

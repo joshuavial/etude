@@ -1,0 +1,234 @@
+✓ etude-8hq.6 · Refactor review gate into explicit reviewer roles   [● P1 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+The retros repeatedly attribute wins/losses to model seats, but the durable distinction is review mode: spec adversary, runtime verifier, docs/reality checker, security/data-integrity checker. Refactor the gate prompt/runbook so roles are explicit and short, reducing dependence on a dense runbook and model personality.
+
+DESIGN
+## Plan
+
+**Approach:** The retros credit gate wins/losses to model SEATS (codex caught X,
+gemini missed Y), but the durable mechanism is the review LENS being applied
+(spec adversary, runtime verifier, docs/reality checker, security/data-integrity
+checker). Refactor `review-gate-runbook.md` to add ONE compact "Reviewer Roles"
+section near the top that defines the role lenses and how seats map to them, and
+re-anchor the prose so model identity reads as "which seat happens to fill a
+lens" rather than "the model IS the quality mechanism." This is ADDITIVE
+structure on top of the existing strict multi-seat-unanimity gate — no policy is
+weakened. The dense per-seat caveats and P1-P4 disciplines are kept verbatim but
+reframed as the RATIONALE/REFERENCE behind the compact roles, with the
+recurring-defect classes (#1-#7) and Plan-Phase disciplines (P1-P4) explicitly
+tagged with the role lens each one exercises so they read as worked examples of a
+lens rather than free-floating prose.
+
+**Naming guard (avoid schema collision):** the structured gate schema already
+uses `reviewed_stages[].role` to mean the STAGE-ARTIFACT role
+(`plan`/`diff`/`verify`) — see docs/gates.md:36 and
+docs/plans/product/gate-reviewer-record-schema.md:200-201. That is a DIFFERENT
+concept from the reviewer-lens roles introduced here. To prevent confusion the
+new section is titled "Reviewer Roles (review lenses)" and uses the word "lens"
+in running text; the plan adds an explicit one-line note that these lenses are
+NOT the `reviewed_stages[].role` field and require NO schema change.
+
+**Decision (must be made explicitly): roles are a CHECKLIST every seat applies,
+NOT one-role-per-seat.** Adopt EVERY-SEAT-COVERS-ALL-LENSES. Rationale, grounded
+in the runbook's own evidence:
+- Multi-seat unanimity is preserved ONLY if every seat is adversarial across the
+  whole surface; if we split one lens per seat we lose redundancy — a single
+  seat's miss on its lens would have no second checker. Seats are the REDUNDANCY;
+  lenses are the SHARED CHECKLIST each redundant seat runs.
+- The runbook's strongest evidence is cross-lens: the inlined spec-focused seats
+  (codex/gemini) repeatedly caught spec-completeness/adversarial-input defects
+  the repo-aware Opus seat GO'd (runbook Recurring Defect Class #2,
+  review-gate-runbook.md:561-596), and codex caught a runtime/cross-compile defect
+  the darwin-only empirical seat missed (#7, :693-716). These show different SEATS
+  are differently reliable at the SAME lens — which only works if every seat is
+  asked to apply every lens, so the panel has multiple independent attempts per
+  lens. Assigning one lens per seat would have SUPPRESSED exactly the catches the
+  runbook documents.
+- Therefore: lenses are the QUESTIONS every seat must answer; the multi-seat
+  panel is the redundancy that makes a miss on any one lens unlikely. Seat
+  sandbox realities (codex diff-only, Opus can mutation-test, gemini inlined)
+  affect HOW a seat exercises a lens, not WHICH lenses it owns.
+
+**The role taxonomy (4 lenses — compact, 1-2 lines + required evidence each):**
+
+1. **Spec Adversary** — Charge: does the artifact satisfy the acceptance criteria
+   AS WRITTEN, including every field/key of any struct it touches and every
+   ambiguous criterion read literally? Hunt silently-dropped fields, convenient
+   reinterpretations, and inputs the spec ALLOWS that bypass validation / spoof
+   provenance / inject. Evidence: cite the acceptance line + the artifact
+   line:col it satisfies or violates; for any struct, enumerate its fields and
+   mark each covered/omitted.
+
+2. **Runtime Verifier** — Charge: does it actually build, run, and pass — on the
+   paths that matter, not just the host happy path? Includes cross-compile for
+   platform APIs and constructing the input where a heuristic picks wrong.
+   Evidence: the command run + observed result (or, for diff-only seats, the
+   green-test summary trusted + an explicit "did not execute" note); for platform
+   APIs, the `GOOS=… go build` result.
+
+3. **Docs/Reality Checker** — Charge: do docs/claims match the code as it now is?
+   No doc claims unshipped behavior; generated-doc blast radius is complete
+   (every regenerated page, not just the obvious one); README/index usage stays
+   consistent. Evidence: cite doc line vs code line; for generated artifacts,
+   the full set of files the generator emits.
+
+4. **Security / Data-Integrity Checker** — Charge: can this lose/corrupt data,
+   break backward compat, or be abused? Reserved-key/`--ref`-override holes,
+   round-trip byte-stability of optional blocks, absent-vs-present-null, refs/git
+   plumbing safety. Evidence: the adversarial input tried + observed
+   guard/behavior; for round-trip, the before/after bytes.
+
+Each lens maps to existing runbook content so nothing is lost: Spec Adversary ←
+Recurring Defect Class #2 + Plan-Phase P1/P3; Runtime Verifier ← #7 + P1
+verify-the-verification; Docs/Reality ← #6 (generated blast radius) +
+Epic-Close reconcile; Security/Data-Integrity ← #1 (reserved keys) + #5
+(optional-block state model) + #3/#4 (guard-test rigor). P2 (premise-check /
+BUILD-vs-DEFER) and P4 (artifact-creating beads vetted against all gates) are
+cross-lens plan-phase gates and stay in their own short Plan-Phase block,
+re-labelled as applying to ALL lenses.
+
+**Seat→role mapping (no model-identity-as-mechanism):** add a short paragraph
+stating "Any sufficiently capable reviewer can apply all four lenses; the gate's
+strength is N independent seats EACH applying the full lens checklist, not any
+one model. We currently seat codex (openai/gpt-5.5), gemini
+(google/gemini-3.1-pro-preview), in-harness Opus (anthropic/claude-opus-4-7), and
+pi/pilms (lmstudio/qwen) — each runs the SAME lens checklist; differences in seat
+reliability per lens are why we keep multiple seats, not a reason to specialize
+them." The existing per-seat sandbox caveats stay, retitled "Per-seat execution
+constraints (how a seat applies the lenses)" so they read as mechanics, not as
+the seat's identity/role.
+
+**Role-specific prompt payload shape:** extend the existing single Reviewer
+Prompt Template (review-gate-runbook.md:239-271) with ONE compact "Apply these
+review lenses" block listing the four lenses as imperative bullets (each = the
+1-line charge + "produce: <evidence>"). It is a single payload that ENUMERATES
+the lenses (not four separate prompts), so it composes with the existing
+seat-only framing, the GO/BLOCK return contract, and the EMPIRICAL-vs-REASONED
+separation already in practice. Add a one-line note: a BLOCK must say WHICH lens
+failed + the cited evidence, so disputed-claim re-verification (below) can target
+that lens's evidence.
+
+**How each PRESERVE-constraint is kept (additive, not replacement):**
+- *Multi-seat unanimity* — UNCHANGED. Gate Weight tiers (Tier 1/2/3) and "every
+  tier requires UNANIMOUS pass" (review-gate-runbook.md:13-55) are untouched;
+  lenses are the per-seat checklist, seats remain the unanimity unit.
+- *Disputed-claim verification* — UNCHANGED and reinforced. Result
+  Classification's empirical-reproduction rule (:338-376) and the
+  disproven-BLOCK handling stay verbatim; the prompt change makes BLOCKs cite a
+  lens + evidence, which makes the re-verify step MORE targeted, not weaker.
+- *Plan-Phase Discipline P1-P4* (:718-834) — kept verbatim; only re-tagged with
+  the lens each exercises (P1→Runtime/Spec, P3→Spec, P2+P4→cross-lens). The
+  hard-won rationale and `etude-…` worked examples are NOT deleted.
+- *Risk tiers* — UNCHANGED (Gate Weight section untouched).
+- *Degraded-gate fallback* — UNCHANGED (Degraded Gate Policy :393-436 untouched;
+  a disregarded seat is still a TOOLING outage, orthogonal to lenses).
+- *Structured gate-record capture* — UNCHANGED (`etude capture-gate`,
+  capture-conventions :898-979 untouched). Explicit note: the new lenses do NOT
+  add a schema field and are NOT the `reviewed_stages[].role` field.
+
+**Reduce load (the actual goal) — what becomes active vs reference:** the COMPACT
+ACTIVE layer is (a) the new four-lens checklist section + (b) the one lens block
+in the prompt template. Everything else (per-seat caveats, the seven Recurring
+Defect Classes, P1-P4 with their worked examples, Degraded Gate Policy, capture
+conventions) is reframed as RATIONALE/REFERENCE that backs the lenses — left in
+place, cross-referenced FROM the compact section ("each lens is exercised by the
+defect classes / disciplines below"), not duplicated. 8hq.6 does NOT itself move
+rules into scripts or shrink the runbook body — it adds the role spine and
+re-labels existing content.
+
+**8hq.6 / 8hq.7 boundary (so they don't collide):**
+- 8hq.6 (this bead) = define the reviewer-role LENSES + seat→role mapping +
+  prompt-payload lens block; reframe existing prose as lens rationale. It writes
+  the role taxonomy that 8hq.7 will later reference. It does NOT create
+  checklists/commands or compress the runbook body.
+- 8hq.7 = COMPRESS the high-frequency close/gate/capture rules into short
+  executable checklists/commands, leaving the long runbook as reference. 8hq.7
+  may point its gate-execution checklist AT the lens block 8hq.6 creates.
+- Stated in the plan so a 8hq.7 implementer knows the lens section is the
+  authoritative role source and should be referenced, not re-derived.
+
+**Files (docs-only, no Go/script changes):**
+- `docs/plans/dogfood/review-gate-runbook.md` — PRIMARY. Add "Reviewer Roles
+  (review lenses)" section (after Purpose / before or alongside Gate Weight);
+  add the lens block to the Reviewer Prompt Template; retitle the per-seat
+  caveats as execution constraints; add the seat→role mapping paragraph; re-tag
+  P1-P4 and Recurring Defect Classes #1-#7 with their lens (light inline labels,
+  no content deletion); add the explicit "these lenses are not the schema role
+  field / no schema change" note.
+- `docs/plans/dogfood/review-gate-process.md` — SECONDARY (small). Add a 2-3 line
+  "Review lenses" note to Gate Semantics pointing to the runbook's new section,
+  so the higher-level policy doc references roles without duplicating them. The
+  four-seat decision and degraded-gate text stay unchanged.
+- No other files. No code, no scripts, no generated docs (this content is not in
+  the generated `docs/cli/*` surface, so `make docs`/`make reconcile` are not
+  triggered).
+
+**Tests:** none — docs-only planning notes, no code path. Verify by: re-reading
+both docs to confirm (a) the four lenses are defined compactly with evidence
+requirements, (b) the seat→role paragraph does not frame model identity as the
+mechanism, (c) the every-seat-all-lenses decision is stated with rationale,
+(d) each PRESERVE constraint has an explicit "kept" line, (e) no P1-P4 or
+defect-class rationale was deleted, (f) the prompt template's lens block composes
+with the existing GO/BLOCK contract. No `make docs`/`make reconcile` needed
+(non-generated planning notes).
+
+**Docs:** this bead IS the docs change. No separate user-facing doc or generated
+command reference is affected (the runbook/process docs are internal planning
+notes under docs/plans/dogfood/, not the generated CLI reference). No
+docs-reality/reconcile impact.
+
+**Risks:**
+- Bloat risk — the goal is to REDUCE load, so the new section must stay compact
+  (≈the four lenses + evidence, ~25-35 lines) and rely on cross-references rather
+  than restating the defect classes. Mitigation: the active layer is additive but
+  SMALL; the bulk stays as reference. The gate (Spec Adversary lens on its own
+  acceptance) should check the section is genuinely compact, not another page of
+  prose.
+- Terminology collision with `reviewed_stages[].role` — mitigated by the explicit
+  "lens, not schema role" note and "review lenses" titling.
+- Boundary drift with 8hq.7 — mitigated by the explicit boundary section above.
+
+**Capture:**
+- inputs: bd show etude-8hq.6 / .7 / 8hq (epic); docs/plans/dogfood/review-gate-runbook.md (full); docs/plans/dogfood/review-gate-process.md (full); docs/plans/dogfood/wide-retro-analysis.md §3-§4 (lines 74-97, 183-199); docs/gates.md:36 and docs/plans/product/gate-reviewer-record-schema.md:200-201 (schema `role` field check)
+- output: bead etude-8hq.6 --design field
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added compact "Reviewer Roles (review lenses)" section (~35 non-blank lines) near the top of review-gate-runbook.md, between Purpose and Gate Weight
+- Section defines 4 lenses (Spec Adversary, Runtime Verifier, Docs/Reality Checker, Security/Data-Integrity Checker) with charge + required evidence for each
+- P1 proof-method validity placed under Spec Adversary as primary home (per Opus NIT)
+- Seat-to-lens mapping paragraph states every seat runs all lenses; per-seat execution constraints cross-referenced to Invocation section (not duplicated)
+- Explicit naming guard: lenses are NOT the schema's reviewed_stages[].role field; no schema change
+- Scope-fence explicitly placed as cross-lens orchestrator mechanic; points to Scope Discipline section
+- Cross-reference table maps each lens to its rationale in defect classes and P-disciplines
+- Added lens block to Reviewer Prompt Template (single enumerated payload, composes with existing GO/BLOCK contract; BLOCK must name which lens failed)
+- Retitled per-seat sandbox constraints heading to "Per-seat execution constraints — how each seat applies the lenses"
+- Lens-tagged all 7 Recurring Defect Classes and P1-P4 with (lens: ...) inline labels
+- Added 3-line "Review lenses" note to Gate Semantics section of review-gate-process.md with cross-reference to runbook
+
+**Checks run:** git status — shows only 2 planning doc files changed (no Go/scripts)
+**Changed files:**
+- docs/plans/dogfood/review-gate-runbook.md
+- docs/plans/dogfood/review-gate-process.md
+
+**Plan deviations:** None. All PRESERVE anchors intact (Gate Weight, multi-seat unanimity, Result Classification, Degraded Gate Policy, Reruns, Scope Discipline, Recurring Defect Classes #1-7, Plan-Phase Discipline P1-P4, Epic-Close Gate, Recording Results, capture-gate).
+
+**Capture:**
+- inputs: bd show etude-8hq.6 --json (design field); docs/plans/dogfood/review-gate-runbook.md; docs/plans/dogfood/review-gate-process.md
+- output: working tree diff (2 planning docs only)
+
+ACCEPTANCE CRITERIA
+review-gate-runbook.md defines compact reviewer roles and prompt payloads; model seats are mapped to roles without implying the model identity is the core quality mechanism; gate examples show role-specific evidence; the change preserves multi-seat unanimity and disputed-claim verification.
+
+LABELS: dogfood, phase, phase:plan, retro, review-gate
+
+PARENT
+  ↑ ○ etude-8hq: (EPIC) Phase: enforce dogfood completeness ● P0
+
