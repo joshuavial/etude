@@ -1,0 +1,269 @@
+# Plan — etude-9uf.1: `etude gate` — run one stage's gate live and record the attempt
+
+This bead is implemented **to** `docs/plans/dogfood/supervisor-runbook.md`, which
+landed in bead .2 as the spec. Its `### Contract (prescriptive — this is what
+bead .1 must build)` section is the requirement list, and its lead paragraph
+obliges this bead's VERIFY phase to exercise the built binary against each of the
+ten items and report item by item. If implementation shows the runbook specified
+something wrong or impossible, the runbook changes **in this bead** with a note
+saying what the implementation taught us.
+
+## Shape
+
+```
+etude gate --run <id> --stage <name> --artifact <file> [--workflow <name>] [--timeout <d>]
+```
+
+### Where the code goes
+
+The reusable machinery — `runGateChecks`, `runGateSeats`, `synthesizeVerdict`,
+`classifySeatOutput`, `storeSeatSessionEvidence`, `nextPhaseRound`,
+`latestStageForRole` — is **unexported in `internal/liverun`**. Exporting six
+helpers to drive them from `internal/cli` would widen the package's API for one
+caller and invite a second seat path to drift from `runGate`'s.
+
+So: one new exported entry point in `liverun`, and a thin cobra command.
+
+- `internal/liverun/gate_once.go` — `func (e *Engine) GateStage(ctx, out, req GateRequest) (GateOutcome, error)`
+- `internal/cli/gate.go` — flag parsing, config loading, printing, exit code.
+
+`GateStage` reuses `runGateChecks` and `runGateSeats` verbatim. It is NOT a
+second seat path: the difference from `runGate` is only that there is no stage
+runner to re-invoke and no rerun loop.
+
+### What `GateStage` does
+
+1. **Resolve the run.** `refstore.Resolve("refs/etude/runs/"+RunID)`. On
+   `ErrNotFound` return a clear error naming the ref and pointing at
+   `etude capture`. Nothing is written.
+2. **Resolve the reviewed stage.** `latestStageForRole(manifest.Stages,
+   stage.Produces)`. If the run carries no stage producing that role, error —
+   this is what enforces capture-before-gate, and it is a better check than
+   "run exists" alone because a run can exist with no stage for *this* phase.
+3. **Derive the round.** `nextPhaseRound(stage.Name, manifest.Stages,
+   manifest.Gates)` — already handles both `plan` and `plan.rN` naming.
+4. **Compose the shared prompt** (see below) and materialize it as the single
+   gate input, role `gate-prompt`.
+5. **Run checks then seats** via the existing helpers, at the tier's seats.
+6. **Synthesize** via `synthesizeVerdict(checksPassed, verdicts, round,
+   gate.EffectiveMaxRounds(), gate.EffectivePassThreshold(), len(seats))`.
+   Passing the real `round` as `tierRound` means the stage's own `max_rounds`
+   becomes a genuine round cap: a not-pass is `rerun` until the cap, then
+   `escalated`.
+7. **Append the `GateAttempt`** and write.
+8. Return the outcome. The CLI prints and maps status to exit code.
+
+### Exit-code contract (explicit)
+
+The acceptance says "exits non-zero on BLOCK". A seat BLOCK is not a
+`GateStatus` — it becomes `rerun` (or `escalated` at the round cap) after
+synthesis. So the contract is stated on the status, and it is deliberately wider
+than the literal wording:
+
+| status | meaning | exit |
+|---|---|---|
+| `pass` | every check passed and the seats cleared the threshold | **0** |
+| `rerun` | not-pass, below the round cap — the worker fixes and re-gates | **non-zero** |
+| `escalated` | not-pass at the cap, or too few usable seats | **non-zero** |
+| error before any attempt is recorded (missing run/stage/tier, bad flags) | nothing written | **non-zero** |
+
+Only `pass` exits 0. That is stricter than "non-zero on BLOCK" and is what makes
+the supervisor loop safe: a seat outage must not be distinguishable from success
+by exit code, or a scripted supervisor advances through a gate nobody ran. The
+distinction between the two non-zero cases is carried in stdout and in the
+recorded `GateAttempt`, not in the exit status.
+
+### Session evidence
+
+The acceptance names session evidence explicitly. `runGateSeats` already calls
+`storeSeatSessionEvidence(as, seatName, seatScratch, worktreeDir, env,
+meta.RequireSessionEvidence)` for every seat, and `ResolveGateSeat` sets
+`RequireSessionEvidence` true for any non-deterministic, non-shell seat. Because
+`GateStage` reuses `runGateSeats` unchanged, evidence handling is inherited
+rather than reimplemented — including the rule that a seat which claims a
+transcript it cannot produce is downgraded to `malfunction`.
+
+The seat adapters therefore emit a `session` block (`session_id` plus a
+`transcript_path` written into the seat's scratch dir) so a real seat's
+transcript is hashed into the run rather than lost. An adapter that cannot
+produce one omits the block, and etude decides what that means — the adapter
+never asserts evidence it does not have.
+
+### Where checks and seats run
+
+`runGate` hands its helpers a **pristine detached checkout** of the recorded git
+SHA, because a live run reviews committed work. A supervised gate reviews
+**uncommitted** work — `make test` and `make lint` must see the worker's actual
+tree — so `GateStage` passes the repo root as `worktreeDir`. That is the honest
+choice for this model and it is why the runbook says the producing step stays
+outside etude.
+
+One constraint falls out of it: `replay.ExecRunner` rejects a `ScratchDir` at or
+under `WorktreeDir`. `.etude/tmp` is inside the repo, so seat scratch CANNOT live
+there — `GateStage` allocates `os.MkdirTemp("", "etude-gate-*")` and removes it
+afterwards. (A leaked scratch dir would also trip the `etude-rep` leak
+assertions' cousin problem; the removal is deferred, not best-effort.)
+
+### The record must match `capture-gate`
+
+The runbook requires the two paths to be interchangeable. `GateStage` therefore
+writes through **`runmanifest.Writer{Store}.Write(ctx, manifest, files, opts)`
+with `opts.ExpectedOld = commit`** — the same call `capture-gate` uses — not
+`WriteManifestTree` (which `runGate` uses because it is mid-run and owns the
+whole manifest). Artifacts are merged the same way: `artifactstore.New()` for new
+seat output, merged over `priorFiles` read from the existing commit.
+
+`gate_id` is `<phase>.r<round>`, the same convention.
+
+### The shared prompt
+
+`gate.abstraction` is currently parsed and passed to no seat — `runGate` sends
+only the artifact. `GateStage` composes one text the seats all receive:
+
+```
+ROLE: independent reviewer seat on an etude phase gate. You are a model identity
+voting on this prompt, not a role persona.
+PHASE: <stage.Name>   ROUND: <n>   TIER: <gate.Tier> (seats: ...)
+DECISION STANDARD: return the envelope described under RETURN.
+ABSTRACTION LEVEL: <gate.abstraction verbatim>
+ARTIFACT (role=<stage.Produces>, from stage <reviewed stage name>):
+<artifact bytes inlined>
+RETURN (exactly four lines, nothing else):
+VERDICT: <GO|BLOCK>
+BLOCKING: <numbered blocking findings, or "none">
+OPTIONAL: <numbered non-blocking follow-ups, or "none">
+CONFIDENCE: <high|medium|low>
+```
+
+**Who writes the envelope: the adapter, not the model.** The prompt asks the
+model for the four-line RETURN block on stdout; the adapter converts that into
+the JSON envelope and writes `$ETUDE_OUTPUT_FILE`. The model is never asked to
+write a file — most seats run in read-only sandboxes and cannot, and a model that
+*could* write the file could also write `{"verdict":"go"}` without doing the
+review. Keeping the envelope on the adapter side means the only thing a model can
+influence is the prose the adapter parses, and an unparseable reply produces no
+envelope at all (see the adapter contract below).
+
+`$ETUDE_OUTPUT_FILE` is therefore deliberately absent from the prompt: it is the
+adapter's business, not the reviewer's.
+
+Every seat gets the identical bytes. That is the property the whole panel rests
+on, and it is testable: a unit test asserts each seat runner received the same
+input content.
+
+### Seat adapters (load-bearing, not scope creep)
+
+A seat MUST write a JSON envelope to `$ETUDE_OUTPUT_FILE`. The registry's current
+`invoke` strings are bare model CLIs that write prose to stdout, so **every seat
+would be classified `empty` and every gate would escalate** — `etude gate` could
+not gate anything, including its own successors. The bead's acceptance ("invokes
+the L2 seats from registry.yaml") is unreachable without adapters.
+
+Add `scripts/seat-codex.sh`, `scripts/seat-gemini.sh`, `scripts/seat-opus.sh`.
+Each: read `$ETUDE_INPUTS_DIR/00-gate-prompt`, invoke its model CLI with the
+per-seat execution constraints the review-gate runbook already documents, parse
+the four-line RETURN block off stdout, and write the envelope to
+`$ETUDE_OUTPUT_FILE`.
+
+**Adapter contract — fail closed, in this order:**
+
+1. CLI exits non-zero → write nothing, exit non-zero. (etude: `failed`)
+2. No `VERDICT:` line found → write nothing, exit non-zero. (etude: `empty`)
+   This is the truncation case the runbook documents for large inputs, and it
+   must never read as a silent GO.
+3. `VERDICT:` present but not exactly `GO` or `BLOCK` → write nothing, exit
+   non-zero. No fuzzy matching, no "contains the word go".
+4. `VERDICT: BLOCK` with no `BLOCKING:` content → still `block`; a blocking
+   verdict with an empty reason is a bad review, not a pass.
+
+The adapter never synthesizes a verdict and never defaults to `go`. The only
+path that writes `{"verdict":"go"}` is a model that literally emitted
+`VERDICT: GO`. Every other outcome leaves `$ETUDE_OUTPUT_FILE` absent, which
+etude already classifies as a non-pass — the fail-closed behavior is inherited
+from `classifySeatOutput` rather than reimplemented in bash.
+
+### `--timeout`
+
+Default `10m`, matching `etude run`'s per-stage default; it is passed to the
+`ExecRunner` built by `ResolveGateSeat` and to `ResolveCheckRunner`. On expiry
+the runner's context deadline fires and `classifySeatOutput` maps it to `failed`
+with a timeout note — so a hung seat is a recorded outage, never a pass, and at
+L2 a single hung seat drops usable below `min(2,2)` and the gate escalates. The
+`make test` check gets the same budget; a check that times out is `block` by the
+same fail-closed rule (`RunCheck` returns `passed=false` on `DeadlineExceeded`).
+
+Repoint each seat's registry `invoke` at its adapter. Seat identities, tiers,
+quorum and models are unchanged — only the invocation becomes
+contract-conformant. This is not "inventing a seat".
+
+Add `env_allowlist: [HOME]` to `.etude/workflow.yaml`: the runner env is
+`PATH` + `ETUDE_*` only, and `codex`/`gemini` read credentials from the home
+directory. `HOME` is allowlistable (`PATH`, `ETUDE_INPUTS_DIR`,
+`ETUDE_OUTPUT_FILE` are reserved). NAMES only; values are never recorded.
+
+### Known limitation, disclosed and tracked
+
+The `opus` seat's registry `invoke` cannot authenticate as a subprocess under a
+Claude Code orchestrator. `etude gate` resolves `invoke` verbatim and cannot
+honour the prose exception in the registry comment, so under such a supervisor
+the opus seat records `failed` and an L2 gate escalates — correct fail-closed
+behavior for a machine handed a rule it cannot read. `etude-pqv` is the fix.
+`scripts/seat-opus.sh` will therefore fail loudly with a message naming
+`etude-pqv` and the bootstrap path, rather than appearing broken.
+
+**Consequence for this epic, stated plainly:** `etude gate` will not be able to
+gate beads .3/.4/.5 while a Claude Code session is the supervisor. Those beads
+continue to gate through the bootstrap path per the runbook. Bead .5's proof runs
+the command for real and shows the recorded attempt; whether its L2 seats can
+both be invoked in this environment is exactly what .5 will establish. If they
+cannot, that is a blocker bead against `etude-pqv`, not a reason to weaken .5.
+
+## Tests
+
+- `GateStage` returns a clear error and writes nothing when the run ref is
+  missing; ditto when the run has no stage producing the phase's role.
+- Unknown stage name → clear error from the CLI, nothing recorded.
+- Round derivation: a run with `plan` + a `plan.r1` gate produces `plan.r2`.
+- All seats receive byte-identical input.
+- Pass path: two stub seats return `{"verdict":"go"}` → status `pass`, one
+  `GateAttempt` appended, exit 0.
+- Block path: one seat `block` → status `rerun` (below max_rounds), exit
+  non-zero, `required` items on the seat result.
+- Outage path: one seat writes no output → `empty`; with a two-seat tier,
+  usable=1 < min(2,2) → `escalated`, exit non-zero. **This is the test that
+  proves a gate cannot pass on a dead seat.**
+- Failing check → not-pass regardless of seat verdicts.
+- Record parity: the `GateAttempt` written by `GateStage` round-trips through
+  `runmanifest.ParseJSON` and matches the field set `capture-gate` produces —
+  asserting the **session-evidence and raw-output fields**, not only verdicts,
+  since those are the fields most likely to diverge between the two paths and
+  the ones the acceptance names.
+- Session evidence: a stub seat returning a `session` block with a real
+  transcript file yields `retrieval: imported` and a stored transcript artifact;
+  a stub claiming `session_id` with an unreadable `transcript_path` is recorded
+  `malfunction`, not `go`. Planned regression: `seat_claiming_missing_transcript_is_not_go`.
+- Adapter tests: `bash -n` each; run each with a stubbed model CLI on `PATH`
+  asserting (a) a well-formed reply produces a valid envelope, (b) a non-zero
+  CLI exit writes no envelope and exits non-zero, (c) an unparseable reply
+  writes no envelope. Planned regression: `seat_adapter_rejects_garbage`.
+
+## Docs
+
+`docs/cli/etude_gate.md` is generated by `make docs`. `docs-reality-check.sh`
+requires a shipped command to be advertised in `README.md` (usage), indexed in
+`docs/README.md`, and to have a generated page — all three, or `make
+docs-reality` fails. It ALSO starts failing on the supervisor runbook's
+"not shipped yet" framing the moment `gate` ships, which is the coupling bead .2
+built in deliberately. So this bead must, in the same commit: regenerate CLI
+docs, add the README usage + index entries, and **amend the supervisor runbook**
+from prescriptive to descriptive, noting anything implementation changed.
+
+## Out of scope
+
+- Making registry exceptions machine-honored — `etude-pqv`.
+- The disregard/degraded-pass policy — an orchestrator judgement recorded through
+  the bootstrap path; `GateStage` escalates on insufficient usable seats.
+- Live `etude run` for the producing step — GH #15.
+- `etude-nad` (run refs disappearing; capture silently creating a fresh run).
+  **Flagged:** this bead's own gate records are exposed to it, and bead .5's
+  proof is worthless if a ref vanishes mid-proof. It should land before .5.
