@@ -1,0 +1,7 @@
+## Final Review — etude-phase2.3 (recommendation: close)
+
+Reviewed: plan (a2 + .etude/ collision fix -> external ScratchDir + OutputMediaType), implementation, verify (pass; Run() 100% coverage), docs (no-docs). Findings: none.
+Correctness: Runner interface; RunRequest separates PRISTINE WorktreeDir (== recorded GitSHA, read-only) from EXTERNAL ScratchDir (never inside the worktree — the .etude/ collision fix); OutputMediaType -> RunResult.MediaType default; RunResult.Skill may differ via SkillOverride; StubRunner FS/exec-free; all branches discriminate.
+Gates re-run green: go test ./... -race ok; vet clean; gofmt clean; Run() 100%.
+Commit hygiene: exactly internal/replay/runner.go + runner_test.go (new, staged by name); phase2.1 resolve files unchanged; no debug/secrets; scheduler lock gitignored.
+Materialization + exec deferred to phase2.4; replay command wiring + user-facing docs deferred to etude-replay-command.
