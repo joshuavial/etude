@@ -1,0 +1,21 @@
+# Resolution evidence — etude-5dr.2
+
+Close this child as superseded by the atomic replacement `etude-5dr.3`.
+
+ANCESTOR: `etude-5dr` (P1) must ship caller-workspace capability and its
+fail-closed provenance guard together in one PR and one indivisible commit.
+MEASUREMENT: splitting the schema child from execution would permit an
+intermediate commit that advertises caller workspace without enforcing the
+guard, the exact silent-failure state issue #15 forbids.
+
+BLAST RADIUS: none: worktree and repo only.
+
+`etude-5dr.2` originally owned execution after a separate schema child. The
+operator-approved plan replaced that split with `etude-5dr.3`, whose acceptance
+requires workflow/manifest schema, caller execution, post-run committed
+provenance, dirty-state rejection, unchanged hermetic gates, tests, docs, and
+proof to ship atomically. The original child therefore has no independent code
+artifact and is correctly closed as superseded rather than implemented.
+
+No new tests: this gate reviews bead topology and the atomic-delivery decision,
+not shipping code. The active replacement child owns all product verification.
