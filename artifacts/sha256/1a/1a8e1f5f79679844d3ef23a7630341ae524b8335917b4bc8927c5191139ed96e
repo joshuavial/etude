@@ -1,0 +1,58 @@
+✓ etude-phase-prep.5 · Add docs reality check guard   [● P0 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Added docs reality-check guard (7851222): scripts/docs-reality-check.sh builds etude fresh and fails on doc/CLI drift (shipped command not advertised in README usage / docs/README index / missing docs/cli page; orphan page; stale future-claim in docs/plans), wired as a SEPARATE make docs-reality target + docs-checklist Final-Review step. Prefix-safe per-doc predicates; allowlist escape hatch. Tier-2 gate PASS (Opus+codex; both BLOCK→GO on prefix-safety and a stale header comment). Currently reports the real README/BRIEF/index drift that phase-prep.2 will fix.
+
+DESCRIPTION
+Add a mechanical docs/reality check so user-facing docs, generated CLI docs, top-level README, and relevant planning docs cannot drift from the source-built etude CLI. Acceptance: add a script or Makefile target that compares go run ./cmd/etude --help command inventory against README.md, docs/README.md, docs/cli; scans planning docs for stale future/not-implemented claims about newly shipped commands; wire it into docs-check or the dogfood final-review checklist; document how to run it. Motivated by docs-reality-drift-retro: Phase 3/4 shipped bench/gc/reindex while README and BRIEF stayed stale.
+
+DESIGN
+## Plan
+
+**Approach:** Add a self-contained bash guard `scripts/docs-reality-check.sh` that builds etude fresh into a tmp dir (never an ambient binary, no network), derives the authoritative shipped-command inventory from the cobra tree, and checks three things: (1) every shipped top-level command is advertised in README.md and docs/README.md and has a `docs/cli/etude_<cmd>.md` page; (2) no doc names a command that does not exist; (3) `docs/plans/**` has no stale "future/not-implemented" claim co-located with a shipped command name. Wire it into a NEW Makefile target `docs-reality` (separate from `docs-check`) and reference it from the dogfood Docs/Final-Review checklist. Keeping it separate is deliberate: README/BRIEF are currently stale (sibling bead etude-phase-prep.2 fixes that), so this guard WILL report drift today. Folding it into `docs-check` would turn the existing green check red on known drift before phase-prep.2 lands. `docs-reality` runs and reports drift independently; phase-prep.2 makes it pass.
+
+**Source of truth (decision):** parse the cobra tree, not raw `--help` prose. The script runs the freshly built binary's `help` output but scopes parsing to the `Available Commands:`..`Flags:` block and strips cobra's built-ins (`completion`, `help`). Cobra's printed command list is the registered set from `internal/cli/root.go`, so it tracks `AddCommand` calls automatically. This is more robust than free-text `--help` scraping and avoids a bespoke Go helper / duplicating gen-docs.
+
+**"A doc advertises a command" (decision):** low-false-positive, format-tolerant, and prefix-safe. For each shipped top-level command NAME the doc must contain an `etude <cmd>` mention (the literal token `etude <cmd>`, optionally backticked — the SAME context predicate the stale scan uses), NOT a bare word. Bare-word matching is REJECTED because the hyphen is a grep word boundary: `grep -wE "capture"` matches `capture-gate`, so a doc mentioning only `capture-gate` would false-pass the `capture` check (a real prefix pair in this repo). Require: an `etude <cmd>` mention in README.md AND in docs/README.md, AND a `docs/cli/etude_<cmd>.md` page. Process the inventory LONGEST-NAME-FIRST and match the full command token so multi-token/hyphenated names (`capture-gate`) are claimed before their prefixes (`capture`). Flag any missing of the three. Reverse check: every top-level `docs/cli/etude_*.md` page (ignoring `_`-nested subpages AND the `etude.md` root index page, which names no command) must map to a shipped command. No brittle exact-list/format matching.
+
+**Stale-claim scan (decision):** bounded `grep -rniE` over `docs/plans/**/*.md` for phrases `not yet|not implemented|does not exist yet|are future|is future|future work|unbuilt|not built` ONLY on lines that also contain a shipped command name (`\betude <cmd>\b` or backticked `etude <cmd>`). Same-line co-occurrence keeps volume tiny (verified: surfaces BRIEF.md:351 "etude bench ... future work"). A literal allowlist file `scripts/docs-reality-allow.txt` (path:linecontent substrings) suppresses legitimate "discussing planned behavior" lines (e.g. capture-protocol.md prose that intentionally frames commands as planned) so the guard stays actionable.
+
+**Files:**
+- scripts/docs-reality-check.sh - NEW. The guard. bash, `set -euo pipefail`; builds etude fresh into a mktemp bin (trap-cleaned); inventory from cobra help block; README/docs/README/docs/cli advertise checks; reverse orphan-page check; planning-doc stale-phrase co-occurrence scan with allowlist; prints a per-finding report and exits non-zero if any drift; header comment documents usage + that it builds fresh and needs no network.
+- scripts/docs-reality-allow.txt - NEW. Allowlist of intentional planned-behavior lines (substring match) to suppress known-good planning prose; comments explain each entry.
+- Makefile - MODIFY. Add `.PHONY` entry + `docs-reality:` target running `bash scripts/docs-reality-check.sh`. Kept SEPARATE from `docs-check` (do not fold in) so existing green check is unaffected by known drift until phase-prep.2.
+- docs/plans/dogfood/docs-checklist.md - MODIFY. Add a "Mechanical reality check" step under Final Review: run `make docs-reality` and resolve findings; note it is the source-built CLI inventory gate the retro said was missing.
+
+**Tests:** Verified by exercising detection in a THROWAWAY tmp copy of the repo (do not dirty real docs). (a) Negative/accurate fixture: copy docs into tmp, ensure that after phase-prep.2-style edits (all shipped commands listed) the script exits 0. (b) Positive fixtures in tmp: delete `bench` from a README copy -> script flags "README missing: bench"; remove `docs/cli/etude_gc.md` -> flags missing page; add a fake `frobnicate` command mention to a doc -> flags "doc mentions unknown command"; add a `docs/cli/etude_bogus.md` -> flags orphan page; add a `docs/plans/tmp.md` line "etude reindex is future work" -> flags stale claim; add same to allowlist -> suppressed. PREFIX-PAIR fixture (Opus BLOCK regression): a README copy that mentions only `etude capture-gate` (no standalone `etude capture`) MUST still flag `capture` missing — proves the longest-first `etude <cmd>` context match doesn't let `capture-gate` satisfy `capture`. Also run against the real repo to confirm it currently reports the known README/BRIEF drift (expected non-zero) without erroring. No real docs are modified by tests.
+
+**Docs (AC#4):** How-to-run documented in the script header comment AND as the new `make docs-reality` step in docs/plans/dogfood/docs-checklist.md (Final Review). README/docs/cli content is NOT changed by this bead (that drift is phase-prep.2's scope).
+
+**Risks:**
+- Stale-scan false positives on legitimate planning prose (capture-protocol.md intentionally frames commands as planned). Mitigated by same-line co-occurrence + explicit allowlist file; risk is low-volume and visible.
+- Cobra help-block parsing is text-based; if cobra changes its help layout the `Available Commands:`..`Flags:` slice could break. Mitigated by scoping to that block and stripping known built-ins; acceptable vs. a heavier Go helper.
+- Command-name matching could match an unrelated prose use of a short name like `run`/`gc`, OR a prefix command (`capture`) could false-pass off a longer one (`capture-gate`). Mitigated by requiring `etude <cmd>` context (not bare word) for BOTH the advertise check and the stale scan, and processing the inventory longest-name-first so hyphenated/longer names are claimed before their prefixes; false positives surface as actionable, not silent.
+
+**Capture:**
+- inputs: bead etude-phase-prep.5 description + parent etude-phase-prep; docs-reality-drift retro (/tmp/docs-reality-drift-retro.md); Makefile (docs/docs-check targets), cmd/gen-docs/main.go, internal/cli/root.go (command registration), README.md, docs/README.md, docs/cli/ listing, docs/plans/dogfood/docs-checklist.md, scripts/dogfood-capture.sh + scripts/backfill-gate-records.sh (style); live cobra `go run ./cmd/etude --help` inventory and stale-phrase co-occurrence probe.
+- output: bead --design field.
+
+
+NOTES
+## Plan gate — Tier 2 (Opus + codex; low-risk dev-process tooling, no Tier-1 surface): PASS
+- codex (GPT-5.5 xhigh): GO. Plan fit; separate docs-reality target is the right call (folding into docs-check would red-CI on known drift before phase-prep.2). Caveat (now fixed): bare-word advertise matching weak for short/prefix commands.
+- Claude Opus (in-harness): BLOCK→GO. BLOCK: bare-word coverage check false-passes `capture` off `capture-gate` (hyphen is a grep word boundary) — verified empirically; silently masks a missing standalone capture mention. Fix: advertise check now requires an `etude <cmd>` context mention (not bare word) in README + docs/README, processes inventory longest-name-first (capture-gate claimed before capture), ignores docs/cli/etude.md root page in the reverse check, + a prefix-pair regression fixture. Reran Opus → GO (no new prefix-collision defect; same context predicate as the stale scan).
+- (gemini + pilms dropped per Tier 2.)
+Opus verified: cobra "Available Commands:" block is clean single-line-per-command (strip completion/help); stale-scan surfaces exactly BRIEF.md:351 (real drift) + capture-protocol.md:4 (allowlist); make docs-check passes today so the separate target is correct.
+Scope: scripts/docs-reality-check.sh + scripts/docs-reality-allow.txt (new) + Makefile + docs/plans/dogfood/docs-checklist.md. Detects drift; phase-prep.2 fixes it.
+## Implement+Final gate — Tier 2 (Opus + codex): PASS
+Reviewed: NEW scripts/docs-reality-check.sh + scripts/docs-reality-allow.txt + Makefile (docs-reality target) + docs/plans/dogfood/docs-checklist.md. No Go code.
+- codex (GPT-5.5 xhigh): BLOCK→GO. BLOCK: script header comment still claimed `etude <cmd>` in BOTH README + docs/README, contradicting the implemented per-doc predicate (impl itself sound). Fixed the header to describe the per-doc predicates. Reran → GO.
+- Claude Opus (in-harness): GO. Empirical (bash 3.2.57 confirmed; while-read not mapfile): real-repo flags EXACTLY the 6 real drifts, no false positives; make docs-reality fails (exit 1), make docs-check stays GREEN (separate target); prefix-safety verified both predicates (capture not satisfied by capture-gate); clean→0; orphan/stale/allowlist verified; reverse check ignores etude.md + nested subpages; stale scan correctly does NOT flag unshipped-command prose. Per-doc-predicate DEVIATION from the gated plan judged CORRECT (plan wrongly assumed docs/README has `etude <cmd>` usage prose; it is a link index — fix, not weakening). Optional (skipped, documented tradeoff): stale scan is precision-over-recall (misses stale claims phrased without `etude <cmd>` on the line).
+- (gemini + pilms dropped per Tier 2.)
+Scope: 4 files; detects drift (reports the current README/BRIEF/index drift); phase-prep.2 fixes it. No product code.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ✓ etude-phase-prep: Prep: overhaul dev workflow for etude dogfooding ● P0
+
