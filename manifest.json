@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8u3.1",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -32,6 +32,39 @@
         "size": 238
       },
       "timestamp": "2026-08-16T02:29:18.486252Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 0,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "511ab666049f517fd35be4031f9dd27b80df6bc2b42545bcb02a23829c6b5505"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "operator",
+          "harness": {
+            "name": "chat",
+            "version": ""
+          },
+          "provider": {
+            "name": "human",
+            "model": "operator"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T02:30:17Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:30:17Z"
     }
   ]
 }
