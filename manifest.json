@@ -214,6 +214,64 @@
       ],
       "decision": {},
       "timestamp": "2026-06-05T06:00:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        },
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "agy"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "document linked-worktree limitation in docs/retro.md"
+          ],
+          "timestamp": "2026-06-05T06:15:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "defer recover() in emitRetroNudge (folded)",
+            "2s timeout on git rev-parse (folded)",
+            "subcommand-failure test (folded)",
+            "corrupted-snooze root test (folded)",
+            "missing-repo root test (folded)",
+            "strconv.Itoa in test (folded)"
+          ],
+          "timestamp": "2026-06-05T06:15:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-05T06:15:00Z"
     }
   ]
 }
