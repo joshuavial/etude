@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1) Regressions only mention session history seeded by a *passed* attempt — add coverage for a failed/blocked attempt so the prior-attempt feed into gate reruns is exercised on the negative path. 2) No manual or automated evidence for redaction *failure* or a non-zero-exit command; both are the interesting branches of v4 log/session capture. 3) Compatibility is asserted for legacy v2/v3 log parsing but not for reading a legacy manifest alongside the v4 writer — worth one round-trip test.
+CONFIDENCE: medium

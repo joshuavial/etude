@@ -483,6 +483,137 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T07:56:16.962376Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "d440ab362b1c8a1c3156dd1f6d8ddbae43548a6b87bf086674b457d082d9d133"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "c5b585d255f4b3e7e28b824599f23792652366e7025e06c579d3d23ef76a1f4f",
+            "path": "artifacts/sha256/c5/c5b585d255f4b3e7e28b824599f23792652366e7025e06c579d3d23ef76a1f4f",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1237
+          },
+          "timestamp": "2026-08-16T07:59:59.702943Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-16T08:00:00.159985Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) Regressions only mention session history seeded by a *passed* attempt — add coverage for a failed/blocked attempt so the prior-attempt feed into gate reruns is exercised on the negative path. 2) No manual or automated evidence for redaction *failure* or a non-zero-exit command; both are the interesting branches of v4 log/session capture. 3) Compatibility is asserted for legacy v2/v3 log parsing but not for reading a legacy manifest alongside the v4 writer — worth one round-trip test."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "fc9451f13bba24894bb05fc1bc640e79b01e276ad0436067fde34235bc199312",
+            "path": "artifacts/sha256/fc/fc9451f13bba24894bb05fc1bc640e79b01e276ad0436067fde34235bc199312",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 646
+          },
+          "session": {
+            "session_id": "opus-6070db42b7f59f2f",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "6070db42b7f59f2f4f1018dc95cac8b4b2ffb513a55104ff6106ded5e46767f0",
+              "path": "artifacts/sha256/60/6070db42b7f59f2f4f1018dc95cac8b4b2ffb513a55104ff6106ded5e46767f0",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 552
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T08:00:14.863572Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "path": "artifacts/sha256/83/831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T08:00:37.08845Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T08:00:37.088579Z"
     }
   ]
 }
