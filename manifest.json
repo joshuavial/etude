@@ -844,6 +844,63 @@
         ]
       },
       "timestamp": "2026-08-16T08:03:19Z"
+    },
+    {
+      "gate_id": "rebase-plan.r1",
+      "phase": "rebase-plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "rebase-plan",
+          "role": "plan",
+          "artifact": "6dab3460741d7f0d65790daf31eff28d874fcd44bff4fac6bf6bc1d1cb9efc8d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Fail closed on a selected legacy hermetic stage whose SHA differs from the run-original fallback.",
+            "Make caller subdirectory preflight explicitly repository-wide.",
+            "Clarify caller-stage submodules refer to original checkout A.",
+            "Clarify gate-check workspace rejection text."
+          ],
+          "timestamp": "2026-08-17T05:23:34Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Require each resumed caller stage to begin at the prior caller stage's recorded HEAD.",
+            "Detect executable-bit mutation even when the runner changes core.fileMode.",
+            "Validate caller-stage git_sha as a full lowercase Git OID.",
+            "Reject caller provenance that does not name a commit in the selected repository at execution consumers.",
+            "Reject selected hermetic stages whose SHA differs from the run-original checkout."
+          ],
+          "timestamp": "2026-08-17T05:23:34Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T05:23:34Z"
     }
   ]
 }
