@@ -461,6 +461,47 @@
       ],
       "decision": {},
       "timestamp": "2026-06-29T20:23:26Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "toYAML encode-error, Seat.Mode validation, isIdentChar dedup (deferred etude-zdl)"
+          ],
+          "timestamp": "2026-06-29T20:27:11Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-zdl"
+        ]
+      },
+      "timestamp": "2026-06-29T20:27:11Z"
     }
   ]
 }
