@@ -1,0 +1,35 @@
+# etude-5dr.5 implementation
+
+Status: ready for implementation gate.
+
+The change adds top-level manifest-v4 `original_git_sha`, retains caller-stage
+post-run `git_sha`, and centralizes the legacy fallback in
+`Manifest.OriginalCheckout()`. New v4 records require the run-level value;
+versions 0/2/3 retain stage-zero semantics and unchanged serialization.
+
+Every hermetic continuation/re-execution path now uses the immutable run value:
+live resume, single-stage replay, forward replay, bench replay, and recorded
+replay provenance. Live gate-attempt rewrites also preserve the field.
+
+Regression coverage uses distinct original and caller-post-run commits for:
+
+- a real caller stage commit followed by a failed hermetic stage and resume;
+- single-stage replay;
+- forward replay;
+- replay resolution and recorded replay provenance;
+- bench replay;
+- v4 schema round-trip and fail-closed missing-field behavior.
+
+Documentation distinguishes run checkout identity from caller-stage output
+provenance and records that pre-fix v4 manifests fail closed.
+
+Verification completed before review:
+
+- `go test ./internal/runmanifest ./internal/replay ./internal/liverun ./internal/cli ./internal/bench` — pass.
+- `make test` — pass.
+- `make lint` — pass.
+- `make docs-check && make docs-reality` — pass.
+- Built-binary two-stage manual QA — first run exited 1 after stage 0 committed;
+  manifest recorded original `1647c396...` and caller stage `9e314207...`;
+  resume exited 0 and the hermetic runner observed `1647c396...`; single-stage
+  replay also observed `1647c396...` in an `etude-worktree-*` directory.
