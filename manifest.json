@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-7no",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,54 @@
         "size": 1720
       },
       "timestamp": "2026-05-26T06:04:51.883857Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "wrong tier: new public CLI command is Tier 1 per runbook 'public CLI behavior'"
+          ],
+          "timestamp": "2026-05-26T11:00:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T11:00:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-26T11:00:55Z"
     }
   ]
 }
