@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-s9om",
   "workflow": "dev-codex",
   "workflow_version": "manual-v1",
@@ -140,6 +140,100 @@
         "size": 134417
       },
       "timestamp": "2026-09-07T00:48:40.617913Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "504bd125f33cf552968386a12d825e4afb9a6859c0dfa38efe586e8df971cc52"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Update ResolveCheckRunner/ResolveGateSeat comments to describe reviewer-only allowlist additions; nil workflow allowlists no longer imply hermetic gate execution."
+          ],
+          "raw_output": {
+            "role": "astra",
+            "artifact": "95c299a98b5efa84ffe97c9b8de5c3cb0745c9aa07327dc798b7bfb1e5ca0a74",
+            "path": "artifacts/sha256/95/95c299a98b5efa84ffe97c9b8de5c3cb0745c9aa07327dc798b7bfb1e5ca0a74",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 312
+          },
+          "session": {
+            "session_id": "astra-515b90eb704bca89",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "515b90eb704bca8943acac62a6a572df851d0bc848251c1ee5ce327b7532ed3b",
+              "path": "artifacts/sha256/51/515b90eb704bca8943acac62a6a572df851d0bc848251c1ee5ce327b7532ed3b",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 220
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:48:56.077259Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `.etude/run-map.tsv` is space-separated despite the `.tsv` name; the parser accepts either, but rename or use tabs so the format matches the filename. 2. In both profiles `review` is mandatory while `routine-review` is optional, yet docs/development.md says to pick exactly one; if capture/gate enforces stage order via frontier, a routine lane that skips `review` may be rejected. Make `review` optional or document the ordering behaviour. 3. The audit script header comment for check (a) still says `refs/etude/runs/<id>` with no mention of the run-map override; the ResolveCheckRunner/ResolveGateSeat comments likewise predate seat-specific env additions (QA already noted this). 4. `pass_threshold: 1` is documented as unanimity; the packet does not show the workflow schema semantics (fraction vs count), so a one-line note in docs/gates.md stating the interpretation would remove ambiguity for future editors."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "186773f6b288b8a4af74fc60b13825a9e43cffab178f66c86d4be195a5780e31",
+            "path": "artifacts/sha256/18/186773f6b288b8a4af74fc60b13825a9e43cffab178f66c86d4be195a5780e31",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1065
+          },
+          "session": {
+            "session_id": "fable-2057bab29f64b73c",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "2057bab29f64b73c1135f180fcd7573b99d5041b4eacc15a6142629186fd7c86",
+              "path": "artifacts/sha256/20/2057bab29f64b73c1135f180fcd7573b99d5041b4eacc15a6142629186fd7c86",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 975
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:49:48.232563Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T00:49:48.23772Z"
     }
   ]
 }
