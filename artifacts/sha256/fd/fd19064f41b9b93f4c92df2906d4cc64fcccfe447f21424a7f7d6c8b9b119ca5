@@ -1,0 +1,23 @@
+# Verify — etude-qih (`etude log` session-narration command)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` green (incl. `cmd/gen-docs TestDriftGuard` after Docs regen); `make lint` clean (gofmt + go vet); `make docs-check` clean; `make docs-reality` OK — 13 commands.
+- 18 tests in internal/cli/log_test.go: registered subcommand; zero events; runs+retros unioned; chronological order; (kind,id) tiebreak; kind filter (run/retro/invalid); subject filter (match + unmatched + **retro-own-id-not-matched** regression); limit (N / 0=unlimited / negative-rejected); malformed manifest; read-only ref-set snapshot; RFC3339 UTC timestamp; run summary stage count.
+- Existing run/retro list/show tests pass UNCHANGED.
+
+## Built-binary, throwaway git+etude-init repo (empirical)
+Seeded 2 runs (runA, runB) + 1 retro (subject_run=runA):
+- `etude log` → TIMESTAMP/KIND/ID/SUMMARY table, ascending by Created, both run + retro rows present. Run summary `manual (1 stages)`; retro summary `scope=run trigger=manual subjects=runA`.
+- `--subject runA` → matches the runA run AND the retro whose subject_run.1=runA; runB filtered out.
+- `--subject <retro-own-id>` → `no events found`, exit 0 (the implement-gate fix: a retro matches only by its subjects, NOT its own retro id).
+- `--kind retro` → only the retro row; `--kind run` → only runs.
+- `--kind bogus` → exit 1, stdout EMPTY, stderr names the allowed set.
+- `--limit 1` → exactly one row (the last in ascending order).
+- Empty repo → `no events found`, exit 0.
+- Malformed manifest (verified by the Opus gate seat via corrupt blob) → exit 1, stdout EMPTY, stderr names the offending ref id.
+- Read-only: `git for-each-ref refs/etude` byte-identical before/after multiple invocations.
+
+## Scope
+3 product/test files (internal/cli/log.go new, root.go +1 registration alphabetical init<log<prime, log_test.go new) + Docs-phase files (regenerated docs/cli/etude.md SEE ALSO + docs/cli/etude_log.md, hand guide docs/log.md, docs/README.md index, README.md 3 mentions). Reuses runsPrefix/retrosPrefix + retroSubjectsList; no manifest-schema change; read-only by construction.
