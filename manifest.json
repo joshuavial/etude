@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-e1r6",
   "workflow": "default",
   "workflow_version": "rebase-644e717",
@@ -41,6 +41,77 @@
         "size": 3273
       },
       "timestamp": "2026-08-17T09:42:18.894707Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "36e6a49ac6b8d7131ad5776e66ccba38c5fc23f4e6e8b5bc037d613050cc92bd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/lane-s6z/scripts/seat-adapter.sh opus claude -p --model opus verdict=failed; IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task subagent_type=general-purpose model=opus; runner failed: runner failed: /private/var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/etude-output-only-seat-1810121290/etude-seat-candidate-0: exit status 1: stderr: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-17T09:42:20.745899Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "path": "artifacts/sha256/83/831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:42:42.494577Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-17T09:42:42.496364Z"
     }
   ]
 }
