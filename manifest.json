@@ -316,6 +316,74 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T00:02:02Z"
+    },
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "migration_test assert critical seat fields preserved"
+          ],
+          "timestamp": "2026-06-29T23:42:07Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "real-workflow dispatch-to-credential-boundary proof",
+            "docs sweep gates.yaml refs",
+            "registry.go:173 comment reword"
+          ],
+          "timestamp": "2026-06-29T23:42:07Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-29T23:42:07Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-s6z"
+        ]
+      },
+      "timestamp": "2026-06-29T23:42:07Z"
     }
   ]
 }
