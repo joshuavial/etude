@@ -1,0 +1,39 @@
+## Plan
+
+**Slice decision (scope this bead = Layer A, runmanifest+retro only):**
+The bead's literal target (Layer B: capture.go + replay.go recordRun) is now largely stale. replay's run-writing dance was already extracted into replay.RunRecorder.Record (internal/replay/record.go) and is already shared by BOTH cli/replay.go recordRun (now a thin print wrapper) AND internal/bench/run.go. So the bead's named future re-deriver (bench) already inherits it. Only capture.go remains a standalone Layer-B orchestrator, and it has unique create-or-append + prior-file-merge + workflow-conflict semantics shared with no one — extracting a 1-caller helper is low leverage and higher risk.
+
+The real, still-duplicated logic is **Layer A**: the validate -> verify-artifacts -> unreferenced-file-guard -> add manifest.json -> WriteCommit sequence. runmanifest.Writer.Write (manifest.go:314) and retro.Writer.Write (retro.go:76) are byte-for-byte identical except (a) ref prefix (refs/etude/runs/ vs refs/etude/retros/), (b) create-or-append-with-ExpectedOld vs create-only, (c) default commit message. q87 already exported VerifyArtifactFile + ReferencedArtifactPaths precisely so retro could hand-copy this loop — that hand-copy is the duplication to kill. (eval.Writer.Write is OUT of scope: it writes only eval_result.json, has no Stages/artifacts, and does no artifact-verify/unreferenced guard — forcing it onto the helper would distort the signature.)
+
+**Approach:** Add one unexported shared core in internal/runmanifest that performs the full artifact-tree assembly + WriteCommit, parameterized by ref prefix and ExpectedOld. runmanifest.Writer.Write delegates to it (passing runs prefix + opts.ExpectedOld); retro.Writer.Write delegates to it (passing retros prefix + empty ExpectedOld = create-only). Pure structural extraction; zero behavior change.
+
+**Files:**
+- internal/runmanifest/manifest.go - add unexported writeManifestTree(ctx, store, refPrefix, manifest, files, refstore.WriteOptions) (string, error) holding the current Writer.Write body (validate, manifest.json collision check, verifyArtifactFile loop, referenced/unreferenced guard, cloneBytes, set manifest.json, WriteCommit). Refactor Writer.Write to call it with prefix "refs/etude/runs/" and opts.ExpectedOld. Export it as WriteManifestTree (or a small exported wrapper) so retro can call it across packages.
+- internal/retro/retro.go - replace the hand-copied loop (lines ~76-124) with a call to the runmanifest shared core (retros prefix, no ExpectedOld, retro default message). Drops the duplicated VerifyArtifactFile/ReferencedArtifactPaths usage from this file.
+
+**Tests:**
+- All existing tests MUST pass unchanged: internal/runmanifest/manifest_test.go (TestWriterWritesManifestAndArtifacts, TestWriterAcceptsRealArtifactstorePointer, TestWriterAcceptsMultiStageManifestWithMultipleInputsAndReplay, TestWriterRejectsManifestCollisionMissingAndUnreferencedArtifacts, TestWriterRejectsArtifactContractMismatches, TestWriterForwardsCAS) and internal/retro/retro_test.go (TestWriterRoundTrip, TestWriterIsCreateOnly, TestWriterRejectsManifestCollision, TestWriterRejectsManifestWithMissingSkill, AllocateRetroId tests). These already cover collision, missing-artifact, unreferenced-file, hash-mismatch, CAS append, and create-only on both paths — they are the behavior lock.
+- Add ONE new unit test in manifest_test.go asserting the shared core writes to an arbitrary ref prefix with create-only semantics (locks the new parameterization seam that retro now depends on), if not already implied by retro's tests.
+- No new characterization test needed beyond the above: existing per-path tests already pin byte output (retro TestWriterRoundTrip re-parses; runmanifest tests assert tree contents).
+
+**Behavior-preservation verification strategy:**
+1. The extraction is a copy of the existing runmanifest.Writer.Write body into a helper + two call sites; no logic edited. retro's body was already a near-verbatim copy of the same loop, so delegating cannot change its output.
+2. Run full suite: go test ./... must be green with NO test edits (any required edit = a behavior change = stop). Run go vet ./... and gofmt.
+3. Byte-identical proof: before the change, in a throwaway git repo, run a capture (creates a run) and an eval/retro write via the binary, and `git rev-parse refs/etude/runs/<id>` + `refs/etude/retros/<id>`; after the change repeat with identical inputs/clock and assert the commit tree OIDs match (git cat-file -p of the tree). Same inputs -> same content-addressed tree -> same tree OID; commit OID matches when author/committer/date are pinned. The deterministic JSON encoder (SetEscapeHTML(false)+SetIndent) guarantees stable manifest bytes.
+
+**Test plan / built-binary smoke:**
+- Primary gate: go test ./... green, unchanged.
+- Built-binary smoke (required, this touches the artifact storage write path): build the binary, in a throwaway repo run `etude capture` (create + append) and a retro write, confirm refs resolve and `etude run show` reads them back. capture.go is NOT refactored in this slice, but it calls runmanifest.Writer.Write which now routes through the helper — so capture must be smoke-tested to confirm the runs write path is unchanged.
+
+**Docs:**
+- None. Purely internal restructuring; no user-facing CLI surface, flags, or manifest schema change. No generated command reference impact.
+
+**Risks:** Tier 1. This refactors the storage write path for the runs namespace (and retros). A silent regression corrupts stored artifact trees. Mitigation: zero-logic-change extraction + the unchanged existing test suite as the behavior lock + the before/after tree-OID comparison. Cross-package export: retro must reach the core, so the helper is exported (e.g. WriteManifestTree); keep the exported surface minimal and documented as the single shared run/artifact-tree writer.
+
+**Deferred follow-up bead (propose, do NOT do here):**
+- 'Fold capture.go create-or-append orchestration onto a shared Layer-B helper' — only valuable if a 2nd append-style writer appears; currently 1 caller, defer. (Layer B for new replay-runs is already shared via replay.RunRecorder.)
+- Optionally: 'Evaluate whether eval.Writer should share the manifest-tree core' — currently it writes no artifacts, so likely never; record as a no-op note.
+
+**Capture:**
+- inputs: bead etude-0rt description; internal/runmanifest/manifest.go (Writer.Write + exported helpers); internal/eval/result.go (eval.Writer); internal/retro/retro.go (retro.Writer); internal/cli/capture.go; internal/cli/replay.go (recordRun); internal/replay/record.go (RunRecorder.Record); internal/bench/run.go (caller); internal/refstore/store.go (WriteCommit/ExpectedOld/ErrRefExists); internal/artifactstore/store.go (Files/AddContent); existing _test.go files for each write path.
+- output: bead --design field
