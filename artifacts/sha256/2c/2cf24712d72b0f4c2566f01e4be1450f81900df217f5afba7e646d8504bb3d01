@@ -1,0 +1,126 @@
+# etude-5dr.4 plan — atomic caller runner capability and guard
+
+## Goal and boundary
+
+Ship issue #15 in one commit and one PR. A stage may explicitly run in the exact
+directory from which the CLI was invoked, while omitted or `hermetic` workspace
+retains the detached worktree. Gates remain unchanged in the original pinned
+detached checkout. The executed workspace and post-run commit are recorded in
+the stage manifest.
+
+ANCESTOR: etude-5dr (P1) — another project is blocked on Etude producing work in
+the caller's live tree, and the issue requires the capability and mutation guard
+to ship together. The deciding measurement is that a runner leaving tracked,
+staged, or non-ignored untracked residue must fail before output capture or gate
+execution, while a clean runner-created commit succeeds and is recorded.
+
+BLAST RADIUS: changes are limited to this Etude worktree, Etude run refs created
+for review evidence, and disposable Git repositories used for verification. The
+manual proof builds the repository CLI and invokes that local binary; it does not
+install packages, alter shared services, or push to main. The final branch and
+review refs are pushed only for the requested pull request.
+
+TRUST BOUNDARY: workflow configuration, the resolved repository root, Git, and
+the authorized runner are trusted. The runner is trusted not to deliberately
+forge Git internals or replace Git/tooling solely to defeat inspection; this is a
+state-ordering guard, not a sandbox for hostile code already holding the
+operator's filesystem permissions. Runner output and ordinary working-tree
+effects are untrusted until Git reports a stable committed HEAD and clean state.
+Repositories with tracked submodules are rejected before the runner because a
+top-level inspection cannot bind arbitrary nested Git controls and index state.
+
+TOPOLOGY: one Etude engine invokes one producing runner synchronously at the
+single stage-execution site. The runner may start child processes, but background
+writers that outlive its successful return and unrelated concurrent repository
+writers are outside the caller-runner contract; callers must provide exclusive
+working-tree access. Repeated status/control checks bounded by stable HEAD reads
+still fail closed on instability observed during provenance capture.
+
+DURABILITY CLASS: caller runner effects are at-least-once across a crash before
+stage capture; successful stage publication remains one append protected by the
+existing compare-and-swap ref update. The authoritative generation identity is
+the Git commit SHA resolved after the runner, not the invocation-time SHA or a
+timestamp proxy.
+
+IRREVERSIBLE SEQUENCE caller-runner: 1 steps
+IRREVERSIBLE STEP caller-runner.1: invoke the authorized producing runner in the caller working tree
+
+If the process stops during or after the runner, runner-side edits or a clean
+commit may remain without a stage record. This existing at-least-once frontier
+behavior is documented; the operator reconciles the live tree before resuming.
+
+## Design
+
+1. Add a validated runner `workspace` enum. Absent/`hermetic` remains the current
+   behavior; `caller` is opt-in. Preserve default-runner inheritance,
+   workspace-only overlays, and CLI `--runner` command overrides.
+2. Capture the CLI's exact invocation directory and pass it only to producing
+   caller runners. Keep provenance inspection anchored at the stable repository
+   root even if the runner commits deletion or movement of the invocation path.
+3. Before invoking a caller runner, reject a dirty repository or tracked
+   gitlinks, proving a destructive runner cannot erase preexisting user work and
+   then pass. Snapshot both repository-local control files and Git's effective
+   local configuration with includes. After successful runner completion, repeatedly verify unchanged
+   controls, reject assume-unchanged/skip-worktree paths, require repository-wide
+   porcelain status to be empty with all untracked paths and submodule dirtiness
+   visible, and require HEAD to remain identical across the inspection. Perform
+   artifact storage, run-ref capture, and gate execution only after this passes.
+4. Permit a runner-created clean commit and record its post-run SHA plus
+   `runner_workspace: caller`. Emit manifest v4 only when the new field is used;
+   preserve and validate legacy versions otherwise. Render the choice in
+   human-readable `run show`.
+5. Leave gate directory and pinned SHA wiring unchanged and test it explicitly.
+   Document syntax, inheritance, post-run cleanliness, unsupported submodules,
+   dirty/crash residue, manifest audit data, and gate isolation.
+
+## Complete sites
+
+COMPLETENESS ENUMERATION: all initial, resume, and gate-rerun stage executions converge on
+`Engine.runAndCaptureStage`, so workspace selection and the guard live at that
+single producing-runner site. Workflow parsing/validation, runner resolution,
+CLI construction, manifest serialization/versioning, and run-show rendering are
+the remaining configuration/audit sites. Replay, standalone gates, checks, and
+model seats do not opt into caller workspace and remain hermetic.
+
+## Planned regressions
+
+Planned regression: caller workspace parsing, validation, default inheritance,
+workspace-only overlay, explicit hermetic override, and round trip.
+
+Planned regression: default runners still receive the detached worktree and
+legacy manifests retain their prior versions and bytes.
+
+Planned regression: CLI invocation from a repository subdirectory runs there,
+and `--runner` preserves caller workspace.
+
+Planned regression: a caller runner may make a clean commit, whose post-run SHA
+and caller workspace appear in the v4 manifest and `run show`.
+
+Planned regression: unstaged, staged, and non-ignored untracked residue each
+fail the stage before artifact/ref capture; ignored files remain permitted.
+
+Planned regression: a preexisting tracked edit fails before the runner is
+invoked, preserves the edit, and publishes no run ref even when the runner body
+would have cleaned it with `git reset --hard`.
+
+Planned regression: index visibility flags, changes to raw or included local Git
+controls, and a changing HEAD fail closed.
+
+Planned regression: repositories containing tracked submodules fail before the
+runner is invoked.
+
+Planned regression: a runner that adds and commits a tracked submodule fails
+after execution but before stage capture.
+
+Planned regression: a caller runner can commit deletion of its invocation
+directory because provenance checks remain anchored at the repository root.
+
+Planned regression: a caller stage gate still executes in the original pinned
+detached worktree rather than the caller tree or its new commit.
+
+## Verification
+
+Run focused package tests, `make test`, `make lint`, `make docs-check`, and
+`make docs-reality`. Build the actual CLI and use disposable repositories to
+prove default hermetic success, caller clean-commit success with manifest audit
+data, and caller tracked-mutation failure without capture or gate execution.
