@@ -1,0 +1,72 @@
+# Plan — etude-9uf.3: Delete the retroactive capture path
+
+## What is being deleted and why
+
+Three scripts implement the after-the-fact reconstruction the supervisor model
+replaces:
+
+| File | Lines | What it did |
+|---|---|---|
+| `scripts/dogfood-capture.sh` | 139 | Rebuilt five stage artifacts from the bead `design` field and `git show <sha>` AFTER the bead closed. |
+| `scripts/dogfood-close.sh` | 146 | Orchestrated the close sequence: preflight, capture run, capture gates, terminal audit. |
+| `scripts/dogfood-close_test.sh` | 689 | Fixture tests for the above and the pre-push enforcement block. |
+
+Under the worker-lane model every phase artifact exists at gate time and is
+captured by `etude capture` as the phase completes, so there is nothing left to
+reconstruct. Keeping them would leave two contradictory descriptions of how a
+bead is recorded — the failure this epic exists to end.
+
+`scripts/dogfood-gate-capture.sh` is NOT in the deletion set. It remains the
+bootstrap path for a hand-assembled gate record, which the supervisor runbook
+documents and which this epic itself used before `etude gate` existed.
+
+## The sweep
+
+`grep -rl 'dogfood-capture\.sh|dogfood-close\.sh|dogfood-close_test'` currently
+returns, outside the deleted files themselves:
+
+| File | Treatment |
+|---|---|
+| `Makefile` | delete the `dogfood-close-test` target and its `.PHONY` entry. |
+| `.beads/hooks/pre-push` | two mentions: a comment explaining the `refs/etude/*` exemption, and an error message telling the operator to "Close the listed bead(s) with scripts/dogfood-close.sh". The hook is NOT installed (the repo's hooks dir holds only `*.sample`), but a hook that names a deleted script is worse than one that names none — rewrite both to the current close flow. |
+| `examples/summarize/README.md` (×2), `examples/summarize/walkthrough.sh` | all three are asides contrasting the generic example with "the tracker-coupled `dogfood-capture.sh`". The contrast still has a point; name the retired mechanism instead of the file. |
+| `docs/plans/product/gate-reviewer-record-schema.md` (×2) | one cites `dogfood-capture.sh line 69` as evidence for a schema decision, the other names it in a byte-identical-output claim. These are historical justifications; reword to the mechanism, preserving the argument. |
+| `scripts/dogfood-gate-capture.sh` | its header comment contrasts a gate attempt with "a stage capture (dogfood-capture.sh, run once post-close)". This script SURVIVES, so a comment naming a deleted file is a live wrong pointer, not history — reword to the mechanism. |
+| `scripts/dogfood-completeness-audit.sh` | mentions the close script in its own prose. Bead .4 replaces this file wholesale, so touching it here would create a conflict with .4 for no gain — **left alone deliberately**, and .4's acceptance covers it. |
+| `.workmux/PROMPT-epic-9uf-supervised-lanes.md` | the operator's own kickoff prompt for this lane. Not repo source, not mine to edit. **Left alone.** |
+
+Two deliberate exemptions above are the only ones, and each is named with its
+reason rather than being silently skipped.
+
+## Verification
+
+- `grep -rn 'dogfood-capture\.sh\|dogfood-close\.sh\|dogfood-close_test'` returns
+  exactly two files, both named as deliberate exemptions above:
+  `scripts/dogfood-completeness-audit.sh` (bead .4's file) and `.workmux/PROMPT-*`
+  (not repo source). Any third hit is a missed sweep site and fails this bead.
+- `make test` and `make lint` green.
+- `make docs-check` and `make docs-reality` green.
+- `bash examples/summarize/walkthrough.sh` still runs end to end — it is the file
+  I am editing, so a prose edit must not have broken it.
+- `make dogfood-audit` still runs (it is .4's to replace, not mine to break).
+- No Makefile target references a deleted file: `make -n dogfood-close-test`
+  fails with "No rule to make target".
+
+## Risks
+
+- **The pre-push hook is not installed, so its text is untested by any run.** A
+  reworded error message cannot be verified by executing it. Mitigation: keep the
+  edit minimal and factual, and verify the file still parses with `bash -n`.
+- **Deleting 974 lines removes the only executable description of the old
+  protocol.** Git history keeps it, and bead .2 already removed the prose that
+  described it; leaving the scripts would leave the repo able to *perform* a
+  protocol its own docs no longer describe.
+
+## Correction to this plan
+
+An earlier draft of the sweep table omitted `scripts/dogfood-gate-capture.sh`,
+and the Verification section asserted a grep result that draft would not have
+produced. Re-running the grep against the current tree found the third hit. It is
+recorded here rather than silently amended because the omission is the same class
+of error this bead exists to remove: a document describing a state the repo is not
+actually in.
