@@ -1,0 +1,153 @@
+# Plan — etude-9uf.5: Prove the model on one real bead end to end
+
+## Subject bead: `etude-3xt`
+
+Candidates were the six follow-ons this epic filed. Rejected and why:
+
+| Bead | Why not |
+|---|---|
+| `etude-8li` (P1, agy fallback) | blocked on an exhausted account quota that resets in days. Cannot be proven end to end now. |
+| `etude-6d9` (hook drift) | touches the executing push gate for every lane in this checkout. A proof run is the wrong place to take that risk. |
+| `etude-m5a` (invoke shell-test) | same: the plausible fix wires a suite into the pre-push hook. |
+| `etude-le0` (unpin two computations) | test-only. The implement L3 gate would review two fixtures, which is thin for "genuine implement substance". |
+| `etude-k47` (sidecar unenforced) | **rejected at plan round 1, on a finding I had missed.** Its fix is shell-only, in `scripts/retro-meta-index.sh`. The verify stage's checks are exactly `make test` and `make lint`; `make test` is `go test ./...` and reaches no shell suite. So both L2 verify checks would have gone green **without touching the change** — defeating the bead's own stated reason for demanding implement+verify substance. |
+
+**Chosen: `etude-3xt`** — the retro cadence check counts retro REFS while lanes
+write retro MARKDOWN. Its own bead text names the preferred fix: have
+`etude retro` capture a ref whenever a retro markdown lands, so the two cannot
+diverge. That fix is **Go** (`internal/cli/retro.go`, `internal/retro/`), which
+is precisely what `make test` and `make lint` cover, so the verify gate's
+deterministic checks genuinely exercise the change. It is not on the push path
+(`.beads/hooks/pre-push` invokes only the completeness audit), and it closes a
+hole bead `.4` disclosed rather than inventing new scope.
+
+An earlier draft chose `etude-k47` and both plan seats blocked it for the reason
+in the table above. Recorded rather than quietly swapped, because "pick something
+with real verify substance" is the one selection criterion the bead spells out,
+and I picked something the verify checks cannot see.
+
+## What is actually being proven
+
+The bead's acceptance names four things. Stating up front which are provable
+today and which are not, rather than discovering it at the gate:
+
+| Claim | Status |
+|---|---|
+| produced by a worker lane | **Provable, on a REAL workmux lane.** An earlier draft substituted an in-session sub-agent and called it a deliberate narrowing; both seats rejected that as a requirement miss, correctly — `workmux` is installed and in daily use here (five lanes live right now), so "operator infrastructure" was a preference dressed as an infeasibility. A sub-agent preserves only the artifact-authorship split and skips exactly what is unproven: a separate worktree with its own hooks and push path, and landing from a lane. |
+| gated exclusively through `etude gate` | **NOT provable today, and this plan does not pretend otherwise.** See below. |
+| run ref shows a gate attempt per phase with per-seat verdicts | **Provable.** |
+| a retro records what the first real pass surfaced | **Provable**, and it is retro 4 for this epic. |
+
+### "Exclusively through `etude gate`" is impossible, and that is the finding
+
+Stated precisely, because the imprecise version points at the wrong fix. The
+registry SANCTIONS an in-harness sub-agent as a real `opus` seat — the candidate
+is declared in `invocation_fallbacks`, `internal/liverun/resolve.go` recognises
+the `in-harness:` prefix, and verdicts from it are recorded on `.3` and `.4`
+under harness `claude-code-subagent`. That seat is real and its verdicts are
+real.
+
+The gap is that **`etude gate` cannot CONSUME that verdict.** It resolves the
+exec-able candidates, finds `claude -p` unauthenticated (and the `agy` fallback
+dead, `etude-8li`), records `opus: failed`, and escalates. Every tier includes
+`opus`, so every gate on every phase escalates and the panel must be completed
+out of band. That is exactly `etude-4ed`, and naming it this way is what makes
+the measurement below point at the right thing.
+
+That is not a workaround to be hidden in a footnote. It is the single most
+important thing this proof run can report, because:
+
+- it has produced **five late or missing gate records across beads `.3` and
+  `.4`** — verdicts acted on and never appended — each caught only by another
+  seat reading the manifest;
+- it means the phrase in this bead's acceptance describes a state the repo
+  cannot reach until `etude-4ed` (verdict injection) lands.
+
+So the proof run will demonstrate the model working *with that gap named and
+measured*, and the honest form of the acceptance is: **every phase gated, every
+seat verdict recorded, and the mechanism by which `etude gate` alone is
+insufficient documented with evidence.** If the plan gate disagrees and holds me
+to the literal wording, the correct outcome is to file `.5` as blocked on
+`etude-4ed` rather than to claim a proof I did not perform.
+
+## The loop, per phase
+
+For each of plan, implement, verify, docs, review:
+
+0. `workmux add` creates the lane with a prompt file handing the worker the bead
+   and the `etude-loop` skill. The worker owns its own worktree, branch and push.
+1. The worker produces `.etude/tmp/etude-3xt/<phase>.md` (and the code, at
+   implement) in ITS worktree. It is told the bead and the abstraction level, and
+   nothing about what a seat will ask.
+2. `etude capture <phase> --run etude-3xt --output <role>=<file>` — using the
+   role table from the supervisor runbook, not the stage name.
+3. `etude gate --run etude-3xt --stage <phase> --artifact <file>` — run for real.
+   Its deterministic checks execute; `codex` executes; `opus` fails to invoke.
+4. The `opus` seat is run in-harness on the **identical** packet, and the
+   completed panel is appended via `scripts/dogfood-gate-capture.sh`.
+5. **The verdict is appended before I act on it.** Not after. This is the
+   discipline that failed five times across `.3` and `.4`.
+
+## Verification
+
+- `etude run show etude-3xt` lists a gate attempt for every one of the five
+  phases, each with per-seat verdicts.
+- No stage artifact on the run is ungated:
+  `{stage artifacts} - {gated artifacts}` is empty, computed from the manifest.
+- Every in-harness verdict that changed the work has a recorded attempt naming,
+  in `reviewed_stages`, the artifact revision it actually reviewed.
+- `make test`, `make lint`, `make shell-test`, `make dogfood-audit` green, and
+  `etude-3xt` itself closes with its own acceptance met.
+- The subject bead's commit lands on `origin/main`.
+
+### The measurement this bead exists to produce
+
+Counted from `refs/etude/runs/etude-3xt`'s manifest, not by hand:
+
+- attempts per phase, and how many escalated;
+- **NOT wall-clock.** An earlier draft promised per-phase timing "counted from
+  the manifest"; bootstrap-appended attempts carry author-supplied timestamps
+  that are identical across seats, so the manifest cannot yield it. Round counts
+  can. Recording a number the source cannot produce is the defect this epic has
+  spent four beads removing.
+- **how many of those escalations are the `opus` subprocess gap** — the expected
+  answer is all of them;
+- how many seat verdicts were produced in-harness versus by `etude gate`;
+- how many bootstrap appends were needed, per phase.
+
+That is the evidence `etude-4ed` needs to be prioritized, and no previous bead
+has produced it in one place.
+
+## Risks
+
+- **The worker sub-agent may produce a thin artifact**, making the gates
+  uninformative. Mitigation: the worker gets the bead text and the phase's
+  abstraction level, the same inputs a human worker would have; if its output is
+  thin, that is itself a finding about the model rather than something to paper
+  over by writing the artifact myself.
+- **I am both supervisor and the in-harness opus seat's host.** The seat is a
+  fresh sub-agent with no access to my reasoning, which is the sanctioned
+  arrangement, but it is worth stating that the isolation is by construction
+  rather than enforced.
+- **Round cost.** Beads `.3` and `.4` took 16 and 20 gate attempts. If
+  `etude-3xt` takes comparable rounds, this bead is long. That is data, not a
+  problem to optimize away — but if the round count exceeds `.4`'s, the proof
+  run should stop and report rather than continue indefinitely.
+
+## Recording the restated acceptance before the run
+
+The honest form of the acceptance differs from the filed wording, and the
+difference must sit on the tracked record rather than only in this scratch
+artifact. Before the run starts, `etude-9uf.5`'s acceptance is updated in `bd`
+to: **one bead closes, produced on a real workmux worker lane, with every phase
+gated and every seat verdict recorded; the run ref shows a gate attempt per phase
+with per-seat verdicts; the mechanism by which `etude gate` alone cannot complete
+a panel is documented with evidence; and a retro records what the first real pass
+surfaced.** A redefinition that lives only in a plan artifact is a redefinition
+nobody can audit.
+
+## Out of scope
+
+- Fixing `etude-4ed` or `etude-8li`. This bead MEASURES the gap; it does not
+  close it.
+- Landing `etude-3xt`'s own follow-ons, if the worker surfaces any.
