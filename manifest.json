@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.4",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,54 @@
         "size": 1838
       },
       "timestamp": "2026-05-26T23:02:07.621558Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.133.0"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T02:00:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "cadence check must be WARN-only + excluded from --bead (gating the 3rd-bead close on a cohort retro written after close = deadlock); docs-reality is a repo-state check not a per-bead gate; --bead must be strictly that-bead run+gates+pushed"
+          ],
+          "timestamp": "2026-05-27T02:00:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-27T02:01:00Z"
     }
   ]
 }
