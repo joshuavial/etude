@@ -423,6 +423,56 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:38:32Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep git stdout separate from stderr while preserving failure diagnostics.",
+            "Consider rejecting gitlinks before stage execution in a future change."
+          ],
+          "timestamp": "2026-08-16T01:47:04Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Give opted-in seats a checkout that deterministic checks cannot mutate away from the pinned SHA."
+          ],
+          "timestamp": "2026-08-16T01:47:04Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:47:04Z"
     }
   ]
 }
