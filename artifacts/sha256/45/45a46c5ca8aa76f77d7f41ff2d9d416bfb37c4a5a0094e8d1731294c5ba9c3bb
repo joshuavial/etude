@@ -1,0 +1,124 @@
+## Plan (attempt 2 — focused delta on attempt-1 core)
+
+**Tier:** 1 (LLM-invoking behavior + introduces a load-bearing reusable seam the pairwise bead inherits). No CLI, so no built-binary manual test (confirmed by gate).
+
+**Approach:** Ship the rubric `eval.Evaluator` as a library, plus the JUDGE seam it (and later pairwise) drives. Mirror phase2.3 `replay.Runner`/`ExecRunner`/`StubRunner` discipline exactly: a small `Judge` interface, an exec-backed impl with strict env + materialized input files + Lstat-safe structured output file + ctx precedence, and a `StubJudge` test double. `RubricEvaluator` orchestrates: load+verify the rubric (shared loader), build a method-tagged `JudgeRequest`, call `Judge`, strict-decode + per-method-validate the `JudgeResponse` into a rubric-coherent `eval.Score` + `[]eval.Finding`. NO CLI in this bead.
+
+### THE TWO LOAD-BEARING SEAM CHOICES (made unambiguous so the gate cannot BLOCK again)
+
+**(A) JudgeResponse is METHOD-NEUTRAL, mirroring eval.Score (internal/eval/eval.go:93-100).** ONE response type serves rubric AND pairwise; the pairwise bead reuses the SAME Judge + JudgeRequest + JudgeResponse with NO new type.
+
+    type JudgeResponse struct {
+      Value      *float64      // rubric only
+      Max        *float64      // rubric only
+      Winner     eval.Winner   // pairwise only ('' | A | B | tie)
+      Confidence *float64      // pairwise only, optional
+      Findings   []eval.Finding
+    }
+
+Pointer fields (Value/Max/Confidence) so absent != zero — exactly parallel to eval.Score's per-Kind coherence (eval.go:79-100). Coherence by Method, validated in the evaluator/decoder (parallels validateScoreCoherence, result.go:85-140):
+  - method=="rubric": Value!=nil && Max!=nil; Winner=='' ; Confidence==nil.
+  - method=="pairwise" (future): Winner in {A,B,tie}; Value==nil && Max==nil; Confidence optional.
+
+**(B) ExecJudge materializes ALL Targets PRESERVING ORDER, plus ordered Context.** Targets -> `<NN>-target` (00-target, 01-target, ... — pairwise: 00=A, 01=B by the orientation convention pinned at eval.go:18-28); Context -> `<NN>-context`. Both %02d-padded, mirroring exec_runner.go:94-100. This is the seam pairwise inherits unchanged.
+
+### Design decision 1 — JUDGE seam types (judge.go)
+Mirrors replay.Runner (internal/replay/runner.go:9-12) and RunInput (runner.go:19-23):
+
+    type Judge interface { Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) }
+
+    type JudgeInput struct {
+      Role      string
+      MediaType string
+      Content   []byte                // fully-materialized; pointer rejection is caller's job (mirrors RunInput)
+      Source    eval.ArtifactSource   // provenance back-link (eval.go:42-47)
+    }
+
+    type JudgeRequest struct {
+      Method   string                 // 'rubric' | 'pairwise' — drives per-method output-shape validation EARLY
+      Targets  []JudgeInput           // ORDERED; len 1 rubric, len 2 pairwise (A,B)
+      Context  []JudgeInput           // ORDERED optional unscored inputs (task/plan/diff)
+      Rubric   []byte                 // rubric file text the judge scores against; empty for pairwise
+      Producer runmanifest.Producer   // model/skill/harness identity to invoke (manifest.go:93-97)
+    }
+
+    type JudgeResponse struct { Value, Max, Confidence *float64; Winner eval.Winner; Findings []eval.Finding }  // see (A)
+
+### Design decision 2 — ExecJudge I/O contract (exec_judge.go) — the reusable seam
+ExecJudge{ Command []string } runs a configured command headlessly, NO shell, with a STRICT env (mirrors exec_runner.go:102-108; reuse the extractPATH exact-key discipline, exec_runner.go:183-194):
+  - PATH               (exact-key match via extractPATH-equivalent)
+  - ETUDE_INPUTS_DIR   -> dir holding materialized inputs: `<NN>-target` (ordered) + `<NN>-context` (ordered), %02d (exec_runner.go:94-100)
+  - ETUDE_RUBRIC_FILE  -> path to req.Rubric bytes written into scratch (omitted/empty for pairwise)
+  - ETUDE_OUTPUT_FILE  -> path the judge MUST write its JSON verdict to
+  - ETUDE_MODEL        -> req.Producer.Model
+cwd = ScratchDir (NOT a worktree — rubric eval scores STORED artifacts, no checkout; no WorktreeDir). Scratch hygiene before run (remove stale output, reset inputs dir) mirrors exec_runner.go:79-90. Read output symlink-safe via Lstat + IsRegular (exec_runner.go:129-138). Context cancellation takes precedence in the error taxonomy (exec_runner.go:119-122).
+
+### Design decision 3 — judge output wire type + STRICT decoding (exec_judge.go)
+Explicit wire type with json tags (godoc the Go-field -> JSON-tag mapping on it AND on ExecJudge):
+
+    type judgeOutputJSON struct {
+      Value      *float64       `json:"value,omitempty"`
+      Max        *float64       `json:"max,omitempty"`
+      Winner     string         `json:"winner,omitempty"`
+      Confidence *float64       `json:"confidence,omitempty"`
+      Findings   []findingWire  `json:"findings,omitempty"`  // {severity,message,pointer}
+    }
+
+Decode with json.Decoder + DisallowUnknownFields + trailing-data check — reuse the ensureEOF idiom (result.go:245-252 + 378-386). Per-method validation (method from JudgeRequest):
+  - method=="rubric": a missing/null `value` or `max` -> ErrJudgeOutputInvalid (NEVER silent zero, because *float64 distinguishes absent); enforce Max>0, 0<=Value<=Max; enforce winner AND confidence ABSENT.
+  - findings: each severity in {info,warning,error}, message non-empty (mirror validateFinding, result.go:215-224).
+Map the validated wire shape into JudgeResponse. Any malformed output -> ErrJudgeOutputInvalid wrapping detail (a clear error, never a panic).
+
+### Design decision 4 — RubricEvaluator + shared loader + load-root (rubricevaluator.go)
+
+    type RubricEvaluator struct { Judge Judge; Root string }  // Root = rubric resolution root (.etude dir / repo root), injected NOT hardcoded
+
+A SHARED internal loader is used by BOTH the pin helper and Evaluate so pin/verify can never skew:
+
+    func loadRubric(root, path string) ([]byte, error)        // resolves path UNDER root; rejects path-escape (.. / absolute escape) via the filepath.Rel idiom from exec_runner.go:62-70; -> ErrRubricLoad on escape / missing / read error
+    func PinRubric(root, path string) (eval.RubricRef, error)  // loadRubric -> RubricRef{Path:path, Version: sha256-hex(bytes)}; future eval-command bead resolves the ref BEFORE Evaluate
+
+Evaluate(ctx, req eval.EvalRequest):
+  1. require req.Method=="rubric", req.Rubric!=nil with Path+Version set (the eval contract requires non-empty Version, result.go:148-153), len(req.Targets)==1.
+  2. bytes := loadRubric(e.Root, req.Rubric.Path)  // ErrRubricLoad on escape/missing
+  3. verify sha256-hex(bytes) == req.Rubric.Version else ErrRubricVersionMismatch (tamper-evident comparability per BRIEF 4.8; eval.go:59-64).
+  4. build JudgeRequest{Method:"rubric", Targets:[the one EvalInput->JudgeInput], Context:mapped, Rubric:bytes, Producer:req.Producer}.
+  5. resp := e.Judge.Judge(ctx, jr)  // ctx error precedence preserved by ExecJudge.
+  6. validate resp per method (Value/Max non-nil, Max>0, 0<=Value<=Max, Winner=='' , Confidence==nil) -> ErrJudgeOutputInvalid otherwise.
+  7. return eval.Evaluation{ Score: Score{Kind:ScoreRubric, Value:resp.Value, Max:resp.Max}, Findings: resp.Findings } — so the caller's wrapped EvalResult.Validate() passes (result.go:100-122). Evaluation carries no Rubric (eval.go:110-117); the pinned RubricRef travels via the caller's EvalRequest, keeping Evaluate pure (no hidden mutation).
+
+VERSION = sha256 content-hash of the rubric bytes (lowercase hex). Content hash makes 'which rubric version was scored' reproducible without a separate registry.
+
+### Design decision 5 — error taxonomy (sentinels; mirror exec_runner.go:17-25)
+ErrJudgeNotConfigured, ErrJudgeFailed, ErrJudgeOutputMissing, ErrJudgeOutputNotRegular, ErrJudgeOutputInvalid (malformed/empty JSON, trailing data, unknown field, missing-value/max for rubric, Max<=0, Value>Max, winner-set-for-rubric, bad severity), ErrRubricLoad (path-escape/missing/read), ErrRubricVersionMismatch.
+
+### Design decision 6 — location + scope boundary
+Package `eval` (internal/eval/), NOT a sub-package — keeps Evaluator + its Judge seam cohesive, mirroring how replay keeps Runner+ExecRunner+Stub together. Reuse eval.Finding/Severity/Score/Winner/ArtifactSource/RubricRef directly. SHIPS: Judge seam (Judge, JudgeRequest, JudgeInput, method-neutral JudgeResponse), judgeOutputJSON+strict decode, ExecJudge, StubJudge, RubricEvaluator, loadRubric, PinRubric, tests. Does NOT ship: any CLI command — `etude eval` wiring (--judge / git config etude.judge resolution analogous to resolveRunner in internal/cli/replay.go, materializing stored artifacts, building EvalResult, persisting via eval.Writer) is DEFERRED to the eval-command/bench bead. No cmd/ change.
+
+### Design decision 7 — StubJudge (mirror StubRunner, runner.go:65-138)
+StubJudge{ Canned JudgeResponse; Err error }: Err short-circuits; else Canned returned verbatim. Makes RubricEvaluator testable end-to-end without a real LLM. Compile-time `var _ Judge = (*StubJudge)(nil)`.
+
+**Files:**
+- internal/eval/judge.go - new: Judge interface, JudgeInput, JudgeRequest (Method+ordered Targets+Context), method-neutral JudgeResponse, StubJudge, sentinel errors
+- internal/eval/exec_judge.go - new: ExecJudge (strict env incl ETUDE_MODEL/ETUDE_RUBRIC_FILE, ordered <NN>-target/<NN>-context materialization, Lstat output, judgeOutputJSON strict decode + per-method validate) — mirrors internal/replay/exec_runner.go
+- internal/eval/rubricevaluator.go - new: RubricEvaluator{Judge,Root}, shared loadRubric (path-escape), PinRubric, Evaluate (version verify + response map)
+- internal/eval/judge_test.go - new: StubJudge canned/err
+- internal/eval/exec_judge_test.go - new: ExecJudge fake-script tests (GOOS-guarded, mirror exec_runner_test.go writeScript:34-39)
+- internal/eval/rubricevaluator_test.go - new: end-to-end + version + load + malformed-matrix tests
+
+**Tests:**
+- StubJudge-driven Evaluate end-to-end -> Evaluation whose Score (+ a wrapped EvalResult) passes EvalResult.Validate() (rubric-coherent: Kind=rubric, Value in [0,Max], Max>0, Winner/Passed/Confidence nil).
+- REAL on-disk version edit: PinRubric(root,path) pins bytes A; MUTATE the rubric file to bytes B on disk; Evaluate with the A-pinned RubricRef -> ErrRubricVersionMismatch (exercises the comparability guarantee end-to-end, Opus ask).
+- Rubric loading: path-escape (../x and absolute escape) -> ErrRubricLoad; missing file -> ErrRubricLoad.
+- Malformed judge-output MATRIX -> ErrJudgeOutputInvalid (no panic): empty, non-JSON, unknown field, trailing data, missing value, missing max, Max<=0, Value>Max, winner-set-for-rubric, bad severity.
+- ExecJudge fake-script (GOOS-guarded): success writes value/max JSON -> correct Score; MULTI-TARGET ordering (00-target + 01-target both present in ETUDE_INPUTS_DIR, ordered context too); strict-env isolation (parent var does not leak; ETUDE_MODEL/ETUDE_RUBRIC_FILE present); non-zero exit -> ErrJudgeFailed; missing output -> ErrJudgeOutputMissing; symlink output -> ErrJudgeOutputNotRegular; context cancel -> ctx error precedence (mirror exec_runner_test.go:483-502).
+- StubJudge: canned returned verbatim; Err short-circuits.
+
+**Docs:**
+- No user-facing docs this bead (no CLI surface; library + seam only). The judge I/O contract (env vars + JSON verdict shape + Go-field->JSON-tag mapping) is documented as godoc on ExecJudge / judgeOutputJSON / JudgeRequest / JudgeResponse. No generated command reference. Planning docs unchanged (BRIEF 4.8 already describes rubric eval).
+
+**Risks:** The method-neutral JudgeResponse (A) + ordered-target materialization (B) are the load-bearing seam choices pairwise inherits — both now pinned explicitly to eval.Score's shape and the eval.go:18-28 orientation convention, so pairwise reuses Judge/JudgeRequest/JudgeResponse with NO new type. Otherwise straightforward — mirrors the proven replay.ExecRunner precedent.
+
+**Capture:**
+- inputs: bead etude-rubric-eval description + NOTES (attempt-1 gate feedback) + parent etude-phase3; internal/eval/eval.go (Score/Winner/Finding/ArtifactSource/RubricRef/EvalRequest/Evaluation/Evaluator/StubEvaluator), internal/eval/result.go (validateScoreCoherence:85-140, validateFinding:215-224, ParseJSON/ensureEOF:243-261+378-386); internal/replay/runner.go (Runner/RunInput/StubRunner), internal/replay/exec_runner.go (sentinels:17-25, strict env:102-108, %02d materialize:94-100, path-escape Step3:62-70, Lstat output:129-138, ctx precedence:119-122, extractPATH:183-194), internal/replay/exec_runner_test.go (writeScript:34-39, GOOS guards, ctx-cancel:483-502); internal/runmanifest/manifest.go (Producer:93-97); docs/plans/product/BRIEF.md 4.1/4.8/5
+- output: bead --design field
