@@ -1,0 +1,198 @@
+# PLAN — etude-nad (b): make `etude capture` distinguish create from append
+
+## Bead
+
+**etude-nad** (P1 bug) — run refs under `refs/etude/runs/` have twice disappeared
+mid-session; `etude capture` then silently rebuilt a fresh manifest, destroying
+three recorded gate attempts while still printing `captured <sha>`.
+
+Acceptance criteria (verbatim):
+
+> The disappearance is root-caused or ruled out; and `etude capture` cannot
+> silently discard an existing run's history — either it distinguishes create
+> from append explicitly, or it fails loudly when a run it was expected to
+> extend is missing.
+
+This plan covers the **second clause only** — the guard, which the manager
+directed to land first as its own commit. The first clause (root cause) is
+already established and is summarised below because it justifies one design
+decision; its remediation is a separate bead.
+
+## (a) Root cause — established, with a reproduction
+
+`etude init` registers a **fetch** refspec that maps the remote's etude
+namespace onto the *same local namespace etude writes to*
+(`internal/cli/init.go:198`, documented at `docs/init.md:30`):
+
+```
+remote.origin.fetch = +refs/etude/*:refs/etude/*
+remote.origin.push  =  refs/etude/*:refs/etude/*
+```
+
+Per `git-fetch(1)`, refs fetched **due to an explicit configured refspec are
+subject to pruning**. So every local `refs/etude/runs/<id>` is, to git, a
+remote-tracking ref — and any `git fetch --prune` anywhere in the repository
+**deletes every local run ref that is not yet on origin**.
+
+Reproduced deterministically in a scratch repo (git 2.47.1):
+
+```
+--- before ---
+22cc9c3 commit  refs/etude/runs/sentinel
+--- git fetch --prune ---
+From ../origin
+ - [deleted]         (none)     -> refs/etude/runs/sentinel
+--- after ---
+(empty)
+```
+
+Trigger present in this environment: `workmux remove --gone` runs
+`git fetch --prune` automatically (workmux's own docs: "`--gone`: Remove
+worktrees whose upstream remote branch has been deleted (e.g., after a PR is
+merged on GitHub). **Automatically runs `git fetch --prune` first.**"). The
+etude-9uf work ran in a linked worktree, so a sibling lane's `workmux remove
+--gone` operated on the shared common git dir and took every unpushed run ref
+in the repository with it.
+
+This explains every recorded observation: not reproducible on demand (nothing
+in `go test`, `make test/lint/docs-check`, the walkthrough, `git stash`, or
+`bd list` runs `fetch --prune`); refs present then absent "minutes later";
+only *unpushed* runs affected (`dogfood-capture.sh` pushes at the very end);
+and incident 2's fresh manifest, because a deleted ref makes the next
+`etude capture` take the create branch.
+
+Remediation is a separate change (stop registering the etude namespace as a
+*fetch* refspec — `etude sync` already passes it explicitly on the command
+line, `internal/cli/sync.go:94`, so the config entry buys nothing and costs
+this). Filed as its own bead; out of scope here.
+
+## The defect this plan fixes
+
+`internal/cli/capture.go:145` resolves the run ref and branches:
+
+```go
+commit, resolveErr := r.store.Resolve(ctx, ref)
+...
+if resolveErr == nil { appending = true; ...merge prior stages/files... }
+else if !errors.Is(resolveErr, refstore.ErrNotFound) { return resolveErr }
+```
+
+`ErrNotFound` therefore falls through to **create**, and both branches print the
+identical `captured <sha>` / `ref <ref>`. A caller that *believes* the run exists
+has no way to say so and no way to tell what happened.
+
+The two sibling commands are already explicit, which makes `capture` the
+inconsistent one:
+
+| command | semantics on ref conflict | behaviour |
+|---|---|---|
+| `etude capture-run` | create-only | errors: *"run %q already exists … (create-only, will not clobber)"* (`capture_run.go:246`) |
+| `etude capture-gate` | append-only | errors: *"run %q not found; a gate must attach to an existing run"* (`capture.go:432`) |
+| `etude capture` | **ambiguous** | silently does either |
+
+## Design
+
+Add one flag to `etude capture`:
+
+```
+--expect create|append
+```
+
+- **`--expect append`** — the run ref MUST already exist. If it does not,
+  fail before writing anything, non-zero, with a message that names the ref and
+  says the history may have been lost rather than inviting a blind re-capture.
+- **`--expect create`** — the run ref must NOT exist. If it does, fail before
+  writing anything, non-zero, naming the ref and its current tip.
+- **omitted** — today's auto behaviour, unchanged. Backward compatible.
+
+An unrecognised value is a usage error naming the two accepted values.
+
+Success output gains a third line naming the action taken:
+
+```
+captured <sha>
+ref refs/etude/runs/<id>
+action create        # or: action append
+```
+
+so that even a caller which passes no flag can *see* a create where it expected
+an append. That line is what satisfies "distinguishes create from append
+explicitly"; `--expect` is what satisfies "fails loudly".
+
+Both checks are made against the single `Resolve` result already computed — no
+extra git call, no second resolve, so no TOCTOU window is introduced beyond the
+one `WriteCommit` already closes (create writes with `ExpectedOld: ""`, which
+git enforces as "must not exist"; append writes with `ExpectedOld: <tip>`, a
+CAS). `--expect` is a *fail-fast* check layered on top of those existing atomic
+guarantees, not a replacement for them: if the ref is deleted between the
+`Resolve` and the write, `--expect append` still cannot silently create,
+because the write carries `ExpectedOld` and git fails it.
+
+### Scope
+
+`internal/cli/capture.go` (flag registration, `captureConfig`, `run`) plus
+`internal/cli/capture_test.go`, `docs/capture.md`, and the generated
+`docs/cli/etude_capture.md`. No change to `internal/refstore`, to
+`capture-run`, or to `capture-gate` — those are already explicit.
+
+### Rejected: enabling a reflog for `refs/etude/*`
+
+The kickoff asked to consider landing `core.logAllRefUpdates` for these refs so
+the next incident is diagnosable. **Tested, and it does not work for this
+failure mode.** Measured in a scratch repo:
+
+- `git -c core.logAllRefUpdates=always update-ref refs/etude/runs/sentinel …`
+  does create `.git/logs/refs/etude/runs/sentinel`, and **subsequent plain git
+  writes keep appending to it** (git logs a ref whose reflog file already
+  exists regardless of the setting) — so a one-time creation at etude's own
+  write would be enough to enable it permanently. That part works.
+- But `git fetch --prune`'s deletion **unlinks the reflog together with the
+  ref**. After the prune, `.git/logs/refs/etude/runs/` does not exist and
+  `git reflog refs/etude/runs/sentinel` reports an unknown revision.
+
+So it would have left exactly nothing behind for either recorded incident, and
+nothing for the next one. It is cost without the forensic benefit it was
+proposed for. Dropped deliberately, with the root cause established by other
+means. (A `reference-transaction` hook *would* capture deletions, but that is a
+repo-wide git hook, not this bead, and is moot now that the deleter is known.)
+
+## Behaviour preservation
+
+- The no-`--expect` path is unchanged except for the additional third stdout
+  line. The existing `captured <sha>` and `ref <ref>` lines keep their format
+  and their position (lines 1 and 2).
+- Consumers checked: `internal/cli/run_test.go:769` and
+  `internal/liverun/engine_test.go:134` assert `captured `-prefixed lines, but
+  against the **liverun engine's** output (`internal/liverun/engine.go:452`), a
+  different code path this bead does not touch. `scripts/dogfood-capture.sh`
+  invokes `capture-run`, not `capture`, and does not parse its stdout.
+- Append-conflict errors (`run_id` mismatch, `--workflow` /
+  `--workflow-version` conflicts), artifact merging, ref merging, and the
+  `ExpectedOld` CAS are untouched.
+- No manifest/schema change, so no migration and no compatibility break in the
+  stored format.
+
+## Verification
+
+- Planned regression: TestCaptureExpectAppendFailsWhenRunMissing — asserts
+  non-zero error, the error names the run, and **no ref is created**.
+- Planned regression: TestCaptureExpectCreateFailsWhenRunExists — asserts
+  non-zero error and that the existing ref tip is **unchanged**.
+- Planned regression: TestCaptureExpectAppendPreservesPriorStages — the real
+  data-loss case: capture a stage, capture a second with `--expect append`,
+  assert both stages and both artifacts survive.
+- Planned regression: TestCaptureExpectCreateSucceedsOnFreshRun.
+- Planned regression: TestCaptureRejectsUnknownExpectValue — usage error, no ref.
+- Planned regression: TestCaptureReportsCreateAndAppendAction — stdout carries
+  `action create` then `action append` across two captures.
+- `make test` and `make lint` green.
+- Manual CLI verification against a **built binary** in a scratch repo (this is
+  a CLI-facing change): every `--expect` value, both success and both failure
+  paths, and the exit codes.
+
+## Docs
+
+`docs/capture.md` gains `--expect` under Metadata/Appending, plus a short note
+that a missing run ref is a data-loss signal rather than a fresh start.
+`docs/cli/etude_capture.md` is generated — regenerate with `make docs` and run
+`make docs-check`.
