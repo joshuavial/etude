@@ -1,0 +1,147 @@
+✓ etude-phase-prep.3 · Define degraded review-gate policy   [● P0 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Consolidated the degraded review-gate policy into one explicit '## Degraded Gate Policy' section (1392817): blocks-vs-recoverable-retry; disregard a SINGLE root-caused tooling-outage seat (>=2 novel rerolls / single-confirming only for already-known artifacts, other three unanimous substantive GO; disproven BLOCK routed to disputed-claim rule, substantive BLOCK never bypassed); degraded 3-seat pass orchestrator-authorized in autonomous loop else escalate; recorded structurally (malfunction/disregarded verdicts + decision.degraded_reason). review-gate-process.md carve-out synced. Tier-2 gate PASS (Opus+codex, no defects); strict default preserved; shipped-schema mapping; make docs-reality + docs-check green.
+
+DESCRIPTION
+The runbook says every tier needs unanimous reviewer pass and reviewer failures escalate, but recent captured work proceeded when pilms was unavailable or a reviewer malfunction was ground-truth-disproven. Make this policy explicit instead of relying on ad-hoc exceptions.
+
+Acceptance:
+- define when a reviewer outage, empty output, auth/quota failure, or tool malfunction blocks the gate
+- define when a reviewer seat can be disregarded after ground-truth verification, and what evidence is required
+- define whether a degraded 3-seat gate is ever allowed, who can authorize it, and how it is recorded
+- update review-gate-runbook.md and review-gate-process.md consistently
+- ensure degraded mode is compatible with the upcoming gate reviewer visibility schema
+
+DESIGN
+## Plan
+
+**Approach:** Consolidate the scattered degraded-gate rules already living in
+review-gate-runbook.md into ONE explicit, named "Degraded Gate Policy" section,
+then make review-gate-process.md state the same default-strict-with-bounded-
+exception rule so written process stops contradicting real practice. This is
+consolidation + cross-referencing, NOT invention: the runbook already has the
+"Autonomous-loop tooling-outage fallback" paragraph (Result Classification), the
+disputed-factual-claim rule, the Seat Disagreement rule, the outage-diagnosis
+guidance (Waiting And Status), the Gate Weight tiers, and the structured-capture
+verdict mapping. The shipped schema (gate-reviewer-record-schema.md, docs/gates.md)
+already MODELS degraded mode (verdicts `malfunction`/`disregarded`,
+`decision.degraded_reason`) and docs/gates.md already says "degraded-gate
+policy"/"degraded-gate fallback" by name — so "Degraded Gate Policy" is the
+canonical term to standardize on (the runbook currently calls it the
+"autonomous-loop tooling-outage fallback"; harmonize the naming, keep the existing
+detail). The default stays strict: unanimous substantive GO; a real BLOCK
+(substantive dissent) is NEVER bypassed.
+
+**Files:**
+- docs/plans/dogfood/review-gate-runbook.md — Add a new top-level "## Degraded
+  Gate Policy" section (placed right after "Result Classification", since that is
+  where the fallback paragraph lives today). It CONSOLIDATES, not duplicates:
+  state the default strict rule, then the FOUR explicit sub-rules and
+  cross-reference the existing prose rather than re-spelling it.
+  (1) BLOCKS-the-gate vs recoverable-retry: a seat that exits with
+  auth/quota/model-access/timeout/tool-invocation failure, OR returns empty/no
+  verdict, is FIRST a recoverable retry — reroll and root-cause per "Waiting And
+  Status" (the 2nd-occurrence debug rule, the pi/pilms reasoning budget, the
+  0-CPU-hang diagnosis). It BLOCKS the gate (incomplete, escalate) UNTIL it is
+  either resolved or meets the bounded-exception bar below; an unresolved/
+  undiagnosed failure is never a GO (verdict `failed`/`empty`, gate incomplete).
+  (2) DISREGARD a seat: ONLY a SINGLE seat with a REPRODUCIBLE TOOLING outage
+  (empty/hang/auth/quota, recurring after >=2 rerolls, root-caused to a KNOWN
+  tooling artifact — e.g. pilms 0-CPU hang, codex go-test hang, pilms empty
+  completion — NOT substantive dissent) MAY be disregarded WHEN the other THREE
+  seats are unanimous substantive GO after thorough review. Required EVIDENCE:
+  which seat, the artifact/diagnosis, and reroll evidence. REROLL BAR: >=2 rerolls
+  to ESTABLISH a NOVEL tooling outage as reproducible + root-caused; for an outage
+  ALREADY documented in this runbook as a known root-caused artifact (e.g. the
+  pi/pilms 0-CPU client hang under "Third failure mode"), the documented single
+  confirming reroll suffices. This shortcut is BOUNDED to already-known,
+  already-root-caused artifacts — it is NOT a general 1-reroll allowance, and a
+  novel/undiagnosed outage always needs >=2. A DISPROVEN BLOCK (ground-truth contradicts a factual claim)
+  is NOT disregarding — cross-reference the existing disputed-factual-claim rule:
+  verify empirically, do NOT apply the change, rerun with evidence embedded. A
+  substantive BLOCK is never disregarded.
+  (3) Degraded 3-seat gate allowed? YES, bounded to rule (2). WHO authorizes: in
+  an autonomous /loop there is no real-time user, so the ORCHESTRATOR authorizes
+  under these explicit conditions and records it; OUTSIDE an autonomous loop,
+  escalate to the user. HOW recorded (cross-ref Recording Results + the verdict
+  mapping table): the outage seat carries verdict `malfunction` (or `empty`) with
+  a `failure_note`, the degraded pass carries seat verdict `disregarded` +
+  `failure_note` AND `decision.degraded_reason` (which seat, evidence, reroll
+  count), the gate is a recorded `GateAttempt` (status `pass`), and the prose
+  mirror notes the outage.
+  (4) Schema mapping (cross-ref gate-reviewer-record-schema.md / docs/gates.md):
+  outage -> `failed`/`empty`/`malfunction`; disregarded seat -> `disregarded` +
+  `failure_note` + `decision.degraded_reason`; degraded pass is a normal recorded
+  `GateAttempt`. State this so degraded gates are captured STRUCTURALLY, not just
+  in prose.
+  Then RENAME/cross-link the existing "Autonomous-loop tooling-outage fallback"
+  paragraph to point at (or fold under) "Degraded Gate Policy" so there is ONE
+  authority and the older name resolves to it (avoid leaving two competing
+  headings). Add a one-line pointer to the new section from "Gate Weight" (the
+  "every seat failure still escalates" line) and "Waiting And Status" (the
+  "escalate to the user" line) so the strict statements there reference the
+  bounded exception instead of contradicting it.
+- docs/plans/dogfood/review-gate-process.md — Make the policy doc consistent.
+  Today lines ~33-46 ("gate passes only when all four reviewers give a clear GO";
+  "any reviewer cannot complete ... stop and escalate to the user. A failed
+  reviewer invocation is not a GO and must not be skipped") and ~61-78 assert
+  strict-only with NO degraded exception. Edit to: keep the default strict rule
+  verbatim as the DEFAULT, then add a short "Degraded gate (bounded exception)"
+  paragraph stating the single-seat reproducible-tooling-outage carve-out, who
+  authorizes it (orchestrator in an autonomous loop; else escalate to user), and
+  that it is recorded structurally, with a cross-reference to the runbook's
+  "Degraded Gate Policy" for the operational detail. The process doc states the
+  POLICY; the runbook keeps the HOW. No duplication of the reroll mechanics.
+
+**Tests (docs bead — how verified):**
+- Internal consistency: the new runbook section does not contradict the existing
+  Result Classification / Waiting And Status / Reruns / Gate Weight prose — it
+  references them; grep for the old "Autonomous-loop tooling-outage fallback"
+  heading to confirm there is exactly one authority after the edit (renamed or
+  explicitly cross-linked, not two competing rules).
+- Cross-doc consistency: review-gate-process.md and review-gate-runbook.md state
+  the SAME default (strict unanimous GO; real BLOCK never bypassed) and the SAME
+  bounded exception (single reproducible tooling-outage seat, 3 unanimous GO,
+  orchestrator-authorized in /loop else escalate). Read both end-to-end; confirm
+  no sentence in one is falsified by the other.
+- Schema compatibility: the documented mapping uses ONLY the shipped enum values
+  (`failed`/`empty`/`malfunction`/`disregarded`) and the shipped fields
+  (`decision.degraded_reason`, `failure_note`, `GateAttempt.status`/`round`);
+  cross-check against gate-reviewer-record-schema.md §3/§5 verdict semantics and
+  docs/gates.md "Reviewer seat fields" so the prose matches the validation
+  (failure_note required on non-go/block, forbidden on go/block;
+  degraded_reason on the disregarded case). No NEW schema field is implied.
+- Term check: the section heading and process-doc wording use "Degraded Gate
+  Policy" to match docs/gates.md's existing "degraded-gate policy/fallback"
+  references and backlog-operating-model.md's backlog name.
+
+**Docs:** PROCESS-DOCS only (planning notes under docs/plans/dogfood/). No
+user-facing docs and no generated CLI reference change — the shipped schema and
+docs/gates.md already model degraded mode; this bead only makes the dogfood
+PROCESS notes explicit and self-consistent. capture-protocol.md (line 390) and
+backlog-operating-model.md (line 70) already reference the verdict mapping /
+backlog name consistently and need NO edit; if a read-through shows either now
+contradicts the consolidated policy, flag it rather than silently widening scope.
+
+**Risks:** Low. Main risk is duplicating instead of consolidating (two competing
+degraded rules) — mitigated by renaming/cross-linking the existing fallback
+paragraph into the single new section and keeping the process doc pointing at the
+runbook for mechanics. Secondary risk is drifting from the shipped enum — mitigated
+by mapping explicitly onto the existing verdicts/fields and adding no new schema.
+Scope risk (touching code or other docs) is bounded by the Files list above.
+
+**Capture:**
+- inputs: bead etude-phase-prep.3 description/design; docs/plans/dogfood/review-gate-runbook.md (Gate Weight, Waiting And Status, Result Classification incl. autonomous-loop fallback + disputed-claim + seat-disagreement rules, Reruns, Recording Results verdict mapping); docs/plans/dogfood/review-gate-process.md (Decision, Gate Semantics); docs/plans/product/gate-reviewer-record-schema.md (§3 SeatVerdict/GateDecision, §5 worked example); docs/gates.md (shipped verdicts + degraded-gate references); grep of dogfood docs for degraded/outage/disregard terms
+- output: bead --design field
+
+
+NOTES
+## Plan gate — Tier 2 (Opus + codex): PASS. codex BLOCK→GO (claimed the 1-reroll shortcut loosens the >=2 bar; EMPIRICALLY CORRECTED — it is the existing runbook rule @293-296, bounded to the known root-caused pilms 0-CPU artifact; revised plan makes the bound explicit: novel outage=>>=2 rerolls, only already-documented+root-caused artifact gets single-confirming-reroll; reran → GO). Opus GO (verified: strict default preserved, disregard bounded, disproven-BLOCK kept distinct via disputed-claim rule, schema mapping uses only shipped enums, no orphaned anchor refs to the renamed fallback paragraph). Optional folded: cite the shortcut by name not line number. Scope: review-gate-runbook.md + review-gate-process.md.
+## Implement+Final gate — Tier 2 (Opus + codex): PASS. codex GO + Opus GO (no defects): strict default preserved in both docs; disregard bounded to a single root-caused tooling outage (>=2 novel rerolls / single-confirming only for already-known artifacts), other three unanimous substantive GO; substantive + disproven BLOCKs excluded (disproven routed to disputed-claim rule); process.md carve-out consistent, no contradiction; old 'tooling-outage fallback' heading gone, 'Third failure mode' pointer updated; schema mapping uses only shipped enums (malfunction/failed/empty/disregarded + degraded_reason, gate status pass, no new field); make docs-reality + docs-check PASS; scope = 2 process docs.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ✓ etude-phase-prep: Prep: overhaul dev workflow for etude dogfooding ● P0
+
