@@ -351,6 +351,75 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:39:57Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "model opaque multi-call Claude invocations",
+            "scope Go cache writes"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r4",
+            "artifact": "67dc730db4ea8efb86b04986dd500c6d89046cdaa6be533db0da76dfdfd87ba9",
+            "path": "artifacts/sha256/67/67dc730db4ea8efb86b04986dd500c6d89046cdaa6be533db0da76dfdfd87ba9",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 480
+          },
+          "timestamp": "2026-08-15T23:42:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "record OAuth measurement",
+            "pin flags and mappings",
+            "reject stale output",
+            "make flag and model evidence explicit"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r4",
+            "artifact": "c8eb49b487979ec7aa5f5d1a88d5db4cb31e5a6fc3b9616f7bca0123dc32c74d",
+            "path": "artifacts/sha256/c8/c8eb49b487979ec7aa5f5d1a88d5db4cb31e5a6fc3b9616f7bca0123dc32c74d",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 440
+          },
+          "timestamp": "2026-08-15T23:48:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:48:54Z"
     }
   ]
 }
