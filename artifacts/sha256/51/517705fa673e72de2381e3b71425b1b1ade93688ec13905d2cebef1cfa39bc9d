@@ -1,0 +1,24 @@
+# Verify artifact — etude-2pc.3 (generality test, non-dev workflow live, NO engine change)
+**Status: pass. Recommendation: proceed to Docs.** Proof-by-construction bead.
+
+## Automated (all green)
+- go test ./internal/cli/... ./internal/example/... ./internal/liverun/... → all PASS (TestRunWorkflowResearch, TestResearchWalkthroughSmokeTest)
+- make lint clean; GOOS=windows build OK; make docs no change; make docs-reality OK (14 commands)
+- Test changes are test-only: internal/cli/run_test.go (edit), internal/example/research_example_test.go (new)
+
+## NO-ENGINE-CHANGE PROOF (AC2 — defining criterion): EMPTY / PROVEN
+- `git diff --name-only 6160230 -- ':!**/*_test.go' | grep '^internal/'` → empty; no untracked non-test internal Go.
+- Changed files: .gitignore, README.md, docs/README.md, docs/plans/README.md, docs/plans/product/live-execution.md, docs/replay.md, internal/cli/run_test.go; untracked: examples/research/, internal/example/research_example_test.go. (mkdocs.yml/requirements-docs.txt/_ai pre-existing.)
+- Only test/example/docs changed; NO non-test internal Go.
+
+## Manual (built binary): ETUDE_BIN=bin/etude bash examples/research/walkthrough.sh → exit 0
+- 5 non-dev stages: research→fact-check→draft→review→tone-police; output roles findings/checked/draft/reviewed/toned; produced_by=original.
+- run show gate review.r1 status=pass; registry-resolved approver seat (provider deterministic, verdict go) + deterministic check.0 go.
+- replay <id> forward re-executed all 5 stages deterministically. NO review.r2 (gate passed round 1).
+
+## AC-to-evidence
+- AC1 (non-dev live + capture + forward replay) → TestRunWorkflowResearch + TestResearchWalkthroughSmokeTest + built-binary walkthrough → PASS.
+- AC2 (no engine change) → structural proof EMPTY/PROVEN.
+
+## Risks / deferred
+Stage outputs byte-identical from fact-check onward (stage-runner ls-parsing imperfection) — tracked in etude-aqh (byte-equal replay assertion + ls fix); deterministic, AC3 holds, not a regression.

@@ -1,0 +1,775 @@
+commit 612d0ab083be3d139bab59473dcf85f1c464a907
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 10:34:21 2026 +0800
+
+    add research-workflow generality test proving the engine has no dev-specific assumptions
+
+diff --git a/README.md b/README.md
+index c2beb06..ffa04f4 100644
+--- a/README.md
++++ b/README.md
+@@ -136,3 +136,7 @@ See [CLI reference](docs/cli/etude.md) for the generated per-command reference.
+ 
+ For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
+ [examples/summarize/README.md](examples/summarize/README.md).
++
++For a non-dev workflow walkthrough proving the engine has no dev-specific
++assumptions (research → fact-check → draft → review → tone-police, with a live
++gate), see [examples/research/README.md](examples/research/README.md).
+diff --git a/docs/plans/product/live-execution.md b/docs/plans/product/live-execution.md
+index 9da94aa..c82aea1 100644
+--- a/docs/plans/product/live-execution.md
++++ b/docs/plans/product/live-execution.md
+@@ -212,5 +212,12 @@ and orchestration walk were proven live via `etude run` with a throwaway repo.
+ etude-3a2): running the real `dev` stage runner (`claude -p`) and model-seat
+ gates (opus/codex/gemini) live with real credentials is etude-s6z's scope.
+ 
+-A second, research-style workflow lands later as an explicit generality test
+-(etude-2pc.3).
++The **generality test has landed (etude-2pc.3)**: a genuinely non-dev 5-stage
++research workflow (research → fact-check → draft → review → tone-police) runs
++live via `etude run`, captures by construction, and forward-replays
++deterministically with no engine change. The example lives at
++`examples/research/` and the hermetic in-process test is
++`internal/cli/TestRunWorkflowResearch` + smoke test
++`internal/example/TestResearchWalkthroughSmokeTest`. The proof-by-diff:
++`git diff --name-only <pre-2pc.3-commit> -- ':!**/*_test.go' | grep '^internal/'`
++returns empty — this bead adds zero non-test Go under `internal/`.
+diff --git a/examples/research/README.md b/examples/research/README.md
+new file mode 100644
+index 0000000..44b5a5a
+--- /dev/null
++++ b/examples/research/README.md
+@@ -0,0 +1,112 @@
++# Research workflow example
++
++This example proves that the etude live-run engine has **no dev-specific assumptions**: a genuinely non-dev 5-stage workflow runs end-to-end via `etude run`, capturing by construction, resolving a gate seat from the shared registry, and forward-replaying deterministically. No real LLM or network access is required — all runners and the gate seat are deterministic shell stubs.
++
++## Workflow shape
++
++```
++research  (in: task)
++    └─► fact-check  (in: task, findings)
++            └─► draft  (in: checked)
++                    └─► review  (in: draft)  ← GATE: tier L1 + check
++                            └─► tone-police  (in: reviewed)
++```
++
++| Stage | Produces | Inputs |
++|---|---|---|
++| research | findings | task |
++| fact-check | checked | task, findings |
++| draft | draft | checked |
++| review | reviewed | draft |
++| tone-police | toned | reviewed |
++
++The `review` stage carries a gate with two components:
++- A **deterministic check** (`gate-check.sh`): exits 0 when the reviewed draft is non-empty (always passes here).
++- A **registry tier** (`L1`): resolves the `approver` seat from `.etude/registry.yaml`, which writes `{"verdict":"go"}`.
++
++The gate is designed to **pass on round 1** (single seat, threshold 1.0, one "go" vote). See the invariant below.
++
++## Registry reuse
++
++The registry mechanism is workflow-agnostic. The same `ResolveStageRunner`, `ResolveGateSeat`, and `ResolveTiers` functions that power the dev workflow also power this research workflow. The example ships its own registry (written at walkthrough runtime with ABSOLUTE paths) to stay hermetic.
++
++## How to run
++
++```bash
++bash examples/research/walkthrough.sh
++```
++
++Or supply a pre-built binary to skip the build step:
++
++```bash
++ETUDE_BIN=bin/etude bash examples/research/walkthrough.sh
++```
++
++The script:
++1. Builds etude from source (or uses `ETUDE_BIN`).
++2. Git-inits a throwaway repo.
++3. Commits the sample task document (`inputs/topic.txt`).
++4. Writes `.etude/workflow.yaml` and `.etude/registry.yaml` with ABSOLUTE script paths interpolated.
++5. Commits the etude config.
++6. Runs `etude run research --task inputs/topic.txt`.
++7. Runs `etude run show <id>` to inspect the captured run.
++8. Runs `etude replay <id>` (forward) to re-execute all 5 stages.
++
++## Expected output
++
++```
++==> Step 1: etude run research (5 stages + review gate)
++captured <sha>
++captured <sha>
++captured <sha>
++captured <sha>
++captured gate review.r1 status=pass
++captured <sha>
++ref refs/etude/runs/research-<timestamp>-<hex>
++
++==> Step 2: etude run show <id>
++...
++stage: research
++  produced_by: original
++...
++stage: fact-check
++...
++stage: draft
++...
++stage: review
++...
++gate: review.r1
++  status:   pass
++  ...
++  seat: approver
++    verdict:  go
++...
++stage: tone-police
++...
++
++==> Step 3: etude replay <id> (forward — all 5 stages)
++...
++==> Walkthrough complete.
++```
++
++## No engine change
++
++This bead (etude-2pc.3) adds **zero non-test Go under `internal/`**. The proof is structural: the engine's stage graph walker (`engine.go`) uses user-defined stage names; the gate resolver (`gate.go`, `resolve.go`) keys off registry names, not phase names. There are no hardcoded phase names in the live-run engine.
++
++To verify: `git diff --name-only <pre-bead-commit> -- ':!**/*_test.go' | grep '^internal/'` must return empty for this bead's diff.
++
++## Round-1-pass invariant
++
++The `review` gate is **single-seat (`approver`) + threshold 1.0** by design. The `approver` stub always votes "go", so the gate passes on round 1 and no rerun stage is emitted.
++
++**This invariant must be preserved.** Adding a second seat or a blocking seat would cause the gate to rerun (`review.r2`, `review.r3`, …), and the forward replay (`etude replay <id>`) cannot resolve those stage names from the workflow unless a `--runner` override is supplied. If you need to test a multi-round gate scenario, pass `--runner /path/to/stage-runner.sh` on `etude replay` to supply a single fallback runner for all stage names.
++
++## Files
++
++| File | Purpose |
++|---|---|
++| `stage-runner.sh` | Deterministic runner: concatenates sorted inputs → output |
++| `approve-seat.sh` | Stub gate seat: always writes `{"verdict":"go"}` |
++| `gate-check.sh` | Deterministic check: exits 0 when input is non-empty |
++| `inputs/topic.txt` | Sample task document |
++| `walkthrough.sh` | End-to-end demo script |
+diff --git a/examples/research/approve-seat.sh b/examples/research/approve-seat.sh
+new file mode 100755
+index 0000000..cc9f181
+--- /dev/null
++++ b/examples/research/approve-seat.sh
+@@ -0,0 +1,15 @@
++#!/bin/sh
++# approve-seat.sh — deterministic stub gate seat for the research example.
++#
++# Always votes "go".  Writes the JSON verdict envelope to ETUDE_OUTPUT_FILE
++# exactly as a real model seat would.
++#
++# In a production workflow this script would be replaced by a real model
++# invocation (e.g. claude -p --model opus).  The registry wires the
++# invocation command; the engine does not care whether the runner is a stub
++# or a real LLM — only the JSON envelope matters.
++#
++# Environment (set by etude):
++#   ETUDE_OUTPUT_FILE  — file to write the JSON verdict envelope to
++
++printf '{"verdict":"go"}' > "$ETUDE_OUTPUT_FILE"
+diff --git a/examples/research/gate-check.sh b/examples/research/gate-check.sh
+new file mode 100755
+index 0000000..101159c
+--- /dev/null
++++ b/examples/research/gate-check.sh
+@@ -0,0 +1,17 @@
++#!/bin/sh
++# gate-check.sh — deterministic gate check for the research example.
++#
++# Exit 0 (pass) when the reviewed artifact input is non-empty.
++# Exit 1 (block) when all inputs are empty.
++#
++# The review gate is designed to always pass: stage-runner.sh always
++# produces non-empty output when given non-empty inputs.
++#
++# Environment (set by etude):
++#   ETUDE_INPUTS_DIR   — directory containing the gate's input artifact(s)
++
++for f in "$ETUDE_INPUTS_DIR"/*; do
++    [ -f "$f" ] || continue
++    [ -s "$f" ] && exit 0
++done
++exit 1
+diff --git a/examples/research/inputs/topic.txt b/examples/research/inputs/topic.txt
+new file mode 100644
+index 0000000..0b761db
+--- /dev/null
++++ b/examples/research/inputs/topic.txt
+@@ -0,0 +1,8 @@
++Research topic: The impact of deterministic testing on software reliability.
++
++Key questions:
++1. How do deterministic test runners reduce flakiness?
++2. What are the trade-offs of hermeticity vs environment realism?
++3. How does content-addressed artifact storage help with reproducibility?
++
++This document is the task input for the research pipeline demo.
+diff --git a/examples/research/stage-runner.sh b/examples/research/stage-runner.sh
+new file mode 100755
+index 0000000..8d5440f
+--- /dev/null
++++ b/examples/research/stage-runner.sh
+@@ -0,0 +1,19 @@
++#!/bin/sh
++# stage-runner.sh — deterministic stage runner for the research example.
++#
++# Concatenates all inputs from ETUDE_INPUTS_DIR (sorted by filename) into
++# ETUDE_OUTPUT_FILE.  Input filenames are <NN>-<role> so sorting by name
++# gives a stable, dependency-order concatenation.
++#
++# This script is intentionally simple: no LLM, no network, no randomness.
++# Output is byte-stable across repeated runs with the same inputs, which
++# makes forward replay deterministic.
++#
++# Environment (set by etude):
++#   ETUDE_INPUTS_DIR   — directory containing one file per stage input
++#   ETUDE_OUTPUT_FILE  — file to write stage output to
++
++: > "$ETUDE_OUTPUT_FILE"
++for f in $(ls "$ETUDE_INPUTS_DIR" | sort); do
++    cat "$ETUDE_INPUTS_DIR/$f" >> "$ETUDE_OUTPUT_FILE"
++done
+diff --git a/examples/research/walkthrough.sh b/examples/research/walkthrough.sh
+new file mode 100755
+index 0000000..e4f18c0
+--- /dev/null
++++ b/examples/research/walkthrough.sh
+@@ -0,0 +1,188 @@
++#!/usr/bin/env bash
++# walkthrough.sh — end-to-end research workflow example using only git + sh + the etude binary.
++#
++# Proves the engine has no dev-specific assumptions: a genuinely non-dev
++# 5-stage workflow (research → fact-check → draft → review → tone-police)
++# runs live via `etude run`, captures by construction, executes a gate that
++# resolves from a shared registry, and forward-replays deterministically.
++# NO real LLM or network access is needed: all runners and the gate seat are
++# deterministic shell stubs in this directory.
++#
++# Usage:
++#   bash examples/research/walkthrough.sh
++#   ETUDE_BIN=/path/to/etude bash examples/research/walkthrough.sh
++#
++# When ETUDE_BIN is unset the script builds etude from source into a temp dir.
++# The smoke test (internal/example/research_example_test.go) always sets
++# ETUDE_BIN so it can supply a freshly compiled binary.
++set -euo pipefail
++
++# ---------------------------------------------------------------------------
++# Resolve paths: SCRIPT_DIR is this file's directory; REPO_ROOT is the
++# etude source root (two levels up); EXAMPLES_DIR is this directory and
++# holds the runner/seat/check scripts with ABSOLUTE paths.
++# ---------------------------------------------------------------------------
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
++EXAMPLES_DIR="$SCRIPT_DIR"
++
++# ---------------------------------------------------------------------------
++# Create the temp dirs and install the cleanup trap BEFORE any fallible step
++# so nothing leaks if an early command fails.
++# WORK is the throwaway demo repo.
++# BINDIR holds a locally-built binary (empty when ETUDE_BIN is supplied).
++# ---------------------------------------------------------------------------
++WORK="$(mktemp -d)"
++BINDIR=""
++trap '[ -n "$BINDIR" ] && rm -rf "$BINDIR"; rm -rf "$WORK"' EXIT
++
++# ---------------------------------------------------------------------------
++# Build or locate the etude binary.
++# ---------------------------------------------------------------------------
++if [ -n "${ETUDE_BIN:-}" ]; then
++    ETUDE="$ETUDE_BIN"
++    echo "==> Using etude binary: $ETUDE"
++else
++    echo "==> Building etude from source..."
++    BINDIR="$(mktemp -d)"
++    (cd "$REPO_ROOT" && go build -o "$BINDIR/etude" ./cmd/etude)
++    ETUDE="$BINDIR/etude"
++    echo "    built: $ETUDE"
++fi
++
++# ---------------------------------------------------------------------------
++# Initialise the throwaway git repository for the demo.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Initialising throwaway git repo: $WORK"
++git init "$WORK" --quiet
++git -C "$WORK" config user.name  "Etude Example"
++git -C "$WORK" config user.email "example@etude.local"
++
++# ---------------------------------------------------------------------------
++# Commit the sample task document so HEAD resolves (required by etude run).
++# ---------------------------------------------------------------------------
++mkdir -p "$WORK/inputs"
++cp "$EXAMPLES_DIR/inputs/topic.txt" "$WORK/inputs/"
++git -C "$WORK" add inputs/
++git -C "$WORK" commit --quiet -m "add research task"
++
++cd "$WORK"
++
++# ---------------------------------------------------------------------------
++# Write .etude/workflow.yaml with ABSOLUTE script paths interpolated so the
++# gate check command resolves regardless of working directory.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Writing .etude/workflow.yaml and .etude/registry.yaml"
++mkdir -p .etude
++
++cat > .etude/workflow.yaml << EOF
++name: research
++stages:
++  - name: research
++    produces: findings
++    inputs:
++      - task
++    skill: research-skill
++    runner:
++      name: stage-runner
++  - name: fact-check
++    produces: checked
++    inputs:
++      - task
++      - findings
++    skill: fact-check-skill
++    runner:
++      name: stage-runner
++  - name: draft
++    produces: draft
++    inputs:
++      - checked
++    skill: draft-skill
++    runner:
++      name: stage-runner
++  - name: review
++    produces: reviewed
++    inputs:
++      - draft
++    skill: review-skill
++    runner:
++      name: stage-runner
++    gate:
++      tier: L1
++      max_rounds: 1
++      checks:
++        - command: $EXAMPLES_DIR/gate-check.sh
++  - name: tone-police
++    produces: toned
++    inputs:
++      - reviewed
++    skill: tone-police-skill
++    runner:
++      name: stage-runner
++EOF
++
++# Write .etude/registry.yaml with absolute paths to the deterministic stubs.
++cat > .etude/registry.yaml << EOF
++quorum: unanimous
++seats:
++  stage-runner:
++    provider: deterministic/stage-runner
++    harness: shell
++    invoke: $EXAMPLES_DIR/stage-runner.sh
++  approver:
++    provider: deterministic/approver
++    harness: shell
++    invoke: $EXAMPLES_DIR/approve-seat.sh
++tiers:
++  L1:
++    name: Research review tier
++    seats:
++      - approver
++EOF
++echo "    .etude/ written"
++
++# ---------------------------------------------------------------------------
++# Commit the etude config so the HEAD commit includes it (good practice;
++# not strictly required since etude reads from filesystem, not git tree).
++# ---------------------------------------------------------------------------
++git -C "$WORK" add .etude/
++git -C "$WORK" commit --quiet -m "add etude research workflow config"
++
++# ---------------------------------------------------------------------------
++# Step 1: run the research workflow live.
++# etude run research prints "captured <oid>" per stage, "captured gate <id>
++# status=pass" when the gate passes, then "ref refs/etude/runs/<id>".
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 1: etude run research (5 stages + review gate)"
++RUN_OUT="$("$ETUDE" run research --task inputs/topic.txt)"
++echo "$RUN_OUT"
++RUN_ID="$(printf '%s\n' "$RUN_OUT" | grep '^ref refs/etude/runs/' | sed 's|^ref refs/etude/runs/||')"
++echo ""
++echo "==> captured run: $RUN_ID"
++
++# ---------------------------------------------------------------------------
++# Step 2: inspect the run.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 2: etude run show $RUN_ID"
++"$ETUDE" run show "$RUN_ID"
++
++# ---------------------------------------------------------------------------
++# Step 3: forward replay — re-execute all 5 stages with the same recorded
++# inputs.  Output is byte-stable: stage-runner.sh is deterministic.
++# The engine resolves runners from .etude/registry.yaml (stage-runner seat).
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 3: etude replay $RUN_ID (forward — all 5 stages)"
++echo "    replay output:"
++"$ETUDE" replay "$RUN_ID"
++
++# ---------------------------------------------------------------------------
++# Done.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Walkthrough complete."
++echo "    git repo, binary, and temp dirs will be cleaned up on exit."
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 8cf0aca..cf71f7e 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -1046,6 +1046,236 @@ func TestRunReservedWorkflowNames(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// AC tests: research (non-dev) workflow — generality proof
++// ---------------------------------------------------------------------------
++
++// writeResearchFiles writes deterministic runner/seat/check scripts and
++// .etude/workflow.yaml + .etude/registry.yaml with absolute paths into repo.
++// Returns the absolute path to the stage-runner script (used to verify the
++// registry wiring in assertions).
++func writeResearchFiles(t *testing.T, repo string) string {
++	t.Helper()
++
++	// stage-runner.sh: concatenate sorted inputs to output file.
++	stageRunnerPath := filepath.Join(repo, "stage-runner.sh")
++	if err := os.WriteFile(stageRunnerPath, []byte(
++		"#!/bin/sh\n: > \"$ETUDE_OUTPUT_FILE\"\n"+
++			"for f in $(ls \"$ETUDE_INPUTS_DIR\" | sort); do\n"+
++			"    cat \"$ETUDE_INPUTS_DIR/$f\" >> \"$ETUDE_OUTPUT_FILE\"\ndone\n",
++	), 0o755); err != nil {
++		t.Fatalf("write stage-runner.sh: %v", err)
++	}
++
++	// approve-seat.sh: always votes go.
++	approvePath := filepath.Join(repo, "approve-seat.sh")
++	if err := os.WriteFile(approvePath, []byte(
++		"#!/bin/sh\nprintf '{\"verdict\":\"go\"}' > \"$ETUDE_OUTPUT_FILE\"\n",
++	), 0o755); err != nil {
++		t.Fatalf("write approve-seat.sh: %v", err)
++	}
++
++	// gate-check.sh: exits 0 when the reviewed artifact is non-empty.
++	gateCheckPath := filepath.Join(repo, "gate-check.sh")
++	if err := os.WriteFile(gateCheckPath, []byte(
++		"#!/bin/sh\nfor f in \"$ETUDE_INPUTS_DIR\"/*; do\n"+
++			"    [ -f \"$f\" ] || continue\n"+
++			"    [ -s \"$f\" ] && exit 0\ndone\nexit 1\n",
++	), 0o755); err != nil {
++		t.Fatalf("write gate-check.sh: %v", err)
++	}
++
++	// .etude/workflow.yaml: 5-stage research workflow.
++	workflowContent := fmt.Sprintf(`name: research
++stages:
++  - name: research
++    produces: findings
++    inputs:
++      - task
++    skill: research-skill
++    runner:
++      name: stage-runner
++  - name: fact-check
++    produces: checked
++    inputs:
++      - task
++      - findings
++    skill: fact-check-skill
++    runner:
++      name: stage-runner
++  - name: draft
++    produces: draft
++    inputs:
++      - checked
++    skill: draft-skill
++    runner:
++      name: stage-runner
++  - name: review
++    produces: reviewed
++    inputs:
++      - draft
++    skill: review-skill
++    runner:
++      name: stage-runner
++    gate:
++      tier: L1
++      max_rounds: 1
++      checks:
++        - command: %s
++  - name: tone-police
++    produces: toned
++    inputs:
++      - reviewed
++    skill: tone-police-skill
++    runner:
++      name: stage-runner
++`, gateCheckPath)
++	etDir := filepath.Join(repo, ".etude")
++	if err := os.MkdirAll(etDir, 0o755); err != nil {
++		t.Fatalf("mkdir .etude: %v", err)
++	}
++	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(workflowContent), 0o644); err != nil {
++		t.Fatalf("write workflow.yaml: %v", err)
++	}
++
++	// .etude/registry.yaml: stage-runner + approver seats + L1 tier.
++	registryContent := fmt.Sprintf(`quorum: unanimous
++seats:
++  stage-runner:
++    provider: deterministic/stage-runner
++    harness: shell
++    invoke: %s
++  approver:
++    provider: deterministic/approver
++    harness: shell
++    invoke: %s
++tiers:
++  L1:
++    name: Research review tier
++    seats:
++      - approver
++`, stageRunnerPath, approvePath)
++	if err := os.WriteFile(filepath.Join(etDir, "registry.yaml"), []byte(registryContent), 0o644); err != nil {
++		t.Fatalf("write registry.yaml: %v", err)
++	}
++
++	return stageRunnerPath
++}
++
++// TestRunWorkflowResearch is the generality-proof test for etude-2pc.3.
++// It verifies that the engine has no dev-specific assumptions by running a
++// genuinely non-dev research workflow live, then asserting:
++//  1. Manifest has exactly 5 stages with output roles findings/checked/draft/
++//     reviewed/toned (non-dev roles) and produced_by=original.
++//  2. Artifact-ref chaining: fact-check input[findings].Artifact ==
++//     research output.Artifact (registry-mechanism reuse proof).
++//  3. The recorded review gate attempt has Status==pass AND seat "approver"
++//     reflects the registry-resolved stub (catches silent RERUN regression).
++//  4. etude replay <id> (forward) re-executes all 5 stages without error.
++func TestRunWorkflowResearch(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh scripts not supported on Windows")
++	}
++	repo := initCaptureRepo(t)
++	writeResearchFiles(t, repo)
++	writeFile(t, repo, "topic.txt", "research task content\n")
++	chdir(t, repo)
++
++	runID := "research-20260101T000000Z-genproof1"
++	stdout, stderr, err := execute("run", "research",
++		"--task", "topic.txt",
++		"--run-id", runID,
++	)
++	if err != nil {
++		t.Fatalf("etude run research returned error: %v\nstderr: %s\nstdout: %s", err, stderr, stdout)
++	}
++
++	// The stdout must include a captured gate pass line and the ref line.
++	if !strings.Contains(stdout, "captured gate review.r1 status=pass") {
++		t.Errorf("stdout missing 'captured gate review.r1 status=pass':\n%s", stdout)
++	}
++	if !strings.Contains(stdout, "ref refs/etude/runs/"+runID) {
++		t.Errorf("stdout missing ref line:\n%s", stdout)
++	}
++
++	m := readRunManifest(t, repo, runID)
++
++	// AC1: exactly 5 stages with non-dev output roles.
++	wantRoles := []string{"findings", "checked", "draft", "reviewed", "toned"}
++	if len(m.Stages) != 5 {
++		t.Fatalf("manifest stages = %d, want 5", len(m.Stages))
++	}
++	for i, s := range m.Stages {
++		if s.Output.Role != wantRoles[i] {
++			t.Errorf("stage[%d].output.role = %q, want %q", i, s.Output.Role, wantRoles[i])
++		}
++		if s.ProducedBy != "original" {
++			t.Errorf("stage[%d].produced_by = %q, want original", i, s.ProducedBy)
++		}
++	}
++
++	// AC2: artifact-ref chaining — fact-check input[findings] == research output.
++	// Stage indices: 0=research, 1=fact-check.
++	researchOut := m.Stages[0].Output
++	// fact-check has inputs [task, findings]; findings is at index 1.
++	factCheckInputs := m.Stages[1].Inputs
++	var findingsInput *runmanifest.ArtifactRef
++	for i := range factCheckInputs {
++		if factCheckInputs[i].Role == "findings" {
++			findingsInput = &factCheckInputs[i]
++			break
++		}
++	}
++	if findingsInput == nil {
++		t.Fatal("fact-check stage has no 'findings' input")
++	}
++	if findingsInput.Artifact != researchOut.Artifact {
++		t.Errorf("fact-check input[findings].Artifact %q != research output.Artifact %q",
++			findingsInput.Artifact, researchOut.Artifact)
++	}
++	if findingsInput.Path != researchOut.Path {
++		t.Errorf("fact-check input[findings].Path %q != research output.Path %q",
++			findingsInput.Path, researchOut.Path)
++	}
++
++	// AC3: gate attempt has Status==pass and registry-resolved approver seat.
++	if len(m.Gates) != 1 {
++		t.Fatalf("manifest gates = %d, want 1", len(m.Gates))
++	}
++	g := m.Gates[0]
++	if g.GateID != "review.r1" {
++		t.Errorf("gate_id = %q, want review.r1", g.GateID)
++	}
++	if g.Status != runmanifest.GateStatusPass {
++		t.Errorf("gate status = %q, want pass", g.Status)
++	}
++	// Find the registry-resolved approver seat.
++	foundApprover := false
++	for _, seat := range g.Seats {
++		if seat.Seat == "approver" {
++			foundApprover = true
++			if seat.Verdict != runmanifest.SeatVerdictGo {
++				t.Errorf("approver seat verdict = %q, want go", seat.Verdict)
++			}
++		}
++	}
++	if !foundApprover {
++		t.Errorf("registry-resolved approver seat not found in gate attempt; seats=%v", g.Seats)
++	}
++
++	// AC4: forward replay re-executes all 5 stages without error.
++	// etude replay <runID> (1-arg forward replay) uses .etude/workflow.yaml
++	// and .etude/registry.yaml to resolve runners for each stage name.
++	replayOut, replaySderr, replayErr := execute("replay", runID)
++	if replayErr != nil {
++		t.Fatalf("etude replay returned error: %v\nstderr: %s\nstdout: %s", replayErr, replaySderr, replayOut)
++	}
++	// Forward replay output is the concatenated output of all 5 stages.
++	if len(replayOut) == 0 {
++		t.Error("forward replay produced no output")
++	}
++}
++
+ // ---------------------------------------------------------------------------
+ // helpers
+ // ---------------------------------------------------------------------------
+diff --git a/internal/example/research_example_test.go b/internal/example/research_example_test.go
+new file mode 100644
+index 0000000..b03ba1e
+--- /dev/null
++++ b/internal/example/research_example_test.go
+@@ -0,0 +1,96 @@
++// Package example contains smoke tests that execute example walkthroughs
++// end-to-end against a freshly compiled etude binary.
++package example
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"testing"
++	"time"
++)
++
++// TestResearchWalkthroughSmokeTest proves the generality claim for etude-2pc.3:
++// a non-dev 5-stage research workflow runs live, captures by construction,
++// the review gate passes on round 1, and all 5 stages replay forward.
++//
++// The test builds the binary fresh, drives examples/research/walkthrough.sh,
++// and asserts stable output markers.  It is heavier than in-process CLI tests
++// so it uses a generous timeout.
++func TestResearchWalkthroughSmokeTest(t *testing.T) {
++	// Skip if bash or git is unavailable (e.g. minimal CI image).
++	if _, err := exec.LookPath("bash"); err != nil {
++		t.Skip("bash not found on PATH; skipping research walkthrough smoke test")
++	}
++	if _, err := exec.LookPath("git"); err != nil {
++		t.Skip("git not found on PATH; skipping research walkthrough smoke test")
++	}
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh scripts not supported on Windows")
++	}
++
++	// Locate the repo root: this test lives at internal/example/research_example_test.go,
++	// so walk up two directories from the file's directory.
++	_, thisFile, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("runtime.Caller(0) failed")
++	}
++	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
++
++	// Build etude into a temp directory.  The binary path is passed to the
++	// walkthrough via ETUDE_BIN so the script never falls back to an ambient
++	// binary on $PATH.
++	binDir := t.TempDir()
++	etudebin := filepath.Join(binDir, "etude")
++	t.Logf("building etude -> %s", etudebin)
++	buildCmd := exec.Command("go", "build", "-o", etudebin, "./cmd/etude")
++	buildCmd.Dir = repoRoot
++	buildOut, buildErr := buildCmd.CombinedOutput()
++	if buildErr != nil {
++		t.Fatalf("go build failed: %v\n%s", buildErr, buildOut)
++	}
++
++	// Generous timeout: the walkthrough git-inits, runs 5 stages + gate, shows
++	// the run, and forward-replays.
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
++	defer cancel()
++
++	walkthroughPath := filepath.Join(repoRoot, "examples", "research", "walkthrough.sh")
++	cmd := exec.CommandContext(ctx, "bash", walkthroughPath)
++	cmd.Env = append(os.Environ(), "ETUDE_BIN="+etudebin)
++
++	output, err := cmd.CombinedOutput()
++	outStr := string(output)
++
++	if err != nil {
++		t.Fatalf("walkthrough.sh exited with error: %v\noutput:\n%s", err, outStr)
++	}
++
++	t.Logf("walkthrough output:\n%s", outStr)
++
++	// Assert stable output markers — checked against substrings that are
++	// unlikely to change even if formatting evolves.
++
++	// Non-dev stage names must appear in the run show output.
++	for _, stage := range []string{"stage: research", "stage: fact-check", "stage: draft", "stage: review", "stage: tone-police"} {
++		assertContains(t, outStr, stage, "run show must include "+stage)
++	}
++
++	// The review gate must pass on round 1 (folded optional: catches silent RERUN regression).
++	assertContains(t, outStr, "captured gate review.r1 status=pass",
++		"live run must print gate pass line")
++
++	// The run show output must include the gate pass status.
++	assertContains(t, outStr, "status:   pass", "run show must show gate status=pass")
++
++	// The approver seat must appear (registry-mechanism reuse proof).
++	assertContains(t, outStr, "seat: approver", "run show must show approver seat from registry")
++
++	// Forward replay must complete.
++	assertContains(t, outStr, "Step 3: etude replay", "walkthrough must reach forward replay step")
++
++	// Overall completion marker.
++	assertContains(t, outStr, "Walkthrough complete", "walkthrough must reach completion marker")
++}

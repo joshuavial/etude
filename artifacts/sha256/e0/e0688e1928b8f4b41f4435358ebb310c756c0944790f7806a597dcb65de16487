@@ -1,0 +1,18 @@
+# Final Review artifact — etude-2pc.3 (generality test, NO engine change)
+**Verdict: GO. Commit scope clean. Ready to close.** Commit 612d0ab083be3d139bab59473dcf85f1c464a907.
+
+## Scope (10 in-scope paths staged; docs/README.md + other pre-existing mkdocs files EXCLUDED; no stray files; NO non-test internal Go)
+examples/research/{walkthrough,stage-runner,approve-seat,gate-check}.sh + inputs/topic.txt + README.md; internal/cli/run_test.go (test); internal/example/research_example_test.go (new test); README.md; docs/plans/product/live-execution.md.
+
+## Confirmed
+- AC2 (defining no-engine-change): git diff vs HEAD and vs parent 6160230 with ':!**/*_test.go' | grep '^internal/' → EMPTY. Only internal Go is test files. PROVEN.
+- AC1: TestRunWorkflowResearch asserts 5 non-dev stages (findings/checked/draft/reviewed/toned), artifact-ref chaining, gate review.r1 Status==pass with registry-resolved approver seat, forward replay; walkthrough.sh runs clean.
+- Green: go test cli/example PASS; make lint clean; make docs zero diff; make docs-reality OK.
+
+## Gate history
+- Plan r1 PASS (Tier 1 unanimous; folds: registry-resolution assertion, README round-1-pass invariant, scoped proof command).
+- Implement r1 PASS (Tier 1 unanimous; opus independently verified no-engine-change EMPTY + walkthrough).
+- Verify r1 PASS (Tier 1 unanimous; AC2 proven bead-scoped).
+- Docs r1 PASS (Tier 3 single Opus). Final Review r1 PASS (Tier 3 single Opus / dev-pr-reviewer).
+
+## Deferred (non-blocking) → etude-aqh (byte-equal replay assertion + assert-no-review.r2 + ls-parsing fix).
