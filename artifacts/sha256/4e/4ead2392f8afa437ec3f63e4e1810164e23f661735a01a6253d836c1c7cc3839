@@ -1,0 +1,111 @@
+✓ etude-egg · Add retros: config block to workflow.yaml (triggers + generator)   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: added optional retros: block to workflow.yaml (parse/validate/accessors; advisory/non-gating; nil-for-absent + present-null=present-empty invariants; default-true on_run_close); Tier-1 gate passed (plan 2 rounds + implement 2 rounds); 351a080
+
+DESCRIPTION
+Deferred Phase-C extra from etude-n0t (design: docs/plans/product/etude-retro-command.md §4). Extend the .etude/workflow.yaml schema (internal/workflow) with a retros: block: on_run_close (default TRUE), on_repeated_gate_block {enabled:false, threshold:3}, on_failed_verify:false, on_blocked_state:false, post_bench:false, generator:<script> (required only when any trigger is automated). Triggers are NON-GATING/advisory — they map to invocations of retro capture (manual) or retro generate (automated). This bead = parse + validate the config block (KnownFields, defaults, generator-required-when-automated); the config never makes a retro a precondition for advancing. Tractable schema extension mirroring the existing workflow.yaml parsing.
+
+DESIGN
+## Plan
+
+**Scope note:** This bead adds the `retros:` config block to the `.etude/workflow.yaml` SCHEMA only — parse + validate + expose it on the parsed `Workflow`. Per design §4 the triggers are NON-GATING / advisory: they map to `retro capture` (manual) or `retro generate` (automated, Phase C, not yet built) invocations and NEVER make a retro a precondition for advancing a workflow. Etude has no run-close hook, so actual auto-firing is OUT OF SCOPE: it is read off the parsed config by tooling/agents (the dogfood workflow) and is their choice. This bead only makes the config parseable and validated.
+
+**Approach:** Mirror the existing yaml.v3 + `KnownFields(true)` + `Validate()` patterns in internal/workflow/workflow.go exactly. Add a public `Retros *RetrosConfig` field to `Workflow`, a matching `retrosYAML` decode struct, ACCESSOR methods that compute effective values, and validation. No new deps.
+
+`retros:` is a top-level key alongside `name:`/`stages:` (per §4 config shape). Decode the block with a dedicated `retrosYAML` struct so `KnownFields(true)` rejects unknown keys inside it just as it does at top level.
+
+**Presence-preserving model (THE FIX — supersedes the earlier synthesize-on-absent approach):** The earlier plan synthesized `w.Retros = &RetrosConfig{OnRunClose: ptr(true)}` whenever the `retros:` block was ABSENT. That was wrong on two counts and is REMOVED:
+1. It destroyed the presence bit: after synthesis `Validate()` could not distinguish an absent block from an explicit one, so the generator-required rule could not be gated on the block being present.
+2. It broke round-trip: a legacy `workflow.yaml` with no `retros:` parsed to `Retros != nil`, so `YAML()` re-emitted a spurious `retros:` block (`omitempty` only drops NIL pointers). `ParseYAML(legacy).YAML()` was therefore not byte-stable. (`Default().YAML()` happened to stay stable only because `Default()` bypasses the parse path and leaves `Retros = nil`; the parse path did not.)
+
+The fix is codex's option (a): **keep `nil` for an absent block; expose effective defaults via accessor methods, never by mutating the struct.**
+
+- On parse, an ABSENT `retros:` block leaves `w.Retros == nil`. Nothing is synthesized. So `Retros == nil` ⇔ block absent, and `ParseYAML(legacy).YAML()` re-encodes with `omitempty` dropping the nil pointer → byte-stable round-trip.
+- A PRESENT block decodes into a non-nil `*RetrosConfig`. Omitted fields inside it stay `nil` (`*bool` / `*int`) so the encoder re-emits the block exactly as authored (no field that the author omitted gets materialized into the struct). The block's presence (`Retros != nil`) is preserved across round-trip.
+- We do NOT mutate the struct to fill defaults. There is no `applyRetroDefaults` step. Effective values are computed on read.
+
+**Accessor surface (chosen: methods on `Workflow`):** I expose the effective defaults as methods on `Workflow` rather than on `*RetrosConfig`. Justification: a consumer holds a `Workflow` and the most important default — `on_run_close` true — must hold even when `w.Retros == nil` (absent block). A method on `*RetrosConfig` would force every caller to nil-check the pointer first and re-implement the absent-block default, which is exactly the bug we are fixing. Putting the accessors on `Workflow` lets callers read the effective value with one call regardless of presence/omission. The accessors are:
+
+- `(w Workflow) OnRunCloseEnabled() bool` — true when `w.Retros == nil`, OR (`w.Retros != nil` and `w.Retros.OnRunClose == nil`), OR (`*w.Retros.OnRunClose == true`); returns the explicit value when the `*bool` is set (so explicit `on_run_close: false` is honored).
+- `(w Workflow) OnRepeatedGateBlockEnabled() bool` — false when `w.Retros == nil` or the sub-block is nil or its `Enabled` is nil/false; the explicit value otherwise. (Default OFF.)
+- `(w Workflow) RepeatedGateBlockThreshold() int` — returns 3 when the trigger's `Threshold *int` is nil; the explicit value otherwise. (Only meaningful when the trigger is enabled; default 3.)
+- `(w Workflow) OnFailedVerifyEnabled() bool`, `(w Workflow) OnBlockedStateEnabled() bool`, `(w Workflow) PostBenchEnabled() bool` — each false when `w.Retros == nil` or the field is nil/false; explicit value otherwise. (Default OFF.)
+- `(w Workflow) RetroGenerator() string` — `w.Retros.Generator` when present, else "".
+
+The public `RetrosConfig`/`RepeatedGateBlock` structs keep `*bool`/`*int` fields so set-vs-omitted is distinguishable for both encoding and the accessors; the accessors are the only sanctioned way to read effective values. Key property satisfied: `OnRunCloseEnabled()` returns true by default whether the block is ABSENT or PRESENT-with-on_run_close-omitted, and an explicit `on_run_close: false` returns false.
+
+**Validation rules (new validateRetros, wrapped in ErrInvalidWorkflow, matching the existing error style) — gated on PRESENCE, computed against EFFECTIVE values:**
+- `validateRetros` runs ONLY when `w.Retros != nil` (an explicit block). An absent block (nil) needs no validation and never fails: the default `on_run_close` true is advisory and nothing automated is wired yet, so `Default()` and all legacy workflows stay valid. (`Validate()` early-returns from the retros check when `w.Retros == nil`.)
+- Within a present block, `generator` is required when at least one AUTOMATED trigger is EFFECTIVELY enabled. Compute via the accessors: `w.OnRunCloseEnabled()` (true by default within a present block since the omitted `*bool` defaults true), `w.OnRepeatedGateBlockEnabled()`, `w.OnFailedVerifyEnabled()`, `w.OnBlockedStateEnabled()`, or `w.PostBenchEnabled()`. If any is true and `strings.TrimSpace(w.RetroGenerator()) == ""` → error naming the requirement. NOTE: because a present block has `on_run_close` effectively true by default, the moment an operator writes a `retros:` block they opt into the generator requirement unless they explicitly set `on_run_close: false` (and leave the others off). This is the intended contract: writing the block = opting into config; the absent-block escape hatch is what keeps legacy/`Default()` valid. (State explicitly in doc + tests.) `manual` is the always-on baseline, not a config field, and needs no generator.
+- `on_repeated_gate_block.threshold` must be `>= 1` when that trigger is enabled. Validate against the EFFECTIVE threshold: when enabled and `Threshold` is non-nil and `< 1` → error. A nil threshold is the default-3 case and is valid (never errors). Threshold is ignored (not validated) when the trigger is disabled.
+- Unknown fields inside `retros:` (and its nested `on_repeated_gate_block:`) rejected by the existing `KnownFields(true)` decoder (no extra code) — the nested decode struct must carry yaml tags so the strict decoder covers it.
+
+**Encoding (toYAML):** add `Retros *retrosYAML` to `workflowYAML` with `omitempty`. `toYAML` sets it only when `w.Retros != nil`, copying the `*bool`/`*int` fields through verbatim (no default materialization). So:
+- `Retros == nil` (absent block, AND `Default()`) → `omitempty` drops it → `Default().YAML()` golden bytes UNCHANGED and `ParseYAML(legacy).YAML()` byte-stable.
+- An explicit block re-encodes exactly as authored (omitted fields stay omitted because they are nil pointers), so parse→encode→parse is stable.
+
+**Files:**
+- internal/workflow/workflow.go — add `RetrosConfig` + `RepeatedGateBlock` public structs (fields are `*bool`/`*int`/`string`); `Retros *RetrosConfig` on `Workflow`; the accessor methods on `Workflow` listed above; `retrosYAML`/`repeatedGateBlockYAML` decode structs with `*bool`/`*int` + yaml tags for omission detection and nested KnownFields; `validateRetros` called from `Validate()` (guarded by `w.Retros != nil`); extend `toYAML`/`toWorkflow` to pass the pointer through verbatim (NO defaulting/synthesis on either path). Preserve existing helper/error style.
+- internal/workflow/workflow_test.go — new tests (see Tests).
+
+**Tests:**
+- Legacy YAML (no `retros:` block) → `w.Retros == nil`, `w.OnRunCloseEnabled() == true`, all other trigger accessors false, no validation error.
+- `ParseYAML(legacy).YAML()` round-trips BYTE-STABLE: re-encoding a legacy workflow.yaml that has no `retros:` produces NO spurious `retros:` block (assert bytes equal input / assert no "retros" substring).
+- `retros:` block PRESENT with `on_run_close` omitted → `w.Retros != nil` (presence preserved) AND `w.OnRunCloseEnabled() == true` (effective default).
+- Explicit `on_run_close: false` honored → `w.OnRunCloseEnabled() == false`.
+- Automated-trigger-without-generator → ErrInvalidWorkflow, but ONLY for an explicit block (e.g. block with `on_failed_verify: true` and no generator errors; an ABSENT block never errors even though on_run_close is effectively true).
+- `on_repeated_gate_block.enabled: true`, threshold omitted → `w.RepeatedGateBlockThreshold() == 3`, valid; threshold `0` → error; threshold `>= 1` → valid.
+- KnownFields rejects an unknown key inside `retros:` AND inside nested `on_repeated_gate_block:`.
+- `Default().YAML()` golden bytes UNCHANGED (existing test still passes — `Default()` leaves `Retros == nil`, omitted).
+- Explicit-block round-trip stable: parse→encode→parse of an authored block (with some fields set, some omitted) yields an equal struct and equal bytes (omitted fields stay omitted).
+- Manual-only / all-automated-off explicit block: a present block with `on_run_close: false` and every other trigger false → no generator required (no error).
+
+**Docs:**
+- docs/init.md — the only user-facing doc describing the scaffolded workflow.yaml shape ("What it creates"). Add a short `retros:` schema subsection documenting the block, the default-on `on_run_close` (effective both when the block is absent and when present-with-omitted-field), the opt-in triggers, the generator-required-when-an-explicit-block-enables-automation rule (and that omitting the block entirely keeps legacy/Default valid), and the advisory/non-gating nature. Cross-reference docs/plans/product/etude-retro-command.md §4.
+- `make docs-reality` / `make docs-check` are NOT triggered: both guard the CLI command surface (generated docs/cli pages + README command mentions). This bead adds no command and changes no command surface, so the CLI docs guards do not apply. (Noted explicitly so the gate does not expect a docs/cli change.)
+
+**Risks:** Low. Additive, optional field following the existing `Eval *Eval` optional-pointer convention. The accessor model removes the round-trip and presence-bit hazards of the earlier synthesize-on-absent approach: `Retros == nil` ⇔ absent, defaults are computed on read, the struct is never mutated, so legacy YAML re-encodes byte-stable and the generator-required rule is correctly gated on an explicit block. No consumers break: the only external readers are internal/cli/init.go (uses Default()/ParseYAML; Default() leaves Retros nil) — adding an optional field + read accessors is backward compatible.
+
+**Gate tier:** Tier 1. The review-gate runbook (docs/plans/dogfood/review-gate-runbook.md:25) lists "workflow ... schema/format ... changes" as a Tier 1 trigger. Although this change is additive + optional + advisory (no gating, no storage write), it modifies the workflow schema and future compatibility of .etude/workflow.yaml, which is squarely the runbook's letter. Recommend Tier 1; the gate holds the runbook's text.
+
+**Capture:**
+- inputs: bead etude-egg description; Tier-1 plan-gate defect report (codex, option a — keep nil for absent, defaults via accessors); docs/plans/product/etude-retro-command.md §4 (authoritative config shape + trigger table); internal/workflow/workflow.go (Workflow/Stage/Eval structs, ParseYAML/KnownFields, Validate, toYAML/toWorkflow, omitempty/nil-pointer encode behavior); internal/workflow/workflow_test.go + example_test.go (test patterns); internal/cli/init.go (consumer); docs/init.md (workflow.yaml doc); docs/plans/dogfood/review-gate-runbook.md (tier triggers); Makefile + scripts/docs-reality-check.sh (docs guards scope)
+- output: bead --design field
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added public `RetrosConfig` + `RepeatedGateBlock` structs with `*bool`/`*int` pointer fields for omitted-vs-explicit distinction
+- Added `Retros *RetrosConfig` field on `Workflow` (nil = absent, non-nil = explicit block authored)
+- Added 7 accessor methods on `Workflow`: `OnRunCloseEnabled()`, `OnRepeatedGateBlockEnabled()`, `RepeatedGateBlockThreshold()`, `OnFailedVerifyEnabled()`, `OnBlockedStateEnabled()`, `PostBenchEnabled()`, `RetroGenerator()` — compute effective defaults without mutating the struct
+- Added `validateRetros()` called from `Validate()` only when `Retros != nil`; absent block always valid
+- Added `retrosYAML` + `repeatedGateBlockYAML` decode structs with yaml tags so `KnownFields(true)` rejects unknown keys at both levels
+- Extended `toYAML()` / `toWorkflow()` to pass the pointer through verbatim (no defaulting/synthesis on either path)
+- Added 15 new tests covering all plan-specified cases
+- Updated `docs/init.md` with a `retros:` schema subsection
+
+**Key decisions:**
+- Nil-for-absent model: `Retros == nil` ⟺ block absent, preserving the presence bit and ensuring `ParseYAML(legacy).YAML()` is byte-stable
+- Accessor methods on `Workflow` (not `*RetrosConfig`) so callers never need to nil-check the pointer
+- `goldenDefaultYAML` test UNMODIFIED and PASSING — `Default()` leaves `Retros = nil`, omitempty drops it
+
+**Checks run:**
+- `go build ./...`: PASS
+- `go test ./...`: PASS (all 15 packages + all 15 new retros tests)
+- `make lint` (gofmt + go vet): PASS
+
+**Changed files:**
+- internal/workflow/workflow.go
+- internal/workflow/workflow_test.go
+- docs/init.md
+
+**Plan deviations:** None. Implemented exactly as gated. One gofmt alignment fix applied to `retrosYAML` struct (trailing-space alignment gofmt normalizes).
+
+**Capture:**
+- inputs: approved plan (bead etude-egg --design), prior Plan gate notes (Tier-1, round 2: nil-for-absent + accessor model)
+- output: working tree diff (3 files) and bead notes
+
+LABELS: phase:review
+
