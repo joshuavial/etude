@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-q396-dev-claude",
   "workflow": "dev-claude",
   "workflow_version": "manual-v1",
@@ -32,6 +32,83 @@
         "size": 13087
       },
       "timestamp": "2026-09-07T03:01:52.150899Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "4c982d59caca90136ee2ac8e23cb7b2dfec4e1ba0998df6d7fbcb10ccb316a53"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Signal handling needs unconditional cleanup when ExecuteContext returns; otherwise successful executions leave signal interception and the waiting goroutine active. 2. Tests require descendants to reach ESRCH, contradicting the acknowledged zombie limitation. Verify termination without depending on init reaping within three seconds."
+          ],
+          "optional": [
+            "1. Clarify that group-kill failures during post-run cleanup are ignored, whereas cancellation failures can surface; qualify the unconditional I1 guarantee accordingly."
+          ],
+          "raw_output": {
+            "role": "astra",
+            "artifact": "874a6622ed71b0b40663cb785d3bc066f5ca61f81907f26a82aa42537ed11765",
+            "path": "artifacts/sha256/87/874a6622ed71b0b40663cb785d3bc066f5ca61f81907f26a82aa42537ed11765",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 656
+          },
+          "session": {
+            "session_id": "astra-3cfdd9bf6ee3d929",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "3cfdd9bf6ee3d9299e6196f8d5d72fea938c3ce7baae9e3923275e9369a9baef",
+              "path": "artifacts/sha256/3c/3cfdd9bf6ee3d9299e6196f8d5d72fea938c3ce7baae9e3923275e9369a9baef",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 558
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T03:02:21.715588Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/etude-q396-dev-claude/scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools= verdict=failed; runner failed: runner failed: /private/var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/etude-output-only-seat-3402198870/etude-seat-candidate-0: exit status 1: stderr: seat fable: model CLI exited non-zero",
+          "timestamp": "2026-09-07T03:02:23.147354Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-09-07T03:02:23.149721Z"
     }
   ]
 }
