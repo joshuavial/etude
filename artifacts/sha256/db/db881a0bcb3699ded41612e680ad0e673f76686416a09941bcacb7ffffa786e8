@@ -1,0 +1,19 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "the `--ref` spoof/override class recurred: q87 subject_run/scope; n0t reintroduced it via an unreserved `generator` provenance key",
+    "the in-harness repo-aware reviewer seat GO'd 4 times on defects codex/gemini correctly BLOCKED (the two --ref holes, retro show dropping gate/bench/eval/custom metadata, resolveSubjectStage silently picking one stage of a multi-stage run)"
+  ],
+  "root_causes": [
+    "command-generated Refs/manifest keys were not reserved against --ref override",
+    "the in-harness repo-aware reviewer seat did only \"it works\" review, not adversarial + spec-completeness review"
+  ],
+  "follow_up_beads": [
+    "etude-712 (make gen-docs TestDriftGuard expectedCommands exhaustive)"
+  ],
+  "decisions": [],
+  "durable_changes": [
+    "review-gate-runbook.md new \"Recurring Defect Classes (implement gate)\" section: (1) reserve every command-generated Refs/manifest key against --ref override; (2) the in-harness repo-aware reviewer seat must do adversarial + spec-completeness review, not just \"it works\""
+  ]
+}
