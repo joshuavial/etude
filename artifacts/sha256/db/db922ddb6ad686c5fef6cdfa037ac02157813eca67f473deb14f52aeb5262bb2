@@ -1,0 +1,8 @@
+✓ etude-quk · Remove now-dead exported runmanifest.VerifyArtifactFile/ReferencedArtifactPaths wrappers   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: removed the 2 zero-caller exported wrappers (VerifyArtifactFile/ReferencedArtifactPaths) left dead by 0rt's WriteManifestTree consolidation; compiler-verified no callers; Tier-2 gate passed, 260ae54
+
+DESCRIPTION
+These two exported wrappers were added in q87 ONLY so retro.Writer could hand-copy the verify loop. etude-0rt consolidated that into runmanifest.WriteManifestTree (which uses the unexported originals), leaving both exported wrappers with ZERO callers (confirmed by all 3 gate seats). Remove them (or document why public). Trivial dead-exported-API cleanup; deferred from 0rt to keep that bead scoped.
+
