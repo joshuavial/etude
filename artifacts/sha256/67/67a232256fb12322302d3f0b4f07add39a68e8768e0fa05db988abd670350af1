@@ -1,0 +1,179 @@
+# Implement — etude-9uf.5: the proof run
+
+## What was run
+
+`etude-3xt` was worked end to end by a **real `workmux` worker lane** and gated by
+this supervisor from a different worktree. It landed on `origin/main` as
+**`752be1a`** (6 files, +457/−20) and the worker closed the bead itself.
+
+- Lane: `lane/3xt-retro-ref` at `.worktrees/lane-3xt`, created with
+  `workmux add … -a claude -P <prompt>`, branched from `origin/main` at `1b837a1`.
+- The worker ran the `etude-loop` skill, wrote `.etude/tmp/etude-3xt/<phase>.md`
+  after each phase, and stopped. It never gated its own work.
+- The supervisor captured each artifact, ran `etude gate`, completed the panel,
+  recorded the attempt, and handed the seats' findings back verbatim.
+- Communication was `SendMessage` between two Claude sessions plus a file dropped
+  in the lane's `.workmux/`. That worked without incident.
+
+## The measurement
+
+Computed from `refs/etude/runs/etude-3xt:manifest.json`:
+
+| phase | attempts | outcome |
+|---|---|---|
+| plan | 2 | `plan.r1` escalated (etude gate) → `plan.r2` **pass** (out of band) |
+| implement | 2 | `implement.r1` escalated → `implement.r2` **pass** |
+| verify | 2 | `verify.r1` escalated → `verify.r2` **pass** |
+| docs | 2 | `docs.r1` escalated → `docs.r2` **pass** |
+| review | 2 | `review.r1` escalated → `review.r2` **pass** |
+
+- **10 attempts. 5 produced by `etude gate` alone; all 5 escalated.**
+- At SEAT granularity, which the approved plan also asked for and an earlier
+  draft omitted: `etude gate` emitted **10 seat entries** (3 codex `go`, 2
+  deterministic check `go`, 5 opus `failed`); the 5 bootstrap appends carried
+  **8** (5 opus in-harness `go`, 3 codex `go`).
+- **All 5 escalations are the same cause**: the `opus` seat recorded `failed`
+  because it cannot be invoked as a subprocess.
+- **5 attempts completed out of band; all 5 passed.**
+- **`etude gate` alone passed zero of five gates.** Every single passing verdict
+  on this run required a manual bootstrap append.
+- 0 seat BLOCK verdicts. 0 ungated stage artifacts.
+
+That last pair is the headline for `etude-4ed`: the gate machinery is not
+*failing* — the checks ran, codex ran, the synthesis was correct, and fail-closed
+behaviour was exactly right every time. It simply **cannot complete a panel**,
+so the supervisor is required to hand-append the deciding verdict five times per
+bead. That is the mechanism, measured, in one place.
+
+## The supervision hazard this run surfaced
+
+**`etude gate` runs its deterministic checks in the CALLER's working directory.**
+
+The supervisor and worker are in different worktrees. **At the time the verify
+gate ran** (`verify.r1`, 2026-08-15T16:44Z, supervisor at `1b837a1`) the
+supervisor's worktree did not contain the worker's change at all: `grep -c
+retro_file internal/cli/retro.go` returned 0 there. That is no longer
+reproducible — the supervisor has since rebased past `752be1a`, which introduced
+`retro_file`, so the same command returns 6 today. The claim is pinned to the
+commit and timestamp because both seats flagged the un-pinned present-tense
+version, one of them as blocking; an artifact that documents a hazard must not
+itself go stale. Running `etude gate --stage verify` from
+the supervisor's own cwd, which is the obvious thing to do since that is where
+the supervisor is, would have run `make test` and `make lint` against a tree
+without the change, passed both, and certified nothing.
+
+Nothing in `etude gate`, `.etude/workflow.yaml`, or the supervisor runbook says
+which worktree the checks run in. **This is a silent fail-open on the one gate
+whose entire value is executing real checks, and it is invisible because the
+wrong answer is green.** Every other gate defect this epic found announced itself
+with a BLOCK; this one would announce itself with a pass.
+
+Worked around by invoking the gate with cwd set to the lane. Filed as
+**`etude-4qi` (P1)**. The durable half of the fix is not a flag but *recording
+the resolved check directory in the gate attempt* — today a gate record cannot be
+audited for this at all.
+
+## What the worker produced
+
+All five phases passed at their **first completed panel — zero BLOCK rounds.**
+For contrast, this supervisor's own beads `.3` and `.4` took **16 and 22**
+attempts. That comparison is not like-for-like — 5 of this run's 10 attempts are
+mechanical escalations, against 4 and 6 on `.3` and `.4` — so the sharper figure,
+computable from all three manifests, is **seat BLOCK verdicts: 0 here, 8 on `.3`,
+10 on `.4`.**
+
+**That contrast is n=1 and should not be read as a result about the model.**
+`etude-3xt` was selected for tractability, its fix direction was already named in
+the bead text, and it touches one Go file plus its test. A harder or vaguer bead
+would very likely block. What the run does establish is narrower and still worth
+having: the supervised loop can carry a bead from kickoff to `origin/main` without
+the supervisor writing any of the worker's artifacts.
+
+The worker was given the bead text and each phase's abstraction level, and
+nothing about what a seat would ask. It nonetheless:
+
+- **inverted the bead's suggested fix** — rather than capturing a ref when
+  markdown lands, it made capture *emit* the markdown, so the file is an output
+  of the command that writes the ref rather than a second remembered step — and
+  both plan seats returned GO on the inverted plan;
+- **measured rather than asserted** that its regressions fail without the change,
+  by scripted neutering edits, twice, and the verify seat independently
+  reproduced one;
+- **filed its own follow-on beads** (`etude-24d`, `etude-8ft`) when a seat asked.
+
+21 optionals were returned across the four earlier gates — a figure derived by
+summing `decision.degraded_reason` prose (7+4+5+5), since `seats[].optional` is
+empty on every bootstrap attempt. It is the one number in this artifact not
+computable from a structured field, which is itself the limitation it describes. The final-review seat
+verified each was folded or explicitly declined — none vanished silently.
+
+## Two things the seat-level recount surfaced
+
+**The bootstrap appends re-record verdicts `etude gate` already produced, and
+the copies are worse than the originals.** Each `.r2` attempt carries the codex
+verdict again, because the bootstrap reconstructs a whole panel rather than
+completing the existing one. Three consequences, all verified:
+
+- the re-recorded codex entries carry **no `raw_output` and no `session`** — the
+  r1 originals carry both. The duplicate is evidence-free;
+- they **drop the r1 optionals**;
+- worst, **`verify.r2` — the only verify attempt marked `pass` — carries no
+  `check.0`/`check.1` seats at all.** The deterministic checks ran, at r1, and
+  the record that certifies verify as passing contains **zero deterministic-check
+  evidence**. A reader auditing this run for "did the checks pass" must know to
+  look at the escalated attempt, not the passing one.
+
+That last point is the strongest argument yet for `etude-4ed`: verdict injection
+must COMPLETE the existing attempt in place, not emit a second, lossier one.
+
+**The round numbering carries a visible fingerprint of the missing-record
+defect.** `.3`'s verify rounds run 1,3,4,5,6,7 and its docs rounds 1,3,4; `.4`'s
+verify rounds run 1,3,4,…,11. Every one of those gaps is a round whose verdict
+was acted on and appended later under a different id, or never. **A gap in a
+phase's round sequence is machine-detectable evidence that a verdict went
+missing** — which means the defect that needed a seat to catch it six times could
+have been caught by three lines of arithmetic. That is worth more than the
+individual fixes.
+
+**No field anywhere in a gate record captures the check working directory.**
+`check.0` and `check.1` do carry `harness: exec` and a `raw_output` holding the
+full `go test ./...` transcript — an earlier draft said they record "only
+`provider.model`", which was loose. But nothing records WHERE they ran. That
+substantiates `etude-4qi`'s claim that a gate attempt cannot be audited for the
+cwd hazard at all: asserted in an earlier draft, evidenced here.
+
+**Two claims in this artifact are themselves unverifiable, by exactly the
+lossiness it documents.** "Both plan seats returned GO on the inverted plan" and
+"the verify seat independently confirmed one regression" are true, and the only
+surviving record of either is `degraded_reason` prose I wrote — the in-harness
+opus outputs are preserved nowhere, and the re-recorded codex entries carry no
+`raw_output`. Stating that is more useful than quietly softening the wording:
+the bootstrap path makes a supervisor's own summary the sole evidence for what a
+seat said, which is precisely the condition this epic exists to remove.
+
+**All five `.r2` attempts carry empty `seats[].optional` arrays**, so the 21
+optionals returned across this run exist only as `decision.degraded_reason`
+prose. A limitation of the bootstrap path, not of the seats.
+
+## Findings against my own earlier work
+
+The proof run surfaced two defects in beads I had already closed:
+
+1. **`docs/plans/dogfood/supervisor-runbook.md` step 6** still told a supervisor
+   to hand-write a retro and commit it, with no pointer to `etude retro capture`.
+   The worker fixed it as part of `etude-3xt` — the practice fix had otherwise
+   landed only in `retro-ledger.md`, leaving the document supervisors actually
+   follow describing the old two-step habit.
+2. **`mkdocs.yml:66` still lists `plans/dogfood/checklists.md`**, a file bead
+   `.2` deleted. My sweep there checked prose and missed the nav. Neither
+   `make docs-check` nor `make docs-reality` builds the site, so every docs gate
+   on this epic reported green over a dangling nav target. Filed as `etude-fn8`.
+   (An earlier draft of this artifact cited a bead id I had invented rather than
+   read from `bd`. Caught before the gate, but it is the same class of defect the
+   seats blocked three of this epic's final reviews on, so it is recorded.)
+3. **This artifact itself said `.4` took 20 attempts; the manifest says 22.** A
+   miscount, in the artifact whose subject is measurement discipline, caught by
+   the implement gate. The plan for this bead says in as many words that
+   "recording a number the source cannot produce is the defect this epic has
+   spent four beads removing", and I then produced one by hand instead of
+   reading it. Every count in this artifact is now computed.
