@@ -1,0 +1,73 @@
+# etude-5dr.4 final review
+
+ANCESTOR: etude-5dr (P1) — GitHub issue #15 and a blocked downstream project
+require caller-CWD producing runners and their fail-closed mutation guard to ship
+together in one pull request.
+
+BLAST RADIUS: 13 repository files spanning workflow schema, live-run execution,
+manifest audit/versioning, CLI rendering/wiring, tests, and shipped run/gate docs.
+Verification builds only this worktree and creates disposable Git repositories.
+No package install, shared service, main-branch push, or external mutation is
+performed before the requested branch/PR publication.
+
+TRUST BOUNDARY: workflow configuration, the installed Git executable, canonical
+repository identity, and configured Git normalization/ignore/file-mode semantics
+are trusted. The authorized runner is trusted not to rewrite those semantics or
+Git control files solely to alter inspection. Ordinary runner output and tracked,
+index, and non-ignored untracked effects are untrusted until the postflight passes.
+Hostile same-process replacement of Git/tooling and unrelated concurrent writers
+are outside the contract; caller mode requires exclusive working-tree access.
+
+TOPOLOGY: one engine synchronously invokes one producing runner at the single
+`runAndCaptureStage` site shared by fresh and resumed runs. No second caller-mode
+invoker exists; gate checks and seats remain hermetic.
+
+DURABILITY CLASS: caller-runner effects are at-least-once until stage publication;
+successful publication remains the existing CAS-protected ref append. The
+AUTHORITATIVE generation identity is the stable post-run Git commit SHA, not the
+invocation SHA, ancestry relationship, or a timestamp proxy.
+
+IRREVERSIBLE SEQUENCE caller-runner: 1 steps
+IRREVERSIBLE STEP caller-runner.1: invoke the authorized producing runner in the caller working tree
+
+Crash residual: runner edits or a clean commit may survive without a stage record;
+resume is at-least-once, so the operator reconciles the live tree first and caller
+runners must be repeat-safe.
+
+## Outcome
+
+- `runner.workspace` supports opt-in `caller`; absent/`hermetic` keeps the
+  detached worktree and stage/default/CLI override precedence is tested.
+- The CLI passes its exact invocation directory only to caller producing runners.
+- The same repository-wide inspection runs before and after the runner: caller
+  repository identity must match, tracked gitlinks and hidden index flags are
+  rejected, and staged/unstaged/non-ignored-untracked status must be empty.
+- Preflight rejects valuable dirty or hidden work before runner invocation.
+  Postflight resolves a stable authoritative HEAD before any artifact storage,
+  manifest append, gate check, or seat execution.
+- Clean commits and intentional history rewrites are allowed; manifest v4 records
+  `runner_workspace: caller` and the exact post-run SHA. Legacy hermetic manifest
+  versions remain unchanged and reject the new field below v4.
+- Gate checks and seats remain on the original pinned hermetic checkout.
+
+## Evidence
+
+- Plan gate: PASS after narrowing to Git status/index semantics and explicitly
+  naming the shared pre/post inspection and post-run SHA authority.
+- Implementation gate: PASS from Opus and Codex over the complete 13-file diff.
+- Verification gate: PASS after documenting the trusted Git-semantics boundary.
+- Documentation gate: PASS; `make docs-check` reports 25 generated pages exact and
+  `make docs-reality` reports all 15 shipped commands aligned.
+- `make test`: PASS across all packages.
+- `make lint`: PASS (`gofmt` clean and `go vet ./...`).
+- `make build`: PASS.
+- Manual built-CLI proof: hermetic v2/no workspace field, caller nested-CWD clean
+  commit with v4/post-run SHA, and a zero-exit tracked mutation failing with no run
+  ref all PASS.
+- `git diff --check`: PASS.
+
+COMPLETENESS ENUMERATION: initial and resumed producing-stage execution converge
+on `runAndCaptureStage`; configuration/audit sites are workflow parse/validation,
+runner resolution, CLI construction, manifest serialization/validation, run-show
+rendering, and shipped run/gate docs. Replay, standalone gates, checks, model
+seats, bench, and retro do not opt into caller workspace and remain hermetic.
