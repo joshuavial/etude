@@ -426,6 +426,73 @@
         "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
       },
       "timestamp": "2026-06-07T10:14:34Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-07T10:18:20Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a narrow test for invalid unlabeled prediction keys if future CLI reporting will rely on unlabeled cell provenance.",
+            "Consider documenting in code that rerun/escalated proxy labels require FinalRound > 0."
+          ],
+          "timestamp": "2026-06-07T10:18:20Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add package-level or exported godoc before aul.4 wiring.",
+            "Cross-reference GateLabelKey validation to runmanifest rules.",
+            "Comment the defensive duplicate proxy-warning insertion in gate_score.go."
+          ],
+          "timestamp": "2026-06-07T10:18:20Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
+      },
+      "timestamp": "2026-06-07T10:18:20Z"
     }
   ]
 }
