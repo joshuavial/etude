@@ -1,0 +1,36 @@
+# etude-n9b.6 final review
+
+ROLE: Independent final reviewer of the complete scoped change.
+PHASE: review
+DECISION STANDARD: BLOCK if the change is unsafe, incomplete, out of scope, or lacks acceptance evidence; otherwise PASS or PASS_WITH_FOLLOWUPS.
+BEAD: etude-n9b.6 — Prove output-only gate seats cannot read the checkout.
+ANCESTOR: etude-n9b (P1) — a workflow may grant gate seats read access to an immutable pinned checkout, while the default remains output-only and the prompt keeps embedded provenance authoritative for measurements.
+BLAST RADIUS: worktree/repo, cleaned helper-owned temp repositories, and cleaned throwaway QA repo under .etude/tmp.
+TOPOLOGY: live and supervised gates; per-seat neutral repositories in output-only mode; granted seats retain the pin; checks retain caller access.
+DURABILITY CLASS: source, tests, user documentation, manifests, and normal run refs.
+COMPLETENESS ENUMERATION: schema/manifest/prompt behavior from the parent commit; current isolation fix covers cwd and executable-adjacent reads, live enabled/default, supervised gate, both CLI anchoring paths, real model adapter, manifest present/absent, literal prompt capture, temp path identity, Git environment, primary/fallback, and cleanup.
+TRUST BOUNDARY: Etude-provided cwd, ambient GIT_ values, and Etude-provided repo-local executable paths are denied in output-only mode. This is not an OS sandbox; arbitrary pre-known absolute host paths remain outside the guarantee.
+IRREVERSIBLE SEQUENCES: none.
+
+VERIFICATION:
+- make test: PASS.
+- make lint: PASS.
+- make docs-check: PASS (25 command pages).
+- make docs-reality: PASS (15 commands).
+- make build: PASS; manual tests used the resulting bin/etude.
+- The same adversarial seat attempted checkout-marker.txt through cwd and dirname($0). Granted run reported read:PINNED_GH16_7F3A91; default run reported read-denied.
+- Enabled manifest records read_checkout:true; default manifest omits read_checkout.
+- Captured actual prompts contain the checkout mode and the embedded-provenance authority rule.
+- A supervised built-binary gate and a real Codex adapter smoke run passed from the neutral repository.
+- GH #14 is open, so submodule content is UNTESTED; opted-in gates fail closed on gitlinks.
+
+KNOWN LIMITATION: output-only isolation is a harness policy rather than OS sandboxing. The user explicitly directed convergence without further beads or scope after verify; adjudicate only whether the requested acceptance behavior is ready to ship.
+
+ROUND-1 BLOCK RESOLUTION:
+- Relative seat executables are now resolved from the seat's run worktree, preserving pinned live-run behavior; absolute executables under either the run worktree or Engine.Root are recognized and copied into the neutral repository.
+- Output-only seat scratch is now checked by physical filesystem identity against both protected roots and fails closed if inside either; the live engine normally creates scratch with os.MkdirTemp outside the repository.
+- The candidate slice is copied before its Runner fields are replaced, so even a caller that returns a reused slice cannot retain deleted neutral executable paths across rounds.
+- Added direct regressions for an additional protected executable root and checkout-contained scratch. Updated the research live-run fixture to commit its relative seat executable so the pinned worktree contains it.
+- Focused internal/liverun and internal/cli suites pass after these corrections.
+
+The complete implementation, test, and documentation diff follows.
