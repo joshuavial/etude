@@ -1,0 +1,5 @@
+# Verify — etude-quk (remove dead runmanifest wrappers)
+Status: PASS. Pure dead-code deletion (Tier 2).
+- grep across all .go: zero callers of VerifyArtifactFile/ReferencedArtifactPaths (only their now-deleted defs). internal/runmanifest is an internal pkg -> no external callers.
+- go build ./... + go test ./... green after removal = COMPILER PROOF of zero callers; make lint clean.
+- Unexported verifyArtifactFile/referencedArtifactPaths retained + still used by WriteManifestTree (verification path intact). Scope: 1 file, deletion only.
