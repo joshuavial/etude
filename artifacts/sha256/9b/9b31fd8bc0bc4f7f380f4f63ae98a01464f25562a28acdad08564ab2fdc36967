@@ -1,0 +1,3 @@
+## Docs — etude-phase2.1 (Changed: no)
+
+No shipped docs needed. internal/replay is an internal package with no CLI surface (grep -r replay cmd/ = nothing; root_test.go asserts replay is REJECTED as a command). Shipped docs (capture/init/run/sync/README) describe user-facing commands; none affected. The 'replay' mention in docs/capture.md Current Limits is a pre-existing 'not implemented yet' note. All other replay refs are under docs/plans/ (planning). User-facing replay docs deferred to etude-replay-command (which should also update capture.md Current Limits at that time).
