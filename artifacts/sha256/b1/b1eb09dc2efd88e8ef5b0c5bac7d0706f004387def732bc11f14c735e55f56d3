@@ -1,0 +1,85 @@
+✓ etude-phase-prep.1 · Create retro impact ledger   [● P0 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Created the retro impact ledger (f46688e): docs/plans/dogfood/retro-ledger.md inventories every retro across three forms — standalone docs (A1 early workflow, A2 gate-auth/four-seat), runbook-rule commits (B1 loop retro, B2 gate-spiral cluster 6045147/bf3d755/cc32afb/a262870, B3 phase3, B4 phase4, B5 post-2.2 cadence incl scope-fence, B6 recurring-blocks, B7 plan-deviation), and C1 docs-reality-drift — with [IMPLEMENTED]/[PLANNED] tags, an inclusion boundary, and the no-retro-stage finding (motivates etude-14r). Coverage via git log on the runbook (not grep retro). Tier-2 gate PASS (Opus SHA-spot-checked + completeness-verified; codex GO). Unblocks .4.
+
+DESCRIPTION
+Create an overview of all retros performed so far and the concrete improvements that happened because of them. Current state is scattered across docs/plans/dogfood/dogfood-process-retro.md, product retro planning docs, bead notes, captured run artifacts, and follow-up beads.
+
+Acceptance:
+- inventory every explicit retro currently present in docs/plans/dogfood and docs/plans/product, plus retro-like captured lessons from recent runs when they produced process changes
+- for each retro, record trigger/date/scope, evidence refs, findings, recommended changes, which changes landed, which follow-up beads exist, and what remains undone
+- distinguish implemented improvements from planned/unimplemented improvements
+- include the finding that no current refs/etude/runs/* manifest contains a retro stage
+- output lives under docs/plans/dogfood/ as planning/dogfood material, not shipped docs
+
+DESIGN
+## Plan
+
+**Approach:** Create ONE new ledger doc, `docs/plans/dogfood/retro-ledger.md`, that inventories every retrospective performed during the etude dogfood effort and the concrete improvements each produced. It is an INVENTORY + STATUS ledger, not a new retro and not re-analysis. The crucial framing: most retros did NOT produce a standalone `retro.md` — they produced runbook-rule additions (committed) and filed beads. So the ledger covers all three forms (A standalone retro docs, B cadence/phase runbook-rule retros, C the docs-reality-drift retro that motivated shipped beads). Add one index link from `docs/plans/dogfood/README.md`. PLANNING-DOCS only: no code, no edits to the retros themselves, no new retro.
+
+**Shape (decision):** A short intro framing the three retro forms + the standing cadence rule, then ONE section per retro record. Each record uses a consistent scannable field block satisfying AC#2: **Trigger/date/scope · Evidence refs (commits/beads/docs) · Findings · Recommended changes · Landed (with [IMPLEMENTED]/[PLANNED] tag per change) · Follow-up beads · Remaining.** Implemented-vs-planned is marked per-change inline with explicit `[IMPLEMENTED]`/`[PLANNED]` tags (AC#3); a record may mix both. A dedicated short section covers the no-retro-stage finding (AC#4). A closing "Retro cadence" note records the standing rule (retro every 3 closed tickets in an autonomous loop; outputs go to skills/formulas/repo-docs, never memory).
+
+**Retros to inventory (the complete list, by form):**
+
+FORM A — standalone retro docs / retro-related planning:
+- A1. Early dogfood workflow retro — `docs/plans/dogfood/dogfood-process-retro.md` (top section). Trigger: end of etude-agent-workflow-audit / etude-consolidate-test-qa work. Findings: process drift (human-gate→3-reviewer), stale Verify language, inline bd-update backtick failures, Opus seat-role confusion. Changes [IMPLEMENTED]: gate execution checklist, file/stdin bd-update rule, exact-artifact payloads, optional-improvements mandatory-before-advance, reviewer run-status surfacing, explicit reviewer-seat prompts — all in review-gate-runbook.md / review-gate-process.md (commits 9965869, a22cc44, 0b71ca8). Remaining: carry safe-bead-update rule into workflow skill.
+- A2. Gate-auth + four-seat expansion retro (2026-05-23) — same doc, lower section. Findings: nested `claude -p` 401 auth failure; 3-seat panel too thin (codex caught a BLOCK others missed). Changes [IMPLEMENTED]: in-harness Claude Task-seat rule (commit 8f03314 "expand dogfood review gate to four reviewers"); pi/pilms 4th seat with read-only tool allowlist (commit 7d6b702 "fix pi reviewer-seat invocation to use read-only tools"). Evidence: those two commits + review-gate-runbook.md, review-gate-process.md, verify-phase-design.md, capture-protocol.md, dev-workflow SKILL.md.
+- A3. `retrospectives.md` (product) — retros-as-first-class-artifact PLANNING (not an executed retro; noted as retro-related). [PLANNED] → etude-14r.
+- A4. `etude-retro-command.md` (product) — concrete `etude retro` CLI design / implementation plan for etude-14r (commit a3334a1). [PLANNED] → etude-14r.
+
+FORM B — runbook-rule retros (each added rule(s) to review-gate-runbook.md from a retro / real-spiral lesson; all changes [IMPLEMENTED]). **COVERAGE METHOD (corrected):** enumerate every rule-adding commit to docs/plans/dogfood/review-gate-runbook.md via `git log -- docs/plans/dogfood/review-gate-runbook.md`, NOT a `grep -i retro` of subject lines (which structurally misses lessons whose subject lacks the word "retro" — e.g. 6045147/bf3d755/cc32afb/a262870):
+- B1. Loop retro (2026-05-24) — commit 7930450: plan verify-external-tool-semantics empirically; docs capture-real-binary-output; risk-tiered (Tier 1/2/3) gates. Artifacts: dev-planner.md, dev-docs-writer.md, dev-workflow SKILL.md, review-gate-runbook.md.
+- B2. Gate-spiral hardening cluster (2026-05-25) — the real-spiral lessons that built the runbook's "Per-seat sandbox constraints (learned from real spirals)" + tooling-outage + codex-caveat sections: 6045147 (reviewer seats NEVER revert the working tree mid-gate — a seat's mutation-test revert once wiped producer wiring out of internal/cli/capture.go); bf3d755 (per-seat sandbox constraints + gemini GrepTool cross-file-bleed caveat — origin of open follow-up etude-ojz); cc32afb (codex diff-only-from-first-attempt + the autonomous-loop tooling-outage fallback); a262870 (codex large-input ~1000+ line truncation). Artifacts: review-gate-runbook.md (+ capture-protocol.md).
+- B3. Phase 3 retro — commits 079aab3 (dogfood-capture script + gate-tooling fixes: gemini inline-from-first-attempt, pi 0-CPU-hang diagnosis, debug-flake-on-2nd-occurrence) + 25565d9 (ref-mutating manual-test isolation in a throwaway repo + codex doc-gate "reason only from inlined note"). Evidence lesson: etude-bench-command cohort-recursion bug (bench re-benchmarking its own replays) surfaced only from running the built binary twice. Artifacts: scripts/dogfood-capture.sh, capture-protocol.md, review-gate-runbook.md.
+- B4. Phase 4 retro — commit a74ded5: snapshot-must-preserve-directory-structure (cp --parents) + conceptual-contradiction-vs-missing-detail plan-fix rule. Evidence: etude-gc-command's two wasted planner round-trips on the "what does --prune delete?" contradiction.
+- B5. Cadence retro (post-roadmap.2.2) — ONE retro, TWO rule-commits: 59fe049 (seat-disagreement-resolution = consensus-safe option; no-conditional-plan rule) AND 24d64f2 (implement-scope-discipline / SCOPE-FENCE: 1 bead = 1 commit; orchestrator scope-check vs the plan's Files list; sub-agents never commit). NOTE the scope-fence was first mis-placed in the global ~/.claude dev-workflow skill, reverted per the "skills live in the repo" correction, then relocated to the repo runbook as 24d64f2.
+- B6. Cadence retro — commit d07e65c: recurring-avoidable-plan-gate-blocks (cover ALL struct fields incl. optional; read acceptance criteria literally; verify-before-irreversible-push).
+- B7. Cadence retro — commit a568056: plan-deviation-flagging (when implementation reveals the gated plan is wrong, deviate correctly AND flag the deviation to the gate).
+
+**Inclusion boundary (stated so omissions are deliberate):** EXCLUDED as not-a-retro-lesson — 50feb02 (the runbook baseline), 57deaf9 (structured gate-capture TOOLING, an etude-roadmap.2.4 deliverable, not a lesson), 1392817 (the degraded-policy CONSOLIDATION = etude-phase-prep.3 itself, structural not a fresh lesson); a66f87e / 3c614e9 are docs-hygiene / phase-0-completion notes, not retro lessons.
+
+FORM C — docs-reality-drift retro:
+- C1. Docs-reality-drift retro (2026-05-25) — write-up reverted as out-of-scope but survives at /tmp/docs-reality-drift-retro.md; captured from the bead trail. Trigger: post-Phase-3/4 docs-vs-CLI audit. Findings: README omitted bench/gc/reindex; BRIEF stale on eval/bench; stale ./bin/etude; no mechanical source-built CLI inventory check. Changes: docs-checklist source-built CLI compare [IMPLEMENTED, in checklist]; mechanical docs-reality guard [IMPLEMENTED] → etude-phase-prep.5 (commit 7851222, scripts/docs-reality-check.sh + make docs-reality); README/BRIEF/index refresh [IMPLEMENTED] → etude-phase-prep.2 (commit e16b9b6); epic-close holistic docs reconciliation rule [PLANNED/partial]. Follow-ups: etude-phase-prep.5 (closed), etude-phase-prep.2 (closed).
+
+Beads referenced for retro-derived lessons (NOT a per-bead log): etude-bench-command (bench-recursion → B2), etude-gc-command (conceptual-contradiction → B3), etude-ojz (gemini GrepTool bleed, open P3 follow-up), etude-14r (first-class retro artifact, open P0).
+
+**No-retro-stage finding (AC#4, its own section):** Verified empirically — `etude run list` shows runs with 4-5 stages; `etude run show` for sampled runs lists only plan/implement/verify/review(/docs). No `refs/etude/runs/*` manifest contains a `retro` stage. Retros live as docs/runbook-edits/bead-notes, never as etude run artifacts. This is the motivation for etude-14r (and the plan in retrospectives.md / etude-retro-command.md). The ledger states this plainly and links those three.
+
+**Files (commit scope):**
+- `docs/plans/dogfood/retro-ledger.md` — NEW. The ledger (intro + three-form framing + one section per retro A1-A4/B1-B8/C1 + no-retro-stage section + cadence note). Status header marks it dogfood planning material, not shipped docs.
+- `docs/plans/dogfood/README.md` — MODIFY. Add ONE index bullet linking the new ledger under the existing doc list.
+
+**Tests (docs bead — how verified, no unit tests):**
+- Coverage: every retro in all three forms (A1-A4, B1-B7, C1) has a record. Coverage is cross-checked against the AUTHORITATIVE surface `git log -- docs/plans/dogfood/review-gate-runbook.md` (every rule-adding commit), NOT `grep -i retro` (which misses lessons without "retro" in the subject); plus the standalone retro docs + the product planning docs + the docs-reality-drift retro. Every runbook rule-commit is either inventoried as a Form-B record or named in the inclusion boundary as a deliberate exclusion.
+- Evidence refs resolve: each cited commit SHA exists (`git show <sha> --stat`); each cited bead exists (`bd show`); each cited doc path exists.
+- Implemented-vs-planned correct: each `[IMPLEMENTED]` tag traces to a landed commit/closed bead; each `[PLANNED]` tag traces to an open bead (etude-14r) or unimplemented recommendation.
+- No-retro-stage finding accurate: re-confirm `etude run show` for a sampled run shows no retro stage.
+- `make docs-reality` stays green: the new ledger discusses planned commands (etude retro) — ensure no future-phrase shares a line with a SHIPPED `etude <cmd>` token (etude retro is unshipped → guard ignores it); add allowlist entry only if a shipped command unavoidably co-occurs. `make docs-check` unaffected (no docs/cli/* touched).
+- Links resolve: new README bullet + intra-ledger relative links (review-gate-runbook.md, retrospectives.md, etude-retro-command.md) resolve.
+- Writing style: follows docs/plans/dogfood/writing-style-guide.md.
+
+**Docs:** This bead IS the planning deliverable (a dogfood planning ledger under docs/plans/dogfood/). No shipped user docs change; no generated CLI reference change. The only secondary edit is the dogfood README index link.
+
+**Risks:**
+- Drifting from ledger into re-analysis. Mitigation: fixed per-record field block; record findings/changes as inventory, link the source retro rather than re-arguing it.
+- Miscategorising a change as implemented when only the rule (not a follow-up) landed. Mitigation: per-change [IMPLEMENTED]/[PLANNED] tag traced to a specific commit or open bead.
+- docs-reality guard false-positive on planned-command prose. Mitigation: never co-locate a future-phrase with a shipped command token on one line; allowlist as last resort.
+
+**Capture:**
+- inputs: bead etude-phase-prep.1 + parent etude-phase-prep; etude-phase-prep.4 (downstream backfill consumer); dogfood-process-retro.md, retrospectives.md, etude-retro-command.md, product/README.md, dogfood/README.md, writing-style-guide.md; retro commits 9965869,a22cc44,0b71ca8,7930450,079aab3,25565d9,a74ded5,59fe049,24d64f2,d07e65c,a568056,a3334a1; beads etude-14r, etude-phase-prep.5/.2/.3, etude-gc-command, etude-bench-command, etude-ojz; /tmp/docs-reality-drift-retro.md; empirical `etude run list`/`run show` (no retro stage) + `git log --oneline | grep -i retro`.
+- output: bead --design field.
+
+
+NOTES
+## Plan gate — Tier 2 (Opus + codex): PASS. Both BLOCK→GO on inventory completeness: codex (scope-fence grouping) + Opus (the grep-i-retro method structurally missed 4 rule commits: 6045147/bf3d755/cc32afb/a262870). FIXED: coverage method changed to 'every rule-adding commit to review-gate-runbook.md (git log -- ...)'; added the 4 as Form-B B2 'gate-spiral hardening cluster'; B5 groups the post-2.2 cadence retro's two commits (59fe049 seat-disagreement+no-conditional + 24d64f2 scope-fence); A2 cites implementers 8f03314+7d6b702; inclusion boundary states the 5 deliberate exclusions (50feb02/57deaf9/1392817/a66f87e/3c614e9). Opus reconfirm: all 20 runbook commits accounted-for, zero unaccounted. Scope: docs/plans/dogfood/retro-ledger.md (new) + README index entry.
+## Implement+Final gate — Tier 2 (Opus + codex): PASS. codex GO + Opus GO (no defects). Opus spot-checked ~18 SHAs against git show (all match: 6045147/bf3d755/cc32afb/a262870/a74ded5/59fe049/24d64f2/a568056/d07e65c/079aab3/25565d9/7930450/8f03314/7d6b702/7851222/e16b9b6/a3334a1/9965869...); no over-claim (etude-14r+etude-ojz OPEN, phase-prep.5/.2 CLOSED match tags); completeness — all 20 runbook commits accounted (16 records + boundary); AC#4 confirmed (zero retro stages across 38 run manifests); scope = 2 files; make docs-reality + docs-check green.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ✓ etude-phase-prep: Prep: overhaul dev workflow for etude dogfooding ● P0
+
+BLOCKS
+  ← ○ etude-phase-prep.4: Backfill retro improvement links into beads ● P0
+
