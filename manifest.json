@@ -511,6 +511,41 @@
         "degraded_reason": "Both seats GO. The deterministic checks ran live at verify.r1 (make test go, make lint go) and this attempt records the completed panel, appended before the verdict was acted on. THE SUPERVISION FINDING OF THIS PROOF RUN: the gate had to be invoked FROM THE WORKER'S WORKTREE. The supervisor's own worktree does not contain the change at all - grep -c retro_file internal/cli/retro.go returns 0 there - so running etude gate from the supervisor's cwd would have executed make test and make lint against the wrong tree, passed both, and certified nothing. Nothing in etude gate, the supervisor runbook, or the workflow config says which worktree the checks run in; the checks simply inherit the caller's cwd. That is a silent fail-open on the one gate whose whole value is executing real checks, and it is invisible because the wrong answer is green. The opus seat independently confirmed the worker's claim that its regressions were MEASURED red without the change rather than asserted. Five optionals returned, the sharpest being that the artifact records WHERE the checks ran but not WHY that matters, and a misquoted diffstat (+160/-15 double-counts deletions from --stat; --numstat gives +145/-15). All handed back to the worker verbatim."
       },
       "timestamp": "2026-08-15T17:01:37Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "c16cbeb62a47bd8eda68cdf0810c7fa6237ce425169292582926559d31365d9d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/lane-3xt/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T17:12:07.117013Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 1",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T17:12:07.117024Z"
     }
   ]
 }
