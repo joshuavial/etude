@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-3xt",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -32,6 +32,80 @@
         "size": 8190
       },
       "timestamp": "2026-08-15T15:58:21.99795Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "6019869073c57d1e945e33f0d81ea609b40b204c7ae30fd25e135f983fdd91b1"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T15:58:23.222967Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Consider making the preflight explicitly include an existence check for the computed `.etude/retros/<retro-id>.md` path before writing the ref, so the create-only contract cannot leave a ref pointing at an unwritten file on collision."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "42a1918bac54534dd3be7858507e3b327f0f930f1a86735804d7adc1ebbe151f",
+            "path": "artifacts/sha256/42/42a1918bac54534dd3be7858507e3b327f0f930f1a86735804d7adc1ebbe151f",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 384
+          },
+          "session": {
+            "session_id": "codex-0942edb9f2a4d897",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "0942edb9f2a4d897b7c6b6f8ce3888c0f14aa0bc75e9518aceee2a87f3627fa6",
+              "path": "artifacts/sha256/09/0942edb9f2a4d897b7c6b6f8ce3888c0f14aa0bc75e9518aceee2a87f3627fa6",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 292
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T15:58:43.212948Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T15:58:43.213912Z"
     }
   ]
 }
