@@ -1,0 +1,31 @@
+# etude-5dr.1 plan — caller workspace schema and audit record
+
+## Goal
+
+Land the safe representation half of issue #15 without enabling caller execution: workflow runners can declare `workspace`, the effective workspace respects default-runner overlays and explicit hermetic opt-outs, and manifests can durably audit caller execution once the dependent integration child lands.
+
+ANCESTOR: etude-5dr (P1) — issue #15 requires caller-workspace capability and its guard in one PR; this child isolates the non-executing schema/audit foundation after the combined implementation exceeded the strict gate-round cap.
+
+BLAST RADIUS: none outside this worktree and the child run ref. No execution path, host service, install path, or external repository is changed by this child.
+
+TOPOLOGY: pure parse/validate/encode functions and manifest serialization; no concurrency or external writer.
+
+DURABILITY CLASS: manifest serialization is deterministic and immutable once captured; no irreversible external action occurs in this child.
+
+COMPLETE SET: workflow stage runners, `default_runner`, and gate checks share the Runner YAML shape. Stage/default runners accept absent, `hermetic`, or `caller`; gate checks reject every workspace because gates remain pinned. Manifest conversion, validation, parser version allowlist, JSON emission, and legacy compatibility all carry the new field.
+
+TRUST BOUNDARY: workflow YAML and manifest JSON are untrusted inputs validated before use; only the literal enum values are accepted, and `runner_workspace` requires manifest version 4.
+
+IRREVERSIBLE SEQUENCES: none.
+
+## Changes
+
+1. Extend `workflow.Runner`/YAML with `workspace` and validate the enum.
+2. Permit a workspace-only stage overlay when `default_runner` supplies the command/name; explicit stage `hermetic` overrides a caller default.
+3. Reject workspace on gate checks so their behavior cannot change.
+4. Add manifest stage `runner_workspace`, emitting v4 only when present while preserving v0/v2/v3 parsing and non-caller emission.
+5. Cover parsing, round trips, precedence, invalid inputs, version enforcement, and legacy compatibility.
+
+## Verification
+
+Run focused workflow/runmanifest tests, then the repository test and lint targets before closing the child. The dependent execution child will add CLI rendering and live engine behavior so this commit alone cannot run anything in the caller tree.
