@@ -1,0 +1,347 @@
+diff --git a/.claude/skills/dev-workflow/SKILL.md b/.claude/skills/dev-workflow/SKILL.md
+index 62aff43..f2bd1a6 100644
+--- a/.claude/skills/dev-workflow/SKILL.md
++++ b/.claude/skills/dev-workflow/SKILL.md
+@@ -91,6 +91,18 @@ Conventions:
+   Final Review, so every stage shares the base-commit sha; that is expected.
+ - Always pass `--workflow default --workflow-version v1` (consistent value, so
+   appends never conflict on run-level metadata).
++- Always pass `--harness claude-code --harness-version "$(claude --version)"`
++  to record the harness that executed the stage. Quote the command substitution —
++  `claude --version` prints `2.1.150 (Claude Code)`, so without quotes the spaces
++  split into stray argv words.
++- Pass `--model <model>` matching the agent that produced the stage. The recorded
++  model must be the actual model used (mixed opus/sonnet across phases), so
++  provenance and benchmarks are meaningful. Per-stage mapping:
++  - `plan`      (`dev-planner`)      → `--model claude-opus-4-7`
++  - `implement` (`dev-executor`)     → `--model claude-sonnet-4-6`
++  - `verify`    (`dev-qa`)           → `--model claude-opus-4-7`
++  - `docs`      (`dev-docs-writer`)  → `--model claude-sonnet-4-6`
++  - `review`    (`dev-pr-reviewer`)  → `--model claude-opus-4-7`
+ - If `etude` is not installed, skip capture and note the skip in the bead — the
+   gate flow itself does not depend on capture succeeding.
+ 
+@@ -116,13 +128,15 @@ etude capture plan --run <bead-id> \
+   --ref bead=<bead-id> \
+   --workflow default --workflow-version v1 \
+   --skill-id dev-planner \
++  --harness claude-code --harness-version "$(claude --version)" \
++  --model claude-opus-4-7 \
+   --message "<bead-id>: plan"
+ ```
+ 
+ Later phases follow the same shape with the stage's role/inputs from the table
+ (`--skill-id` = the phase agent: `dev-executor`, `dev-qa`, `dev-docs-writer`,
+-`dev-pr-reviewer`). After Final Review's capture, inspect the run with
+-`etude run show <bead-id>`.
++`dev-pr-reviewer`; `--model` = the per-stage model from the mapping above).
++After Final Review's capture, inspect the run with `etude run show <bead-id>`.
+ 
+ ## Auto Mode
+ 
+diff --git a/docs/capture.md b/docs/capture.md
+index 1cf2920..1c4e640 100644
+--- a/docs/capture.md
++++ b/docs/capture.md
+@@ -44,6 +44,9 @@ Useful flags:
+ --skill-repo manual
+ --skill-version manual
+ --message <text>
++--harness <name>
++--harness-version <version>
++--model <model-id>
+ ```
+ 
+ If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
+@@ -54,6 +57,11 @@ The other metadata defaults are `--workflow manual`,
+ `--workflow-version manual-v1`, `--produced-by original`,
+ `--skill-repo manual`, and `--skill-version manual`.
+ Use `--message` to override the Git commit message for the run ref update.
++`--harness`, `--harness-version`, and `--model` are optional; all default to
++empty string. They populate the run manifest's producer block (harness name,
++harness version, and model that produced the stage). When `--harness` is
++omitted, the harness sub-block is omitted from the manifest entirely; when
++`--model` is omitted, no model field is written.
+ 
+ ## Appending
+ 
+diff --git a/internal/cli/capture.go b/internal/cli/capture.go
+index f2cc424..cd88a81 100644
+--- a/internal/cli/capture.go
++++ b/internal/cli/capture.go
+@@ -38,6 +38,9 @@ type captureConfig struct {
+ 	skillRepo       string
+ 	skillVersion    string
+ 	message         string
++	harness         string
++	harnessVersion  string
++	model           string
+ }
+ 
+ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
+@@ -81,6 +84,9 @@ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
+ 	flags.StringVar(&cfg.skillRepo, "skill-repo", defaultSkillRepo, "skill repo")
+ 	flags.StringVar(&cfg.skillVersion, "skill-version", defaultSkillVersion, "skill version")
+ 	flags.StringVar(&cfg.message, "message", "", "run ref commit message")
++	flags.StringVar(&cfg.harness, "harness", "", "agent runtime that executed the stage (e.g. claude-code)")
++	flags.StringVar(&cfg.harnessVersion, "harness-version", "", "version of the agent runtime")
++	flags.StringVar(&cfg.model, "model", "", "LLM model used by this stage (e.g. claude-opus-4-7)")
+ 	return cmd
+ }
+ 
+@@ -180,14 +186,23 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
+ 		return resolveErr
+ 	}
+ 
++	skill := runmanifest.Skill{
++		ID:      skillID,
++		Repo:    cfg.skillRepo,
++		Version: cfg.skillVersion,
++	}
+ 	manifest.Stages = append(manifest.Stages, runmanifest.Stage{
+ 		Name:       stageName,
+ 		ProducedBy: cfg.producedBy,
+ 		GitSHA:     gitSHA,
+-		Skill: runmanifest.Skill{
+-			ID:      skillID,
+-			Repo:    cfg.skillRepo,
+-			Version: cfg.skillVersion,
++		Skill:      skill,
++		Producer: runmanifest.Producer{
++			Harness: runmanifest.Harness{
++				Name:    cfg.harness,
++				Version: cfg.harnessVersion,
++			},
++			Model: cfg.model,
++			Skill: skill,
+ 		},
+ 		Inputs:    inputs,
+ 		Output:    output,
+diff --git a/internal/cli/capture_test.go b/internal/cli/capture_test.go
+index 7a95f82..df1de3d 100644
+--- a/internal/cli/capture_test.go
++++ b/internal/cli/capture_test.go
+@@ -3,6 +3,7 @@ package cli
+ import (
+ 	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+@@ -237,6 +238,215 @@ func TestInferMediaType(t *testing.T) {
+ 	}
+ }
+ 
++func readRawManifest(t *testing.T, repo, runID string) []byte {
++	t.Helper()
++	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, "manifest.json")
++	if err != nil {
++		t.Fatalf("ReadFile raw manifest returned error: %v", err)
++	}
++	return content
++}
++
++// rawProducerProbe decodes only the provenance-bearing fields of a manifest so
++// tests can assert the SERIALIZED shape structurally (rather than by substring,
++// which a leaked legacy top-level skill block could satisfy by accident).
++type rawProducerProbe struct {
++	Stages []struct {
++		Skill    *json.RawMessage `json:"skill"`
++		Producer struct {
++			Harness *struct {
++				Name    string `json:"name"`
++				Version string `json:"version"`
++			} `json:"harness"`
++			Model string `json:"model"`
++			Skill *struct {
++				ID      string `json:"id"`
++				Repo    string `json:"repo"`
++				Version string `json:"version"`
++			} `json:"skill"`
++		} `json:"producer"`
++	} `json:"stages"`
++}
++
++func parseRawProducer(t *testing.T, raw []byte) rawProducerProbe {
++	t.Helper()
++	var probe rawProducerProbe
++	if err := json.Unmarshal(raw, &probe); err != nil {
++		t.Fatalf("unmarshal raw manifest: %v\n%s", err, raw)
++	}
++	return probe
++}
++
++func TestCaptureRecordsProducer(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "run-1",
++		"--output", "output=out.md",
++		"--skill-id", "dev-planner",
++		"--skill-repo", "myrepo",
++		"--skill-version", "v3",
++		"--harness", "claude-code",
++		"--harness-version", "1.0",
++		"--model", "claude-opus-4-7",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	wantSkill := runmanifest.Skill{ID: "dev-planner", Repo: "myrepo", Version: "v3"}
++
++	manifest := readRunManifest(t, repo, "run-1")
++	if manifest.ManifestVersion != 2 {
++		t.Fatalf("ManifestVersion = %d, want 2", manifest.ManifestVersion)
++	}
++	stage := manifest.Stages[0]
++	if stage.Producer.Harness.Name != "claude-code" || stage.Producer.Harness.Version != "1.0" {
++		t.Fatalf("Producer.Harness = %#v, want {claude-code 1.0}", stage.Producer.Harness)
++	}
++	if stage.Producer.Model != "claude-opus-4-7" {
++		t.Fatalf("Producer.Model = %q, want claude-opus-4-7", stage.Producer.Model)
++	}
++	if stage.Producer.Skill != wantSkill {
++		t.Fatalf("Producer.Skill = %#v, want %#v", stage.Producer.Skill, wantSkill)
++	}
++	if stage.Skill != stage.Producer.Skill {
++		t.Fatalf("mirror invariant violated: Stage.Skill = %#v, Producer.Skill = %#v", stage.Skill, stage.Producer.Skill)
++	}
++
++	// Structurally verify the SERIALIZED shape: producer.skill must carry the
++	// resolved skill identity, and no top-level stages[].skill may exist (so the
++	// provenance can only be coming from producer.skill, not a leaked legacy block).
++	raw := readRawManifest(t, repo, "run-1")
++	ps := parseRawProducer(t, raw).Stages[0]
++	if ps.Skill != nil {
++		t.Fatalf("raw stages[0].skill must be absent (skill lives inside producer), got %s", *ps.Skill)
++	}
++	if ps.Producer.Skill == nil {
++		t.Fatalf("raw stages[0].producer.skill is missing:\n%s", raw)
++	}
++	if ps.Producer.Skill.ID != "dev-planner" || ps.Producer.Skill.Repo != "myrepo" || ps.Producer.Skill.Version != "v3" {
++		t.Fatalf("raw producer.skill = %#v, want {dev-planner myrepo v3}", *ps.Producer.Skill)
++	}
++	if ps.Producer.Harness == nil || ps.Producer.Harness.Name != "claude-code" || ps.Producer.Harness.Version != "1.0" {
++		t.Fatalf("raw producer.harness = %#v, want {claude-code 1.0}", ps.Producer.Harness)
++	}
++	if ps.Producer.Model != "claude-opus-4-7" {
++		t.Fatalf("raw producer.model = %q, want claude-opus-4-7", ps.Producer.Model)
++	}
++}
++
++func TestCaptureOmitsHarnessWithoutFlags(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "run-1",
++		"--output", "output=out.md",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	manifest := readRunManifest(t, repo, "run-1")
++	stage := manifest.Stages[0]
++	if stage.Producer.Harness.Name != "" {
++		t.Fatalf("Producer.Harness.Name = %q, want empty", stage.Producer.Harness.Name)
++	}
++	if stage.Producer.Model != "" {
++		t.Fatalf("Producer.Model = %q, want empty", stage.Producer.Model)
++	}
++	if stage.Skill != stage.Producer.Skill {
++		t.Fatalf("mirror invariant violated: Stage.Skill = %#v, Producer.Skill = %#v", stage.Skill, stage.Producer.Skill)
++	}
++
++	// Structural check: harness omitted, producer.skill present, no leaked
++	// top-level stages[].skill — independent of substring coincidence.
++	raw := readRawManifest(t, repo, "run-1")
++	ps := parseRawProducer(t, raw).Stages[0]
++	if ps.Producer.Harness != nil {
++		t.Fatalf("raw stages[0].producer.harness must be omitted when unset, got %#v", ps.Producer.Harness)
++	}
++	if ps.Producer.Model != "" {
++		t.Fatalf("raw stages[0].producer.model = %q, want empty/omitted", ps.Producer.Model)
++	}
++	if ps.Skill != nil {
++		t.Fatalf("raw stages[0].skill must be absent (skill lives inside producer), got %s", *ps.Skill)
++	}
++	if ps.Producer.Skill == nil || ps.Producer.Skill.ID == "" {
++		t.Fatalf("raw stages[0].producer.skill is missing or empty:\n%s", raw)
++	}
++}
++
++func TestCapturePartialHarnessName(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "run-1",
++		"--output", "output=out.md",
++		"--harness", "claude-code",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	manifest := readRunManifest(t, repo, "run-1")
++	stage := manifest.Stages[0]
++	if stage.Producer.Harness.Name != "claude-code" {
++		t.Fatalf("Producer.Harness.Name = %q, want claude-code", stage.Producer.Harness.Name)
++	}
++	if stage.Producer.Harness.Version != "" {
++		t.Fatalf("Producer.Harness.Version = %q, want empty", stage.Producer.Harness.Version)
++	}
++
++	raw := readRawManifest(t, repo, "run-1")
++	ps := parseRawProducer(t, raw).Stages[0]
++	if ps.Producer.Harness == nil || ps.Producer.Harness.Name != "claude-code" {
++		t.Fatalf("raw stages[0].producer.harness = %#v, want name claude-code", ps.Producer.Harness)
++	}
++	if ps.Producer.Harness.Version != "" {
++		t.Fatalf("raw producer.harness.version = %q, want empty", ps.Producer.Harness.Version)
++	}
++}
++
++func TestCaptureModelWithoutHarness(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "run-1",
++		"--output", "output=out.md",
++		"--model", "claude-sonnet-4-6",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	manifest := readRunManifest(t, repo, "run-1")
++	stage := manifest.Stages[0]
++	if stage.Producer.Model != "claude-sonnet-4-6" {
++		t.Fatalf("Producer.Model = %q, want claude-sonnet-4-6", stage.Producer.Model)
++	}
++	if stage.Producer.Harness.Name != "" {
++		t.Fatalf("Producer.Harness.Name = %q, want empty", stage.Producer.Harness.Name)
++	}
++
++	raw := readRawManifest(t, repo, "run-1")
++	ps := parseRawProducer(t, raw).Stages[0]
++	if ps.Producer.Model != "claude-sonnet-4-6" {
++		t.Fatalf("raw stages[0].producer.model = %q, want claude-sonnet-4-6", ps.Producer.Model)
++	}
++	if ps.Producer.Harness != nil {
++		t.Fatalf("raw stages[0].producer.harness must be omitted, got %#v", ps.Producer.Harness)
++	}
++}
++
+ func readRunManifest(t *testing.T, repo, runID string) runmanifest.Manifest {
+ 	t.Helper()
+ 	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, "manifest.json")
