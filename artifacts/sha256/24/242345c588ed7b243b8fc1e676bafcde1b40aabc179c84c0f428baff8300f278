@@ -1,0 +1,12 @@
+## Verify — etude-dpz (status: pass, recommend proceed to Docs)
+
+Automated: go test ./... -count=1 -race ok (all packages, race clean); go vet clean; gofmt clean. TestRunShowInvalidRunIDBeforeGit (6) + TestCaptureRejectsInvalidInputs (8) pass unchanged; new runmanifest predicates_test.go locks the spec.
+
+Built-binary (go install ./cmd/etude, throwaway repo), real captured output:
+- etude run show "bad/id"  -> exit 1, stderr: invalid run id "bad/id" (no 'not a git repository' => pre-git validation intact)
+- etude run show ".."      -> exit 1, stderr: invalid run id ".."
+- etude run show "x.lock"  -> exit 1, stderr: invalid run id "x.lock"
+- etude run show ""        -> exit 1, stderr: run id is required (two-call structure preserved the empty message)
+- round-trip: etude capture plan --run good-run --output output=plan.md -> exit 0 (captured <sha>); etude run show good-run -> exit 0, full detail.
+
+QA: De Morgan transform equivalent; all 4 error sites keep exact text/wrapping; capture timing unchanged; coverage adequate. Residual: deferred workflow.go isIdentChar (separate follow-up).
