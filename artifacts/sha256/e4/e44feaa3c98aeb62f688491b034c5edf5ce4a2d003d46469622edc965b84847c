@@ -1,0 +1,73 @@
+# Verify report — etude-n9b.2
+
+## Result
+
+PASS. The opt-in non-submodule path, output-only default, manifest audit field,
+supervised rejection, prompt policy, and temporary gitlink boundary are covered.
+
+ANCESTOR: `etude-n9b` (P1) delivers GitHub issue #16 without changing the
+output-only default. MEASUREMENT: live model seats previously ran cwd-in-checkout
+without an explicit authorization or measurement rule, while GH #14 records the
+observed empty-submodule false-evidence defect that requires the temporary
+gitlink refusal.
+
+BLAST RADIUS: none: worktree and repo only.
+
+## Automated verification
+
+- `go test ./internal/liverun -count=1` — pass.
+- `go test ./internal/liverun ./internal/workflow ./internal/runmanifest -count=1` — pass.
+- Focused checkout-policy, supervised-gate, and shared-prompt regressions — pass.
+- `make test` (`go test ./...`) — pass after rebasing onto `origin/main`.
+- `make lint` (`gofmt -l cmd internal` plus `go vet ./...`) — pass.
+- `git diff --check` — pass.
+
+## Built-binary proof
+
+Built `./cmd/etude` and initialized a private temporary non-submodule repository.
+The pinned commit contained `checkout-marker.txt` with `pinned marker`; after the
+commit, the caller tree was changed to `unpinned caller mutation`. A live
+workflow gate with `read_checkout: true` used a prompt-aware shell seat that:
+
+- ran after a passing deterministic check overwrote the execution worktree's
+  marker with `check mutation`;
+- required `CHECKOUT ACCESS: READ-ONLY` in the actual gate prompt;
+- required the authoritative-provenance and no-rederived-arithmetic rules;
+- read `checkout-marker.txt` from its process checkout and required the committed
+  `pinned marker` value; and
+- returned a real GO envelope.
+
+The built binary completed the check and seat with GO and the gate with
+`status: pass`. `run show --json` recorded the exact pinned SHA,
+`read_checkout: true`, and both verdicts. This distinguishes the dedicated
+detached pin from both the mutated caller tree and the check-mutated execution
+worktree.
+The temporary repository and binary were then moved to Trash.
+
+## Edge coverage
+
+- False/absent grants produce OUTPUT-ONLY prompts and omit `read_checkout`.
+- Two model seats receive byte-identical prompts.
+- A passing deterministic check mutates its execution worktree before seats
+  run; the opted-in seat still reads committed bytes from its dedicated pin.
+- Checks-only configuration resolves no model-seat grant and deterministic
+  checks retain the raw stage artifact.
+- Supervised `GateStage` rejects a grant before resolving checks or seats and
+  records no attempt.
+- Recursive mode-160000 gitlinks reject opted-in reads before seat resolution;
+  output-only gates still run and stray `.gitmodules` files do not false-match.
+- Git tree inspection errors retain Git diagnostic output.
+
+## Documentation and replay
+
+`docs/run.md` documents the workflow opt-in, output-only default, checks-only
+resolution, supervised limitation, compatibility, audit semantics, and GH #14
+boundary. `docs/gates.md` documents the exact prompt rule and manifest field.
+`docs/replay.md` needs no change: stage replay behavior is unchanged, while
+forward replay already re-enters the documented live gate path at the recorded
+SHA.
+
+## Outstanding dependency
+
+GitHub issue #14 remains open. Submodule read grants therefore fail closed and
+are not claimed as supported or tested; the PR must disclose this limitation.

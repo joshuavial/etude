@@ -1,0 +1,68 @@
+# Implement report — etude-n9b.2
+
+Implemented the approved opt-in checkout-read policy for live gate model seats.
+
+ANCESTOR: `etude-n9b` (P1) delivers GitHub issue #16 without changing the
+output-only default. MEASUREMENT: before this change every live model seat ran
+with the checkout as its working directory but received no explicit access
+policy or measurement-authority instruction, so a reviewer could inspect code
+or recompute embedded measurements without an auditable workflow grant.
+
+BLAST RADIUS: repository worktree only. The implementation creates no durable
+external state, host configuration, service, package, privilege, or large
+per-run artifact. An opted-in live gate creates one temporary detached worktree
+and removes it when gate execution returns.
+
+## Behavior
+
+- Live gates resolve `read_checkout` from the current workflow only when model
+  seats exist, create a dedicated detached seat checkout at the pinned SHA, and
+  record the effective grant in each `GateAttempt`.
+- All model seats receive one byte-identical shared prompt. The default says
+  `OUTPUT-ONLY` and forbids checkout inspection. The opt-in says `READ-ONLY`
+  and names the run's pinned commit.
+- Every seat prompt says embedded provenance is AUTHORITATIVE for measurements,
+  prohibits re-derived arithmetic, restricts reads to falsifying claims, and
+  requires BLOCK with evidence instead of silently substituted numbers.
+- Deterministic checks retain the raw stage output input rather than receiving
+  the model review prompt. They continue in the stage worktree and cannot mutate
+  the separate checkout presented to opted-in model seats.
+- Supervised gates reject `read_checkout` before resolving checks or seats
+  because their caller tree can be mutable and uncommitted.
+- While GitHub issue #14 remains open, live read grants recursively inspect the
+  pinned git tree and fail closed before invoking seats when an actual
+  mode-160000 gitlink is present. A stray `.gitmodules` file is not treated as
+  a submodule; output-only behavior is unchanged.
+
+## Files
+
+- `internal/liverun/gate.go`
+- `internal/liverun/gate_once.go`
+- `internal/liverun/gate_test.go`
+- `internal/liverun/gate_once_test.go`
+- `docs/run.md`
+- `docs/gates.md`
+
+The schema dependency is already committed in child bead `etude-n9b.1` and is
+not part of this child diff.
+
+## Verification so far
+
+- `go test ./internal/liverun -count=1`
+- `go test ./internal/liverun ./internal/workflow ./internal/runmanifest -count=1`
+- `git diff --check`
+
+All pass after rebasing onto `origin/main` with the Gemini removal. Full
+`make test`, `make lint`, and built-binary proof belong to the verify phase.
+
+## Compatibility and trust boundary
+
+Absent/false fields retain output-only behavior and omit the manifest field.
+Older strict workflow or manifest parsers reject the new field instead of
+silently changing authority. Configured seat harnesses are the enforcement
+boundary for prompt/tool policy; cwd is not claimed as an OS sandbox. The
+manifest is an audit record, never an authorization input.
+
+KNOWN LIMITATION: GitHub issue #14 is still open, so submodule read grants fail
+closed and are not claimed as tested support. This must be disclosed in the PR
+unless #14 lands and its populated/recorded submodule path is integrated first.
