@@ -225,6 +225,77 @@
         "degraded_reason": "pilms down. codex+gemini both BLOCK on stage honesty (final diff as implement stage); adopted the agreed fix (review-only, no plan/implement). opus seated on r2."
       },
       "timestamp": "2026-05-27T20:11:30Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T20:30:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T20:30:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T20:31:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T20:31:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. Amended to review-only stages (no plan/implement). codex+gemini re-confirmed GO; opus (fresh, full Tier-1 verify against runmanifest) GO — review-only mapping manifest-valid, run_id/occurred_at/git_sha correct, reuse/idempotency/read-only sound."
+      },
+      "timestamp": "2026-05-27T20:32:00Z"
     }
   ]
 }
