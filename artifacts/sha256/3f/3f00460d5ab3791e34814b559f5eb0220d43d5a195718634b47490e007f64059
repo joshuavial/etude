@@ -1,0 +1,21 @@
+# Verify — etude-roadmap.2.4 (Update dogfood workflow to capture gate reviewers)
+
+Status: PASS · Recommendation: close
+
+## Scope (docs/process + one shell script; no Go changes)
+- scripts/dogfood-gate-capture.sh (NEW) — wraps `etude capture-gate`: build-fresh, fetch run ref, local append, verify-before-push (git cat-file manifest → assert manifest_version 3 + gate_id present), push only after verify.
+- docs/plans/dogfood/review-gate-runbook.md — "Structured capture (etude capture-gate)" subsection: per-attempt step, gate-file shape, reviewer-seat conventions table (opus claude-code/anthropic/claude-opus-4-7; gemini gemini-cli/google/gemini-3.1-pro-preview; codex codex/openai/gpt-5.5; pilms pi/lmstudio/qwen/qwen3.6-35b-a3b), verdict mapping (failure_note required for failed/empty/malfunction/disregarded), combined-gate modeling note.
+- docs/plans/dogfood/capture-protocol.md — note that gates are now captured structurally; cross-link to the runbook.
+
+## Verification
+- `bash -n` clean.
+- ISOLATED throwaway-repo test (full etude copy + bare origin in /tmp; real repo/refs untouched): success path appended a gate → manifest_version 3 → verified → pushed (origin shows v3); FAILURE path (dangling reviewed_stages artifact) → capture-gate rejected, set -e aborted before push, local+origin refs UNCHANGED; nonexistent-run / missing-file / arg-count errors clean; pipefail proven (a verify-assert failure stops before push); multi-round append carries prior+new blobs; failed-seat/escalated path works; failure_note enforcement confirmed.
+- Opus seat independently reproduced all of the above and verified the docs against validateSeat (failure_note rule), validateProviderField, stageHasArtifact, and that `run show` has no --json (git cat-file is the right read mechanism).
+
+## Acceptance
+1. Runbook names the per-attempt structured capture step ✓
+2. Seat conventions pin harness/provider/model (pilms=lmstudio/qwen) ✓
+3. Covers GO/BLOCK/rerun/empty/auth-fail/quota-fail/disregarded with failure_note ✓
+4. New dogfood run demonstrates structured records — demonstrated on .4's OWN new run refs/etude/runs/etude-roadmap.2.4 (real data; backfilling pre-existing runs is bead .5).
+
+## Result: PASS
