@@ -166,6 +166,78 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T05:58:42.391358Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "df91741ec0e36a5177c5d117b1596644c3eee3452ee9a5076b6264cdf0de7d68"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T05:59:37.565935Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Clarify whether adapter “no VERDICT” outcomes will record as `empty` or `failed`; either is fail-closed, but the plan currently names `empty` while also saying the adapter exits non-zero."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "715939c63548f90b4a4989aa59020347a926a649316b7b878ac403efe3725025",
+            "path": "artifacts/sha256/71/715939c63548f90b4a4989aa59020347a926a649316b7b878ac403efe3725025",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 347
+          },
+          "session": {
+            "session_id": "codex-ee699e843f3de76b",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ee699e843f3de76b2c599765c28834a0bb76d5f53f5e2ee3e15814476445d39b",
+              "path": "artifacts/sha256/ee/ee699e843f3de76b2c599765c28834a0bb76d5f53f5e2ee3e15814476445d39b",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 249
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T05:59:55.118435Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T05:59:55.118583Z"
     }
   ]
 }
