@@ -425,6 +425,64 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T01:26:58Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T01:26:58Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T01:26:58Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T01:26:58Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "codex round-1 block resolved by added built-binary raw-git-blob proof (no code change): git cat-file refs/etude/runs/<id>:manifest.json shows NAME present count=1, VALUE count=0"
+      },
+      "timestamp": "2026-06-30T01:26:58Z"
     }
   ]
 }
