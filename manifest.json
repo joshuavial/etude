@@ -267,6 +267,54 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T08:23:12Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verification",
+          "artifact": "66c4d44f87e024a3c0cab6dee5db4a7462a98aac57fa2fee229906d7d1f5003d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Memoize ancestor checks only after measured need.",
+            "Record the unrelated timing-flake test name in durable evidence."
+          ],
+          "timestamp": "2026-08-17T08:32:59Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-17T08:32:59Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T08:32:59Z"
     }
   ]
 }
