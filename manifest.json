@@ -226,6 +226,72 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T03:00:00Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "gemini-3.1-pro-preview"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "align init.md field-example inputs (declined: task is valid special role in single-stage snippet)"
+          ],
+          "timestamp": "2026-06-30T03:30:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness Task subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "capture-run.md:105 dev-coder example (out of scope)"
+          ],
+          "timestamp": "2026-06-30T03:30:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T03:30:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T03:30:00Z"
     }
   ]
 }
