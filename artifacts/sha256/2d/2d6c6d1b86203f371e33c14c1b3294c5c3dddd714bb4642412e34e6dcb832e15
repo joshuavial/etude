@@ -1,0 +1,40 @@
+# Implement — etude-n9b.1 workflow and manifest contract
+
+ANCESTOR: etude-n9b (P1) — deliver GitHub issue #16 as an opt-in checkout-read
+verification capability while preserving output-only as the default.
+
+BLAST RADIUS: none outside this worktree. The implementation changes four Go
+schema/codec files and creates no external state.
+
+## Result
+
+- Added `GateConfig.ReadCheckout` and the `read_checkout` workflow YAML leaf.
+- Added `GateAttempt.ReadCheckout` and the `read_checkout` manifest JSON leaf.
+- Both wire fields use `omitempty`; absent and false remain output-only and
+  preserve legacy serialized output.
+- Both decode paths remain strict. Tests reject near-miss field names and
+  non-boolean values.
+- The manifest codec test directly constructs the grant because runtime
+  population belongs to dependent bead etude-n9b.2.
+
+## Completeness audit
+
+Repository-wide search found no non-Go schema or validator that independently
+enumerates gate keys. The representation sites are the workflow domain/YAML
+pair and manifest domain/JSON pair changed here. User-facing documentation is
+deferred to etude-n9b.2, where the runtime behavior becomes shipped.
+
+## Verification
+
+- `go test ./internal/workflow ./internal/runmanifest` — pass.
+- `git diff --check` — pass.
+
+TOPOLOGY: no concurrency change.
+
+DURABILITY CLASS: additive optional serialization leaves only; no delivery or
+irreversible action.
+
+TRUST BOUNDARY: YAML and JSON remain untrusted until strict decoding and normal
+validation complete; the added typed booleans are trusted afterward.
+
+IRREVERSIBLE SEQUENCES: none
