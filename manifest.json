@@ -106,6 +106,54 @@
         "degraded_reason": "Both seats GO, including on the central question: the plan deliberately does NOT patch the file the bead names, because bead .3 deletes it, and resolves the defect in the supervised model instead. Both seats were asked to judge that reframing hard as a possible convenient reading; both accepted it, noting the bead itself allows \"add docs-stage capture OR define a lossless supported mapping\". Four optionals folded, all guarding against hollow work: the negative half is already covered by an existing test so the new one must pin the role-vs-stage-name divergence and the nothing-written path or it is a rename; the runbook already lists docs-diff so the callout must be a literal copy-pasteable command; the tracker needs the reframing recorded so the bead text does not contradict the shipped commit; and the acceptance now names the stage/role mismatch explicitly."
       },
       "timestamp": "2026-08-15T08:15:11Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "The tracker reframing was a folded plan-gate requirement, but no tracker change is present in the diff."
+          ],
+          "timestamp": "2026-08-15T08:22:08Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:22:08Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Gate did NOT pass. codex BLOCKed correctly on a PACKET omission rather than missing work: the tracker reframing had been recorded, but this repo tracks in bd (dolt), which cannot appear in a git diff, so a diff-only packet could not show it. That is a packet bug on the author side; the rule that every requirement a packet asks a seat to adjudicate must appear IN the packet, whatever medium it lives in, was folded into the supervisor runbook."
+      },
+      "timestamp": "2026-08-15T08:22:08Z"
     }
   ]
 }
