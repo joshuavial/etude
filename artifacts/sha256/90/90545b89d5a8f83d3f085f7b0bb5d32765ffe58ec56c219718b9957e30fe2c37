@@ -1,0 +1,100 @@
+# Final review — etude-9uf.5: the proof run
+
+## What landed
+
+Two commits from this supervisor:
+- **`1694e14`** (corrected by `db8eb4c`, `8e01765`) — retro 4.
+- **`f4533af`** — +163/−13 across `supervisor-runbook.md` and
+  `review-gate-process.md`, recording what the run taught.
+
+And one from the worker lane: **`752be1a`**, `etude-3xt`, 6 files, +457/−20.
+
+## The restated acceptance
+
+Restated at the plan gate and written onto the bead in `bd` BEFORE the run,
+because the filed wording ("gated exclusively through `etude gate`") describes a
+state the repo cannot reach.
+
+| Clause | Status |
+|---|---|
+| one bead closes, produced on a REAL workmux lane | `etude-3xt` CLOSED, `752be1a` authored and pushed from `lane/3xt-retro-ref` |
+| every phase gated, every seat verdict recorded | 10 attempts on `etude-3xt`, 2 per phase, 0 ungated stage artifacts |
+| run ref shows a gate attempt per phase with per-seat verdicts | verified by recomputation |
+| the mechanism `etude gate` cannot complete is documented WITH EVIDENCE | 0 of 5 gates passed by `etude gate` alone; the ladder's actual behaviour observed and recorded at `docs.r6` |
+| a retro records what the first real pass surfaced | retro 4, landed |
+
+## This bead's own gate record
+
+**16 attempts; 4 passed, 12 did not** (8 `rerun`, 4 `escalated`), 10 seat
+BLOCK verdicts. Computed from `refs/etude/runs/etude-9uf.5`.
+
+| phase | attempts | outcomes |
+|---|---|---|
+| `plan` | 2 | pass ×1, rerun ×1 |
+| `implement` | 4 | escalated ×1, pass ×1, rerun ×2 |
+| `verify` | 3 | escalated ×1, pass ×1, rerun ×1 |
+| `docs` | 7 | escalated ×2, pass ×1, rerun ×4 |
+
+**Five stage artifacts on this bead were never gated**, and that is a finding
+against me rather than a bookkeeping note:
+
+| stage | |
+|---|---|
+| `plan.r2` | unique content, superseded by `plan.r3` before any gate saw it |
+| `implement.r4` | unique — the revision produced by folding `implement.r3`'s optionals |
+| `verify.r2` / `verify.r3` | identical bytes, neither gated |
+| `docs.r8` | unique — the revision produced by folding `docs.r7`'s optionals |
+
+This is precisely the pattern `etude-pq7` describes, and **I did it more often
+than the worker did.** Every one is a revision captured after a gate had passed,
+because I folded the seat's optionals and re-captured rather than either folding
+before the gate or gating the new revision.
+
+The passing verdicts are still honest — each names in `reviewed_stages` the
+artifact it actually reviewed, and those bytes are preserved. But a reader
+running "which artifacts did a seat approve?" against this run gets a partial
+answer, and the run I am offering as proof of the model is the worst instance of
+it in the epic. The supervisor runbook now says fold before the gate or capture a
+rerun stage and gate again; I wrote that instruction and then did not follow it.
+
+## What the proof run actually established
+
+**The loop closes.** A worker in a separate worktree produced every artifact; the
+supervisor captured, gated, appended and relayed findings verbatim, and never
+wrote the worker's work. Five phases, five passes, a landed commit, a closed bead
+the worker closed itself.
+
+**And the tooling cannot yet do it alone.** `etude gate` passed 0 of 5. Every
+passing verdict required a manual append, and that manual step is measurably
+where records go missing — six across `.3` and `.4`.
+
+## What this bead found that nothing else would have
+
+- **`etude gate` runs checks in the caller's worktree**, so a supervisor can
+  certify a tree without the change and see green (`etude-4qi`, P1).
+- **The bootstrap path is lossy AND duplicating**: re-recorded seats lose
+  `raw_output`/`session`, the completed attempt carries no check seats, and the
+  manifest shows 6 codex verdicts for 3 invocations (`etude-4ed`).
+- **Nothing detects an artifact edited after its gate** — it happened to 2 of 5
+  on `etude-3xt` and 2 of 3 on this run (`etude-pq7`).
+- **Round-sequence holes are a partial fingerprint** for missing verdicts, with
+  both failure modes, and the obvious discriminator does not work (`etude-a1i`).
+- **My own `bin/etude` predated the fallback ladder**, so every escalation this
+  epic measured came from a pre-ladder binary. The outcome held; my explanation
+  of it did not, for four gate rounds, until I rebuilt and ran one.
+
+## Limits, stated plainly
+
+n=1, on a bead chosen for tractability whose fix direction the bead text already
+named. The worker, the in-harness `opus` seat and the supervisor are all the same
+model family, so `codex` was the only independent judgement in every panel.
+Nothing here exercises two lanes at once, a worker that disputes a gate, or a
+bead that blocks repeatedly. Nothing in the run ref records that a lane existed,
+or links the gated evidence to the landed commit.
+
+## Ready
+
+`make test`, `make lint`, `make docs-check`, `make docs-reality`,
+`make shell-test` green. `make dogfood-audit` clean once this run ref is pushed.
+Every count above computed from a manifest, not typed — three rounds of this
+bead's implement gate blocked on numbers I had typed.
