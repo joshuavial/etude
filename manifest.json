@@ -506,6 +506,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:13:00Z"
+    },
+    {
+      "gate_id": "plan.r6",
+      "phase": "plan",
+      "round": 6,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-plan-r6",
+            "artifact": "6ddf7b80765a4f34972599fdaf4e3cbcbb06acde451d23b2b6cd72686e129c33",
+            "path": "artifacts/sha256/6d/6ddf7b80765a4f34972599fdaf4e3cbcbb06acde451d23b2b6cd72686e129c33",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 244
+          },
+          "timestamp": "2026-08-16T01:24:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "move transcript-byte import and fail-closed policy to etude-ps9",
+            "cover maximal framed log at the engine boundary",
+            "confirm os.Root toolchain support"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r6",
+            "artifact": "0a82190da1ebb585e9e2eba77ddf4fb14b095894f37bcd5238fe4ca84d8c3005",
+            "path": "artifacts/sha256/0a/0a82190da1ebb585e9e2eba77ddf4fb14b095894f37bcd5238fe4ca84d8c3005",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 396
+          },
+          "timestamp": "2026-08-16T01:31:00Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-ps9"
+        ]
+      },
+      "timestamp": "2026-08-16T01:32:00Z"
     }
   ]
 }
