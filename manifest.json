@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-9uf.4",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -59,6 +59,59 @@
         "size": 15787
       },
       "timestamp": "2026-08-15T11:17:22.98302Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "099867e688ed4be840f425d32b6dc21be49f220255acae23613d5f9bb979ce77"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T11:17:42Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Premise challenge UPHELD, but the same argument that saves (a) also saves (b), and the plan does not apply it: its justification assumes the very thing it just disproved. internal/cli/capture.go writes refs/etude/runs/* independently of gating and runmanifest marshals gates,omitempty, so a captured-but-never-gated run is a valid manifest with 0 gates - exactly as reachable as a never-captured one, and (b) is its only detector.",
+            "2. The plan silently converts check (c) from WARN to HARD and asserts both positions at once: 'the exit contract is preserved exactly' versus a negative control requiring (c) to 'confirm exit 1'. These cannot both hold.",
+            "3. The stated basis for deleting the allowlist is factually wrong and the error breaks the plan's own headline verification: active_ids is built by subtracting the allowlist and check (c) iterates active_ids, so it is a live input to the cadence denominator. Emptying it takes uncovered_count from 1 to 3, exactly the >= 3 threshold; combined with finding 2, make dogfood-audit would exit 1 on the current tree and block every push in this checkout - the plan's own top-listed risk, triggered by its own change."
+          ],
+          "timestamp": "2026-08-15T11:17:42Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Seats split - codex GO, opus BLOCK - so the gate does not pass under unanimous quorum. Both seats independently upheld the plan's premise challenge: the bead's claim that check (a) becomes structurally true is false, because nothing forces etude gate to be used and (a) is the only detector of a bead closed with no run ref. opus then found three defects in the plan's own reasoning, all verified before folding. The third is the sharpest and was quantified: the allowlist is not merely an (a)/(b) exemption, it is check (c)'s denominator, and emptying it moves the uncovered count from 1 to exactly the threshold - confirmed by running it with the allowlist emptied and restoring it. Deleting it while making (c) hard would have blocked every push in this checkout, which is the plan's own top-listed risk triggered by the plan's own change. The opus seat ran as an in-harness sub-agent per the documented registry exception; bead etude-8li covers its dead subprocess path."
+      },
+      "timestamp": "2026-08-15T11:17:42Z"
     }
   ]
 }
