@@ -1,0 +1,55 @@
+## Plan
+
+**Approach:** Replace the three fixed `skill id/repo/ver` lines in printRunDetail (internal/cli/run.go:169-171) with a producer block read from `stage.Producer`. Producer.Skill is always populated, so always print one consolidated `skill:` line. Harness and Model may be empty (legacy/partial manifests), so print `harness:`/`model:` lines ONLY when non-empty — degrade gracefully, never leak empty-label noise, never crash. Keep produced_by, git sha, input, and output lines exactly as-is. This consolidates the three skill lines into one (more readable, less vertical noise) at the cost of churning the two literal-string assertions in run_test.go and the example/field-list in docs/run.md (noted for Docs phase).
+
+**Chosen output format (exact literal lines):**
+
+(a) FULL producer (harness=claude-code 2.1.150, model=claude-opus-4-7, skill=dev-planner@v3 repo codewithjv-agent-skills):
+```
+stage: plan
+  produced_by: original
+  git sha:     <sha>
+  harness:     claude-code 2.1.150
+  model:       claude-opus-4-7
+  skill:       dev-planner@v3 (codewithjv-agent-skills)
+  input:  ...
+  output: ...
+```
+
+(b) LEGACY/partial (harness empty, model empty, skill=plan@manual repo manual):
+```
+stage: plan
+  produced_by: original
+  git sha:     <sha>
+  skill:       plan@manual (manual)
+  input:  ...
+  output: ...
+```
+
+Format rules:
+- harness line: `  harness:     <Name>` + (if Version != "") ` <Version>`. Omit entire line if Harness.Name == "".
+- model line: `  model:       <Model>`. Omit entire line if Model == "".
+- skill line: always `  skill:       <ID>@<Version> (<Repo>)` from stage.Producer.Skill.
+- Label column padded to align with `produced_by:` / `git sha:` (existing two-space-indent + value-start col).
+
+**Rationale (format decision):** Consolidate, do not just add. Adding harness/model alongside the existing three skill lines would produce 5 producer lines per stage (noisy, and 3 of them are the skill split across id/repo/ver). The `id@version (repo)` form is the conventional compact skill identity and matches the bead's stated `skill@version` goal. Producer.Skill is always populated by decode (new manifests authoritative; legacy lifts top-level skill into Producer.Skill), so the skill line never needs a guard. The churn (2 test assertions + 1 doc block) is small and acceptable per the bead's explicit allowance.
+
+**Files:**
+- internal/cli/run.go (printRunDetail, ~165-179) - replace the 3 `skill id/repo/ver` Fprintf lines with: conditional harness line (if Producer.Harness.Name != ""), conditional model line (if Producer.Model != ""), and one always-on consolidated skill line built from stage.Producer.Skill. Add a small helper or inline the harness `Name [Version]` join. produced_by/git sha/input/output unchanged.
+
+**Tests:** internal/cli/run_test.go
+- TestRunShowExistingRun (~256-261): the captured `plan` stage has empty harness/model (capture --harness/--model default to ""), so it is the LEGACY case. Replace the old `skill id:    plan` / `skill repo:  manual` assertions with: assert `skill:       plan@manual (manual)` present; assert output contains NO `harness:` and NO `model:` substring (proves empty-producer lines do not leak).
+- New TestRunShowFullProducer: capture a stage with --harness claude-code --harness-version 2.1.150 --model claude-opus-4-7 --skill-id dev-planner --skill-repo codewithjv-agent-skills --skill-version v3, then run show and assert all three appear: `harness:     claude-code 2.1.150`, `model:       claude-opus-4-7`, `skill:       dev-planner@v3 (codewithjv-agent-skills)`.
+- Edge: optionally a partial-producer case (harness set, model empty) asserting harness line present but no `model:` line — covers independent conditional omission.
+
+**Docs:** docs/run.md WILL drift (note for Docs phase, do not edit in Plan): the example block (lines 54-62) shows the old `skill id/repo/ver` lines and must show `harness:`/`model:`/`skill:`; the per-stage field list (lines 69-70) lists `skill id`, `skill repo`, `skill ver` and must describe `harness` (optional), `model` (optional), and consolidated `skill: id@version (repo)`, noting harness/model are omitted when empty for legacy manifests.
+
+**Risks:** None significant. Pure output-format change in one function. Producer.Skill guaranteed populated by decode so no nil/empty-skill crash. Only coupling risk is the literal-string test assertions and the shipped doc, both explicitly in scope.
+
+**Tier:** Tier 1 — user-facing product output AND a shipped-doc change (docs/run.md). This is a CLI bead: Verify requires a built-binary manual test (build etude, capture a full-producer stage and a legacy stage into a run, run `etude run show` against each, confirm full shows harness/model/skill@version and legacy shows skill only with no empty harness/model lines).
+
+**Capture:**
+- inputs: bead etude-roadmap.1.4 description; internal/cli/run.go printRunDetail loop; internal/cli/run_test.go TestRunShowExistingRun; internal/runmanifest/manifest.go Stage/Skill/Harness/Producer + decode; internal/cli/capture.go producer population + flag defaults; docs/run.md run-show section
+- output: bead --design field
+
+

@@ -1,0 +1,104 @@
+✓ etude-roadmap.1.4 · Surface harness/model/skill@version in run show   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: run show displays harness/model/skill@version per stage (conditional harness/model, always-on skill id@version (repo)); legacy renders skill only; Tier 1 gate 3 GO + dev-pr-reviewer, Gemini malfunction disregarded; 6bf72e0
+
+DESCRIPTION
+Display the full producer identity in 'etude run show' so each stage line shows harness, model, and skill@version (rather than just the skill). Touch point: internal/cli/run.go (run show rendering) plus internal/cli/run_test.go. Format the producer compactly (e.g. harness/model running skill-id@version) and keep it readable for stages that only have partial producer data (back-compat-lifted old manifests).
+
+Why: provenance that is recorded but never shown does not help the user understand what produced a stage; this closes the loop for humans inspecting a run.
+
+Dependency: schema must land first (etude-roadmap.1.1).
+
+DESIGN
+## Plan
+
+**Approach:** Replace the three fixed `skill id/repo/ver` lines in printRunDetail (internal/cli/run.go:169-171) with a producer block read from `stage.Producer`. Producer.Skill is always populated, so always print one consolidated `skill:` line. Harness and Model may be empty (legacy/partial manifests), so print `harness:`/`model:` lines ONLY when non-empty — degrade gracefully, never leak empty-label noise, never crash. Keep produced_by, git sha, input, and output lines exactly as-is. This consolidates the three skill lines into one (more readable, less vertical noise) at the cost of churning the two literal-string assertions in run_test.go and the example/field-list in docs/run.md (noted for Docs phase).
+
+**Chosen output format (exact literal lines):**
+
+(a) FULL producer (harness=claude-code 2.1.150, model=claude-opus-4-7, skill=dev-planner@v3 repo codewithjv-agent-skills):
+```
+stage: plan
+  produced_by: original
+  git sha:     <sha>
+  harness:     claude-code 2.1.150
+  model:       claude-opus-4-7
+  skill:       dev-planner@v3 (codewithjv-agent-skills)
+  input:  ...
+  output: ...
+```
+
+(b) LEGACY/partial (harness empty, model empty, skill=plan@manual repo manual):
+```
+stage: plan
+  produced_by: original
+  git sha:     <sha>
+  skill:       plan@manual (manual)
+  input:  ...
+  output: ...
+```
+
+Format rules:
+- harness line: `  harness:     <Name>` + (if Version != "") ` <Version>`. Omit entire line if Harness.Name == "".
+- model line: `  model:       <Model>`. Omit entire line if Model == "".
+- skill line: always `  skill:       <ID>@<Version> (<Repo>)` from stage.Producer.Skill.
+- Label column padded to align with `produced_by:` / `git sha:` (existing two-space-indent + value-start col).
+
+**Rationale (format decision):** Consolidate, do not just add. Adding harness/model alongside the existing three skill lines would produce 5 producer lines per stage (noisy, and 3 of them are the skill split across id/repo/ver). The `id@version (repo)` form is the conventional compact skill identity and matches the bead's stated `skill@version` goal. Producer.Skill is always populated by decode (new manifests authoritative; legacy lifts top-level skill into Producer.Skill), so the skill line never needs a guard. The churn (2 test assertions + 1 doc block) is small and acceptable per the bead's explicit allowance.
+
+**Files:**
+- internal/cli/run.go (printRunDetail, ~165-179) - replace the 3 `skill id/repo/ver` Fprintf lines with: conditional harness line (if Producer.Harness.Name != ""), conditional model line (if Producer.Model != ""), and one always-on consolidated skill line built from stage.Producer.Skill. Add a small helper or inline the harness `Name [Version]` join. produced_by/git sha/input/output unchanged.
+
+**Tests:** internal/cli/run_test.go
+- TestRunShowExistingRun (~256-261): the captured `plan` stage has empty harness/model (capture --harness/--model default to ""), so it is the LEGACY case. Replace the old `skill id:    plan` / `skill repo:  manual` assertions with: assert `skill:       plan@manual (manual)` present; assert output contains NO `harness:` and NO `model:` substring (proves empty-producer lines do not leak).
+- New TestRunShowFullProducer: capture a stage with --harness claude-code --harness-version 2.1.150 --model claude-opus-4-7 --skill-id dev-planner --skill-repo codewithjv-agent-skills --skill-version v3, then run show and assert all three appear: `harness:     claude-code 2.1.150`, `model:       claude-opus-4-7`, `skill:       dev-planner@v3 (codewithjv-agent-skills)`.
+- Edge: optionally a partial-producer case (harness set, model empty) asserting harness line present but no `model:` line — covers independent conditional omission.
+
+**Docs:** docs/run.md WILL drift (note for Docs phase, do not edit in Plan): the example block (lines 54-62) shows the old `skill id/repo/ver` lines and must show `harness:`/`model:`/`skill:`; the per-stage field list (lines 69-70) lists `skill id`, `skill repo`, `skill ver` and must describe `harness` (optional), `model` (optional), and consolidated `skill: id@version (repo)`, noting harness/model are omitted when empty for legacy manifests.
+
+**Risks:** None significant. Pure output-format change in one function. Producer.Skill guaranteed populated by decode so no nil/empty-skill crash. Only coupling risk is the literal-string test assertions and the shipped doc, both explicitly in scope.
+
+**Tier:** Tier 1 — user-facing product output AND a shipped-doc change (docs/run.md). This is a CLI bead: Verify requires a built-binary manual test (build etude, capture a full-producer stage and a legacy stage into a run, run `etude run show` against each, confirm full shows harness/model/skill@version and legacy shows skill only with no empty harness/model lines).
+
+**Capture:**
+- inputs: bead etude-roadmap.1.4 description; internal/cli/run.go printRunDetail loop; internal/cli/run_test.go TestRunShowExistingRun; internal/runmanifest/manifest.go Stage/Skill/Harness/Producer + decode; internal/cli/capture.go producer population + flag defaults; docs/run.md run-show section
+- output: bead --design field
+
+
+NOTES
+PLAN GATE (Tier 1): 4/4 GO (Opus, Gemini, Codex, pilms). Notes folded into Implement: (a) value column aligns at index 15 — harness: +5 spaces, model: +7, skill: +7 (matches existing produced_by:/git sha:); pilms' miscount notwithstanding, the planned spacing is correct. (b) REWRITE the existing skill id/repo/ver assertions in TestRunShowExistingRun (don't just add). (c) add TestRunShowPartialProducer (harness set, model empty) to cover the independent-omission edge. Proceeding to Implement.
+IMPLEMENT GATE (Tier 1): 3 GO (Opus, Codex, pilms) + 1 GEMINI MALFUNCTION (treated as non-blocking after definitive ground-truth verification). Opus independently verified all value columns align at index 15; manual built-binary test confirmed full/partial/legacy rendering.
+- Gemini BLOCK'd TWICE citing a malformed assertion `skill: dev-planner @docs/plans/product/manifest-schema-v2.md (codewithjv-agent-skills)` in TestRunShowPartialProducer. INVESTIGATED: that string exists NOWHERE in run_test.go (grep for manifest-schema/dev-planner /docs-plans returns NONE); the real assertion (L438) is `skill:       dev-planner@v2 (codewithjv-agent-skills)`; TestRunShowPartialProducer + TestRunShowFullProducer both PASS (go test -v). Root cause: Gemini's fallback GrepTool (ripgrep unavailable) bleeds matches from the real repo doc docs/plans/product/manifest-schema-v2.md and misattributes them — reproducible Gemini-specific artifact, not a code defect. Per "investigate don't dismiss": investigated thoroughly, BLOCK has zero basis.
+Decision: Implement gate PASS on 3 valid GO + verified ground truth + green tests + manual smoke. Proceeding to Docs.
+## Docs
+
+Changed: yes
+Files:
+- docs/run.md
+
+Rationale:
+- Updated the `run show` example output block (lines 54-62): replaced the three legacy lines `skill id:`, `skill repo:`, `skill ver:` with the new single `skill: plan@manual (manual)` line. Added a second mini-example showing the full-producer stage with `harness:` and `model:` lines so readers know those appear when recorded.
+- Updated the per-stage field list (lines 69-70): replaced `skill id`, `skill repo`, `skill ver` with three bullet points for `harness` (omitted when not recorded), `model` (omitted when not recorded), and `skill` (always printed as `id@version (repo)`). Added note that harness/model are omitted for manual/legacy captures.
+
+Policy check:
+- policy applied: existing docs/run.md style (factual, minimal prose, code blocks for exact output)
+- shipped docs describe implemented behavior only
+- planning material remains under planning docs
+- generated references are separate from hand-written guides
+- generated output was updated through the repo workflow or intentionally left alone (not applicable — run.md is hand-written)
+
+Capture:
+- inputs: Verify artifact and docs policy
+- output: docs diff — two edits to docs/run.md only
+DOCS GATE (lightened 2-seat): 2/2 GO (Opus, Codex). docs/run.md updated: legacy example shows only skill: id@version (repo); added a full-producer example; field list documents harness/model as optional. Proceeding to Final Review.
+FINAL GATE (Tier 1): 3 GO (Opus, Codex, pilms) + dev-pr-reviewer ready-to-commit + 1 GEMINI MALFUNCTION (3rd reproduction, non-blocking). Opus built the binary and verified byte-aligned full/partial/legacy output; dev-pr-reviewer + Opus mutation-tested branches on /tmp copies. Gemini hallucinated the SAME phantom assertion `skill: dev-planner @docs/plans/product/manifest-schema-v2.md` a THIRD time even WITH an explicit forewarning in the prompt — confirms a deterministic GrepTool bleed from docs/plans/product/manifest-schema-v2.md, not a code defect. Ground truth (grep + go test -v + manual + 3 seats + dev-pr-reviewer): real assertion is `dev-planner@v2 (codewithjv-agent-skills)`, tests pass. Decision: gate PASS; Gemini seat malfunctioning on this repo's run_test.go, disregarded with documentation.
+
+LABELS: phase:docs
+
+PARENT
+  ↑ ○ etude-roadmap.1: (EPIC) Capture and surface full producer identity (harness/model/skill) ● P2
+
+DEPENDS ON
+  → ✓ etude-roadmap.1.1: Add nested Producer (harness/model/skill) to run manifest schema ● P2
+
