@@ -1989,6 +1989,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:34:46.550721Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "e8d7eab1e13107644457fc6685f4fa8624c77b0fae520dda6242a9b383c62df0"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. The artifact asserts docs/behavior alignment without citing the specific doc sections or commit range it was checked against; naming them would make future gate rounds re-verifiable output-only. 2. The unscanned-stage-log risk is recorded in the security note but no follow-up owner/tracking item is referenced — worth filing so the accepted risk does not silently persist."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "9c9d672e7f43a2fd558224a5bf46282f0ee4b857c7b881b8b1bf161f10d29aa7",
+            "path": "artifacts/sha256/9c/9c9d672e7f43a2fd558224a5bf46282f0ee4b857c7b881b8b1bf161f10d29aa7",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 526
+          },
+          "session": {
+            "session_id": "opus-5f591bede53166d7",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "5f591bede53166d7c46251eda1490b06a042ab9a36fc33875b54460b6fea761b",
+              "path": "artifacts/sha256/5f/5f591bede53166d7c46251eda1490b06a042ab9a36fc33875b54460b6fea761b",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 435
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:35:15.472943Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:35:15.473687Z"
     }
   ]
 }
