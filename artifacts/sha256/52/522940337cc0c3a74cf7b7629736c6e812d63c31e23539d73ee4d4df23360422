@@ -1,0 +1,6 @@
+packet: .etude/tmp/etude-s6z.1/plan.r6.packet.md
+sha256: 4afad05eb9b0d5125fe2287eb00abbadd7c0b9160b994f2fb64a2e67a189dcf1
+
+Blocking defect: tool-enabled Claude inherits CLAUDE_CODE_OAUTH_TOKEN, so untrusted prior-stage content can induce token exfiltration into model output. Disable ambient tools and reject exact-token output before publication.
+
+VERDICT: BLOCK

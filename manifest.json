@@ -536,6 +536,72 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:58:48Z"
+    },
+    {
+      "gate_id": "plan.r6",
+      "phase": "plan",
+      "round": 6,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "remove model-driven access to inherited OAuth credentials"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r6",
+            "artifact": "522940337cc0c3a74cf7b7629736c6e812d63c31e23539d73ee4d4df23360422",
+            "path": "artifacts/sha256/52/522940337cc0c3a74cf7b7629736c6e812d63c31e23539d73ee4d4df23360422",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 364
+          },
+          "timestamp": "2026-08-16T00:03:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "bound live proof after plan",
+            "cite base PATH injection"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r6",
+            "artifact": "0cc81a3cc24ba39d4e5c1cb9de6b16f446fdb55e0024c5b61f23a2ac27d5d95c",
+            "path": "artifacts/sha256/0c/0cc81a3cc24ba39d4e5c1cb9de6b16f446fdb55e0024c5b61f23a2ac27d5d95c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 383
+          },
+          "timestamp": "2026-08-16T00:05:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:06:57Z"
     }
   ]
 }
