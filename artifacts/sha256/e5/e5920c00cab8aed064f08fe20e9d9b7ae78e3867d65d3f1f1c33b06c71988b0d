@@ -1,0 +1,20 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-egg BLOCKED TWICE: plan synthesize-on-absent lost the presence bit + broke legacy round-trip; implement present-null `retros:` decoded *T->nil == absent, skipping validation",
+    "both egg BLOCKs were STATE-MODEL bugs the spec-focused seats (codex/gemini) caught while the test-running repo-aware seat (opus) GO'd"
+  ],
+  "root_causes": [
+    "an optional config/struct block must preserve absent / present-null / present-empty; a plain *T field conflates absent with present-null and synthesizing-on-absent destroys the presence bit + breaks round-trip",
+    "reasoning about the state model / spec catches a class the \"run it, it passes\" seat structurally cannot"
+  ],
+  "follow_up_beads": [
+    "etude-2ku retro-meta sidecar",
+    "etude-qih etude log"
+  ],
+  "decisions": [],
+  "durable_changes": [
+    "review-gate-runbook.md \"Recurring Defect Classes\" item 5: optional block must preserve the three presence states via nil-for-absent + accessor-computed defaults + yaml.Node + re-imposed KnownFields on node decode + validate-only-when-present"
+  ]
+}

@@ -1,0 +1,21 @@
+### B11. Cadence retro (2026-05-26) — post sweep-tail + Phase-C-extra-1 (quk/f6h/egg)
+- **Trigger/scope:** 3-ticket cadence after the 2 sweep loose-ends (etude-quk dead
+  exported-wrapper removal, etude-f6h gitignore gen-docs — both trivial single-gate)
+  + the first deferred Phase-C extra (etude-egg, the `retros:` workflow.yaml block).
+- **Findings/changes:** added a FIFTH "Recurring Defect Classes" item: **an optional
+  config/struct block must preserve absent / present-null / present-empty** — a plain
+  `*T` field conflates absent with present-null, and synthesizing-on-absent destroys
+  the presence bit + breaks round-trip. From etude-egg, which BLOCKED TWICE on exactly
+  this (plan: synthesize-on-absent lost the presence bit + broke legacy round-trip;
+  implement: present-null `retros:` decoded `*T`→nil == absent, skipping validation).
+  Fix pattern: nil-for-absent + accessor-computed defaults + `yaml.Node` to distinguish
+  the three states + re-impose KnownFields on node decode + validate-only-when-present.
+- **Reinforced (3rd time):** item-2 — both egg BLOCKs were STATE-MODEL bugs the spec-
+  focused seats (codex/gemini) caught while the test-running repo-aware seat (opus) GO'd.
+  Pattern is now unmistakable: reasoning about the state model / spec catches a class the
+  "run it, it passes" seat structurally cannot.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect Classes"
+  item 5). Counter reset.
+- **Remaining:** 2 more Phase-C extras in flight (etude-2ku retro-meta sidecar, etude-qih
+  etude log).
+
