@@ -1385,6 +1385,143 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T06:56:29.021989Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "5f1c5b5775e7a5e1c8396ea7abb8e04c293bd604bc568f47c46ce02496b9249d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "block",
+          "required": [
+            "exit 2: make: *** [test] Error 1"
+          ],
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "19acc8009458e6023af58cd3a68c5db8413e40e35844a20342dbcaf91919c000",
+            "path": "artifacts/sha256/19/19acc8009458e6023af58cd3a68c5db8413e40e35844a20342dbcaf91919c000",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 10241
+          },
+          "timestamp": "2026-08-17T07:09:15.353392Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-17T07:09:16.63162Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) The recommendation is conditional (\"after the corrected implementation gate passes\") while status is `pass` — state explicitly whether that gate has already cleared so the docs phase does not start on an unmet precondition. 2) The unrelated CLI package hitting a 10-minute timeout under a concurrent full-suite lane is a real infra flake; file it rather than leaving it as prose in a verify artifact. 3) Manual QA covers success and two negative paths, but not a read_checkout seat whose pinned checkout is empty/unpopulated — worth one fixture if cheap."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "7417f2b04dbdba18e66588e095b8571e3995f55006e3e1f7447c542d41040344",
+            "path": "artifacts/sha256/74/7417f2b04dbdba18e66588e095b8571e3995f55006e3e1f7447c542d41040344",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 714
+          },
+          "session": {
+            "session_id": "opus-30a31b8a3ee5bd38",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "30a31b8a3ee5bd38435fd2cabe4b6f810ccef4be68ac48c15f745b8be9d50762",
+              "path": "artifacts/sha256/30/30a31b8a3ee5bd38435fd2cabe4b6f810ccef4be68ac48c15f745b8be9d50762",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 616
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:09:35.979939Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Clarify the conditional “after the corrected implementation gate passes” if this artifact is archived as final verify evidence."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "464bece9d1585efac039c4d7b9eafa5970d9b0668a80d14da5d9d3b569629471",
+            "path": "artifacts/sha256/46/464bece9d1585efac039c4d7b9eafa5970d9b0668a80d14da5d9d3b569629471",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 287
+          },
+          "session": {
+            "session_id": "codex-ffd66fcd84828b0f",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ffd66fcd84828b0f4b20adc41830c5f24f3e7f6a9aadc1e061ad12103943ec29",
+              "path": "artifacts/sha256/ff/ffd66fcd84828b0f4b20adc41830c5f24f3e7f6a9aadc1e061ad12103943ec29",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 191
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:10:17.067781Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:10:17.07131Z"
     }
   ]
 }

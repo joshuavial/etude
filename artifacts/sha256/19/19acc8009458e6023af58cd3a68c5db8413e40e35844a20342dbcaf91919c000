@@ -1,0 +1,168 @@
+go test ./...
+?   	github.com/joshuavial/etude/cmd/etude	[no test files]
+ok  	github.com/joshuavial/etude/cmd/gen-docs	1.975s
+ok  	github.com/joshuavial/etude/internal/artifactmedia	(cached)
+ok  	github.com/joshuavial/etude/internal/artifactstore	(cached)
+ok  	github.com/joshuavial/etude/internal/bench	347.009s
+panic: test timed out after 10m0s
+	running tests:
+		TestRetroNudgeDismissDoesNotEmitStderrNudge (1s)
+
+goroutine 20469 [running]:
+testing.(*M).startAlarm.func1()
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2802 +0x2c4
+created by time.goFunc
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/time/sleep.go:215 +0x38
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x4a55837e8488, {0x105216cc3?, 0x4a5583313b18?}, 0x10575daa0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2109 +0x3bc
+testing.runTests.func1(0x4a55837e8488)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2585 +0x38
+testing.tRunner(0x4a55837e8488, 0x4a5583313c48)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2036 +0xc4
+testing.runTests({0x105204092, 0x1b}, {0x105213567, 0x28}, 0x4a55832fc0f0, {0x1057b3580, 0x19f, 0x19f}, {0x8080804431645721?, 0x1051f9564?, ...})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2583 +0x3f0
+testing.(*M).Run(0x4a558339edc0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2443 +0x578
+main.main()
+	_testmain.go:874 +0x80
+
+goroutine 20384 [syscall]:
+syscall.syscalln(0x104d56c70, {0x4a5583765228, 0x6, 0x6})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/runtime/sys_darwin.go:38 +0x20
+syscall.syscall6(0x183494c78?, 0x12e3dba28?, 0x1078a66c8?, 0x90?, 0x4a558335d008?, 0x4a55837ce480?, 0x4a55837652c8?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/syscall/syscall_darwin.go:388 +0x28
+syscall.wait4(0x4a55837652f8?, 0x104d7aa8c?, 0x90?, 0x10574d280?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/syscall/zsyscall_darwin_arm64.go:44 +0x4c
+syscall.Wait4(0x4a55834a3180?, 0x4a5583765334, 0x4a5583494c78?, 0x4a55834a3110?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/syscall/syscall_bsd.go:144 +0x28
+os.(*Process).pidWait.func1(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec_unix.go:64
+os.ignoringEINTR2[...](...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file_posix.go:266
+os.(*Process).pidWait(0x4a55837f0700)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec_unix.go:63 +0x9c
+os.(*Process).wait(0x1078a66c8?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec_unix.go:28 +0x24
+os.(*Process).Wait(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec.go:346
+os/exec.(*Cmd).Wait(0x4a558356c1a0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:930 +0x38
+os/exec.(*Cmd).Run(0x4a558356c1a0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:632 +0x38
+github.com/joshuavial/etude/internal/refstore.Store.gitBytes({{0x0?, 0x1051fa158?}, {0x1051f2fcf?, 0x1051f7a3a?}}, {0x105766f08?, 0x1057de360?}, {0x0, 0x0, 0x4a5583765548?}, 0x0, ...)
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/refstore/store.go:471 +0x1ec
+github.com/joshuavial/etude/internal/refstore.Store.git(...)
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/refstore/store.go:451
+github.com/joshuavial/etude/internal/refstore.Store.List({{0x0?, 0x4a5583321008?}, {0x1051f2fcf?, 0x104d39de4?}}, {0x105766f08, 0x1057de360}, {0x1051fa158, 0xf})
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/refstore/store.go:236 +0x138
+github.com/joshuavial/etude/internal/nudge.CountRunsSinceLastRetro({0x105766f08, 0x1057de360}, {{0x0?, 0x4a5583765908?}, {0x1051f2fcf?, 0x0?}})
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/nudge/nudge.go:151 +0x4b8
+github.com/joshuavial/etude/internal/cli.newRetroNudgeDismissCommand.func1(0x4a558370f100?, {0x1057de360?, 0x4?, 0x1051f33c0?})
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/cli/retro_nudge.go:64 +0x15c
+github.com/spf13/cobra.(*Command).execute(0x4a5583431808, {0x1057de360, 0x0, 0x0})
+	/Users/jv/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1015 +0x814
+github.com/spf13/cobra.(*Command).ExecuteC(0x4a558342a008)
+	/Users/jv/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1148 +0x350
+github.com/spf13/cobra.(*Command).Execute(...)
+	/Users/jv/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071
+github.com/joshuavial/etude/internal/cli.ExecuteWithWriters({0x1057640e0?, 0x4a558385aba0?}, {0x1057640e0, 0x4a558385abd0}, {0x4a558385ab70, 0x3, 0x3})
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/cli/root.go:73 +0x7c
+github.com/joshuavial/etude/internal/cli.execute({0x4a558385ab70, 0x3, 0x3})
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/cli/root_test.go:12 +0x68
+github.com/joshuavial/etude/internal/cli.TestRetroNudgeDismissDoesNotEmitStderrNudge(0x4a558390e248)
+	/Users/jv/projects/etude/.worktrees/lane-s6z/internal/cli/retro_nudge_test.go:184 +0xf4
+testing.tRunner(0x4a558390e248, 0x10575daa0)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/testing/testing.go:2101 +0x3a8
+
+goroutine 20467 [IO wait]:
+internal/poll.runtime_pollWait(0x12e757a00, 0x72)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x4a55839bec00?, 0x4a5583488800?, 0x1)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0x4a55839bec00, {0x4a5583488800, 0x200, 0x200})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_unix.go:165 +0x234
+os.(*File).read(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file_posix.go:29
+os.(*File).Read(0x4a55838b2168, {0x4a5583488800?, 0x4a558382d4f8?, 0x0?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:144 +0x68
+bytes.(*Buffer).ReadFrom(0x4a558384e330, {0x105763f08, 0x4a55838b2168})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/bytes/buffer.go:229 +0x90
+io.copyBuffer({0x1057640e0, 0x4a558384e330}, {0x105763f08, 0x4a55838b2168}, {0x0, 0x0, 0x0})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:415 +0x14c
+io.Copy(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:388
+os.genericWriteTo(0x4a558382d698?, {0x1057640e0?, 0x4a558384e330?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:295 +0x44
+os.(*File).WriteTo(0x4a558382d698?, {0x1057640e0?, 0x4a558384e330?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:273 +0x5c
+io.copyBuffer({0x1057640e0, 0x4a558384e330}, {0x105764000, 0x4a55838b2168}, {0x0, 0x0, 0x0})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:411 +0x98
+io.Copy(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:602 +0x40
+os/exec.(*Cmd).Start.func2(0x4a55834a4910?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:757 +0x30
+created by os/exec.(*Cmd).Start in goroutine 20384
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:756 +0x6c8
+
+goroutine 20468 [IO wait]:
+internal/poll.runtime_pollWait(0x12e757c00, 0x72)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x4a55839becc0?, 0x4a558337fc00?, 0x1)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0x4a55839becc0, {0x4a558337fc00, 0x200, 0x200})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/internal/poll/fd_unix.go:165 +0x234
+os.(*File).read(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file_posix.go:29
+os.(*File).Read(0x4a55838b2180, {0x4a558337fc00?, 0x4a558382dcf8?, 0x0?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:144 +0x68
+bytes.(*Buffer).ReadFrom(0x4a558384e360, {0x105763f08, 0x4a55838b2180})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/bytes/buffer.go:229 +0x90
+io.copyBuffer({0x1057640e0, 0x4a558384e360}, {0x105763f08, 0x4a55838b2180}, {0x0, 0x0, 0x0})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:415 +0x14c
+io.Copy(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:388
+os.genericWriteTo(0x4a558382de98?, {0x1057640e0?, 0x4a558384e360?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:295 +0x44
+os.(*File).WriteTo(0x4a558382de98?, {0x1057640e0?, 0x4a558384e360?})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/file.go:273 +0x5c
+io.copyBuffer({0x1057640e0, 0x4a558384e360}, {0x105764000, 0x4a55838b2180}, {0x0, 0x0, 0x0})
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:411 +0x98
+io.Copy(...)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:602 +0x40
+os/exec.(*Cmd).Start.func2(0x4a55833b69c0?)
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:757 +0x30
+created by os/exec.(*Cmd).Start in goroutine 20384
+	/opt/homebrew/Cellar/go/1.26.1/libexec/src/os/exec/exec.go:756 +0x6c8
+FAIL	github.com/joshuavial/etude/internal/cli	601.096s
+ok  	github.com/joshuavial/etude/internal/eval	59.676s
+ok  	github.com/joshuavial/etude/internal/example	125.171s
+ok  	github.com/joshuavial/etude/internal/gc	124.973s
+ok  	github.com/joshuavial/etude/internal/ident	(cached)
+ok  	github.com/joshuavial/etude/internal/index	109.462s
+ok  	github.com/joshuavial/etude/internal/liverun	334.124s
+ok  	github.com/joshuavial/etude/internal/nudge	74.023s
+ok  	github.com/joshuavial/etude/internal/refstore	108.865s
+ok  	github.com/joshuavial/etude/internal/registry	(cached)
+--- FAIL: TestExecRunner_TimeoutRetainsStderrTail (0.67s)
+    exec_runner_test.go:1102: error = runner: timed out after 500ms: context deadline exceeded
+FAIL
+FAIL	github.com/joshuavial/etude/internal/replay	157.134s
+ok  	github.com/joshuavial/etude/internal/retro	77.172s
+ok  	github.com/joshuavial/etude/internal/runmanifest	70.410s
+ok  	github.com/joshuavial/etude/internal/sessionevidence	(cached)
+ok  	github.com/joshuavial/etude/internal/workflow	(cached)
+ok  	github.com/joshuavial/etude/internal/worktree	96.106s
+FAIL
+make: *** [test] Error 1
