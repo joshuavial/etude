@@ -1,0 +1,7 @@
+# Verify — etude-roadmap.2.5 (Backfill recent gate reviewer records) — PASS
+- New scripts/backfill-gate-records.sh + docs/gates.md "Backfilled gate records" subsection. No Go/schema change.
+- bash -n clean; make docs-check no diff.
+- Parser unit-tested (5 cases): canonical→1 attempt (tier:0, convention providers, [backfilled…] marker, correct verdicts, failure_note only on non-go/block); real narrative→0; phase-with-no-stage→refuse; unknown verdict→refuse; unknown EXTRA seat→refuse.
+- Throwaway end-to-end (etude copy + bare origin + stub bd): canonical→append tier:0 gate→v3→verify-before-push→push; narrative→0 attempts, ref unchanged; mixed-block→eligible lands + non-zero exit; bd-show-failure fails closed.
+- Real-data non-mutation: ran on etude-gc-command + etude-roadmap.2.1 (non-canonical) → 0 attempts, exit 0, refs byte-identical.
+- AC: parse canonical lines ✓; inferred marked (tier:0 + degraded_reason marker) + source refs (reviewed_stages) ✓; pilms provider convention-derived only when token recognized, marked ✓; refuses ambiguous ✓; docs explain limitations ✓.
