@@ -1,0 +1,146 @@
+# Plan — etude-3xt
+
+**Bead:** `etude-3xt` [BUG] — "the retro cadence check measures retro refs, not the
+retro markdown lanes actually write"
+
+## The defect, restated
+
+Two artifacts claim to be "a retro":
+
+- **the ref** — `refs/etude/retros/<id>`, written by `etude retro capture|generate`.
+  Carries the manifest: scope, trigger, subjects (`subject_run.N` / `bead.N`),
+  decision, the meta sidecar, provenance. Pushable, and check (d) of
+  `scripts/dogfood-completeness-audit.sh` hard-fails when it is not pushed.
+- **the markdown** — `.etude/retros/<name>.md`, hand-written and committed by lanes.
+  Carries the prose and nothing else — no subject linkage, no trigger, no sidecar.
+
+Nothing connects them. Check (c) counts refs with `trigger=cadence-retro`; the
+practice produces markdown. On epic `etude-9uf` that produced three markdown files
+and two refs. The check can therefore pass with zero retros written, or warn with
+three written.
+
+The root cause is the same one the ledger already records for this project
+(`retro-ledger.md`, finding 2026-05-27, B16): *"the run-capture habit held but the
+retro/gate-capture habits lapsed without any signal."* `etude retro capture` is a
+second, separately-remembered step after the markdown is written, and a
+separately-remembered step is the thing that lapses.
+
+## Chosen fix
+
+Follow the bead's preferred option — keep the ref, make the practice produce it —
+and make it structural rather than procedural:
+
+> **`etude retro capture` and `etude retro generate` land the retro body as
+> markdown under `<repo-root>/.etude/retros/<retro-id>.md`, and record that path in
+> the manifest as `refs["retro_file"]`.**
+
+So the committed markdown a lane must land on `origin/main` becomes an **output of
+the command that writes the ref**, not an input a second command has to be
+remembered for. A lane that has the markdown has the ref, because the markdown came
+out of capture. The file name *is* the ref name, so `.etude/retros/<id>.md` ⟺
+`refs/etude/retros/<id>` is checkable by inspection from either side.
+
+Two directions, two rules:
+
+1. **`--file` outside `.etude/retros/` (or `-`, stdin):** after the ref commit
+   succeeds, write the body to `<root>/.etude/retros/<retro-id>.md` (create-only —
+   the id is freshly allocated, so an existing file is an error, never a clobber),
+   `MkdirAll` the directory, and print `wrote .etude/retros/<retro-id>.md`.
+2. **`--file` already inside `<root>/.etude/retros/`:** the markdown has already
+   landed. Write nothing — record the file's existing repo-relative path in
+   `retro_file` and print it. Without this branch, capturing a retro a lane wrote by
+   hand would drop a second copy of the same prose in the repo under a different
+   name, which is the divergence again in a new costume.
+
+`retro_file` becomes a reserved `--ref` key (like `scope`, `trigger`,
+`produced_via`), so a caller cannot forge or clobber it. `retro show` already prints
+unrecognised refs under `metadata:`, so it surfaces with no display change.
+
+Both rules live in `assembleAndWriteRetro` (`internal/cli/retro.go`), which capture
+and generate already share, so this is one implementation and both paths get it.
+
+Sequencing inside `assembleAndWriteRetro`:
+
+- resolve the repo root and decide the target path **before** `retro.Writer.Write`,
+  so a non-repo / unresolvable root fails before any ref exists;
+- set `refsMap["retro_file"]` before the manifest is built (it must be inside the
+  manifest that gets committed);
+- write the file **after** the ref commit succeeds, so a failed ref write leaves no
+  stray markdown. If the file write then fails, return an error naming both the ref
+  that exists and the file that does not. That failure is loud and rare
+  (permissions); silently swallowing it would recreate the exact drift this bead is
+  about.
+
+## Why not the alternatives
+
+- **Make check (c) count markdown instead.** Cheapest, and rejected for the reason
+  the bead gives: the markdown carries no subject linkage, so the check could no
+  longer say *which* beads a retro covered — the cadence rule is "one retro per 3
+  closed beads", which needs the subjects. It also drops the pushed-ness guarantee
+  check (d) provides for refs.
+- **Drop the ref, markdown only.** Deletes the manifest, sidecar, and `etude retro
+  list|show` — a feature this repo exists to dogfood.
+- **A new `etude retro sync`/`--all` that sweeps `.etude/retros/` for uncaptured
+  markdown.** This is markdown-first, and it does *not* make divergence impossible:
+  it is still a second command someone has to remember, i.e. the present bug with
+  one more subcommand. It is also close in shape to the retroactive capture path
+  deliberately deleted in `e0c59b6`.
+- **Put the emission behind an opt-in flag (`--land` / `--write-file`).** An opt-in
+  flag is precisely the step that lapses. Making it unconditional is the point.
+
+## Scope boundary — what this bead does NOT do
+
+Check (c) is **not touched**. It keeps counting `cadence-retro` refs and keeps
+being WARN-only, exactly as `etude-9uf.4` left it. This bead removes the *cause* of
+the divergence (markdown produced without a ref); re-tightening the check on the
+new, now-trustworthy evidence is a separate decision and a separate commit. The
+`.etude/retros/*.md` files already committed keep their existing names and are not
+migrated or renamed — they are historical prose, and rewriting landed retros to
+chase a naming scheme would be churn with no reader.
+
+## Contract / behavior changes
+
+| Surface | Before | After |
+|---|---|---|
+| `etude retro capture` | writes a ref; stdout `captured <sha>` + `ref <ref>` | additionally lands the body under `.etude/retros/`; stdout gains a `wrote <path>` line |
+| `etude retro generate` | same | same |
+| retro manifest `refs` | no file linkage | adds `retro_file` = repo-relative markdown path |
+| `--ref retro_file=…` | accepted as a custom ref | rejected as reserved |
+| `.etude/retros/` | written only by hand | also written by the CLI (precedent: `etude init` writes `<root>/.etude`) |
+
+Backward compatibility: existing retro refs have no `retro_file` and stay readable —
+it is an additive optional key, and `retro show` renders unknown refs generically.
+No manifest-version bump.
+
+## Planned regressions
+
+- **Planned regression:** `TestRetroCaptureLandsMarkdownUnderEtudeRetros` — capture
+  with `--file retro.md` (outside the dir) writes `.etude/retros/<retro-id>.md` with
+  bytes identical to the source, and the manifest records
+  `refs["retro_file"] == ".etude/retros/<retro-id>.md"`. Fails today: no file.
+- **Planned regression:** `TestRetroCaptureInPlaceDoesNotDuplicate` — capture with
+  `--file .etude/retros/<existing>.md` leaves the directory holding exactly that one
+  file, and records `refs["retro_file"]` pointing at it. Fails today (`retro_file`
+  absent) and pins the no-second-copy rule.
+- **Planned regression:** `TestRetroCaptureRejectsReservedRetroFileRef` —
+  `--ref retro_file=x` is rejected as reserved.
+- **Planned regression:** `TestRetroGenerateLandsMarkdownUnderEtudeRetros` — the
+  generated body lands too, proving the shared path covers both commands.
+- **Planned regression:** capture from stdin (`--file -`) lands the body under the
+  allocated id, asserted inside the first test's table or as a sibling case.
+
+`make test` and `make lint` must be green before verify is called done. Existing
+capture/generate/show tests that assert stdout or `retro show` output will be
+re-run and adjusted only where the new `wrote` line or `retro_file` metadata line
+is genuinely expected — no assertion will be loosened to accommodate a surprise.
+
+## Files
+
+- `internal/cli/retro.go` — the landing rule, `retro_file`, reserved-key addition.
+- `internal/cli/retro_test.go` — the regressions above.
+- `docs/retro.md` — document the landed-markdown output and `retro_file` (docs phase).
+- `docs/plans/dogfood/retro-ledger.md` — the cadence-retro recipe now yields both
+  artifacts from one command (docs phase).
+
+Not touched: `scripts/dogfood-completeness-audit.sh`, the etude-loop skill (skills
+are out of this worktree's blast radius), any already-landed retro markdown.
