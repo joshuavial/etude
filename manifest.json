@@ -369,6 +369,61 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T04:34:35Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "force+dry-run+explicit-missing errors (force outranks dryRun) — confirm intent/comment",
+            "dead initAction.describe field",
+            "unused ctx param in apply",
+            "duplicated dry-run configure preview text"
+          ],
+          "timestamp": "2026-06-07T04:59:46Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "--dry-run --force --remote <missing> returns remoteNotFoundErr, violating dry-run-never-errors-on-missing-remote invariant; handle dryRun before the force missing-remote error / exempt dry-run from remoteNotFoundErr"
+          ],
+          "optional": [
+            "add test for init --dry-run --force --remote missing"
+          ],
+          "timestamp": "2026-06-07T04:59:46Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T04:59:46Z"
     }
   ]
 }
