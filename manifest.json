@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aul.1",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,78 @@
         "size": 2638
       },
       "timestamp": "2026-06-07T09:01:14.046667Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "LabelHint tracker-neutral shape",
+            "real-ref test durability vs synthetic authority",
+            "package-doc the one-plan-per-run limitation at the type"
+          ],
+          "timestamp": "2026-06-07T08:10:10Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "clarify registration seam is interface/default-ctor only in aul.1",
+            "package-doc: hints describe multiple rounds on one final plan text"
+          ],
+          "timestamp": "2026-06-07T08:10:10Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "single-place package doc of contract+limitation",
+            "registration seam interface-only in aul.1; CLI selection in aul.4",
+            "CohortSelector tracker-neutral value type"
+          ],
+          "timestamp": "2026-06-07T08:10:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T08:10:10Z"
     }
   ]
 }
