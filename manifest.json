@@ -797,6 +797,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:12:10Z"
+    },
+    {
+      "gate_id": "final.r2",
+      "phase": "final",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review.r2",
+          "role": "review",
+          "artifact": "37e4f6bb3986ce29c7c09754e4baef90f0a8321904399701488316be1a2a96f6"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "State the trusted-input boundary for workflow YAML and manifest JSON in the final packet."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.1/final-gate-r2.md sha256 861cac286b93f5f5ec0c62c95f75d870fb02fac46539ff451fd747831ff3d8ee"
+          ],
+          "timestamp": "2026-08-16T01:15:31Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Execution child must map hermetic workspace to an omitted manifest field.",
+            "packet path .etude/tmp/etude-5dr.1/final-gate-r2.md sha256 861cac286b93f5f5ec0c62c95f75d870fb02fac46539ff451fd747831ff3d8ee"
+          ],
+          "timestamp": "2026-08-16T01:15:31Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:15:31Z"
     }
   ]
 }
