@@ -1,0 +1,15 @@
+# etude-o9z docs impact
+
+Canonical shipped documentation checked:
+
+- `docs/run.md` — changed. It now documents the fourth reserved runner env var, strict session-sidecar schema and limits, atomic publication expectation, absence/empty behavior, transcript import policy, bounded log framing, `run show` presentation, and the deliberate fact that raw log evidence is not secret-scanned.
+- `docs/gates.md` — checked, unchanged. Gate seat session evidence and raw-output behavior are existing contracts; this bead changes stage-runner evidence only.
+- `docs/replay.md` — checked, unchanged. Replay command behavior and equality remain output-based; the optional replay log/session metadata does not change invocation semantics.
+- `docs/cli/**` — checked with the generator, unchanged because no command/flag/help text changed.
+
+Planning notes are not shipped behavior and were not edited. The docs claims are cross-consistent: a sidecar is optional, but if present it must be valid; transcripts are best-effort and secret-scanned, while logs are always raw bounded evidence and must not contain credentials.
+
+Checks:
+
+- `make docs-check`: PASS (25 generated command docs).
+- `make docs-reality`: PASS (15 shipped commands).

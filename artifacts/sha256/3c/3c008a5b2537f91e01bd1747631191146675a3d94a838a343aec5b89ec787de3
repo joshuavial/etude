@@ -1,0 +1,67 @@
+diff --git a/docs/run.md b/docs/run.md
+index 95ba0ac..3ff440b 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -96,6 +96,8 @@ Per stage, the detail view shows:
+ - `skill` — always printed as `id@version (repo)`
+ - Each input as `role=… path=… size=… storage=… media-type=…`
+ - The output in the same format
++- `log` — the stage runner's bounded stdout/stderr artifact digest, size, and
++  media type; omitted when both streams were empty
+ - `session` evidence — printed only when the stage's producer was an agentic
+   runner that reported a session (see [Producer session evidence](#producer-session-evidence))
+ 
+@@ -134,6 +136,33 @@ transcript cannot be read, never fails the stage — the evidence is simply
+ omitted or marked `failed`. Transcripts are secret-scanned before storage; a
+ failed scan is recorded as `redaction: failed` rather than storing the bytes.
+ 
++External stage runners report identity through the optional reserved
++`ETUDE_SESSION_FILE`. Etude sets it to `<attempt-scratch>/session.json`. A runner
++publishes a complete sidecar with an atomic sibling-file rename before it exits:
++
++```json
++{"session_id":"session-123","transcript_uri":"file:///transcript","transcript_path":"transcript.jsonl"}
++```
++
++`session_id` is required; the transcript fields are optional. The complete
++sidecar is capped at 64 KiB. Unknown fields, invalid UTF-8, malformed JSON,
++non-regular files, and fields over 4 KiB fail the stage. If the
++file is absent, behavior is unchanged and no session is recorded. A reported
++transcript path follows the existing best-effort import and secret-scan policy
++described above.
++
++An empty sidecar is malformed and fails the stage; omit the file entirely when
++the runner has no session to report.
++
++Successful runner stdout and stderr are stored as one
++`application/octet-stream` stage-log artifact. Etude retains stdout's first
++1 MiB and stderr's final 1 MiB while continuing to drain both pipes. Each
++present stream has a byte-count and dropped-byte framing header; stdout is
++listed before stderr. Raw log bytes are never printed by `etude run show`.
++Logs are stored as raw runner evidence and are not secret-scanned like imported
++transcripts; runners must not print credentials or other secrets to either
++stream.
++
+ When a run carries review-gate attempts, they are printed after the stages —
+ see [Gate reviewer records](gates.md) for the gate output format and how to
+ capture gates with `etude capture-gate`.
+@@ -322,7 +351,7 @@ runs.
+ ### Env passthrough
+ 
+ By default, each stage runner receives a hermetic environment containing only
+-`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
++`PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE`. To pass additional env
+ vars (such as API keys) to live runners, declare an allowlist of names in
+ `.etude/workflow.yaml`:
+ 
+@@ -339,8 +368,8 @@ Deterministic gate checks are always hermetic (they receive no allowlist entries
+ regardless of configuration).
+ 
+ **Validation.** Each entry must be a valid POSIX env var name
+-(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
+-`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
++(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the four reserved names (`PATH`,
++`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, `ETUDE_SESSION_FILE`) are rejected at workflow load time.
+ 
+ **Audit.** The configured names (never values) appear in `etude run show` as an
+ `env allowlist:` header line and in the run manifest (`env_allowlist` field).
