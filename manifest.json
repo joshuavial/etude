@@ -195,6 +195,69 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T01:38:07Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T01:16:19Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "shared isValidEnvName helper",
+            "control-char validation test case"
+          ],
+          "timestamp": "2026-06-30T01:16:19Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "defensive dedup of ExecRunner.EnvAllowlist for non-workflow callers"
+          ],
+          "timestamp": "2026-06-30T01:16:19Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T01:16:19Z"
     }
   ]
 }
