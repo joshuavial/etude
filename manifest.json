@@ -263,6 +263,72 @@
       ],
       "decision": {},
       "timestamp": "2026-06-29T21:36:15Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-29T21:36:15Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "refstore-layer run-id assertion (deferred etude-g12)"
+          ],
+          "timestamp": "2026-06-29T21:36:15Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "validate --resume id; empty-task distinction (deferred etude-g12)"
+          ],
+          "timestamp": "2026-06-29T21:36:15Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-g12"
+        ]
+      },
+      "timestamp": "2026-06-29T21:36:15Z"
     }
   ]
 }
