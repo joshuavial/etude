@@ -1,0 +1,22 @@
+# Final Review artifact — etude-2pc.1
+
+**Verdict: GO. Commit scope clean. Ready to close.** Commit 5856b67.
+
+## Scope
+Working tree's in-scope changes only: internal/workflow/workflow.go (+workflow_test.go, example_test.go); new internal/registry/ (registry.go, registry_test.go, example_test.go); internal/cli/init.go (+init_test.go); docs/init.md. Pre-existing mkdocs/docs-tooling files (.gitignore, docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt) were NOT staged.
+
+## Confirmed
+- Coherence: final diff matches the approved plan + committed decisions (D1 registry.yaml added / gates.yaml untouched; D3 skill retained, runner additive+optional; D4 Default() unchanged; D5 3-state node presence for runner/gate/default_runner; D6 cross-file refs deferred). No drift across plan/implement/verify/docs.
+- Green: go test ./internal/workflow/... ./internal/registry/... ./internal/cli/... PASS; make lint clean; make docs zero generated-doc diff; make docs-reality OK (14 commands).
+- Adversarial sweep clear: legacy round-trip byte-stable via omitempty on yaml.Node fields; KnownFields(true) re-imposed on every captured runner/gate node (incl. nested checks); optional-block 3-state (absent→nil, present-null→validate error, present-empty→validate error) holds for all three blocks; no new command/flag → zero generated-doc blast radius.
+- Docs: docs/init.md documents only parsed+validated behavior with explicit "live execution not yet wired" disclaimer (AGENTS.md no-over-claim policy satisfied).
+
+## Gate history
+- Plan gate: attempt 1 rerun (Opus BLOCK on TestInitSummaryCounts exact-count), attempt 2 PASS (Tier 1, unanimous).
+- Implement gate: attempt 1 PASS (Tier 1, unanimous; Opus re-ran suite + adversarial defect-#5 verification).
+- Verify gate: attempt 1 PASS (Tier 1, unanimous; full AC-to-test map + built-binary manual test).
+- Docs gate: attempt 1 PASS (Tier 3, single Opus).
+- Final Review gate: attempt 1 PASS (Tier 3, single Opus).
+
+## Deferred (non-blocking) → etude-zdl
+toYAML node-encode error surfacing; Seat.Mode closed-set validation; isIdentChar dedup; leftover _ = threshold test no-op cleanup.

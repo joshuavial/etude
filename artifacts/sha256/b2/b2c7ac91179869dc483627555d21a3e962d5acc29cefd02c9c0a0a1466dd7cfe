@@ -1,0 +1,187 @@
+## Plan — etude-2pc.1: Schema + registry foundation
+
+### BUILD-vs-DEFER (premise check — P2)
+**BUILD.** Premise holds and is verified against current code:
+- Four beads are *blocked on this one* (etude-xin, etude-04i, etude-2pc.2, etude-3a2) — a real, present set of consumers, not hypothetical.
+- The normative spec is decided and written (`docs/plans/product/live-execution.md`, Summary decisions 2–4; interview `_ai/planning/etude-2pc-interview.md` Q1/Q4/Q5/Q7/Q11 all ✅).
+- The home package exists and already uses the exact optional-block convention this bead needs (`internal/workflow` RetrosConfig via `yaml.Node`).
+- The thing being modeled into a registry exists today (`.etude/gates.yaml`).
+This is pure schema+parser+scaffold; no speculative read/execute code (execution is etude-xin/04i). Nothing to defer.
+
+### Plan-gate round 1 → round 2 (this revision)
+Round-1 verdicts: codex GO, gemini GO, **Opus BLOCK** (verified-true). Opus caught that `TestInitSummaryCounts` (init_test.go:649/656/666) asserts an EXACT created-count, so scaffolding `registry.yaml` breaks it — the plan's "no count breakage" claim was false. Incorporated: the init_test.go bullet + test plan now require updating `expectedCreated` to `1 + 1 + rubricCount`. Optionals folded in: empty-`checks: []` semantics + `abstraction` no-validation rule stated (Opus); `KnownFields(true)` on captured-node decode (D5, gemini) and the deferred-cross-file-ref comment (D6, gemini) already present; AC#4 reading explicit (codex). No conceptual change to the design.
+
+### Goal
+Add the schema foundation live execution builds on, with **zero behavior change to existing consumers**:
+1. Optional per-stage `runner` (name-ref OR inline command) + optional run-level `default_runner` in `workflow.yaml`.
+2. Optional per-stage `gate` block (`checks` / `seats` | `tier` / `pass_threshold` / `max_rounds` / `abstraction`).
+3. A new shared seat/runner registry file with a Go parser (seats, tier presets L1–L4, quorum).
+4. `etude init` scaffolds the registry; schema round-trips byte-stable for legacy files.
+
+### Committed decisions (one approach each)
+
+**D1 — Registry filename: NEW file `.etude/registry.yaml`; DO NOT rename or touch `.etude/gates.yaml`.**
+Verified: the `etude-review` skill reads `.etude/gates.yaml` at SKILL.md lines 36/50/67, and the dev-workflow gate reads it too. A `git mv` now would break both live consumers, violating the scope fence ("consumers still read the old gates.yaml until etude-2pc.2"). So this bead *adds* `registry.yaml` alongside the untouched `gates.yaml`. The actual content migration (seats/tiers → registry, `phase_gates` → per-stage gates) and deletion of `gates.yaml` is etude-2pc.2. This is the consumer-safe choice and matches AC#2 (which mandates a "registry file" but not a specific name and not a deletion).
+
+**D2 — New package `internal/registry`** mirroring `internal/workflow` (the file is a distinct artifact with its own read/write/Default/Validate halves). Public API: `Registry`, `ParseYAML`, `(Registry).YAML`, `Default`, `Validate`, `ErrInvalidRegistry`.
+
+**D3 — `runner` is OPTIONAL and ADDITIVE; the existing required `skill` field stays.** Migrating the dev workflow from `skill` to `runner` is etude-2pc.2. Making `runner` required would break the `skill`-based `Default()` and every legacy file → AC#5 failure. So a stage with only `skill` and no `runner` stays valid and byte-stable.
+
+**D4 — `Default()` workflow is UNCHANGED** (keeps the existing 6 skill-based stages, no runner/gate). "etude init scaffolds the new shape" (AC#4) is satisfied by scaffolding the new `registry.yaml`; populating the dev workflow's own stage runner/gate blocks is the dev-workflow migration explicitly fenced to etude-2pc.2. Stated reading of the ambiguous AC, per runbook guidance. Consequence: the existing `goldenDefaultYAML` test is unchanged (lower risk).
+
+**D5 — `runner`, `gate`, `default_runner` each use the `yaml.Node` presence-detection pattern** (defect class #5), identical to `decodeRetrosNode`: keep the public field NIL when absent; decode via `yaml.Node` to tell absent (Kind==0) from present-null (`!!null` scalar) from present-empty (`!!map`); re-impose `KnownFields(true)` when re-marshalling the captured node; `omitempty` on the node field keeps legacy round-trips byte-stable. Empirically verified (yaml.v3 v3.0.1) that this works for a node field *inside a slice element* (a stage): absent→Kind 0 (dropped by omitempty), `runner:`→Kind 8 `!!null`, `runner: {}`→Kind 4 `!!map`.
+
+**D6 — Cross-file reference resolution is DEFERRED to execution (etude-xin/04i).** Schema validation is intra-file only: a stage `runner.name`/`gate.tier`/`gate.seats` token is charset-validated but NOT checked to exist in the registry (the two files are parsed independently here). WITHIN the registry, `tier.seats` ARE validated to reference defined `seats` (same file). This boundary is stated so the gate doesn't expect cross-file checks.
+
+### New YAML shapes (concrete)
+
+Stage `runner` — exactly one of `name`/`command`:
+```yaml
+stages:
+  - name: implement
+    produces: diff
+    skill: dev-coder            # legacy field, still required
+    runner:                     # OPTIONAL
+      name: opus                # registry seat ref  -- OR --
+      # command: "make build"   # inline command (mutually exclusive with name)
+```
+
+Run-level default runner (optional, top level):
+```yaml
+name: default
+default_runner:
+  name: opus
+stages: [ ... ]
+```
+
+Stage `gate` (optional). `seats` and `tier` are mutually exclusive; `checks` items are runners (name|command):
+```yaml
+    gate:
+      checks:                   # deterministic hard-veto runners (optional)
+        - command: "make test"
+        - command: "make lint"
+        - name: custom-check    # may also reference a registry entry
+      seats: [opus, codex]      # inline seat name list  -- OR --
+      # tier: L2                # tier preset ref (mutually exclusive with seats)
+      pass_threshold: 1.0       # weighted threshold for seats (default 1.0)
+      max_rounds: 3             # default 3
+      abstraction: "review at design/contract altitude ..."
+```
+
+Registry file `.etude/registry.yaml` (= quorum + seats + tiers; NO phase_gates/escalation — those are gate *bindings* that move onto stages in 2pc.2):
+```yaml
+quorum: unanimous
+seats:
+  codex:
+    provider: openai/gpt-5.5
+    harness: codex
+    invoke: 'codex exec --ephemeral -m gpt-5.5 -s read-only -'
+    mode: diff-only
+    model_fallbacks: [gpt-5.4, gpt-5.3]
+  gemini:
+    provider: google/gemini-3.1-pro-preview
+    harness: gemini-cli
+    invoke: "gemini -m gemini-3.1-pro-preview -p"
+    mode: inline-no-tools
+    model_fallbacks: [gemini-3-pro-preview]
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: "claude -p --model opus"
+    mode: inline
+tiers:
+  L1:
+    name: Full three-seat gate
+    seats: [gemini, opus, codex]
+  L2:
+    name: Strong two-seat gate
+    seats: [opus, codex]
+  L3:
+    name: Medium two-seat gate
+    seats: [opus, codex]
+  L4:
+    name: Light single-seat gate
+    seats: [opus]
+```
+Map keys encode alphabetically + deterministically in yaml.v3 (verified) so the registry golden is stable. The scaffold mirrors the proven `gates.yaml` seats/tiers (dropping the long `use:` prose for a concise scaffold); these are example seats users edit, exactly like the example skills in `Default()` workflow.
+
+### Go struct field coverage (every field enumerated)
+
+`Runner` (workflow pkg): `Name string` (registry ref, identifier charset, optional), `Command string` (inline, optional). Rule: **exactly one** non-empty.
+
+`GateConfig` (workflow pkg): `Checks []Runner`, `Seats []string`, `Tier string`, `PassThreshold *float64`, `MaxRounds *int`, `Abstraction string`. Nil-safe accessors `EffectivePassThreshold()`→1.0, `EffectiveMaxRounds()`→3.
+
+`Stage` gains: `Runner *Runner`, `Gate *GateConfig`. `Workflow` gains: `DefaultRunner *Runner`.
+
+`registry.Registry`: `Quorum string` (accessor `EffectiveQuorum()`→"unanimous"), `Seats map[string]Seat`, `Tiers map[string]Tier`.
+`registry.Seat`: `Provider string` (req), `Harness string` (req), `Invoke string` (req), `Mode string` (opt), `ModelFallbacks []string` (opt).
+`registry.Tier`: `Name string` (opt), `Seats []string` (req, ≥1), `Use string` (opt).
+
+### Validation rules
+
+Workflow (added to `Validate` loop + `default_runner`):
+- `runner` present: exactly one of name/command; name (if set) matches identifier charset; not both, not neither (present-null/present-empty → "runner requires name or command").
+- `gate` present: at least one of checks/seats/tier set (else "empty gate"); seats+tier both set → error; each `check` is a valid Runner; each seat name + tier token charset-valid; `pass_threshold` (if set) `0 < t ≤ 1`; `max_rounds` (if set) `≥ 1`.
+- `checks: []` (explicit len-0 list) is treated as UNSET — it contributes nothing; a gate with only `checks: []` and no seats/tier still errors "empty gate" (mirrors absent). Tested explicitly. (Opus optional.)
+- `abstraction` is free prose with NO validation rule (it is a prompt-altitude string). AC#1's "parses/validates ... abstraction" means it is PARSED + KnownFields-checked, not value-constrained. Stated so the gate doesn't expect a constraint. (Opus optional.)
+- `default_runner` present: valid Runner.
+
+Registry `Validate`:
+- `quorum` (if non-empty) ∈ {unanimous, majority} (committed closed set; "majority" reserved for the weighted path; empty → default unanimous).
+- seat map keys charset-valid; each seat: provider/harness/invoke non-empty.
+- tier map keys charset-valid; each tier: `seats` non-empty AND every entry resolves to a defined seat (intra-file ref check).
+- `KnownFields(true)` at top level and re-imposed on every captured node; trailing-document rejection (mirror workflow `ensureEOF`).
+
+### Files
+
+- `internal/workflow/workflow.go` — add `Runner`, `GateConfig` structs + `Runner *Runner`/`Gate *GateConfig` on Stage + `DefaultRunner *Runner` on Workflow; add `runnerYAML`/`gateYAML` decode/encode structs; add `runner`/`gate` (yaml.Node) to `stageYAML` and `default_runner` (yaml.Node) to `workflowYAML`; `decodeRunnerNode`/`decodeGateNode` helpers (mirror `decodeRetrosNode`); extend `toYAML`/`toWorkflow`; extend `Validate`; add accessors. `Default()` unchanged.
+- `internal/workflow/workflow_test.go` — new tests (below).
+- `internal/workflow/example_test.go` — optional: add an `ExampleParseYAML` variant showing a runner+gate stage (nice-to-have, not load-bearing).
+- `internal/registry/registry.go` — NEW: `Registry`/`Seat`/`Tier`, `ParseYAML`, `YAML`, `Default`, `Validate`, accessors, `ErrInvalidRegistry`, `ensureEOF`.
+- `internal/registry/registry_test.go` — NEW: parser/validation/round-trip/golden tests.
+- `internal/registry/example_test.go` — NEW: `ExampleParseYAML`/`ExampleDefault` mirroring workflow.
+- `internal/cli/init.go` — in `plan()`: build `registry.Default().YAML()`, self-check via `registry.ParseYAML`, append a `writeAction` for `.etude/registry.yaml`.
+- `internal/cli/init_test.go` — assert `.etude/registry.yaml` is created + parseable; assert dry-run lists it. **MUST update `TestInitSummaryCounts`** (gate round-1 BLOCK, Opus, verified-true): it derives `expectedCreated = 1 + rubricCount` and asserts the EXACT summary string via `strings.Contains` at init_test.go:649/656/666. Adding the `registry.yaml` writeAction raises the created count by one (`init: 3 created` → `init: 4 created`), so the substring match fails and the test goes red. Change `expectedCreated` to `1 + 1 + rubricCount` (workflow.yaml + registry.yaml + rubrics). (This CORRECTS the earlier false "no count breakage" claim — the count is load-bearing, not invisible.)
+- `docs/init.md` — add `registry.yaml` to "What it creates"; add a section documenting the registry schema + the optional stage `runner`/`gate`/`default_runner` fields.
+
+### Test plan
+
+Workflow (`workflow_test.go`):
+- Runner: parse `runner: {name: opus}` and `runner: {command: "make test"}`; both-set → error; KnownFields rejects unknown key in runner.
+- Runner 3-state (defect #5): absent → `Stage.Runner==nil`, valid; present-null `runner:` → present, Validate errors (empty); present-empty `runner: {}` → present, Validate errors.
+- Gate: parse full gate (checks+seats+pass_threshold+max_rounds+abstraction); parse `tier:` variant; seats+tier both → error; empty gate (no checks/seats/tier) → error; pass_threshold 0 and 1.5 → error; max_rounds 0 → error; check `{name,command}` both → error; KnownFields rejects unknown in gate and in a check.
+- Gate 3-state: absent → nil valid; `gate:` (null) → present, Validate errors; `gate: {}` → present, Validate errors.
+- default_runner: parse/validate/3-state.
+- AC#3 arbitrary stage names (no phase hardcoding): a workflow named e.g. `research → fact-check → draft → tone-police` with runner+gate parses and validates clean.
+- Effective-default accessors return 1.0 / 3 when unset.
+- Existing `goldenDefaultYAML` + `TestParseYAMLRoundTripsDefault` remain green (Default unchanged).
+
+Registry (`registry_test.go`):
+- Parse seats (all fields incl. model_fallbacks), tiers (incl. optional name/use), quorum.
+- Validate: tier seat ref to undefined seat → error; tier empty seats → error; seat missing invoke/provider/harness → error; quorum "majority" ok, "bogus" → error, empty → EffectiveQuorum "unanimous"; KnownFields top/seat/tier; trailing-document rejection.
+- Golden bytes test for `Default().YAML()` (deterministic, verified) + `ParseYAML(Default().YAML())` round-trip equality.
+
+**AC#5 round-trip proof (P1 — verify the verification):**
+- Proof commands that EXIST: pure Go `go test ./internal/workflow/... ./internal/registry/...` (no new flags/binaries).
+- **Volatile fields: NONE.** `workflow.yaml` and `registry.yaml` contain no run_id, timestamp, or id-derived field — output is fully deterministic — so the comparison is raw `string(w.YAML()) == input` with **no normalization**.
+- Legacy byte-stable: parse a legacy fixture (skill-only stage, no runner/gate/default_runner; and the existing `goldenDefaultYAML`) → encode → assert bytes IDENTICAL to input AND output contains none of `runner:`/`gate:`/`default_runner:` (mirrors `TestRetrosAbsentBlockLegacyRoundTrip`). Proves omitempty drops absent nodes.
+- New-shape stability: a workflow WITH runner+gate+default_runner round-trips parse→encode→parse→encode byte-stable (mirrors `TestYAMLRoundTripsCustomWorkflow`/`TestRetrosFullBlockRoundTrip`).
+
+init (`init_test.go`): `.etude/registry.yaml` created + `registry.ParseYAML` succeeds on it; `--dry-run` lists `registry.yaml`; `--force` regenerates it; **`TestInitSummaryCounts` `expectedCreated` updated to `1 + 1 + rubricCount`** so the created/skipped counts stay green (gate round-1 fix).
+
+Lint: `make lint` (`gofmt -l` + `go vet`) on all touched Go (Runtime-Verifier lens; gofmt drift doesn't fail `go test`).
+
+### Docs blast radius (defect #6)
+- **No new command, no new flag** → `etude init` cobra metadata unchanged → `make docs` regenerates `docs/cli/*` with **zero diff**. I will RUN `make docs` + `git status` to confirm zero generated-doc change (not assert it from memory).
+- **No README/`docs/README.md` change**: `make docs-reality` checks the *command* inventory; no command is added, so the index/usage surface is unchanged. I will run `make docs-reality` to confirm green.
+- **Hand-written:** only `docs/init.md` (new `registry.yaml` scaffold entry + registry/stage-field schema section).
+- `docs/gates.md` is about gate *reviewer records* (`capture-gate`), not `gates.yaml`/registry — confirmed it does not reference `gates.yaml` — so it is out of scope.
+
+### Risks
+- **Optional-block 3-state correctness** (the recurring defect #5) — mitigated by reusing the proven `decodeRetrosNode` pattern verbatim, empirically re-verified for slice-nested nodes, and testing all three states for each of runner/gate/default_runner.
+- **Scope creep into the dev-workflow migration** — mitigated by D1/D3/D4: `gates.yaml` untouched, `skill` retained, `Default()` unchanged; registry is purely additive. The only files touched outside the two schema packages are `init.go`/`init_test.go`/`docs/init.md`.
+- **Registry golden determinism** depends on yaml.v3 map-key sorting — verified empirically (alphabetical + stable across 5 encodes).
+
+### Capture
+- inputs: bead etude-2pc.1 description + acceptance criteria; `docs/plans/product/live-execution.md` (decisions 2–4, §2, Sequencing); `_ai/planning/etude-2pc-interview.md`; `internal/workflow/workflow.go` + `workflow_test.go` + `example_test.go`; `.etude/gates.yaml`; `internal/cli/init.go` + `init_test.go`; `docs/init.md`; `docs/gates.md`; `docs/plans/dogfood/review-gate-runbook.md`; `scripts/docs-reality-check.sh`; `Makefile`; `.claude/skills/etude-review/SKILL.md`; empirical probes (yaml.v3 map ordering + node-in-slice presence).
+- output: bead --design field.

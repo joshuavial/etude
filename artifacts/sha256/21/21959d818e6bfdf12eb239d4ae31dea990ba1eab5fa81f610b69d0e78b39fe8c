@@ -1,0 +1,30 @@
+# Verify artifact — etude-2pc.1
+
+**Status: pass. Recommendation: proceed to Docs.**
+
+## Automated tests (all pass)
+- `go test -count=1 ./internal/workflow/... ./internal/registry/... ./internal/cli/...` — all green (workflow, registry, cli).
+- `make lint` (`gofmt -l` + `go vet ./...`) — clean.
+- `GOOS=windows` and `GOOS=linux` amd64 builds — both OK.
+- `make docs` then `git status` — regenerated 24 command docs with ZERO new diff.
+- `make docs-reality` — OK (14 commands, docs match shipped CLI).
+
+## AC-to-test coverage map (every AC maps to >=1 passing test)
+- AC#1 (stage runner+gate parse/validate, all 5 gate sub-fields): TestRunnerParse*, TestGateParseFullBlock, TestGateParseTier, TestGatePassThreshold{Zero,Negative,AboveOne}Errors, TestGateMaxRounds{Zero,Negative}Errors, TestGateCheckBothNameAndCommandErrors, KnownFields tests, TestDefaultRunnerParse.
+- AC#2 (registry seats/tiers/quorum): TestParseYAMLSeats, TestParseYAMLTiers, TestParseYAMLQuorum, TestDefaultValidatesClean, plus TestValidateRejects* negative set.
+- AC#3 (arbitrary stage names, no phase hardcoding): TestArbitraryStageNamesWithRunnerAndGate.
+- AC#4 (etude init scaffolds new shape): TestInitCreatesRegistryYAML, TestInitDryRunListsRegistryYAML, TestInitForceRegeneratesRegistryYAML, TestInitSummaryCounts (round-1 BLOCK fix expectedCreated=1+1+rubricCount) + built-binary manual test.
+- AC#5 (round-trip): 3-state TestRunner/Gate/DefaultRunner{AbsentIsNil,PresentNullErrors,PresentEmptyErrors}; byte-stable TestLegacyStageNoRunnerOrGateRoundTrip, TestGoldenDefaultYAMLLegacyRoundTrip, TestNewShapeWorkflowRoundTrip, registry TestRegistryRoundTripByteStable, TestParseYAMLRoundTripsDefault. Confirmed these assert RAW byte equality, not normalized.
+
+## Manual test (built binary — required; etude init is a CLI command): PASS
+Built bin/etude via `make build`, ran in a throwaway git repo with an origin remote.
+- First `etude init`: created .etude/workflow.yaml, .etude/registry.yaml, 2 rubrics; configured fetch+push; `init: 4 created, 0 skipped, 2 configured`.
+- On-disk .etude/registry.yaml byte-identical to registry.Default().YAML(); passes ParseYAML+Validate; parse->encode byte-stable (EffectiveQuorum=unanimous, 3 seats, 4 tiers).
+- .etude/workflow.yaml has NO runner/gate/default_runner keys (Default() legacy shape unchanged — confirms D4).
+- Second `etude init`: idempotent skip of all 4 files, "already configured" remotes, `init: 0 created, 4 skipped, 2 configured` (exercises TestInitSummaryCounts fix in reality). Temp dir cleaned up.
+
+## QA findings
+Implementation matches the approved plan + all committed decisions (D1 registry.yaml added alongside untouched gates.yaml; D3 skill retained/runner additive; D4 Default() unchanged; D5 3-state node presence; D6 cross-file refs deferred). Thorough coverage; no regressions; gofmt/vet clean.
+
+## Risks
+None blocking. Cross-file reference validation (runner.name/gate.tier/gate.seats -> registry entries) intentionally deferred to execution (etude-xin/04i) per D6 — inside the scope fence, not a defect.
