@@ -1,0 +1,21 @@
+commit 9ff869bb491d5fa244e03ff5a222526c442fd262
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 14:17:06 2026 +0800
+
+    gitignore the root gen-docs build artifact
+
+diff --git a/.gitignore b/.gitignore
+index f7d891d..5e10f19 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,6 +6,10 @@
+ bin/
+ coverage.out
+ 
++# Stray binary left at the repo root by `go build ./cmd/gen-docs` (the docs
++# generator). Use `make docs` (go run) instead — this is build output, not source.
++/gen-docs
++
+ # Claude Code session scheduler state (transient, machine-local)
+ .claude/scheduled_tasks.lock
+ .claude/scheduled_tasks.json
