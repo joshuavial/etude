@@ -924,6 +924,42 @@
         "degraded_reason": "BLOCK, correct, and the seat explicitly superseded its own earlier GO after checking the file's comments - a self-correction worth recording. Five line-number citations into the replaced audit survived in retro-meta-index.sh, in a file the artifact claimed to have swept for exactly that defect, ten lines above a comment this bead had already updated. Two of the five named the removed sidecar check's line range specifically, asserting a mirroring relationship with code that exists nowhere. All now name the behavior rather than a line range, which is what makes a comment survive the next rewrite. The sharpest optional was the INVERSE error and is folded with its own note: my sweep past-tensed 'the cadence and subject-consistency checks also skip superseded refs', but the cadence check SURVIVES and still does. Blanket past-tensing a section swept a live behavior into history - correcting docs after deleting code can be wrong in both directions, and that direction is harder to spot because the sentence looks appropriately humble. Also folded: a present-tense 'presence + type checked' three lines below 'nothing checks it now'; the last surviving mention of the audit's deleted --bead flag; and the allowlist header, previously called a verified no-op, which was accurate but omitted that the file is the cadence check's denominator - the fact that nearly made this bead block every push in the checkout."
       },
       "timestamp": "2026-08-15T13:22:59Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r3",
+          "role": "docs-diff",
+          "artifact": "79410c8e27230aa5f4126f89efeb083b5934d82c2caf3b81954d720c60810047"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. scripts/retro-meta-index.sh:65-66 past-tenses a behavior that survives - the inverse error, in the file that blocked round 2. The comment says the superseded-set is 'the pattern the completeness audit used before etude-9uf.4 shrank it', but the shrunk audit still builds a superseded-set the same way (dogfood-completeness-audit.sh:182-193). The file then contradicts itself 22 lines later at :87-88, which correctly says 'the same unconditional skip the audit's cadence check uses' - a skip that cannot exist without the set the earlier comment says is gone. Same intra-file contradiction shape that blocked round 1, re-introduced by this sweep, and it defeats the only purpose these mirroring comments serve."
+          ],
+          "timestamp": "2026-08-15T13:32:53Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, correct, and pointed: I introduced the inverse error INSIDE the sweep that fixed the previous instance of it. The superseded-set the audit builds survives the shrink, but my rewritten comment said it was the pattern the audit used BEFORE the shrink, contradicting another comment I wrote 22 lines below it. Both now say the audit still uses it, which is the only version that tells a maintainer there is parity to keep. Four optionals folded, two of them further provenance errors my own sweep introduced: docs/retro.md claimed the audit's --bead mode was removed in etude-9uf.3, when that bead deleted only its CALLER and this bead removes the mode; and the surviving cadence check was described as skipping superseded refs 'by the same mechanism' as the removed sidecar check - same refs.supersedes mechanism, different rule, unconditional versus PRE-cutoff only. Also corrected: an unqualified 'all seven keys must be present' twelve lines below the reframing that says nothing checks them, and a ledger citation to the f-mask-guard regression test which went with check (f). Three docs rounds, and every one found the artifact claiming a file was clean when it was not - which is why the artifact now records that nothing mechanical in this repo detects prose promising a guarantee that no longer exists, and a seat reading the text is the only check there is."
+      },
+      "timestamp": "2026-08-15T13:32:53Z"
     }
   ]
 }
