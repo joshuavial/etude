@@ -1,0 +1,23 @@
+# Final Review — etude-roadmap.2.4 (Update dogfood workflow to capture gate reviewers)
+
+## Recommendation: CLOSE
+
+Wires the dogfood workflow to record structured gate-reviewer data via the `etude capture-gate` command shipped in .2. Commit 57deaf9, on origin/main. Docs/process + one self-contained script; no Go changes.
+
+## Plan gate — four-seat: PASS (after BLOCK→rerun)
+codex BLOCK (failure_note missing for malfunction/disregarded in the verdict mapping) + gemini BLOCK (backfilling old roadmap.2.2 ≠ AC#4 "new run"; test the ref-mutating push script in a throwaway repo first; verify locally before push) → resolved: demonstration retargeted to .4's OWN new run; script verifies-before-push; throwaway-tested first; failure_note required for all non-go/block verdicts. Opus GO (empirical). Reran codex+gemini → GO.
+
+## Implement+Final gate — four-seat: PASS (3 substantive GO, pilms skipped)
+- codex: GO (nit folded: absolutize gate-file path before cd).
+- gemini: GO.
+- Claude Opus (in-harness): GO — throwaway-repo empirical test (good/bad/nonexistent/multi-round/failed-escalated paths; pipefail proof; failure_note enforcement; blobs carried forward) + docs verified against validateSeat/validateProviderField/stageHasArtifact + run-show-has-no-json. Scope clean.
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+
+## Findings
+None blocking. Non-blocking: verdict-table "block→rerun" is shorthand (escalated also valid — shape lists all three); `git fetch || true` swallows non-missing-ref errors by design (capture-gate's ExpectedOld CAS still catches a stale tip on push).
+
+## Demonstration (acceptance #4)
+Performed on .4's OWN new run refs/etude/runs/etude-roadmap.2.4 (real dogfood data; backfilling pre-existing runs is bead .5).
+
+## Commit
+57deaf9 "add structured gate-reviewer dogfood capture". Unblocks nothing further in the epic directly; remaining: .3 (surface gates in run show), .5 (backfill), .6 (document gate reviewer visibility).
