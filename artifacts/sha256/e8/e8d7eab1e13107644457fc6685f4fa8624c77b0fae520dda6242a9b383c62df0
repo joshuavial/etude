@@ -1,0 +1,12 @@
+# Documentation review: PR #23 after rebase
+
+Status: ready
+
+The rebased change documents the shipped behavior in the implemented guides:
+
+- `docs/run.md` describes stage stdout/stderr capture as a durable `stage.log` artifact, the optional `ETUDE_SESSION_FILE` producer-session sidecar, transcript import/redaction evidence, and the manifest-version transition when logs are present.
+- `docs/gates.md` describes digest-bound `prior-attempts` inputs on actual RERUN attempts, including session, transcript, log, output, and killing-verdict evidence. It also documents that prior-attempt inputs compose with per-seat `read_checkout` isolation: the inputs remain copied into every seat's isolated input directory while the pinned checkout is a separate read-only grant.
+- `docs/replay.md` describes recorder preservation of valid sidecar transcript paths and the no-session/no-transcript case.
+- The security note explicitly distinguishes transcript redaction scanning from currently unscanned stage logs and records that risk rather than implying equivalent treatment.
+
+No planning-only behavior is presented as shipped, and generated CLI reference docs remain unchanged.
