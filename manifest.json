@@ -252,6 +252,56 @@
         "degraded_reason": "Tier 2 (Opus+codex); gemini+pilms dropped per tier for low-risk dev tooling"
       },
       "timestamp": "2026-05-26T11:05:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T12:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "script header comment contradicts the implemented per-doc predicate"
+          ],
+          "timestamp": "2026-05-26T12:01:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-26T12:05:00Z"
     }
   ]
 }
