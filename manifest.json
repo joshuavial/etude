@@ -179,6 +179,78 @@
         "degraded_reason": "First gate of the etude-9uf.5 proof run, and the first gate this repo has run on work produced by a separate workmux worker lane. Both seats GO on the worker's plan. etude gate executed the panel live and recorded plan.r1 as escalated because the opus seat cannot be invoked as a subprocess (bead etude-8li); the seat was run in-harness on the identical frozen packet and this attempt records the completed panel. Appended BEFORE the verdict was acted on, which is the discipline that failed six times across beads .3 and .4. The worker INVERTED the bead's suggested direction - rather than capturing a ref when markdown lands, it makes capture emit the markdown, so the file becomes an output of the command that writes the ref rather than a separately-remembered second step. Both seats accepted the inversion. The opus seat's sharpest optional is that the inversion is asymmetric: it guarantees ref-to-markdown, while the filed symptom is markdown-to-no-ref, so a lane that hand-writes a retro and never runs capture still reproduces the exact divergence. It asks for a follow-on bead to be filed before this one closes. All seven optionals are being handed back to the worker verbatim rather than folded by the supervisor - the supervisor gates, the worker works."
       },
       "timestamp": "2026-08-15T16:13:04Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "a597512d44564b22caf23ff2842677593848f6c7476c6b47fb05142f2c064e09"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T16:23:30.610337Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. In docs phase, call out that `retro_file` is the canonical lookup source and that capture/generate do not stage markdown files."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "9ca5a2a849ff152882b435aab19a1e8b73b91863611c4a7c6ffd11ebf203f269",
+            "path": "artifacts/sha256/9c/9ca5a2a849ff152882b435aab19a1e8b73b91863611c4a7c6ffd11ebf203f269",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 277
+          },
+          "session": {
+            "session_id": "codex-777699ba194bace3",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "777699ba194bace3f2a21e2dcb3b2b4c7c0ca0d4d5cf928185b64d3420c315e2",
+              "path": "artifacts/sha256/77/777699ba194bace3f2a21e2dcb3b2b4c7c0ca0d4d5cf928185b64d3420c315e2",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 187
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T16:23:49.200481Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T16:23:49.200572Z"
     }
   ]
 }
