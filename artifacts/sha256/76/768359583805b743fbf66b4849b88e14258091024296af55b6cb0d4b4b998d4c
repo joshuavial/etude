@@ -1,0 +1,21 @@
+◐ etude-7ri.6 · Docs: document session-log capture behavior + schema   [● P3 · IN_PROGRESS]
+Owner: joshuavial · Type: task
+Created: 2026-07-02 · Updated: 2026-07-02
+
+DESCRIPTION
+Update user-facing docs (docs/run.md, docs/gates.md, docs/capture*.md as relevant) and the gate-reviewer-record schema doc (docs/plans/product/gate-reviewer-record-schema.md) to describe the implemented session-capture behavior: the Session field, reference-vs-copy, per-harness sources, and how to interrogate the logs. Implemented-reality only — lands after wiring + surfacing.
+
+NOTES
+Docs gate attempt 1, L4 (single Opus, docs-of-implemented-behavior). Opus GO: every claim (field labels, retrieval/redaction enums, isAgenticProducer gating, best-effort non-fatal, secret-scan-then-not-stored, transcript_artifact-only-when-imported) verified against run.go/engine.go/manifest.go/gate.go. Cosmetic optional fixed: removed empty transcript_uri line from the example (run show omits it when empty). result: pass.
+
+ACCEPTANCE CRITERIA
+Docs describe implemented behavior only; schema doc updated; make docs-check + docs-reality clean.
+
+PARENT
+  ↑ ○ etude-7ri: (EPIC) [epic] Capture agentic-CLI session ids + log references in run artifacts ● P2
+
+DEPENDS ON
+  → ✓ etude-7ri.2: Producer session evidence: add Session to Producer + wire stage runners + run show ● P2
+  → ✓ etude-7ri.4: Capture wiring: populate session refs from live gates + stage runners (+ optional copy) ● P2
+  → ✓ etude-7ri.5: Surface session refs in etude run show / etude log ● P3
+
