@@ -727,6 +727,38 @@
         "degraded_reason": "PASS on a FROZEN tree: the adapter sha256 was recorded in the packet and verified unchanged between packet build and both verdicts, after rounds 6 and 7 were each reviewed against code that shifted mid-review (both opus seats flagged that as a process defect). The opus seat ran as an in-harness sub-agent, which .etude/registry.yaml now encodes as the first invocation_fallbacks entry — a real seat, not a substitute, so no degradation applies. Four non-blocking follow-ups raised; all four folded before commit with a confirmation re-gate."
       },
       "timestamp": "2026-08-15T07:15:36Z"
+    },
+    {
+      "gate_id": "implement.r9",
+      "phase": "implement",
+      "round": 9,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r7",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:25:05Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "CONFIRMATION re-gate, not a fresh panel: the implement gate already PASSED at round 8 (codex GO + opus GO on a frozen, hash-verified tree). This round asked only the seat that raised the four round-8 follow-ups to confirm they were closed and introduced nothing new. It confirmed GO and raised three further optionals — a missed whitespace site in the awk terminator (false outage, fixed), the narrowed residue of the placeholder heuristic (documented in the code as known residue rather than hidden), and a SUPERSEDED comment left above the correct rule so the comment misdescribed its own guard (removed). All three folded with a regression for the behavioural one. 50 adapter checks green."
+      },
+      "timestamp": "2026-08-15T07:25:05Z"
     }
   ]
 }
