@@ -1,0 +1,8 @@
+# Final Review — etude-jb7 (etude capture-run batch capture)
+Verdict: GO.
+- Coherent: new etude capture-run <spec.yaml> parses one YAML spec into a multi-stage runmanifest.Manifest + merged files map (artifacts via artifactstore.AddContent, paths confined to spec dir), writes ONE create-only WriteManifestTree(refs/etude/runs/, ExpectedOld:""). Both round-1 fixes present + tested (path containment resolveArtifactPath rejects absolute + ..-escape; parse fix three-way errors.Is(io.EOF)).
+- Code quality: reuses capture.go package-level helpers/defaults without touching capture.go; skill->Producer.Skill mirror; defaults + per-stage overrides; clear errors. No bug/dead code.
+- Docs: generated etude_capture-run.md + refreshed etude.md; hand-written docs/capture-run.md guide (schema/path-confinement/create-only/example); README + docs/README + capture-protocol coherence note. docs-check/docs-reality(11 cmds)/TestDriftGuard/lint all green. Fixed the produced_by `replay` example (capture-run can't set replay_of, so replay would error) before commit.
+- Scope: 9 files, 1-bead=1-commit; product code limited to capture_run.go + root.go registration.
+- Known follow-ups (non-blocking): symlink-inside-spec-dir path residual; dogfood-capture.sh rewire onto capture-run.
+Commit: add capture-run command for batch multi-stage run capture from a yaml spec (8fca8fa).
