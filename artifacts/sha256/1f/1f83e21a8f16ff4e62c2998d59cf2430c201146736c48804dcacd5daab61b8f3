@@ -1,0 +1,1445 @@
+diff --git a/.claude/agents/dev-planner.md b/.claude/agents/dev-planner.md
+index f0786dd..f55101d 100644
+--- a/.claude/agents/dev-planner.md
++++ b/.claude/agents/dev-planner.md
+@@ -6,6 +6,27 @@ model: opus
+ 
+ # Dev Planner Agent
+ 
++## Named development profiles take precedence
++
++When working under `dev-claude` or `dev-codex` (including this repo's default),
++read `docs/development.md` and the selected `.etude/workflows/<profile>.yaml`
++first. Follow that current contract instead of the historical per-phase gate
++sequence below. Read relevant technical docs before planning, maintain docs with
++code, and supply verification evidence for the actual revision.
++
++The host selects the worker model from the profile; the legacy model/defaults
++below do not override that assignment. The worker produces artifacts and reports
++concrete blockers. The supervisor owns capture and the selected independent
++gates: only high-risk designs require plan review, and final review depth follows
++consequence. Do not ask for or run an approval gate at every phase. Capture comes
++before reviewing the captured bytes. Use the explicit bead/run mapping when one
++exists; do not assume the run ID equals the bead ID.
++
++For these profiles, continue with the current development contract and treat the
++remaining material only as reference where it agrees. Do not resume the legacy
++five-gate loop.
++
++
+ You create implementation plans for beads.
+ 
+ ## Your Purpose
+diff --git a/.claude/skills/dev-workflow/SKILL.md b/.claude/skills/dev-workflow/SKILL.md
+index f2bd1a6..ce6a227 100644
+--- a/.claude/skills/dev-workflow/SKILL.md
++++ b/.claude/skills/dev-workflow/SKILL.md
+@@ -5,6 +5,27 @@ description: Work on a bead through Plan, Implement, Verify, Docs, and Final Rev
+ 
+ # Dev Workflow
+ 
++## Named development profiles take precedence
++
++When working under `dev-claude` or `dev-codex` (including this repo's default),
++read `docs/development.md` and the selected `.etude/workflows/<profile>.yaml`
++first. Follow that current contract instead of the historical per-phase gate
++sequence below. Read relevant technical docs before planning, maintain docs with
++code, and supply verification evidence for the actual revision.
++
++The host selects the worker model from the profile; the legacy model/defaults
++below do not override that assignment. The worker produces artifacts and reports
++concrete blockers. The supervisor owns capture and the selected independent
++gates: only high-risk designs require plan review, and final review depth follows
++consequence. Do not ask for or run an approval gate at every phase. Capture comes
++before reviewing the captured bytes. Use the explicit bead/run mapping when one
++exists; do not assume the run ID equals the bead ID.
++
++For these profiles, continue with the current development contract and treat the
++remaining material only as reference where it agrees. Do not resume the legacy
++five-gate loop.
++
++
+ Structured development for commit-sized work:
+ 
+ `PLAN -> IMPLEMENT -> VERIFY -> DOCS -> FINAL REVIEW -> commit/close`
+diff --git a/.etude/registry.yaml b/.etude/registry.yaml
+index 05fab47..5266f39 100644
+--- a/.etude/registry.yaml
++++ b/.etude/registry.yaml
+@@ -1,99 +1,34 @@
+-# Etude seat/tier registry — the single machine-readable source of truth for
+-# named runners and tier presets. Two consumers read this file:
+-#   - the LIVE RUN ENGINE: resolves stage runners and gate seat invocations by
+-#     name from this registry.
+-#   - the REVIEW SKILL (etude-review): reads seat invoke/mode here and per-phase
+-#     tier + abstraction from the matching stage gate block in workflow.yaml.
+-#
+-# A seat is a MODEL/HARNESS identity that reviews the SAME shared prompt and
+-# votes GO/BLOCK. Seats are NEVER role personas (that is design-council, a
+-# different tool); divergence comes from model diversity, not assigned roles.
+-# Every tier requires a UNANIMOUS pass of its seats — none advances on partial
+-# approval. A seat failure (auth/quota/tool/empty/truncation) never counts as a
+-# pass and escalates per the degraded-gate policy in the runbook.
+-
++# Explicit reviewer identities. Worker selection is host-managed; see docs/development.md.
++# env_allowlist here applies ONLY to review seats, not arbitrary checks/stages.
+ quorum: unanimous
+-
+-# Seat identities + canonical non-interactive invocations. Each seat receives
+-# ONLY the shared gate prompt and the inlined artifact — never hidden context.
+-# `mode` captures the hard-won per-seat execution constraint (see the runbook
+-# "Per-seat execution constraints"): seats MUST NOT mutate the working tree.
+ seats:
+-  opus:
+-    provider: anthropic/claude-opus
++  fable:
++    provider: anthropic/claude-fable-5-1
+     harness: claude-code
+-    # `claude -p` returns 401 when the ORCHESTRATOR is itself Claude Code: the
+-    # host session's credentials are not exposed to a subprocess. The primary
+-    # invoke below is correct only when a NON-Claude harness (e.g. codex)
+-    # orchestrates the gate.
+-    #
+-    # The adapter turns the CLI's prose RETURN block into the JSON envelope etude
+-    # reads from $ETUDE_OUTPUT_FILE. A bare CLI writes nothing there and would be
+-    # classified `empty`, so a subprocess invoke MUST name the adapter.
+-    invoke: "scripts/seat-adapter.sh opus claude -p --model opus"
+-    mode: inline
+-    # Ordered fallbacks, tried when the primary invocation cannot run. The
+-    # candidate that actually ran is recorded in the gate's session/provider
+-    # evidence.
+-    #
+-    # The first entry is NOT a shell command, and that is deliberate. When the
+-    # orchestrator is Claude Code it cannot authenticate a `claude` subprocess,
+-    # but it CAN spawn an in-harness Task sub-agent — a fresh, separately
+-    # authenticated opus identity given only the shared gate prompt and the
+-    # inlined artifact. That is a REAL seat producing a REAL verdict, not a
+-    # degraded substitute, and its record needs no degraded_reason.
+-    #
+-    # This used to live only in a prose comment, which meant a worker could read
+-    # it, believe it, and stop. It is config now so a consumer can act on it:
+-    # `in-harness:` marks a candidate the HOST must run itself rather than exec.
+-    invocation_fallbacks:
+-      - harness: claude-code-subagent
+-        invoke: "in-harness:task subagent_type=general-purpose model=opus"
+-        mode: inline
+-  codex:
+-    provider: openai/gpt-5.5
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    invoke: 'scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools='
++  astra:
++    provider: openai/gpt-6-astra
+     harness: codex
+-    invoke: 'scripts/seat-adapter.sh codex codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort=xhigh -s read-only -'
+-    model_fallbacks: [gpt-5.4, gpt-5.3, gpt-5.2]
+-    mode: diff-only
+-  # The gemini seat was REMOVED 2026-08-16. The gemini CLI fails before review
+-  # with "IneligibleTierError: this client is no longer supported for Gemini Code
+-  # Assist for individuals", and Google's own migration path is the Antigravity
+-  # suite (the agy CLI), which is deliberately not used here.
+-  dev:
+-    provider: anthropic/claude-opus
++    env_allowlist: [CODEX_HOME]
++    invoke: 'scripts/seat-adapter.sh astra codex exec --ephemeral -m gpt-6-astra -c model_reasoning_effort=high -s read-only -'
++  sol:
++    provider: openai/gpt-5.6-sol
++    harness: codex
++    env_allowlist: [CODEX_HOME]
++    invoke: 'scripts/seat-adapter.sh sol codex exec --ephemeral -m gpt-5.6-sol -c model_reasoning_effort=high -s read-only -'
++  sonnet:
++    provider: anthropic/claude-sonnet-5
+     harness: claude-code
+-    invoke: "claude -p --model opus"
+-
+-# Tier numbers are inverted by weight: L1 is the heaviest, L4 the lightest.
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    invoke: 'scripts/seat-adapter.sh sonnet claude -p --model claude-sonnet-5 --effort high --no-session-persistence --tools='
+ tiers:
+-  # NOTE: with the gemini seat removed this panel is identical to L2 and L3, so
+-  # escalating to L1 currently buys no extra model diversity. The tier is kept so
+-  # existing per-stage declarations and escalation paths keep resolving; restoring
+-  # a genuine third seat or collapsing the tier is tracked separately.
+-  L1:
+-    name: Heaviest gate
+-    seats: [opus, codex]
+-    use: >-
+-      Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage
+-      format / ref-namespace / git-plumbing changes that could lose or corrupt
+-      data, or break backward compatibility.
+   L2:
+-    name: Strong two-seat gate
+-    seats: [opus, codex]
+-    use: >-
+-      The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any
+-      change touching product/CLI behavior, schema/format, refs/etude/*, or docs
+-      claiming NEW shipped behavior.
++    name: Consequential independent review
++    seats: [astra, fable]
+   L3:
+-    name: Medium two-seat gate
+-    seats: [opus, codex]
+-    use: >-
+-      The IMPLEMENT-phase gate, and low-risk localized refactors / validation
+-      tightening / test strengthening on an already-gated component.
++    name: Routine review for dev-claude
++    seats: [sol]
+   L4:
+-    name: Light single-seat gate
+-    seats: [opus]
+-    use: >-
+-      DOCS and FINAL REVIEW phase gates, and changes with no shipping-code change
+-      (test-only additions or docs/planning-only changes).
++    name: Routine review for dev-codex
++    seats: [sonnet]
+diff --git a/.etude/run-map.tsv b/.etude/run-map.tsv
+new file mode 100644
+index 0000000..3d910a4
+--- /dev/null
++++ b/.etude/run-map.tsv
+@@ -0,0 +1,3 @@
++# Bead ID followed by its active run ID; explicit mapping overrides legacy runs.
++etude-3343 etude-3343-dev-claude
++etude-l8tz etude-l8tz-dev-codex
+diff --git a/.etude/workflow.yaml b/.etude/workflow.yaml
+index 3016a21..39ce35f 100644
+--- a/.etude/workflow.yaml
++++ b/.etude/workflow.yaml
+@@ -1,79 +1,46 @@
+-name: default
+-# Seat adapters shell out to model CLIs that read their credentials from the
+-# user's home directory. The runner env is otherwise PATH + ETUDE_* only, so
+-# without HOME every real seat fails to authenticate. NAMES only — values are
+-# resolved at run time and never written to a manifest or a gate record.
++# Default profile; keep aligned with workflows/dev-codex.yaml.
++# External workers produce artifacts; supervisor captures and gates them.
++# No autonomous stage runner is configured. See docs/development.md.
++name: dev-codex
+ env_allowlist: [HOME]
+ stages:
+   - name: plan
+     produces: plan
+-    inputs:
+-      - task
++    inputs: [task]
+     skill: dev-planner
+-    eval:
+-      method: rubric
+-      rubric: evals/plan-rubric.md
+-    runner:
+-      name: dev
+     gate:
+       tier: L2
+-      abstraction: >-
+-        ABSTRACTION LEVEL: review at design/contract/behavior-preservation altitude —
+-        NOT implementation minutiae. BLOCK only if the plan (a) misses a requirement,
+-        (b) regresses or loosens an observable behavior/contract, or (c) specifies a
+-        mechanism that cannot be implemented as described. Anything that is an
+-        implementation detail a coder would naturally resolve, or that a test would
+-        catch, goes in OPTIONAL — do NOT block on it.
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "High-risk plan only: requirements, contracts, feasibility and failure modes. Implementation details are optional unless they make the design infeasible."
+   - name: implement
+     produces: diff
+-    inputs:
+-      - plan
+-      - repo-state
++    inputs: [plan, repo-state]
+     skill: dev-executor
+-    runner:
+-      name: dev
+-    gate:
+-      tier: L3
+-      abstraction: "code correctness against the approved plan"
+   - name: verify
+     produces: verify
+-    inputs:
+-      - plan
+-      - diff
++    inputs: [plan, diff]
+     skill: dev-qa
+-    eval:
+-      method: rubric
+-      rubric: evals/verify-rubric.md
+-    runner:
+-      name: dev
+-    gate:
+-      tier: L2
+-      abstraction: "test adequacy + real built-binary behavior"
+-      checks:
+-        - command: "make test"
+-        - command: "make lint"
+   - name: docs
+     produces: docs-diff
+-    inputs:
+-      - diff
++    inputs: [diff]
+     skill: dev-docs-writer
+-    optional: true
+-    runner:
+-      name: dev
+-    gate:
+-      tier: L4
+-      abstraction: "docs match implemented behavior; docs policy"
+   - name: review
+     produces: review
+-    inputs:
+-      - diff
+-      - plan
+-      - verify
++    inputs: [plan, diff, verify, docs-diff]
+     skill: dev-pr-reviewer
+-    eval:
+-      method: pairwise
+-    runner:
+-      name: dev
++    gate:
++      tier: L2
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Consequential final review: actual code, technical docs, acceptance criteria and independent QA evidence. Block on concrete defects with trigger and consequence."
++  - name: routine-review
++    produces: routine-review
++    inputs: [plan, diff, verify, docs-diff]
++    skill: dev-pr-reviewer
++    optional: true
+     gate:
+       tier: L4
+-      abstraction: "bead-level readiness; diff vs plan"
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Routine final review: code, docs and verification evidence satisfy acceptance criteria. Optional improvements are not blockers."
+diff --git a/.etude/workflows/dev-claude.yaml b/.etude/workflows/dev-claude.yaml
+new file mode 100644
+index 0000000..0f65423
+--- /dev/null
++++ b/.etude/workflows/dev-claude.yaml
+@@ -0,0 +1,45 @@
++# External workers produce artifacts; supervisor captures and gates them.
++# No autonomous stage runner is configured. See docs/development.md.
++name: dev-claude
++env_allowlist: [HOME]
++stages:
++  - name: plan
++    produces: plan
++    inputs: [task]
++    skill: dev-planner
++    gate:
++      tier: L2
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "High-risk plan only: requirements, contracts, feasibility and failure modes. Implementation details are optional unless they make the design infeasible."
++  - name: implement
++    produces: diff
++    inputs: [plan, repo-state]
++    skill: dev-executor
++  - name: verify
++    produces: verify
++    inputs: [plan, diff]
++    skill: dev-qa
++  - name: docs
++    produces: docs-diff
++    inputs: [diff]
++    skill: dev-docs-writer
++  - name: review
++    produces: review
++    inputs: [plan, diff, verify, docs-diff]
++    skill: dev-pr-reviewer
++    gate:
++      tier: L2
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Consequential final review: actual code, technical docs, acceptance criteria and independent QA evidence. Block on concrete defects with trigger and consequence."
++  - name: routine-review
++    produces: routine-review
++    inputs: [plan, diff, verify, docs-diff]
++    skill: dev-pr-reviewer
++    optional: true
++    gate:
++      tier: L3
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Routine final review: code, docs and verification evidence satisfy acceptance criteria. Optional improvements are not blockers."
+diff --git a/.etude/workflows/dev-codex.yaml b/.etude/workflows/dev-codex.yaml
+new file mode 100644
+index 0000000..3bfee12
+--- /dev/null
++++ b/.etude/workflows/dev-codex.yaml
+@@ -0,0 +1,45 @@
++# External workers produce artifacts; supervisor captures and gates them.
++# No autonomous stage runner is configured. See docs/development.md.
++name: dev-codex
++env_allowlist: [HOME]
++stages:
++  - name: plan
++    produces: plan
++    inputs: [task]
++    skill: dev-planner
++    gate:
++      tier: L2
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "High-risk plan only: requirements, contracts, feasibility and failure modes. Implementation details are optional unless they make the design infeasible."
++  - name: implement
++    produces: diff
++    inputs: [plan, repo-state]
++    skill: dev-executor
++  - name: verify
++    produces: verify
++    inputs: [plan, diff]
++    skill: dev-qa
++  - name: docs
++    produces: docs-diff
++    inputs: [diff]
++    skill: dev-docs-writer
++  - name: review
++    produces: review
++    inputs: [plan, diff, verify, docs-diff]
++    skill: dev-pr-reviewer
++    gate:
++      tier: L2
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Consequential final review: actual code, technical docs, acceptance criteria and independent QA evidence. Block on concrete defects with trigger and consequence."
++  - name: routine-review
++    produces: routine-review
++    inputs: [plan, diff, verify, docs-diff]
++    skill: dev-pr-reviewer
++    optional: true
++    gate:
++      tier: L4
++      pass_threshold: 1
++      max_rounds: 3
++      abstraction: "Routine final review: code, docs and verification evidence satisfy acceptance criteria. Optional improvements are not blockers."
+diff --git a/.gitignore b/.gitignore
+index b6424ae..94f20f1 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -18,3 +18,6 @@ coverage.out
+ tmp/
+ site/
+ .etude/loop.local.md
++
++# Isolated workmux checkouts
++.worktrees/
+diff --git a/AGENTS.md b/AGENTS.md
+index 7b91f29..c93e1ec 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -38,9 +38,11 @@ implemented.
+ The current product brief is planning material, so it lives at
+ `docs/plans/product/BRIEF.md`.
+ 
+-## Dogfood Session Boot
+-
+-When starting after a context clear or on a new ticket, read
+-`docs/plans/dogfood/README.md` after `bd prime`. Its Session Boot section is
+-the current entry point for the dogfood workflow, including the review-gate
+-process and next-bead flow.
++## Development session boot
++
++After `bd prime`, read `docs/development.md`, the current contract for
++`dev-claude` and `dev-codex`. Read relevant technical docs before planning;
++ship accurate technical documentation alongside code. Historical dogfood plans
++and generic loop skills do not override this repo's current proportional review
++and independent QA policy. In worktrees, verify access to the canonical beads
++store before claiming work.
+diff --git a/docs/README.md b/docs/README.md
+index 3a59d07..4311c22 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -33,3 +33,5 @@ The current implemented state is summarized in the top-level
+ The storage and manifest packages that exist today are Go APIs internal to this
+ module. The top-level README mentions them as implementation status; user-facing
+ command docs cover the implemented CLI only.
++
++- [Developing Etude](development.md): dev-claude/dev-codex, technical docs, QA and proportional review.
+diff --git a/docs/development.md b/docs/development.md
+new file mode 100644
+index 0000000..c57c8dc
+--- /dev/null
++++ b/docs/development.md
+@@ -0,0 +1,163 @@
++# Developing Etude
++
++This is the current development contract for this repository. It supersedes the
++five mandatory phase gates in the historical dogfood runbooks and the generic
++`etude-loop` instructions wherever they conflict. Both profiles use the same
++acceptance criteria, documentation obligations and quality bar.
++
++## Choose a profile and a bounded task
++
++Use `dev-claude` for a Claude-led lane or `dev-codex` for a Codex-led lane. The
++executable profiles are `.etude/workflows/dev-claude.yaml` and
++`.etude/workflows/dev-codex.yaml`; `.etude/workflow.yaml` defaults to dev-codex.
++Review model identities and invocations live in `.etude/registry.yaml`.
++
++| Responsibility | dev-claude | dev-codex |
++| --- | --- | --- |
++| Scope, risk classification, difficult decisions | Fable 5.1 | Astra |
++| Bounded implementation, tests and docs | Sonnet | Terra |
++| More demanding implementation | Opus | Sol |
++| Architectural uncertainty or persistent failure | Fable 5.1 | Astra |
++| Routine independent final review | Sol | Sonnet |
++| Consequential final review and high-risk plan review | Fresh Astra + Fable | Fresh Astra + Fable |
++
++The host selects and launches actual workers; these assignments are policy, not
++engine-managed model routing. Use inexpensive context gathering only when it
++provides a useful independent task. Keep one worker through code, tests and docs.
++Difficulty selects the worker; the consequence of an error selects review depth.
++Record the model that actually ran, including any explicit substitution.
++
++Track work in beads. In an isolated Git worktree, use the main checkout's beads
++store instead of initializing another database. The launcher may write the
++canonical `.beads` path to ignored `.beads/redirect`; verify `bd show <bead>`
++works before assigning work. `bd prime` alone does not verify database health.
++Keep one bead's changes in one commit, with separate worktrees for parallel lanes.
++
++## Read documentation before planning
++
++Read relevant guides in `docs/`, the affected component's technical explanation,
++contracts, tests and source. Check important documentation claims against the
++implementation. Distinguish stale docs from a code defect before choosing which
++to change. Plans belong in `docs/plans/` or captured run artifacts, not shipped
++usage documentation.
++
++The plan identifies acceptance criteria, invariants, affected components, failure
++cases, documentation updates and a verification method for each requirement.
++High-risk designs (storage integrity, authorization, lifecycle, destructive or
++broad compatibility changes) get an independent Astra/Fable plan gate. Routine
++plans need no model gate. A consequential but understood fix can proceed directly
++to implementation with a strong final gate.
++
++## Implement code, tests and technical docs together
++
++Maintain technical documentation in the same delivery as code: changed contracts,
++component responsibilities, data flow, failure/recovery behavior, configuration
++and significant design decisions. Include usage examples for observable changes.
++Generated command references supplement maintained explanations.
++
++Every change needs a documentation assessment. If it restores already-documented
++behavior, record the relevant paths and why no edit is necessary. Never defer
++necessary docs merely to ship code. Update or mark affected planning notes as
++superseded when behavior ships. Do not turn a focused fix into documenting the
++whole repository.
++
++## Independent QA and verification
++
++The implementer adds meaningful regression tests and runs checks. Demonstrate the
++reported failure before the fix where practical. A fresh QA worker inspects the
++requirements, actual code/docs and test coverage, rather than accepting the
++implementer's summary. QA may add focused tests; production fixes return to the
++implementation worker and invalidate affected evidence. A routine final reviewer
++may also perform QA if its report distinguishes the independent assessment.
++
++| Check | When required |
++| --- | --- |
++| `make test` and `make lint` | Code changes |
++| `make shell-test` | Shell scripts, hooks or process changes; this suite is separate from Go tests |
++| `make docs-check` | CLI/reference changes and final integration |
++| `make docs-reality` | Changed documentation claims and final integration |
++| `go test -race ./...` or affected packages | Concurrency/lifecycle changes |
++| Fresh binary in temporary realistic repositories | Git, CLI, artifact or subprocess behavior changes |
++
++Build with `make build`, and exercise `bin/etude` by its absolute path. Do not
++replace the installed binary unless installation itself is under test. Check
++exit status, output, filesystem/ref effects and failure/recovery behavior. For
++security boundaries, actually attempt both allowed and denied operations.
++
++Capture one verification record for the exact evaluated revision/artifact:
++acceptance criterion to evidence; commands, environment and results; realistic
++product exercises; docs updated or unchanged rationale; independent QA findings;
++and status `pass`, `fail` or `blocked`. Missing evidence is not a pass. Later
++changes require rerunning affected checks; integration checks cover interactions
++between independently verified lanes. A configured check is not evidence it ran.
++
++## Capture and review
++
++These profiles support **externally supervised capture/gate workflows**. They
++intentionally have no stage runner bindings: `etude run` is not an autonomous
++implementation driver for them. The supervisor launches workers and checks,
++captures their outputs, and invokes only the selected gates. Conditional risk
++routing and delivery completeness are supervisor responsibilities, not native
++engine enforcement.
++
++Capture plan, implementation (`diff`), verification (`verify`) and documentation
++(`docs-diff`) artifacts for every task. A docs artifact can carry a justified
++unchanged-docs assessment. Then capture a final **review packet**, not a prior
++reviewer's verdict. It contains requirements, plan, exact revision and diff,
++relevant full source/contracts, documentation and independent QA evidence. Both
++reviewers receive the same complete packet in fresh contexts. Claude reviewers
++have tools disabled, so a path without its contents is not sufficient evidence.
++Codex reviewers also have a read-only sandbox; config `mode` alone is not an
++access-control mechanism.
++
++Example commands, using an existing plan file and a new named run:
++
++```sh
++bin/etude capture plan --run etude-3343-dev-claude \
++  --workflow dev-claude --output plan=.etude/tmp/etude-3343/plan.md
++bin/etude gate --run etude-3343-dev-claude --workflow dev-claude \
++  --stage plan --artifact .etude/tmp/etude-3343/plan.md --timeout 20m
++```
++
++Run the plan gate only for high-risk designs. For the final gate, choose exactly
++one of `review` (consequential, L2) or `routine-review` (routine, L3 for dev-claude,
++L4 for dev-codex), capturing the matching output role before gating it. Supply
++`--harness`, `--model` and `--git-sha` when capturing actual agent work. Always
++recapture changed bytes before a review, preserving earlier attempts.
++
++Every configured gate explicitly requires `pass_threshold: 1`. L2 means both
++Astra and Fable must pass. Auth failures, timeout, missing tools or truncated
++output leave review incomplete. Require concrete blockers with a trigger,
++consequence and evidence; optional suggestions can be deferred with a reason.
++Investigate disagreements with source or a reproduction. After two unsuccessful
++substantive revision rounds, surface the unresolved issue rather than polling for
++approval. `max_rounds: 3` bounds engine-managed attempts; the supervisor also
++bounds separately invoked gate attempts.
++
++Reviewer-only environment names are declared on registry seats. At execution,
++Etude combines those names with the workflow allowlist **only for review seats**,
++including invocation fallbacks. The same named seat used as a stage/check does
++not receive reviewer-only variables. Names must be valid, unique and non-reserved;
++credential values are resolved at runtime and are never configuration values.
++The workflow permits HOME for normal tooling; it does not share Claude OAuth or
++Codex profile variables with project commands. This narrows environment exposure;
++it is not an operating-system credential vault or isolation from all home files.
++
++## Finish and monitor
++
++Ship only when acceptance criteria, relevant checks, technical documentation and
++the selected independent review are complete. The supervisor inspects actual
++logs, exit status, captured identities and run records, repairs process failures
++within scope, and never synthesizes a passing verdict.
++
++`.etude/run-map.tsv` maps a bead to its active run when a new profile needs a new
++run identity. An explicit mapping overrides the legacy run named after the bead.
++The completeness audit checks that mapped run exists and has gate attempts, and
++that metadata refs are pushed. It does not prove phase completeness or passing
++verdicts; the supervisor must check those before closing work. Existing unmapped
++beads retain the legacy lookup. Record the run mapping in bead notes as well.
++
++Sync metadata with `etude sync`, push the branch explicitly, and sync beads with
++`bd dolt push`. The historical cadence-retro warning remains useful feedback,
++not an extra model gate. Review recurring process faults and update the relevant
++repo instructions or shared skill rather than repeating a workaround silently.
+diff --git a/docs/gates.md b/docs/gates.md
+index 81507c9..af4dda1 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -370,3 +370,20 @@ degraded-gate policy), see
+   [`run show`](cli/etude_run_show.md) — generated per-command flag reference.
+ - [Gate reviewer record schema](plans/product/gate-reviewer-record-schema.md) —
+   the full data model and validation rules.
++
++## Reviewer-only authentication environment
++
++A registry seat may declare `env_allowlist` containing environment variable
++names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
++resolver combines these names with the workflow allowlist for that seat's
++primary and fallback subprocesses. Values come from the calling environment at
++execution time; do not put credential values in YAML or captured artifacts.
++
++Seat-only names are not applied when resolving a stage runner or a deterministic
++check, even when it references the same registry seat by name. Invalid names,
++duplicates, PATH and Etude's input/output/session control variables are rejected.
++This controls environment inheritance, not access to credentials elsewhere on
++the filesystem. Configure actual harness tool restrictions separately.
++
++For this repository's development profiles and delivery requirements, see
++[Developing Etude](development.md).
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index 31c005b..6be2748 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -3,30 +3,18 @@
+ These notes describe how this repo is using planned `etude` concepts while the
+ product is still being built. They are not shipped user-facing behavior.
+ 
+-A bead is worked by a **worker lane** and advanced by a **supervisor** who runs
+-each phase gate with a command. Start at the
+-[Supervisor runbook](supervisor-runbook.md) — it owns the operational loop and
+-is the specification for `etude gate`.
+-
+ ## Session Boot
+ 
+-After a context clear or when starting a new ticket:
++Run `bd prime`, then read [Developing Etude](../../development.md). That is the
++current operational contract for `dev-claude` and `dev-codex`, including
++model delegation, documentation-driven planning, independent QA and proportional
++review gates. Verify the actual bead database is accessible, inspect the bead's
++mapped run and continue its recorded work.
+ 
+-1. Run `bd prime`.
+-2. Run `bd ready` and pick the next unblocked bead.
+-3. Inspect recent runs with `etude run list` and `etude run show <bead>` — the
+-   run refs under `refs/etude/runs/*` carry each bead's stages and its gate
+-   reviewer records, so recover what shipped and how it was reviewed from there,
+-   not only from `bd`.
+-4. Read the [Supervisor runbook](supervisor-runbook.md).
+-5. Read the [Review gate runbook](review-gate-runbook.md) for how to judge an
+-   artifact, and [Verify phase design](verify-phase-design.md) for the workflow
+-   shape.
+-6. Work the bead through `plan -> implement -> verify -> docs -> final review`,
+-   running the per-phase loop from the supervisor runbook at every boundary.
+-7. After a gate passes and optional improvements are folded in or deferred to a
+-   named bead, continue to the next phase without waiting for another prompt
+-   unless blocked.
++The documents below are historical design and retrospective material. Their
++five-per-phase gate requirements are superseded by the current development
++contract. Capture/gate storage contracts remain useful background, but do not
++restart the old approval loop.
+ 
+ ## Index
+ 
+diff --git a/docs/plans/dogfood/docs-checklist.md b/docs/plans/dogfood/docs-checklist.md
+index 39405e0..0671f8a 100644
+--- a/docs/plans/dogfood/docs-checklist.md
++++ b/docs/plans/dogfood/docs-checklist.md
+@@ -1,5 +1,9 @@
+ # Docs Freshness Checklist
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: dogfood process note. This checklist keeps shipped docs accurate while
+ most `etude` behavior is still planned.
+ 
+diff --git a/docs/plans/dogfood/review-gate-process.md b/docs/plans/dogfood/review-gate-process.md
+index 4cdba93..04f43c5 100644
+--- a/docs/plans/dogfood/review-gate-process.md
++++ b/docs/plans/dogfood/review-gate-process.md
+@@ -1,5 +1,9 @@
+ # Review Gate Process
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This defines the gate policy to use while building
+ `etude`.
+ 
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index b998fb8..78e5fa7 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -1,5 +1,9 @@
+ # Review Gate Runbook
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This is the judgement reference for the phase gate whose
+ policy is defined in [Review Gate Process](review-gate-process.md).
+ 
+diff --git a/docs/plans/dogfood/supervisor-runbook.md b/docs/plans/dogfood/supervisor-runbook.md
+index c1e2d2b..cddc278 100644
+--- a/docs/plans/dogfood/supervisor-runbook.md
++++ b/docs/plans/dogfood/supervisor-runbook.md
+@@ -1,5 +1,9 @@
+ # Supervisor Runbook
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This describes how a bead is worked while `etude` is
+ still being built. It is not shipped user-facing behavior.
+ 
+diff --git a/docs/plans/dogfood/verify-phase-design.md b/docs/plans/dogfood/verify-phase-design.md
+index a9e81c4..0da0f8e 100644
+--- a/docs/plans/dogfood/verify-phase-design.md
++++ b/docs/plans/dogfood/verify-phase-design.md
+@@ -1,5 +1,9 @@
+ # Verify Phase Design
+ 
++> Historical workflow guidance. Current execution, QA, documentation and gate
++> policy is [Developing Etude](../../development.md); it supersedes conflicting
++> phase-gate requirements here.
++
+ Status: planning note. This defines the intended Verify phase boundary for the
+ dogfood workflow before any external skill files are changed.
+ 
+diff --git a/internal/cli/migration_test.go b/internal/cli/migration_test.go
+index 0eed71f..9cfefe1 100644
+--- a/internal/cli/migration_test.go
++++ b/internal/cli/migration_test.go
+@@ -3,8 +3,8 @@ package cli
+ // migration_test.go is a durable proof guard for the etude-2pc.2 migration:
+ // gates.yaml seats/tiers/quorum → .etude/registry.yaml; phase_gates →
+ // per-stage gate blocks in .etude/workflow.yaml. These tests run against the
+-// REAL files in the repo (no secrets required) and fail immediately if the
+-// migration regresses critical field values or if gates.yaml is re-introduced.
++// REAL files in the repo (no secrets required). Current profile contracts replace
++// historical fixed model and five-gate expectations; schema migration guards remain.
+ 
+ import (
+ 	"bytes"
+@@ -32,245 +32,99 @@ func repoRootForMigration(t *testing.T) string {
+ 	return filepath.Join(filepath.Dir(thisFile), "../..")
+ }
+ 
+-// TestMigrationRegistryMatchesDefault makes etude init --force regeneration
+-// semantically safe for this repository's canonical registry. Comments are not
+-// modeled, but every executable seat and tier setting must remain identical.
+-func TestMigrationRegistryMatchesDefault(t *testing.T) {
++// The repository is allowed to customize init scaffolding. Its default profile
++// must instead agree with the named dev-codex profile used by explicit callers.
++func TestDevelopmentDefaultMatchesNamedProfile(t *testing.T) {
+ 	root := repoRootForMigration(t)
+-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+-	if err != nil {
+-		t.Fatalf("read .etude/registry.yaml: %v", err)
+-	}
+-	got, err := registry.ParseYAML(content)
+-	if err != nil {
+-		t.Fatalf("registry.ParseYAML: %v", err)
+-	}
+-	want := registry.Default()
+-	if !reflect.DeepEqual(got, want) {
+-		t.Fatalf("checked-in registry differs from registry.Default()\n got: %#v\nwant: %#v", got, want)
+-	}
+-}
+-
+-// TestMigrationRegistryParsesAndValidates asserts that .etude/registry.yaml
+-// is accepted by registry.ParseYAML and carries exactly 4 seats and 4 tiers
+-// with unanimous quorum.
+-func TestMigrationRegistryParsesAndValidates(t *testing.T) {
+-	root := repoRootForMigration(t)
+-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+-	if err != nil {
+-		t.Fatalf("read .etude/registry.yaml: %v", err)
+-	}
+-	reg, err := registry.ParseYAML(content)
+-	if err != nil {
+-		t.Fatalf("registry.ParseYAML: %v", err)
+-	}
+-	if got := reg.EffectiveQuorum(); got != "unanimous" {
+-		t.Errorf("quorum = %q, want %q", got, "unanimous")
+-	}
+-	if got := len(reg.Seats); got != 3 {
+-		t.Errorf("seat count = %d, want 3 (opus/codex/dev)", got)
+-	}
+-	if got := len(reg.Tiers); got != 4 {
+-		t.Errorf("tier count = %d, want 4 (L1/L2/L3/L4)", got)
+-	}
+-	for _, name := range []string{"opus", "codex", "dev"} {
+-		if _, ok := reg.Seats[name]; !ok {
+-			t.Errorf("seat %q missing from registry", name)
++	read := func(path string) workflow.Workflow {
++		data, err := os.ReadFile(filepath.Join(root, path))
++		if err != nil {
++			t.Fatal(err)
+ 		}
+-	}
+-	for _, tier := range []string{"L1", "L2", "L3", "L4"} {
+-		if _, ok := reg.Tiers[tier]; !ok {
+-			t.Errorf("tier %q missing from registry", tier)
++		wf, err := workflow.ParseYAML(data)
++		if err != nil {
++			t.Fatal(err)
+ 		}
++		return wf
++	}
++	if !reflect.DeepEqual(read(".etude/workflow.yaml"), read(".etude/workflows/dev-codex.yaml")) {
++		t.Fatal("default must match named dev-codex profile")
+ 	}
+ }
+ 
+-// TestMigrationCriticalSeatFieldsPreserved guards against data-loss during
+-// the port from gates.yaml. Asserts the exact invoke substrings that the
+-// etude-review skill and live-run engine rely on are present verbatim.
+-func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
++func TestDevelopmentReviewerBoundaries(t *testing.T) {
+ 	root := repoRootForMigration(t)
+-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	data, err := os.ReadFile(filepath.Join(root, ".etude/registry.yaml"))
+ 	if err != nil {
+-		t.Fatalf("read .etude/registry.yaml: %v", err)
++		t.Fatal(err)
+ 	}
+-	reg, err := registry.ParseYAML(content)
++	reg, err := registry.ParseYAML(data)
+ 	if err != nil {
+-		t.Fatalf("registry.ParseYAML: %v", err)
+-	}
+-
+-	// The gemini seat was removed 2026-08-16: the CLI fails before review with
+-	// IneligibleTierError for individual accounts. Assert it stays gone so a
+-	// regenerated registry cannot silently reintroduce an unreachable seat.
+-	if _, ok := reg.Seats["gemini"]; ok {
+-		t.Error("gemini seat present; it was removed as unreachable")
+-	}
+-
+-	codex, ok := reg.Seats["codex"]
+-	if !ok {
+-		t.Fatal("codex seat missing")
+-	}
+-	// The SETTING is what must survive, not its shell quoting. An invoke is split
+-	// with strings.Fields before exec, so a quoted value would reach codex as the
+-	// literal `model_reasoning_effort="xhigh"` including the quote characters.
+-	// The quotes were dropped when the seats moved behind the adapter; the
+-	// unquoted form is what actually runs (verified against a live codex seat).
+-	if !strings.Contains(codex.Invoke, "model_reasoning_effort=xhigh") {
+-		t.Errorf("codex invoke missing model_reasoning_effort=xhigh: %q", codex.Invoke)
+-	}
+-	if strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
+-		t.Errorf("codex invoke re-quotes the reasoning effort; strings.Fields would pass the quotes through to codex: %q", codex.Invoke)
+-	}
+-	if !strings.Contains(codex.Invoke, "-s read-only") {
+-		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)
+-	}
+-	if len(codex.ModelFallbacks) == 0 {
+-		t.Error("codex model_fallbacks must be non-empty")
+-	}
+-
+-	// Both mechanisms must survive together: invocation_fallbacks is the
+-	// CONFIG-level statement of which candidates a consumer may try, and the
+-	// seat adapter is the EXECUTION-level bridge that makes any of them
+-	// satisfy the seat envelope contract. Neither replaces the other.
+-	opus, ok := reg.Seats["opus"]
+-	if !ok {
+-		t.Fatal("opus seat missing")
+-	}
+-	invocations := opus.Invocations()
+-	if len(invocations) != 2 {
+-		t.Fatalf("opus invocations = %v, want primary + in-harness sub-agent", invocations)
++		t.Fatal(err)
+ 	}
+-	if invocations[0].Harness != "claude-code" || !strings.Contains(invocations[0].Invoke, "claude -p --model opus") {
+-		t.Errorf("opus primary invocation = %+v", invocations[0])
++	if reg.EffectiveQuorum() != "unanimous" {
++		t.Fatal("review requires unanimity")
+ 	}
+-	// The in-harness sub-agent seat is what a Claude Code orchestrator actually
+-	// uses, because it cannot authenticate a `claude` subprocess. It lived only
+-	// in a prose comment before, which let a worker read it and stop; it is
+-	// config now so a consumer can act on it. It is deliberately NOT a shell
+-	// command — `in-harness:` means the host runs it rather than exec'ing it.
+-	if invocations[1].Harness != "claude-code-subagent" {
+-		t.Errorf("opus fallback[0] must be the in-harness sub-agent seat, got %+v", invocations[1])
+-	}
+-	if !strings.HasPrefix(invocations[1].Invoke, "in-harness:") {
+-		t.Errorf("the sub-agent candidate must be marked in-harness so a consumer does not exec it: %q", invocations[1].Invoke)
+-	}
+-	for _, want := range []string{"subagent_type=general-purpose", "model=opus"} {
+-		if !strings.Contains(invocations[1].Invoke, want) {
+-			t.Errorf("sub-agent candidate missing %q: %q", want, invocations[1].Invoke)
+-		}
+-	}
+-	// The agy fallback was removed 2026-08-16 along with the gemini seat. Assert
+-	// it stays gone: agy is the Antigravity CLI, and reintroducing it as an opus
+-	// substitute is what let a lane spend a day concluding opus was unreachable.
+-	for i, inv := range invocations {
+-		if inv.Harness == "agy" || strings.Contains(inv.Invoke, "agy ") {
+-			t.Errorf("agy invocation present at [%d]: %+v", i, inv)
+-		}
+-	}
+-
+-	// Every REVIEW seat must invoke through the adapter on any candidate that is
+-	// actually exec'd. A bare model CLI writes prose to stdout and nothing to
+-	// $ETUDE_OUTPUT_FILE, so etude classifies it `empty` and the gate escalates —
+-	// the command would ship unable to gate anything. (`dev` is a stage RUNNER,
+-	// not a review seat, so it is exempt; in-harness candidates are not exec'd.)
+-	for _, name := range []string{"opus", "codex"} {
++	for name, model := range map[string]string{"astra": "gpt-6-astra", "fable": "claude-fable-5-1", "sol": "gpt-5.6-sol", "sonnet": "claude-sonnet-5"} {
+ 		seat, ok := reg.Seats[name]
+ 		if !ok {
+-			t.Errorf("review seat %q missing from registry", name)
+-			continue
++			t.Fatalf("missing reviewer %s", name)
+ 		}
+-		for i, inv := range seat.Invocations() {
+-			if strings.HasPrefix(inv.Invoke, "in-harness:") {
+-				continue
+-			}
+-			if !strings.Contains(inv.Invoke, "seat-adapter.sh") {
+-				t.Errorf("review seat %q invocation[%d] must go through the seat adapter, got %q", name, i, inv.Invoke)
+-			}
++		if !strings.HasSuffix(seat.Provider, "/"+model) || !strings.Contains(seat.Invoke, model) {
++			t.Fatalf("reviewer %s identity mismatch", name)
+ 		}
+-	}
+-}
+-
+-// TestMigrationWorkflowParsesAndCrossResolves asserts that .etude/workflow.yaml
+-// is accepted by workflow.ParseYAML with 5 stages, every stage runner name
+-// resolves to a registry seat, every stage gate tier resolves to a registry
+-// tier whose seats are all defined, and the verify stage has exactly 2 checks.
+-func TestMigrationWorkflowParsesAndCrossResolves(t *testing.T) {
+-	root := repoRootForMigration(t)
+-
+-	regContent, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+-	if err != nil {
+-		t.Fatalf("read .etude/registry.yaml: %v", err)
+-	}
+-	reg, err := registry.ParseYAML(regContent)
+-	if err != nil {
+-		t.Fatalf("registry.ParseYAML: %v", err)
+-	}
+-
+-	wfContent, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
+-	if err != nil {
+-		t.Fatalf("read .etude/workflow.yaml: %v", err)
+-	}
+-	wf, err := workflow.ParseYAML(wfContent)
+-	if err != nil {
+-		t.Fatalf("workflow.ParseYAML: %v", err)
+-	}
+-
+-	if got := len(wf.Stages); got != 5 {
+-		t.Errorf("stage count = %d, want 5", got)
+-	}
+-
+-	for _, s := range wf.Stages {
+-		if s.Runner == nil {
+-			t.Errorf("stage %q: runner is nil, every stage must have a runner", s.Name)
+-			continue
++		if !strings.Contains(seat.Invoke, "seat-adapter.sh") {
++			t.Fatalf("reviewer %s missing output adapter", name)
++		}
++		if len(seat.ModelFallbacks) != 0 || len(seat.InvocationFallbacks) != 0 {
++			t.Fatalf("reviewer %s has unvalidated fallbacks", name)
+ 		}
+-		if s.Runner.Name == "" {
+-			t.Errorf("stage %q: runner.name is empty", s.Name)
+-			continue
++		if seat.Harness == "codex" && !strings.Contains(seat.Invoke, "-s read-only") {
++			t.Fatalf("reviewer %s lacks read-only sandbox", name)
+ 		}
+-		if _, ok := reg.Seats[s.Runner.Name]; !ok {
+-			t.Errorf("stage %q: runner name %q not found in registry seats", s.Name, s.Runner.Name)
++		if seat.Harness == "claude-code" && !strings.Contains(seat.Invoke, "--tools=") {
++			t.Fatalf("reviewer %s must review inline evidence without tools", name)
+ 		}
+ 	}
++	if !reflect.DeepEqual(reg.Tiers["L2"].Seats, []string{"astra", "fable"}) {
++		t.Fatal("strong gate must require Astra and Fable")
++	}
++}
+ 
+-	for _, s := range wf.Stages {
+-		if s.Gate == nil {
+-			t.Errorf("stage %q: gate is nil, every stage must have a gate", s.Name)
+-			continue
++func TestDevelopmentWorkflowCaptureAndGateContracts(t *testing.T) {
++	root := repoRootForMigration(t)
++	for _, profile := range []string{"dev-claude", "dev-codex"} {
++		data, err := os.ReadFile(filepath.Join(root, ".etude/workflows", profile+".yaml"))
++		if err != nil {
++			t.Fatal(err)
+ 		}
+-		if s.Gate.Tier == "" {
+-			t.Errorf("stage %q: gate.tier is empty", s.Name)
+-			continue
++		wf, err := workflow.ParseYAML(data)
++		if err != nil {
++			t.Fatal(err)
+ 		}
+-		tier, ok := reg.Tiers[s.Gate.Tier]
+-		if !ok {
+-			t.Errorf("stage %q: gate tier %q not found in registry tiers", s.Name, s.Gate.Tier)
+-			continue
++		if wf.DefaultRunner != nil {
++			t.Fatal("external worker profile must not claim an autonomous runner")
+ 		}
+-		for _, seatName := range tier.Seats {
+-			if _, ok := reg.Seats[seatName]; !ok {
+-				t.Errorf("stage %q: gate tier %q references undefined seat %q", s.Name, s.Gate.Tier, seatName)
++		found := map[string]bool{}
++		for _, stage := range wf.Stages {
++			found[stage.Name] = true
++			if stage.Runner != nil {
++				t.Fatalf("%s unexpectedly has autonomous runner", stage.Name)
++			}
++			wantGate := stage.Name == "plan" || stage.Name == "review" || stage.Name == "routine-review"
++			if (stage.Gate != nil) != wantGate {
++				t.Fatalf("%s gate violates proportional review policy", stage.Name)
++			}
++			if stage.Name == "docs" && stage.Optional {
++				t.Fatal("documentation assessment must be mandatory")
+ 			}
+ 		}
+-	}
+-
+-	// verify stage must have exactly 2 deterministic checks
+-	var verifyStage *workflow.Stage
+-	for i := range wf.Stages {
+-		if wf.Stages[i].Name == "verify" {
+-			verifyStage = &wf.Stages[i]
+-			break
++		for _, name := range []string{"plan", "implement", "verify", "docs", "review", "routine-review"} {
++			if !found[name] {
++				t.Fatalf("missing stage %s", name)
++			}
+ 		}
+ 	}
+-	if verifyStage == nil {
+-		t.Fatal("verify stage not found")
+-	}
+-	if verifyStage.Gate == nil {
+-		t.Fatal("verify stage has no gate")
+-	}
+-	if got := len(verifyStage.Gate.Checks); got != 2 {
+-		t.Errorf("verify gate check count = %d, want 2", got)
+-	}
+ }
+ 
+ // TestMigrationRegistryRoundTrips asserts that ParseYAML(reg.YAML()) is
+diff --git a/internal/liverun/resolve.go b/internal/liverun/resolve.go
+index 87a7348..dfdfc03 100644
+--- a/internal/liverun/resolve.go
++++ b/internal/liverun/resolve.go
+@@ -147,7 +147,7 @@ func ResolveGateSeatCandidates(reg registry.Registry, seatName string, timeout t
+ 				Command:        strings.Fields(inv.Invoke),
+ 				Timeout:        timeout,
+ 				MaxOutputBytes: 64 << 20,
+-				EnvAllowlist:   envAllowlist,
++				EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
+ 			}
+ 		}
+ 		candidates = append(candidates, c)
+@@ -171,7 +171,7 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
+ 		Command:        strings.Fields(seat.Invoke),
+ 		Timeout:        timeout,
+ 		MaxOutputBytes: 64 << 20,
+-		EnvAllowlist:   envAllowlist,
++		EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
+ 	}
+ 	return runner, meta, nil
+ }
+@@ -226,3 +226,19 @@ func DeriveFrontier(wf workflow.Workflow, manifest runmanifest.Manifest) int {
+ 	}
+ 	return len(wf.Stages)
+ }
++
++// Do not mutate the workflow list: checks/stages must not inherit reviewer auth.
++func gateSeatEnv(workflowNames, seatNames []string) []string {
++	out := append([]string(nil), workflowNames...)
++	seen := map[string]bool{}
++	for _, name := range out {
++		seen[name] = true
++	}
++	for _, name := range seatNames {
++		if !seen[name] {
++			out = append(out, name)
++			seen[name] = true
++		}
++	}
++	return out
++}
+diff --git a/internal/liverun/resolve_test.go b/internal/liverun/resolve_test.go
+index 867ea1c..d370258 100644
+--- a/internal/liverun/resolve_test.go
++++ b/internal/liverun/resolve_test.go
+@@ -1,6 +1,9 @@
+ package liverun
+ 
+ import (
++	"context"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -251,3 +254,49 @@ func TestDeriveFrontier(t *testing.T) {
+ 		t.Errorf("complete run: frontier = %d, want 3", frontier)
+ 	}
+ }
++
++func TestReviewerEnvironmentDoesNotReachChecksOrStages(t *testing.T) {
++	t.Setenv("REVIEW_ONLY_TOKEN", "test-secret")
++	script := filepath.Join(t.TempDir(), "probe.sh")
++	if err := os.WriteFile(script, []byte("#!/bin/sh\nvalue=${REVIEW_ONLY_TOKEN-unset}\nprintf '%s' \"$value\"\nif [ -n \"${ETUDE_OUTPUT_FILE-}\" ]; then printf '%s' \"$value\" > \"$ETUDE_OUTPUT_FILE\"; fi\n"), 0755); err != nil {
++		t.Fatal(err)
++	}
++	reg := registry.Registry{Seats: map[string]registry.Seat{"probe": {Provider: "deterministic/test", Harness: "shell", Invoke: script, EnvAllowlist: []string{"REVIEW_ONLY_TOKEN"}, InvocationFallbacks: []registry.SeatInvocation{{Harness: "shell", Invoke: script}}}}}
++	req := func() replay.RunRequest {
++		return replay.RunRequest{WorktreeDir: t.TempDir(), ScratchDir: t.TempDir(), OutputRole: "result"}
++	}
++	runner, _, err := ResolveGateSeat(reg, "probe", time.Second, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	result, err := runner.Run(context.Background(), req())
++	if err != nil || string(result.Output) != "test-secret" {
++		t.Fatalf("seat did not receive credential: %v", err)
++	}
++	candidates, err := ResolveGateSeatCandidates(reg, "probe", time.Second, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, c := range candidates {
++		result, err := c.Runner.Run(context.Background(), req())
++		if err != nil || string(result.Output) != "test-secret" {
++			t.Fatalf("candidate credential missing: %v", err)
++		}
++	}
++	stage, err := ResolveStageRunner(workflow.Workflow{}, reg, workflow.Stage{Name: "work", Runner: &workflow.Runner{Name: "probe"}}, time.Second, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	result, err = stage.Run(context.Background(), req())
++	if err != nil || string(result.Output) != "unset" {
++		t.Fatalf("stage credential isolation failed: %v", err)
++	}
++	check, err := ResolveCheckRunner(reg, workflow.Runner{Name: "probe"}, time.Second, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	passed, raw, detail := check.RunCheck(context.Background(), req())
++	if !passed || strings.Contains(string(raw), "test-secret") || !strings.Contains(string(raw), "unset") {
++		t.Fatalf("check isolation failed: %s", detail)
++	}
++}
+diff --git a/internal/registry/project_profiles_test.go b/internal/registry/project_profiles_test.go
+new file mode 100644
+index 0000000..0e7e1ad
+--- /dev/null
++++ b/internal/registry/project_profiles_test.go
+@@ -0,0 +1,52 @@
++package registry
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/joshuavial/etude/internal/workflow"
++)
++
++// Exercise checked-in profiles with the real strict schemas, not a YAML-only lint.
++func TestProjectDevelopmentProfiles(t *testing.T) {
++	root := filepath.Join("..", "..")
++	data, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	reg, err := ParseYAML(data)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, name := range []string{"dev-claude", "dev-codex"} {
++		data, err := os.ReadFile(filepath.Join(root, ".etude", "workflows", name+".yaml"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		wf, err := workflow.ParseYAML(data)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if wf.Name != name {
++			t.Fatalf("profile %s has name %s", name, wf.Name)
++		}
++		for _, stage := range wf.Stages {
++			if stage.Gate == nil {
++				continue
++			}
++			tier, ok := reg.Tiers[stage.Gate.Tier]
++			if !ok || len(tier.Seats) == 0 {
++				t.Fatalf("unresolved gate tier %s", stage.Gate.Tier)
++			}
++			if stage.Gate.PassThreshold == nil || *stage.Gate.PassThreshold != 1 {
++				t.Fatalf("%s gate must require unanimous pass", stage.Name)
++			}
++			for _, seat := range tier.Seats {
++				if _, ok := reg.Seats[seat]; !ok {
++					t.Fatalf("unresolved seat %s", seat)
++				}
++			}
++		}
++	}
++}
+diff --git a/internal/registry/registry.go b/internal/registry/registry.go
+index 2608a8e..4052c22 100644
+--- a/internal/registry/registry.go
++++ b/internal/registry/registry.go
+@@ -9,6 +9,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	"regexp"
+ 	"strings"
+ 
+ 	"github.com/joshuavial/etude/internal/ident"
+@@ -32,6 +33,9 @@ type Registry struct {
+ 
+ // Seat is a model/harness identity that participates in gate reviews.
+ type Seat struct {
++	// EnvAllowlist adds environment variable names only for gate reviewer execution.
++	// It never applies when the same seat is used as a stage or check runner.
++	EnvAllowlist []string
+ 	// Provider is the model provider and model identifier (required).
+ 	Provider string
+ 	// Harness is the CLI harness name used to invoke the seat (required).
+@@ -123,6 +127,9 @@ func (r Registry) Validate() error {
+ 		if err := validateSeatMode(fmt.Sprintf("seat[%q].mode", key), seat.Mode); err != nil {
+ 			return err
+ 		}
++		if err := validateSeatEnv(seat.EnvAllowlist); err != nil {
++			return fmt.Errorf("%w: seat[%q]: %v", ErrInvalidRegistry, key, err)
++		}
+ 		for i, fallback := range seat.InvocationFallbacks {
+ 			if strings.TrimSpace(fallback.Harness) == "" {
+ 				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].harness required", ErrInvalidRegistry, key, i)
+@@ -301,6 +308,7 @@ type registryYAML struct {
+ }
+ 
+ type seatYAML struct {
++	EnvAllowlist        []string             `yaml:"env_allowlist,omitempty"`
+ 	Provider            string               `yaml:"provider"`
+ 	Harness             string               `yaml:"harness"`
+ 	Invoke              string               `yaml:"invoke"`
+@@ -332,6 +340,7 @@ func (r Registry) toYAML() registryYAML {
+ 				Invoke:         s.Invoke,
+ 				Mode:           s.Mode,
+ 				ModelFallbacks: s.ModelFallbacks,
++				EnvAllowlist:   s.EnvAllowlist,
+ 			}
+ 			if len(s.InvocationFallbacks) > 0 {
+ 				seat.InvocationFallbacks = make([]seatInvocationYAML, len(s.InvocationFallbacks))
+@@ -370,6 +379,7 @@ func (d registryYAML) toRegistry() Registry {
+ 				Invoke:         s.Invoke,
+ 				Mode:           s.Mode,
+ 				ModelFallbacks: s.ModelFallbacks,
++				EnvAllowlist:   s.EnvAllowlist,
+ 			}
+ 			if len(s.InvocationFallbacks) > 0 {
+ 				seat.InvocationFallbacks = make([]SeatInvocation, len(s.InvocationFallbacks))
+@@ -396,3 +406,22 @@ func (d registryYAML) toRegistry() Registry {
+ 	}
+ 	return r
+ }
++
++// Names only: reject values and engine-owned control variables before execution.
++func validateSeatEnv(names []string) error {
++	valid := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
++	seen := map[string]bool{}
++	for _, name := range names {
++		if !valid.MatchString(name) {
++			return fmt.Errorf("invalid env_allowlist name %q", name)
++		}
++		if name == "PATH" || name == "ETUDE_INPUTS_DIR" || name == "ETUDE_OUTPUT_FILE" || name == "ETUDE_SESSION_FILE" {
++			return fmt.Errorf("reserved env_allowlist name %q", name)
++		}
++		if seen[name] {
++			return fmt.Errorf("duplicate env_allowlist name %q", name)
++		}
++		seen[name] = true
++	}
++	return nil
++}
+diff --git a/internal/registry/registry_test.go b/internal/registry/registry_test.go
+index 72ba1ee..9cd4a00 100644
+--- a/internal/registry/registry_test.go
++++ b/internal/registry/registry_test.go
+@@ -881,3 +881,28 @@ func TestDefaultYAMLSelfChecks(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestSeatEnvironmentRoundTrip(t *testing.T) {
++	r := Default()
++	s := r.Seats["codex"]
++	s.EnvAllowlist = []string{"CODEX_HOME", "REVIEW_TOKEN"}
++	r.Seats["codex"] = s
++	data, err := r.YAML()
++	if err != nil {
++		t.Fatal(err)
++	}
++	decoded, err := ParseYAML(data)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.Join(decoded.Seats["codex"].EnvAllowlist, ",") != "CODEX_HOME,REVIEW_TOKEN" {
++		t.Fatal("seat environment lost on round trip")
++	}
++	for _, invalid := range [][]string{{"TOKEN=secret"}, {"PATH"}, {"ETUDE_OUTPUT_FILE"}, {"ETUDE_INPUTS_DIR"}, {"ETUDE_SESSION_FILE"}, {"TOKEN", "TOKEN"}, {""}} {
++		s.EnvAllowlist = invalid
++		r.Seats["codex"] = s
++		if !errors.Is(r.Validate(), ErrInvalidRegistry) {
++			t.Fatalf("accepted invalid names %q", invalid)
++		}
++	}
++}
+diff --git a/scripts/dogfood-completeness-allow.txt b/scripts/dogfood-completeness-allow.txt
+index 6df6d5c..1901d76 100644
+--- a/scripts/dogfood-completeness-allow.txt
++++ b/scripts/dogfood-completeness-allow.txt
+@@ -66,3 +66,5 @@ etude-4jr        # false-premise blocker — closed administratively, no reposit
+ etude-cv9        # manager blocker resolution — accepted two named plan-gate corrections, no repository work
+ etude-d13n       # manager blocker resolution — kickoff error corrected (codex lane uses claude -p, not in-harness Task), no repository work
+ etude-6j8v       # manager blocker resolution — allowlist classification request, no repository work
++
++etude-jhnk # Read-only codebase audit: report and findings recorded on bead; no implementation shipped or delivery gate claimed
+diff --git a/scripts/dogfood-completeness-audit.sh b/scripts/dogfood-completeness-audit.sh
+index f971219..80dbaa4 100755
+--- a/scripts/dogfood-completeness-audit.sh
++++ b/scripts/dogfood-completeness-audit.sh
+@@ -104,9 +104,23 @@ done
+ 
+ echo "dogfood-audit: ${#in_scope[@]} closed bead(s) in window, ${#active[@]} active"
+ 
++# Optional explicit bead-to-run mapping for named workflow pilots. No guessing:
++# an invalid or duplicate mapping is an environment/configuration error.
++declare -A mapped_runs=()
++if [[ -f .etude/run-map.tsv ]]; then
++  while read -r bead run extra || [[ -n "$bead" ]]; do
++    [[ -z "$bead" || "$bead" == \#* ]] && continue
++    if [[ ! "$bead" =~ ^[A-Za-z0-9_.-]+$ || ! "$run" =~ ^[A-Za-z0-9_.-]+$ || -n "$extra" || -v "mapped_runs[$bead]" ]]; then
++      echo "error: invalid or duplicate entry in .etude/run-map.tsv" >&2
++      exit 2
++    fi
++    mapped_runs["$bead"]="$run"
++  done < .etude/run-map.tsv
++fi
++
+ # --- (a) run ref present, (b) run has gates ----------------------------------
+ for b in "${active[@]}"; do
+-  ref="refs/etude/runs/$b"
++  ref="refs/etude/runs/${mapped_runs[$b]:-$b}"
+   if ! git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+     gap "missing-run" "$b" "no $ref"
+     continue
+diff --git a/scripts/dogfood-completeness-audit_test.sh b/scripts/dogfood-completeness-audit_test.sh
+index ae2b6c8..a6f75df 100755
+--- a/scripts/dogfood-completeness-audit_test.sh
++++ b/scripts/dogfood-completeness-audit_test.sh
+@@ -488,6 +488,35 @@ add_run "$r" b1 1
+ run_audit "$r" --last 1
+ assert_exit 1 "$RC" "$OUT"
+ 
++t_start "explicit named workflow run satisfies bead evidence"
++r=$(new_repo "$ONE")
++mkdir -p "$r/.etude"
++printf 'b1 b1-dev-codex\n' > "$r/.etude/run-map.tsv"
++add_run "$r" b1-dev-codex 1
++push_etude "$r"
++run_audit "$r" --last 1
++assert_exit 0 "$RC" "$OUT"
++
++t_start "mapped run missing does not fall back to old bead run"
++r=$(new_repo "$ONE")
++mkdir -p "$r/.etude"
++printf 'b1 b1-dev-codex\n' > "$r/.etude/run-map.tsv"
++add_run "$r" b1 1
++push_etude "$r"
++run_audit "$r" --last 1
++assert_exit 1 "$RC" "$OUT"
++assert_contains 'missing-run' "$OUT"
++
++t_start "duplicate mappings fail closed"
++printf 'b1 b1-dev-claude\n' >> "$r/.etude/run-map.tsv"
++run_audit "$r" --last 1
++assert_exit 2 "$RC" "$OUT"
++
++t_start "malformed mapping fails closed"
++printf 'b1 ../bad\n' > "$r/.etude/run-map.tsv"
++run_audit "$r" --last 1
++assert_exit 2 "$RC" "$OUT"
++
+ # ---------------------------------------------------------------------------
+ echo ""
+ echo "==========================================="
