@@ -1,0 +1,32 @@
+# Docs impact — etude-aul.4
+
+## Updated
+
+- `docs/bench.md` now documents replay and gate-prompt modes, the public gate
+  flags, prompt and labels validation, progression-proxy limitations, common
+  fixture scoring, per-cell evidence, command path behavior, and exit cases.
+
+## Cross-document review
+
+- `README.md`: no change; it links to the detailed bench guide rather than
+  enumerating the command's flags.
+- `docs/README.md`: no change; its documentation index already links to the
+  bench guide.
+- `docs/run.md`: no change; run capture behavior is unchanged.
+- `docs/eval.md`: no change; gate bench consumes the existing gate evaluator
+  and does not change its contracts.
+- `docs/cli/etude_bench.md`: intentionally deferred to `etude-aul.5`, the
+  separately owned generated-reference bead and second requested commit.
+
+## Verification
+
+- `git diff --check` passes.
+- `make docs-reality` passes.
+- The hand-written guide is consistent with the implemented flags and the
+  scratch-directory execution contract.
+- The Docs gate follow-ups are folded: replay-only flags and sections are
+  scoped explicitly, `block` is named as the positive class, zero-scored rows
+  are explained, and the optional labels `note` field is declared.
+- Until `etude-aul.5` runs `make docs`, `make docs-check` is expected to report
+  only the stale generated bench reference. Both commits will be landed
+  together after the complete suite is green.
