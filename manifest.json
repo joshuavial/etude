@@ -116,6 +116,58 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:03:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "block",
+          "required": [
+            "Cut supervised checkout materialization and fail closed on supervised read grants.",
+            "Do not present neutral cwd selection as a filesystem capability boundary.",
+            "Use one shared prompt builder and preserve supervised check cwd behavior."
+          ],
+          "timestamp": "2026-08-16T00:07:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Replace cwd-as-access-proxy with a coherent trusted prompt/harness policy boundary or an actual sandbox.",
+            "Avoid supervised pin mismatch and detect authoritative gitlink entries for the GH14 fail-closed boundary."
+          ],
+          "timestamp": "2026-08-16T00:07:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:07:00Z"
     }
   ]
 }
