@@ -683,6 +683,57 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:38:30Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "841708843280a7e73769d68c83af39ec513761e855807c2ab316f37335d2f0ee"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "A later docs lane should add workspace to docs/init.md.",
+            "packet path .etude/tmp/etude-5dr.4/docs-gate-r1.md sha256 981b5a282c1091b04865bbb07cd2d5acf3947eb14919e439335873e1e1e6f881"
+          ],
+          "timestamp": "2026-08-16T03:42:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/docs-gate-r1.md sha256 981b5a282c1091b04865bbb07cd2d5acf3947eb14919e439335873e1e1e6f881"
+          ],
+          "timestamp": "2026-08-16T03:42:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:42:00Z"
     }
   ]
 }
