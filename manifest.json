@@ -192,6 +192,37 @@
         "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat (Tier-3 standard). GO — one-new-checklists.md-as-index avoids a drifting second copy (no rule body copied; mechanized steps→command, prose steps→anchors), satisfies acceptance, respects the 8hq.6 lens-section boundary."
       },
       "timestamp": "2026-05-27T12:31:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T12:50:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat. GO — independently verified NO rule body copied (Gate step 2 links to the lens section, does not restate it), all 13 section anchors resolve to real headings (drift-as-dead-anchor holds), all commands real + no aspirational, scope = 1 new doc + 3 one-line pointers."
+      },
+      "timestamp": "2026-05-27T12:51:00Z"
     }
   ]
 }
