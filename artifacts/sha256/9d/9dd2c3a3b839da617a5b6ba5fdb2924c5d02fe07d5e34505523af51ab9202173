@@ -1,0 +1,4 @@
+# Verify — etude-docs-site (generated CLI reference)
+Result: PASS. go test ./... green (12 pkgs incl. cmd/gen-docs); gofmt/vet/build clean. `make docs` + `make docs-check` both pass clean.
+Coverage: file-per-command (11: etude.md + 8 cmds + run_list/run_show); two-run BYTE-IDENTICAL (determinism via DisableAutoGenTag tree-walk + date-free prepender); NO "Auto generated"/date footer; drift guard (regen→diff committed). Footgun guard verified: -out on a dir with hand-written run.md/README.md PRESERVES them (clean scoped to etude*.md). Opus mutation-verified teeth + etude binary not bloated (go list -deps shows no cobra/doc in cmd/etude).
+No interactive surface; the generator is run via `make docs` / `go run ./cmd/gen-docs`.
