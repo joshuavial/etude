@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -34,6 +34,66 @@
         "size": 7302
       },
       "timestamp": "2026-08-15T23:53:31.004218Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "cbc040118510d0eac1171f82b22a00459911dbb750af753b9f01f3612d2687d7"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Packet-artifact finding: the captured plan is the full plan document; the synthetic inline diff is only a builder input, so no plan change is required.",
+            "packet path .etude/tmp/etude-5dr/plan-gate-r1.md sha256 bcd728fce4b82c962229392442ec8477604dc055d7a5b5790161f345848e42d8"
+          ],
+          "timestamp": "2026-08-15T23:56:03Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "Include untracked non-ignored files in the post-run cleanliness guard and add a regression proving a newly-created untracked file fails before capture."
+          ],
+          "optional": [
+            "Declare verification install and temporary repository blast radius.",
+            "Declare the caller runner external effect and crash-before-capture residual.",
+            "Use independent literal legacy manifest fixtures.",
+            "Specify an injectable seam for the changing-HEAD regression.",
+            "packet path .etude/tmp/etude-5dr/plan-gate-r1.md sha256 bcd728fce4b82c962229392442ec8477604dc055d7a5b5790161f345848e42d8"
+          ],
+          "timestamp": "2026-08-15T23:56:03Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:56:03Z"
     }
   ]
 }
