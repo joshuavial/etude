@@ -378,6 +378,51 @@
         "degraded_reason": "opus seat run as the documented substitute (registry invoke claude -p --model opus returns Not logged in under a Claude Code orchestrator; the in-harness sub-agent seat returned no verdict across five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Seats split on severity but converged on the SAME finding (criterion 1 positive half asserted, not demonstrated); treated as the blocker codex called it, so the gate did NOT pass. Opus also adjudicated Q3: rebuilding the lost run ref and disclosing beats re-running already-adjudicated gates, escalating to BLOCK if it recurs after etude-nad is fixed."
       },
       "timestamp": "2026-08-15T05:38:58Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:39:58Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:39:58Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus returns Not logged in under a Claude Code orchestrator; in-harness sub-agent seat returned no verdict across five attempts). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Stage gate.checks make test and make lint both green and re-run after the r1 fold."
+      },
+      "timestamp": "2026-08-15T05:39:58Z"
     }
   ]
 }
