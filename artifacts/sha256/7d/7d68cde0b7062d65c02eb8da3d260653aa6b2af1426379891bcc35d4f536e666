@@ -1,0 +1,23 @@
+# Final Review — etude-roadmap.2.2 (Implement gate reviewer capture)
+
+## Recommendation: CLOSE
+
+Implemented the gate-reviewer-record schema (etude-roadmap.2.1's spec) in Go + a standalone `etude capture-gate` command. Commit 3906d8b, on origin/main.
+
+## Plan gate (earlier) — PASS after CLI-surface BLOCK
+codex + gemini BLOCK'd the planned cobra default-subcommand shim (risked regressing `capture <stage>`/dogfood); resolved by committing to a standalone top-level `capture-gate` command, `capture <stage>` byte-for-byte unchanged. Opus had empirically found the shim workable but accepted the standalone command as low-risk. The standalone command is the consensus-safe + simpler choice (no ambiguous `capture --help`).
+
+## Implement+Final gate — Tier 1 four-seat: PASS (3 substantive GO, pilms skipped)
+- codex (GPT-5.5 xhigh): GO — all gated schema requirements met; no blocking defect.
+- gemini Pro: GO — §6 rules meticulously implemented; v2 byte-identical preserved; both ArtifactPaths walkers extended; append + ExpectedOld + ErrNotFound correct.
+- Claude Opus (in-harness): GO — full suite green; MUTATION TESTING on a /tmp copy proved every validation guard real (uniqueness×2, dangling-artifact integrity, failure_note rule, provider-required, {0,2,3} allowlist, both halves of the ArtifactPaths dual-walk); built-binary throwaway-repo test confirmed end-to-end behaviour incl. pilms provider verbatim and raw_output carry-forward.
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+
+## Findings
+None blocking. Non-blocking/deferred: empty GateDecision emits `"decision": {}` (omitempty no-op on non-pointer struct — harmless); Writer.Write doesn't re-hash gate raw_output at write time (defense-in-depth follow-up; CLI always content-addresses); gc size under-count + run-show rendering are spec §6 deferrals (.3 / gc follow-up).
+
+## Process note
+The dev-coder produced out-of-scope doc-drift fixes + a retro doc + runbook/checklist edits, which were reverted to preserve 1-bead=1-commit (saved to /tmp; the doc drift belongs to etude-phase-prep.2). The commit was created with the joshuavial git identity during the gate window (most likely a manual commit) — verified correctly scoped to the implementation before close. Both items are process learnings for the 3/3 cadence retro.
+
+## Commit
+3906d8b "add gate reviewer capture" — origin/main. Unblocks .3 (surface gates in run show), .4 (wire dogfood workflow to capture-gate), .5 (backfill).
