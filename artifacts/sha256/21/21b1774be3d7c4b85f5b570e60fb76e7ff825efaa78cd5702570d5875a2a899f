@@ -1,0 +1,1664 @@
+commit a1d2cc092411e4f196064675dff48192f2bfe775
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 21:44:07 2026 +0800
+
+    add etude gc command for reporting and safely pruning run refs
+
+diff --git a/docs/README.md b/docs/README.md
+index 082afb6..860455f 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -10,6 +10,7 @@ This directory holds user-facing documentation for implemented behavior.
+ - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.
+ - [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
+ - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.
++- [GC](gc.md) - report artifact storage and explicitly prune named run refs.
+ - [Plans](plans/README.md) - notes on planned components that do not exist yet.
+ 
+ The current implemented state is summarized in the top-level
+diff --git a/docs/gc.md b/docs/gc.md
+new file mode 100644
+index 0000000..306d255
+--- /dev/null
++++ b/docs/gc.md
+@@ -0,0 +1,101 @@
++# GC
++
++`etude gc` reports artifact storage across all run and eval refs, and optionally
++deletes named run refs that pass the safety invariant. Object cleanup is `git
++gc`'s job; `etude gc` only removes refs.
++
++```bash
++# Default: print a storage report, never delete anything.
++etude gc [--max-size N]
++
++# Explicit, safety-checked deletion of named runs.
++etude gc --prune <run-id> [<run-id>...]
++```
++
++## Report mode (default)
++
++Running `etude gc` without `--prune` collects and prints:
++
++**TOTAL** — sum of `ArtifactRef.Size` for all content-storage artifacts across
++all run refs, plus run and eval ref counts. The label reads *logical artifact
++bytes (pre-dedup)*: the number reflects the sizes recorded in the manifests at
++capture time, before any git-level deduplication of blobs. Identical content
++stored in multiple runs is counted each time.
++
++**OVERSIZED** (only when `--max-size N` is given) — runs whose total
++content-artifact bytes exceed `N`. Useful for spotting large outliers.
++
++**EXTERNAL** (when any run has pointer artifacts) — pointer artifacts listed
++per run with their external URIs. `etude gc` does not fetch, validate, or delete
++external URIs in v1; the section is informational.
++
++Report mode exits 0 and never modifies any ref or object.
++
++## Prune mode (--prune)
++
++`etude gc --prune <run-id>...` deletes the named run refs after checking the
++**safety invariant**: a run is refused if it is pinned by any live reference.
++
++Before each deletion `etude gc` builds the live pin-set by walking all run and
++eval refs:
++
++- A run ID is **pinned** if it appears as `ArtifactSource.RunID` in any eval
++  result (Targets or Context), or as `ReplayOf.RunID` in any stage of any run.
++- A run that is not pinned is safe to delete.
++
++Pinned runs and runs that do not exist are **refused** (printed to stderr;
++never deleted). Eligible runs are deleted with
++`git update-ref -d --no-deref refs/etude/runs/<id>`. Unreferenced git objects
++are left for `git gc`.
++
++### Exit codes
++
++| Condition | Exit |
++|-----------|------|
++| Report mode (no `--prune`) | 0 always |
++| `--prune` with all named runs deleted | 0 |
++| `--prune` with any refusal or unknown id | non-zero |
++| `--prune` with no run-id args | non-zero (usage error) |
++
++### Output
++
++```
++pruned <id>           # written to stdout for each deleted run
++refused <id>: <why>   # written to stderr for each refused run
++```
++
++## Flags
++
++| Flag | Description |
++|------|-------------|
++| `--max-size N` | Enable the OVERSIZED section for runs exceeding `N` bytes of content-artifact storage. |
++| `--prune` | Enable deletion mode. Requires one or more run-id arguments. |
++
++## Design notes
++
++There is **no automatic garbage collection** in v1. Leaf runs (no inbound eval
++or replay edge) are normal captured work — deleting them automatically would
++destroy the user's data. `etude gc` only deletes runs the user explicitly names,
++and only when the safety invariant permits.
++
++Eval refs are not deletable by `etude gc` in v1.
++
++Pointer artifact URIs in the EXTERNAL section are informational only. No
++remote-URI fetch, validity check, or deletion is performed.
++
++## Examples
++
++```bash
++# Storage report for the current repo.
++etude gc
++
++# Show runs exceeding 50 MB.
++etude gc --max-size 52428800
++
++# Delete two leaf runs.
++etude gc --prune run-abc run-def
++
++# Attempt deletion of a pinned run (refused, non-zero exit).
++etude gc --prune run-pinned-by-eval
++# stderr: refused run-pinned-by-eval: pinned by eval eval-1 (target)
++```
+diff --git a/internal/cli/gc.go b/internal/cli/gc.go
+new file mode 100644
+index 0000000..88baf9a
+--- /dev/null
++++ b/internal/cli/gc.go
+@@ -0,0 +1,124 @@
++package cli
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"strings"
++	"text/tabwriter"
++
++	"github.com/joshuavial/etude/internal/gc"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/spf13/cobra"
++)
++
++func newGCCommand(out, errOut io.Writer) *cobra.Command {
++	runner := &gcRunner{
++		store:  refstore.New(""),
++		stdout: out,
++		stderr: errOut,
++	}
++	return buildGCCommand(out, errOut, runner)
++}
++
++type gcRunner struct {
++	store  refstore.Store
++	stdout io.Writer
++	stderr io.Writer
++}
++
++func buildGCCommand(out, errOut io.Writer, runner *gcRunner) *cobra.Command {
++	var prune bool
++	var maxSize int64
++
++	cmd := &cobra.Command{
++		Use:           "gc [--max-size N] [--prune] [run-id...]",
++		Short:         "Report artifact storage or prune named run refs",
++		SilenceUsage:  true,
++		SilenceErrors: true,
++		RunE: func(cmd *cobra.Command, args []string) error {
++			ctx := cmd.Context()
++			if prune {
++				if len(args) == 0 {
++					return fmt.Errorf("--prune requires one or more run ids")
++				}
++				return runner.prune(ctx, args)
++			}
++			return runner.report(ctx, gc.CollectOptions{MaxSize: maxSize})
++		},
++	}
++	cmd.SetOut(out)
++	cmd.SetErr(errOut)
++	cmd.Flags().BoolVar(&prune, "prune", false, "delete named run refs (requires run-id args)")
++	cmd.Flags().Int64Var(&maxSize, "max-size", 0, "report runs whose total content-artifact bytes exceed N")
++	return cmd
++}
++
++// report runs the default (no --prune) mode: collect and render a storage report.
++func (r *gcRunner) report(ctx context.Context, opts gc.CollectOptions) error {
++	rpt, err := gc.Collect(ctx, r.store, opts)
++	if err != nil {
++		return err
++	}
++
++	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
++
++	fmt.Fprintf(w, "TOTAL\t%d logical artifact bytes (pre-dedup)\t%d runs\t%d evals\n",
++		rpt.TotalBytes, rpt.RunCount, rpt.EvalCount)
++	w.Flush()
++
++	if opts.MaxSize > 0 && len(rpt.Oversized) > 0 {
++		fmt.Fprintln(r.stdout)
++		fmt.Fprintln(r.stdout, "OVERSIZED (exceeds --max-size)")
++		ow := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
++		fmt.Fprintln(ow, "RUN ID\tBYTES")
++		for _, s := range rpt.Oversized {
++			fmt.Fprintf(ow, "%s\t%d\n", s.RunID, s.ContentSize)
++		}
++		ow.Flush()
++	}
++
++	if len(rpt.External) > 0 {
++		fmt.Fprintln(r.stdout)
++		fmt.Fprintln(r.stdout, "EXTERNAL (pointer artifacts)")
++		for _, s := range rpt.External {
++			for _, p := range s.Pointers {
++				uri := p.URI
++				if uri == "" {
++					uri = "(unknown)"
++				}
++				fmt.Fprintf(r.stdout, "  %s  stage=%s  role=%s  uri=%s\n",
++					s.RunID, p.Stage, p.Role, uri)
++			}
++		}
++	}
++
++	return nil
++}
++
++// prune runs the --prune mode: delete named run refs that pass the safety check.
++// Exits non-zero if any named run was unknown or refused.
++func (r *gcRunner) prune(ctx context.Context, runIDs []string) error {
++	pruned, refused, err := gc.Prune(ctx, r.store, runIDs)
++	if err != nil {
++		return err
++	}
++
++	for _, id := range pruned {
++		fmt.Fprintf(r.stdout, "pruned %s\n", id)
++	}
++	for _, ref := range refused {
++		fmt.Fprintf(r.stderr, "refused %s: %s\n", ref.RunID, ref.Reason)
++	}
++
++	if len(refused) > 0 {
++		// Summarise which ids were refused so the caller can see the full picture
++		// on stdout as well. (stderr already has the per-line reasons.)
++		ids := make([]string, 0, len(refused))
++		for _, ref := range refused {
++			ids = append(ids, ref.RunID)
++		}
++		return fmt.Errorf("refused: %s", strings.Join(ids, ", "))
++	}
++	return nil
++}
+diff --git a/internal/cli/gc_test.go b/internal/cli/gc_test.go
+new file mode 100644
+index 0000000..55e9ba7
+--- /dev/null
++++ b/internal/cli/gc_test.go
+@@ -0,0 +1,370 @@
++package cli
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/gc"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++func gcContentRef(role string, content []byte) (runmanifest.ArtifactRef, []byte) {
++	sum := sha256.Sum256(content)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/sha256/" + sha[:2] + "/" + sha
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StorageContent,
++		Size:      int64(len(content)),
++	}, content
++}
++
++func gcPointerRef(role, uri string) (runmanifest.ArtifactRef, []byte) {
++	payload, _ := json.Marshal(map[string]any{"version": 1, "uri": uri})
++	sum := sha256.Sum256(payload)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/pointers/sha256/" + sha[:2] + "/" + sha + ".json"
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StoragePointer,
++		Size:      0,
++	}, payload
++}
++
++func gcMakeStage(name string, output runmanifest.ArtifactRef, inputs []runmanifest.ArtifactRef) runmanifest.Stage {
++	return runmanifest.Stage{
++		Name:       name,
++		ProducedBy: "test-agent",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Inputs:     inputs,
++		Output:     output,
++	}
++}
++
++func gcMakeManifest(runID string, stages []runmanifest.Stage) runmanifest.Manifest {
++	return runmanifest.Manifest{
++		RunID:           runID,
++		Workflow:        "test-workflow",
++		WorkflowVersion: "v1",
++		Created:         time.Now().UTC(),
++		Refs:            map[string]string{"pr": "1"},
++		Stages:          stages,
++	}
++}
++
++func gcWriteRun(t *testing.T, store refstore.Store, manifest runmanifest.Manifest, files map[string][]byte) {
++	t.Helper()
++	w := runmanifest.Writer{Store: store}
++	if _, err := w.Write(context.Background(), manifest, files, runmanifest.WriteOptions{}); err != nil {
++		t.Fatalf("gcWriteRun %s: %v", manifest.RunID, err)
++	}
++}
++
++func gcWriteEval(t *testing.T, store refstore.Store, result eval.EvalResult) {
++	t.Helper()
++	w := eval.Writer{Store: store}
++	if _, err := w.Write(context.Background(), result, eval.WriteOptions{}); err != nil {
++		t.Fatalf("gcWriteEval %s: %v", result.EvalID, err)
++	}
++}
++
++func gcRubricEval(evalID, targetRunID, targetStage string, targetArtifact runmanifest.ArtifactRef) eval.EvalResult {
++	val := 8.0
++	max := 10.0
++	return eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            evalID,
++		Method:            "rubric",
++		Score:             eval.Score{Kind: "rubric", Value: &val, Max: &max},
++		Rubric:            &eval.RubricRef{Path: "rubric.md", Version: "v1"},
++		Targets: []eval.ArtifactSource{{
++			RunID:    targetRunID,
++			Stage:    targetStage,
++			Commit:   strings.Repeat("b", 40),
++			Artifact: targetArtifact.Artifact,
++		}},
++		Context: []eval.ArtifactSource{},
++		Created: time.Now().UTC(),
++	}
++}
++
++// executeGC runs the gc command using an injectable gcRunner backed by a real store.
++func executeGC(store refstore.Store, args ...string) (string, string, error) {
++	var out, errOut bytes.Buffer
++	runner := &gcRunner{store: store, stdout: &out, stderr: &errOut}
++	cmd := buildGCCommand(&out, &errOut, runner)
++	cmd.SetArgs(args)
++	err := cmd.Execute()
++	return out.String(), errOut.String(), err
++}
++
++// ---------------------------------------------------------------------------
++// Registration and --help
++// ---------------------------------------------------------------------------
++
++func TestGCCommandIsRegistered(t *testing.T) {
++	stdout, stderr, err := execute("gc", "--help")
++	if err != nil {
++		t.Fatalf("gc --help returned error: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "gc") {
++		t.Fatalf("gc --help output does not mention 'gc':\n%s", stdout)
++	}
++}
++
++func TestGCHelpMentionsPruneAndMaxSize(t *testing.T) {
++	stdout, stderr, err := execute("gc", "--help")
++	if err != nil {
++		t.Fatalf("gc --help: %v\nstderr: %s", err, stderr)
++	}
++	for _, flag := range []string{"--prune", "--max-size"} {
++		if !strings.Contains(stdout, flag) {
++			t.Fatalf("gc --help does not mention %q:\n%s", flag, stdout)
++		}
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Report mode (no --prune)
++// ---------------------------------------------------------------------------
++
++func TestGCReportDefaultNoDelete(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	outRef, outBytes := gcContentRef("output", []byte("some content here"))
++	gcWriteRun(t, store, gcMakeManifest("run-leaf", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	out, stderr, err := executeGC(store)
++	if err != nil {
++		t.Fatalf("gc report returned error: %v\nstderr: %s", err, stderr)
++	}
++	// Ref must still exist — report mode never deletes
++	if _, resolveErr := store.Resolve(context.Background(), "refs/etude/runs/run-leaf"); resolveErr != nil {
++		t.Fatalf("run-leaf was deleted by report mode: %v", resolveErr)
++	}
++	if !strings.Contains(out, "TOTAL") {
++		t.Fatalf("expected TOTAL in report output:\n%s", out)
++	}
++	if !strings.Contains(out, "pre-dedup") {
++		t.Fatalf("expected 'pre-dedup' label in report output:\n%s", out)
++	}
++}
++
++func TestGCReportTotalBytesDisplayed(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	content := []byte("exactly 17 bytes!") // 17 bytes
++	outRef, outBytes := gcContentRef("output", content)
++	gcWriteRun(t, store, gcMakeManifest("run-1", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	out, _, err := executeGC(store)
++	if err != nil {
++		t.Fatalf("gc report: %v", err)
++	}
++	if !strings.Contains(out, "17") {
++		t.Fatalf("expected 17 in report output:\n%s", out)
++	}
++}
++
++func TestGCReportOversizedSectionPresentWithMaxSize(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	bigContent := []byte("this is bigger than ten bytes")
++	outRef, outBytes := gcContentRef("output", bigContent)
++	gcWriteRun(t, store, gcMakeManifest("big-run", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	out, _, err := executeGC(store, "--max-size", "10")
++	if err != nil {
++		t.Fatalf("gc --max-size 10: %v", err)
++	}
++	if !strings.Contains(out, "OVERSIZED") {
++		t.Fatalf("expected OVERSIZED section with --max-size:\n%s", out)
++	}
++	if !strings.Contains(out, "big-run") {
++		t.Fatalf("expected big-run in OVERSIZED section:\n%s", out)
++	}
++}
++
++func TestGCReportOversizedSectionAbsentWithoutMaxSize(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	bigContent := []byte("this is much bigger than ten bytes here")
++	outRef, outBytes := gcContentRef("output", bigContent)
++	gcWriteRun(t, store, gcMakeManifest("big-run", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	out, _, err := executeGC(store) // no --max-size
++	if err != nil {
++		t.Fatalf("gc report: %v", err)
++	}
++	if strings.Contains(out, "OVERSIZED") {
++		t.Fatalf("OVERSIZED section should be absent without --max-size:\n%s", out)
++	}
++}
++
++func TestGCReportExternalListsPointers(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	pRef, pBytes := gcPointerRef("output", "s3://bucket/object.bin")
++	gcWriteRun(t, store, gcMakeManifest("ptr-run", []runmanifest.Stage{gcMakeStage("gen", pRef, nil)}), map[string][]byte{pRef.Path: pBytes})
++
++	out, _, err := executeGC(store)
++	if err != nil {
++		t.Fatalf("gc report: %v", err)
++	}
++	if !strings.Contains(out, "EXTERNAL") {
++		t.Fatalf("expected EXTERNAL section:\n%s", out)
++	}
++	if !strings.Contains(out, "s3://bucket/object.bin") {
++		t.Fatalf("expected pointer URI in EXTERNAL section:\n%s", out)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Prune mode (--prune)
++// ---------------------------------------------------------------------------
++
++func TestGCPruneNoArgsError(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	_, _, err := executeGC(store, "--prune")
++	if err == nil {
++		t.Fatal("gc --prune with no args should return error")
++	}
++	if !strings.Contains(err.Error(), "--prune requires one or more run ids") {
++		t.Fatalf("error = %q, want '--prune requires one or more run ids'", err.Error())
++	}
++}
++
++func TestGCPruneLeafRunDeleted(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	outRef, outBytes := gcContentRef("output", []byte("run-1 content"))
++	gcWriteRun(t, store, gcMakeManifest("run-1", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	out, _, err := executeGC(store, "--prune", "run-1")
++	if err != nil {
++		t.Fatalf("gc --prune run-1: %v", err)
++	}
++	if !strings.Contains(out, "pruned run-1") {
++		t.Fatalf("expected 'pruned run-1' in output:\n%s", out)
++	}
++	if _, resolveErr := store.Resolve(context.Background(), "refs/etude/runs/run-1"); resolveErr == nil {
++		t.Fatal("run-1 should be deleted after prune")
++	}
++}
++
++func TestGCPrunePinnedRunRefusedNonZeroExit(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	outRef, outBytes := gcContentRef("output", []byte("pinned content"))
++	gcWriteRun(t, store, gcMakeManifest("pinned-run", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++	gcWriteEval(t, store, gcRubricEval("eval-1", "pinned-run", "gen", outRef))
++
++	_, errStr, err := executeGC(store, "--prune", "pinned-run")
++	if err == nil {
++		t.Fatal("gc --prune of pinned run should exit non-zero")
++	}
++	if !strings.Contains(errStr, "refused") {
++		t.Fatalf("expected 'refused' in stderr:\n%s", errStr)
++	}
++	// ref must survive
++	if _, resolveErr := store.Resolve(context.Background(), "refs/etude/runs/pinned-run"); resolveErr != nil {
++		t.Fatalf("pinned-run should survive refusal: %v", resolveErr)
++	}
++}
++
++func TestGCPruneUnknownRunNonZeroExit(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	_, errStr, err := executeGC(store, "--prune", "ghost-run")
++	if err == nil {
++		t.Fatal("gc --prune of unknown run should exit non-zero")
++	}
++	if !strings.Contains(errStr, "refused") {
++		t.Fatalf("expected 'refused' in stderr:\n%s", errStr)
++	}
++}
++
++func TestGCPruneMixedBatchPrunesEligibleRefusesPinned(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	outRefLeaf, outBytesLeaf := gcContentRef("output", []byte("leaf content"))
++	gcWriteRun(t, store, gcMakeManifest("leaf-run", []runmanifest.Stage{gcMakeStage("gen", outRefLeaf, nil)}), map[string][]byte{outRefLeaf.Path: outBytesLeaf})
++
++	outRefPinned, outBytesPinned := gcContentRef("output", []byte("pinned content"))
++	gcWriteRun(t, store, gcMakeManifest("pinned-run", []runmanifest.Stage{gcMakeStage("gen", outRefPinned, nil)}), map[string][]byte{outRefPinned.Path: outBytesPinned})
++	gcWriteEval(t, store, gcRubricEval("eval-1", "pinned-run", "gen", outRefPinned))
++
++	out, errStr, err := executeGC(store, "--prune", "leaf-run", "pinned-run", "ghost-run")
++	// Must exit non-zero (refusals)
++	if err == nil {
++		t.Fatal("gc --prune mixed batch should exit non-zero when some are refused")
++	}
++	// leaf-run pruned
++	if !strings.Contains(out, "pruned leaf-run") {
++		t.Fatalf("expected 'pruned leaf-run' in output:\n%s", out)
++	}
++	// refusals in stderr
++	if !strings.Contains(errStr, "refused") {
++		t.Fatalf("expected 'refused' in stderr:\n%s", errStr)
++	}
++	// leaf-run deleted, pinned-run alive
++	if _, resolveErr := store.Resolve(context.Background(), "refs/etude/runs/leaf-run"); resolveErr == nil {
++		t.Fatal("leaf-run should be deleted")
++	}
++	if _, resolveErr := store.Resolve(context.Background(), "refs/etude/runs/pinned-run"); resolveErr != nil {
++		t.Fatalf("pinned-run should survive: %v", resolveErr)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// validateCLIIdentifier (gc package-level) used in gc
++// ---------------------------------------------------------------------------
++
++// TestGCCollectOptionsZeroMaxSizeNoOversized ensures MaxSize=0 never reports oversized.
++func TestGCCollectOptionsZeroMaxSizeNoOversized(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++
++	outRef, outBytes := gcContentRef("output", []byte("huge content that should not trigger oversized report"))
++	gcWriteRun(t, store, gcMakeManifest("big-run", []runmanifest.Stage{gcMakeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	rpt, err := gc.Collect(context.Background(), store, gc.CollectOptions{MaxSize: 0})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if len(rpt.Oversized) != 0 {
++		t.Fatalf("Oversized should be empty when MaxSize=0, got %v", rpt.Oversized)
++	}
++}
+diff --git a/internal/cli/root.go b/internal/cli/root.go
+index 87d162e..5930e53 100644
+--- a/internal/cli/root.go
++++ b/internal/cli/root.go
+@@ -35,6 +35,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+ 	cmd.AddCommand(newBenchCommand(out, errOut))
+ 	cmd.AddCommand(newCaptureCommand(out, errOut))
++	cmd.AddCommand(newGCCommand(out, errOut))
+ 	cmd.AddCommand(newInitCommand(out, errOut))
+ 	cmd.AddCommand(newReplayCommand(out, errOut))
+ 	cmd.AddCommand(newRunCommand(out, errOut))
+diff --git a/internal/gc/gc.go b/internal/gc/gc.go
+new file mode 100644
+index 0000000..e77b7fa
+--- /dev/null
++++ b/internal/gc/gc.go
+@@ -0,0 +1,288 @@
++package gc
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"strings"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++const (
++	runsPrefix  = "refs/etude/runs"
++	evalsPrefix = "refs/etude/evals"
++	runsNS      = "refs/etude/runs/"
++)
++
++// CollectOptions configures a Collect call.
++type CollectOptions struct {
++	// MaxSize, when positive, enables the OVERSIZED section: runs whose total
++	// content-artifact bytes exceed MaxSize are reported.
++	MaxSize int64
++}
++
++// RunSummary holds per-run totals and pointer-artifact info.
++type RunSummary struct {
++	RunID       string
++	ContentSize int64
++	Pointers    []PointerInfo
++}
++
++// PointerInfo records one pointer artifact for a run.
++type PointerInfo struct {
++	Stage    string
++	Role     string
++	Artifact string
++	URI      string
++}
++
++// Report is the output of Collect: totals, optional oversized list, and
++// pointer-artifact list for the EXTERNAL section.
++type Report struct {
++	RunCount   int
++	EvalCount  int
++	TotalBytes int64
++	Oversized  []RunSummary // only populated when CollectOptions.MaxSize > 0
++	External   []RunSummary // runs with at least one pointer artifact
++}
++
++// RefusedRun records a single refusal from Prune.
++type RefusedRun struct {
++	RunID  string
++	Reason string
++}
++
++// BuildPinSet walks all run and eval refs and returns the set of run IDs that
++// must not be deleted: every run ID referenced by an eval ArtifactSource (Targets
++// or Context) and every run ID in a stage's ReplayOf link. A parse error on any
++// document is returned immediately (naming the ref) so gc is never under-reporting.
++func BuildPinSet(ctx context.Context, store refstore.Store) (map[string]struct{}, error) {
++	pins := make(map[string]struct{})
++
++	runRefs, err := store.List(ctx, runsPrefix)
++	if err != nil {
++		return nil, fmt.Errorf("list run refs: %w", err)
++	}
++	for _, ref := range runRefs {
++		manifestBytes, err := store.ReadFile(ctx, ref, "manifest.json")
++		if err != nil {
++			return nil, fmt.Errorf("read manifest for %s: %w", ref, err)
++		}
++		manifest, err := runmanifest.ParseJSON(manifestBytes)
++		if err != nil {
++			return nil, fmt.Errorf("parse manifest for %s: %w", ref, err)
++		}
++		for _, stage := range manifest.Stages {
++			if stage.ReplayOf != nil {
++				pins[stage.ReplayOf.RunID] = struct{}{}
++			}
++		}
++	}
++
++	evalRefs, err := store.List(ctx, evalsPrefix)
++	if err != nil {
++		return nil, fmt.Errorf("list eval refs: %w", err)
++	}
++	for _, ref := range evalRefs {
++		evalBytes, err := store.ReadFile(ctx, ref, "eval_result.json")
++		if err != nil {
++			return nil, fmt.Errorf("read eval_result.json for %s: %w", ref, err)
++		}
++		result, err := eval.ParseJSON(evalBytes)
++		if err != nil {
++			return nil, fmt.Errorf("parse eval_result.json for %s: %w", ref, err)
++		}
++		for _, src := range result.Targets {
++			pins[src.RunID] = struct{}{}
++		}
++		for _, src := range result.Context {
++			pins[src.RunID] = struct{}{}
++		}
++	}
++
++	return pins, nil
++}
++
++// Collect builds a Report by walking all run and eval refs. It sums content-
++// artifact bytes, counts refs, identifies oversized runs (when opts.MaxSize > 0),
++// and lists pointer artifacts (EXTERNAL section).
++func Collect(ctx context.Context, store refstore.Store, opts CollectOptions) (Report, error) {
++	runRefs, err := store.List(ctx, runsPrefix)
++	if err != nil {
++		return Report{}, fmt.Errorf("list run refs: %w", err)
++	}
++	evalRefs, err := store.List(ctx, evalsPrefix)
++	if err != nil {
++		return Report{}, fmt.Errorf("list eval refs: %w", err)
++	}
++
++	report := Report{
++		RunCount:  len(runRefs),
++		EvalCount: len(evalRefs),
++	}
++
++	for _, ref := range runRefs {
++		manifestBytes, err := store.ReadFile(ctx, ref, "manifest.json")
++		if err != nil {
++			return Report{}, fmt.Errorf("read manifest for %s: %w", ref, err)
++		}
++		manifest, err := runmanifest.ParseJSON(manifestBytes)
++		if err != nil {
++			return Report{}, fmt.Errorf("parse manifest for %s: %w", ref, err)
++		}
++
++		summary := runSummaryFromManifest(ctx, store, ref, manifest)
++		report.TotalBytes += summary.ContentSize
++
++		if opts.MaxSize > 0 && summary.ContentSize > opts.MaxSize {
++			report.Oversized = append(report.Oversized, summary)
++		}
++		if len(summary.Pointers) > 0 {
++			report.External = append(report.External, summary)
++		}
++	}
++
++	return report, nil
++}
++
++// runSummaryFromManifest builds a RunSummary for a single run ref. It reads
++// pointer artifact files to extract URIs for the EXTERNAL section. Any pointer
++// file read error is tolerated: the URI is reported as empty rather than aborting.
++func runSummaryFromManifest(ctx context.Context, store refstore.Store, ref string, manifest runmanifest.Manifest) RunSummary {
++	summary := RunSummary{RunID: manifest.RunID}
++	seen := make(map[string]bool) // deduplicate by artifact SHA so shared blobs are counted once
++
++	for _, stage := range manifest.Stages {
++		collectArtifact(ctx, store, ref, stage.Name, stage.Output, &summary, seen)
++		for _, inp := range stage.Inputs {
++			collectArtifact(ctx, store, ref, stage.Name, inp, &summary, seen)
++		}
++	}
++
++	return summary
++}
++
++func collectArtifact(ctx context.Context, store refstore.Store, ref, stageName string, a runmanifest.ArtifactRef, summary *RunSummary, seen map[string]bool) {
++	if seen[a.Artifact] {
++		return
++	}
++	seen[a.Artifact] = true
++
++	switch a.Storage {
++	case artifactstore.StorageContent:
++		summary.ContentSize += a.Size
++	case artifactstore.StoragePointer:
++		uri := readPointerURI(ctx, store, ref, a.Path)
++		summary.Pointers = append(summary.Pointers, PointerInfo{
++			Stage:    stageName,
++			Role:     a.Role,
++			Artifact: a.Artifact,
++			URI:      uri,
++		})
++	}
++}
++
++// readPointerURI reads the pointer JSON file from the store and returns the URI.
++// Returns empty string on any error rather than failing the whole report.
++func readPointerURI(ctx context.Context, store refstore.Store, ref, path string) string {
++	data, err := store.ReadFile(ctx, ref, path)
++	if err != nil {
++		return ""
++	}
++	var rec struct {
++		URI string `json:"uri"`
++	}
++	if err := json.Unmarshal(data, &rec); err != nil {
++		return ""
++	}
++	return rec.URI
++}
++
++// Prune deletes the named run refs that are not pinned by the current pin-set.
++// It recomputes the pin-set immediately before deletion to guard against races.
++// For each named run:
++//   - If the ref does not exist: refused with reason "not found".
++//   - If the run ID is pinned:   refused with a descriptive reason.
++//   - Otherwise: the ref is deleted and the ID is added to pruned.
++//
++// Prune returns all three lists. Eligible runs are deleted even when some are
++// refused; callers should exit non-zero when any refusals or "not found" occur.
++func Prune(ctx context.Context, store refstore.Store, runIDs []string) (pruned []string, refused []RefusedRun, err error) {
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		return nil, nil, fmt.Errorf("build pin set: %w", err)
++	}
++
++	for _, id := range runIDs {
++		ref := runsNS + id
++		if _, resolveErr := store.Resolve(ctx, ref); resolveErr != nil {
++			refused = append(refused, RefusedRun{RunID: id, Reason: "not found"})
++			continue
++		}
++		if _, pinned := pins[id]; pinned {
++			refused = append(refused, RefusedRun{RunID: id, Reason: pinnedReason(ctx, store, id)})
++			continue
++		}
++		if deleteErr := store.DeleteRef(ctx, ref); deleteErr != nil {
++			return pruned, refused, fmt.Errorf("delete ref %s: %w", ref, deleteErr)
++		}
++		pruned = append(pruned, id)
++	}
++
++	return pruned, refused, nil
++}
++
++// pinnedReason returns a human-readable string explaining why a run is pinned,
++// inspecting the live eval and run refs. Falls back to a generic message.
++func pinnedReason(ctx context.Context, store refstore.Store, runID string) string {
++	evalRefs, err := store.List(ctx, evalsPrefix)
++	if err == nil {
++		for _, ref := range evalRefs {
++			evalBytes, err := store.ReadFile(ctx, ref, "eval_result.json")
++			if err != nil {
++				continue
++			}
++			result, err := eval.ParseJSON(evalBytes)
++			if err != nil {
++				continue
++			}
++			for _, src := range result.Targets {
++				if src.RunID == runID {
++					evalID := strings.TrimPrefix(ref, "refs/etude/evals/")
++					return fmt.Sprintf("pinned by eval %s (target)", evalID)
++				}
++			}
++			for _, src := range result.Context {
++				if src.RunID == runID {
++					evalID := strings.TrimPrefix(ref, "refs/etude/evals/")
++					return fmt.Sprintf("pinned by eval %s (context)", evalID)
++				}
++			}
++		}
++	}
++
++	runRefs, err := store.List(ctx, runsPrefix)
++	if err == nil {
++		for _, ref := range runRefs {
++			manifestBytes, err := store.ReadFile(ctx, ref, "manifest.json")
++			if err != nil {
++				continue
++			}
++			manifest, err := runmanifest.ParseJSON(manifestBytes)
++			if err != nil {
++				continue
++			}
++			for _, stage := range manifest.Stages {
++				if stage.ReplayOf != nil && stage.ReplayOf.RunID == runID {
++					return fmt.Sprintf("pinned by replay in run %s (stage %s)", manifest.RunID, stage.Name)
++				}
++			}
++		}
++	}
++
++	return "pinned by eval or replay"
++}
+diff --git a/internal/gc/gc_test.go b/internal/gc/gc_test.go
+new file mode 100644
+index 0000000..358c2d4
+--- /dev/null
++++ b/internal/gc/gc_test.go
+@@ -0,0 +1,580 @@
++package gc
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"os/exec"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Repo / manifest harness
++// ---------------------------------------------------------------------------
++
++func initRepo(t *testing.T) string {
++	t.Helper()
++	dir := t.TempDir()
++	run := func(args ...string) {
++		t.Helper()
++		cmd := exec.Command("git", args...)
++		cmd.Dir = dir
++		if out, err := cmd.CombinedOutput(); err != nil {
++			t.Fatalf("git %v: %v\n%s", args, err, out)
++		}
++	}
++	run("init")
++	run("config", "user.name", "Test User")
++	run("config", "user.email", "test@example.invalid")
++	return dir
++}
++
++func makeManifest(runID string, stages []runmanifest.Stage) runmanifest.Manifest {
++	return runmanifest.Manifest{
++		RunID:           runID,
++		Workflow:        "test-workflow",
++		WorkflowVersion: "v1",
++		Created:         time.Now().UTC(),
++		Refs:            map[string]string{"pr": "1"},
++		Stages:          stages,
++	}
++}
++
++func contentRef(role string, content []byte) (runmanifest.ArtifactRef, []byte) {
++	sum := sha256.Sum256(content)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/sha256/" + sha[:2] + "/" + sha
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StorageContent,
++		Size:      int64(len(content)),
++	}, content
++}
++
++// pointerRef builds a pointer ArtifactRef and a fake pointer JSON file.
++func pointerRef(role, uri string) (runmanifest.ArtifactRef, []byte) {
++	payload, _ := json.Marshal(map[string]any{"version": 1, "uri": uri})
++	sum := sha256.Sum256(payload)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/pointers/sha256/" + sha[:2] + "/" + sha + ".json"
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StoragePointer,
++		Size:      0,
++	}, payload
++}
++
++func makeStage(name string, output runmanifest.ArtifactRef, inputs []runmanifest.ArtifactRef) runmanifest.Stage {
++	return runmanifest.Stage{
++		Name:       name,
++		ProducedBy: "test-agent",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Inputs:     inputs,
++		Output:     output,
++	}
++}
++
++func writeRun(t *testing.T, store refstore.Store, manifest runmanifest.Manifest, files map[string][]byte) {
++	t.Helper()
++	w := runmanifest.Writer{Store: store}
++	if _, err := w.Write(context.Background(), manifest, files, runmanifest.WriteOptions{}); err != nil {
++		t.Fatalf("write run %s: %v", manifest.RunID, err)
++	}
++}
++
++func writeEval(t *testing.T, store refstore.Store, result eval.EvalResult) {
++	t.Helper()
++	w := eval.Writer{Store: store}
++	if _, err := w.Write(context.Background(), result, eval.WriteOptions{}); err != nil {
++		t.Fatalf("write eval %s: %v", result.EvalID, err)
++	}
++}
++
++func artifactSource(runID, stage string, artifact runmanifest.ArtifactRef) eval.ArtifactSource {
++	return eval.ArtifactSource{
++		RunID:    runID,
++		Stage:    stage,
++		Commit:   strings.Repeat("b", 40),
++		Artifact: artifact.Artifact,
++	}
++}
++
++func rubricEval(evalID string, target eval.ArtifactSource) eval.EvalResult {
++	val := 8.0
++	max := 10.0
++	return eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            evalID,
++		Method:            "rubric",
++		Score: eval.Score{
++			Kind:  "rubric",
++			Value: &val,
++			Max:   &max,
++		},
++		Rubric:  &eval.RubricRef{Path: "rubric.md", Version: "v1"},
++		Targets: []eval.ArtifactSource{target},
++		Context: []eval.ArtifactSource{},
++		Created: time.Now().UTC(),
++	}
++}
++
++// ---------------------------------------------------------------------------
++// BuildPinSet tests
++// ---------------------------------------------------------------------------
++
++func TestBuildPinSetEmptyStore(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		t.Fatalf("BuildPinSet: %v", err)
++	}
++	if len(pins) != 0 {
++		t.Fatalf("expected empty pin set, got %v", pins)
++	}
++}
++
++func TestBuildPinSetEvalTargetPinsRun(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef, outBytes := contentRef("output", []byte("run-a output"))
++	writeRun(t, store, makeManifest("run-a", []runmanifest.Stage{makeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	target := artifactSource("run-a", "gen", outRef)
++	writeEval(t, store, rubricEval("eval-1", target))
++
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		t.Fatalf("BuildPinSet: %v", err)
++	}
++	if _, ok := pins["run-a"]; !ok {
++		t.Fatalf("expected run-a in pin set, got %v", pins)
++	}
++}
++
++func TestBuildPinSetEvalContextPinsRun(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRefA, outBytesA := contentRef("output", []byte("run-a output"))
++	outRefB, outBytesB := contentRef("output", []byte("run-b output"))
++	writeRun(t, store, makeManifest("run-a", []runmanifest.Stage{makeStage("gen", outRefA, nil)}), map[string][]byte{outRefA.Path: outBytesA})
++	writeRun(t, store, makeManifest("run-b", []runmanifest.Stage{makeStage("gen", outRefB, nil)}), map[string][]byte{outRefB.Path: outBytesB})
++
++	// run-a = target, run-b = context
++	target := artifactSource("run-a", "gen", outRefA)
++	ctxSrc := artifactSource("run-b", "gen", outRefB)
++	val := 8.0
++	max := 10.0
++	result := eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            "eval-ctx-1",
++		Method:            "rubric",
++		Score:             eval.Score{Kind: "rubric", Value: &val, Max: &max},
++		Rubric:            &eval.RubricRef{Path: "rubric.md", Version: "v1"},
++		Targets:           []eval.ArtifactSource{target},
++		Context:           []eval.ArtifactSource{ctxSrc},
++		Created:           time.Now().UTC(),
++	}
++	writeEval(t, store, result)
++
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		t.Fatalf("BuildPinSet: %v", err)
++	}
++	if _, ok := pins["run-a"]; !ok {
++		t.Fatalf("expected run-a (target) in pin set, got %v", pins)
++	}
++	if _, ok := pins["run-b"]; !ok {
++		t.Fatalf("expected run-b (context) in pin set, got %v", pins)
++	}
++}
++
++func TestBuildPinSetReplayOfPinsSourceRun(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRefSrc, outBytesSrc := contentRef("output", []byte("source output"))
++	writeRun(t, store, makeManifest("source-run", []runmanifest.Stage{makeStage("gen", outRefSrc, nil)}), map[string][]byte{outRefSrc.Path: outBytesSrc})
++
++	srcCommit := strings.Repeat("c", 40)
++	outRefReplay, outBytesReplay := contentRef("output", []byte("replay output"))
++	replayStage := runmanifest.Stage{
++		Name:       "gen",
++		ProducedBy: "replay",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Inputs:     nil,
++		Output:     outRefReplay,
++		ReplayOf:   &runmanifest.ReplayLink{RunID: "source-run", Stage: "gen", Commit: srcCommit},
++	}
++	writeRun(t, store, makeManifest("replay-run", []runmanifest.Stage{replayStage}), map[string][]byte{outRefReplay.Path: outBytesReplay})
++
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		t.Fatalf("BuildPinSet: %v", err)
++	}
++	if _, ok := pins["source-run"]; !ok {
++		t.Fatalf("expected source-run in pin set, got %v", pins)
++	}
++	if _, ok := pins["replay-run"]; ok {
++		t.Fatalf("did not expect replay-run in pin set, got %v", pins)
++	}
++}
++
++func TestBuildPinSetPinnedTwiceAppearsOnce(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef, outBytes := contentRef("output", []byte("run-a output"))
++	writeRun(t, store, makeManifest("run-a", []runmanifest.Stage{makeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	// Two evals both targeting run-a
++	target := artifactSource("run-a", "gen", outRef)
++	writeEval(t, store, rubricEval("eval-1", target))
++
++	// Second eval with different output to get a different artifact
++	outRef2, outBytes2 := contentRef("output", []byte("second output"))
++	writeRun(t, store, makeManifest("run-b", []runmanifest.Stage{makeStage("gen", outRef2, nil)}), map[string][]byte{outRef2.Path: outBytes2})
++	target2 := artifactSource("run-a", "gen", outRef) // still run-a
++	ctxSrc2 := artifactSource("run-b", "gen", outRef2)
++	val := 8.0
++	max := 10.0
++	result2 := eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            "eval-2",
++		Method:            "rubric",
++		Score:             eval.Score{Kind: "rubric", Value: &val, Max: &max},
++		Rubric:            &eval.RubricRef{Path: "rubric.md", Version: "v1"},
++		Targets:           []eval.ArtifactSource{target2},
++		Context:           []eval.ArtifactSource{ctxSrc2},
++		Created:           time.Now().UTC(),
++	}
++	writeEval(t, store, result2)
++
++	pins, err := BuildPinSet(ctx, store)
++	if err != nil {
++		t.Fatalf("BuildPinSet: %v", err)
++	}
++	if _, ok := pins["run-a"]; !ok {
++		t.Fatalf("expected run-a in pin set (pinned twice)")
++	}
++	// Verify it is a single map entry, not duplicated (maps can't have duplicates)
++	count := 0
++	for id := range pins {
++		if id == "run-a" {
++			count++
++		}
++	}
++	if count != 1 {
++		t.Fatalf("run-a appears %d times in pin set, want 1", count)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Collect / Report tests
++// ---------------------------------------------------------------------------
++
++func TestCollectEmptyStore(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	report, err := Collect(ctx, store, CollectOptions{})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if report.RunCount != 0 || report.EvalCount != 0 || report.TotalBytes != 0 {
++		t.Fatalf("expected empty report, got %+v", report)
++	}
++	if len(report.Oversized) != 0 || len(report.External) != 0 {
++		t.Fatalf("expected no oversized/external entries, got %+v", report)
++	}
++}
++
++func TestCollectTotalBytesAccurate(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	content1 := []byte("hello content one")  // 17 bytes
++	content2 := []byte("hello content two!") // 18 bytes
++
++	outRef1, outBytes1 := contentRef("output", content1)
++	outRef2, outBytes2 := contentRef("output", content2)
++
++	writeRun(t, store, makeManifest("run-1", []runmanifest.Stage{makeStage("gen", outRef1, nil)}), map[string][]byte{outRef1.Path: outBytes1})
++	writeRun(t, store, makeManifest("run-2", []runmanifest.Stage{makeStage("gen", outRef2, nil)}), map[string][]byte{outRef2.Path: outBytes2})
++
++	report, err := Collect(ctx, store, CollectOptions{})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if report.RunCount != 2 {
++		t.Fatalf("RunCount = %d, want 2", report.RunCount)
++	}
++	wantTotal := int64(len(content1) + len(content2))
++	if report.TotalBytes != wantTotal {
++		t.Fatalf("TotalBytes = %d, want %d", report.TotalBytes, wantTotal)
++	}
++}
++
++func TestCollectOversizedBoundary(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	// run-big: 20 bytes (just over 15)
++	bigContent := []byte("exactly twenty byt") // 18 bytes
++	smallContent := []byte("fourteen bytes!")  // 15 bytes
++
++	outBig, outBigBytes := contentRef("output", bigContent)
++	outSmall, outSmallBytes := contentRef("output", smallContent)
++
++	writeRun(t, store, makeManifest("run-big", []runmanifest.Stage{makeStage("gen", outBig, nil)}), map[string][]byte{outBig.Path: outBigBytes})
++	writeRun(t, store, makeManifest("run-small", []runmanifest.Stage{makeStage("gen", outSmall, nil)}), map[string][]byte{outSmall.Path: outSmallBytes})
++
++	maxSize := int64(len(smallContent)) // = 15; run-big (18) > 15, run-small (15) is NOT over
++
++	report, err := Collect(ctx, store, CollectOptions{MaxSize: maxSize})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if len(report.Oversized) != 1 {
++		t.Fatalf("Oversized count = %d, want 1; report: %+v", len(report.Oversized), report)
++	}
++	if report.Oversized[0].RunID != "run-big" {
++		t.Fatalf("Oversized[0].RunID = %q, want run-big", report.Oversized[0].RunID)
++	}
++}
++
++func TestCollectOversizedAbsentWithoutFlag(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef, outBytes := contentRef("output", []byte("some content here"))
++	writeRun(t, store, makeManifest("run-1", []runmanifest.Stage{makeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	report, err := Collect(ctx, store, CollectOptions{}) // MaxSize=0
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if len(report.Oversized) != 0 {
++		t.Fatalf("Oversized should be empty when MaxSize=0, got %+v", report.Oversized)
++	}
++}
++
++func TestCollectExternalListsPointerArtifacts(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	pRef, pBytes := pointerRef("output", "s3://bucket/object.bin")
++	writeRun(t, store, makeManifest("run-ptr", []runmanifest.Stage{makeStage("gen", pRef, nil)}), map[string][]byte{pRef.Path: pBytes})
++
++	report, err := Collect(ctx, store, CollectOptions{})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if len(report.External) != 1 {
++		t.Fatalf("External count = %d, want 1; report: %+v", len(report.External), report)
++	}
++	ext := report.External[0]
++	if ext.RunID != "run-ptr" {
++		t.Fatalf("External[0].RunID = %q, want run-ptr", ext.RunID)
++	}
++	if len(ext.Pointers) != 1 || ext.Pointers[0].URI != "s3://bucket/object.bin" {
++		t.Fatalf("External[0].Pointers = %+v", ext.Pointers)
++	}
++}
++
++func TestCollectEvalCountIncluded(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef, outBytes := contentRef("output", []byte("run-a output"))
++	writeRun(t, store, makeManifest("run-a", []runmanifest.Stage{makeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	target := artifactSource("run-a", "gen", outRef)
++	writeEval(t, store, rubricEval("eval-1", target))
++
++	report, err := Collect(ctx, store, CollectOptions{})
++	if err != nil {
++		t.Fatalf("Collect: %v", err)
++	}
++	if report.EvalCount != 1 {
++		t.Fatalf("EvalCount = %d, want 1", report.EvalCount)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Prune tests
++// ---------------------------------------------------------------------------
++
++func TestPruneLeafRunDeleted(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef1, outBytes1 := contentRef("output", []byte("run-1 content"))
++	outRef2, outBytes2 := contentRef("output", []byte("run-2 content"))
++	writeRun(t, store, makeManifest("run-1", []runmanifest.Stage{makeStage("gen", outRef1, nil)}), map[string][]byte{outRef1.Path: outBytes1})
++	writeRun(t, store, makeManifest("run-2", []runmanifest.Stage{makeStage("gen", outRef2, nil)}), map[string][]byte{outRef2.Path: outBytes2})
++
++	pruned, refused, err := Prune(ctx, store, []string{"run-1"})
++	if err != nil {
++		t.Fatalf("Prune: %v", err)
++	}
++	if len(refused) != 0 {
++		t.Fatalf("expected no refusals, got %v", refused)
++	}
++	if len(pruned) != 1 || pruned[0] != "run-1" {
++		t.Fatalf("pruned = %v, want [run-1]", pruned)
++	}
++
++	// run-1 ref must be gone
++	if _, err := store.Resolve(ctx, "refs/etude/runs/run-1"); !errors.Is(err, refstore.ErrNotFound) {
++		t.Fatalf("Resolve run-1 after prune: %v (want ErrNotFound)", err)
++	}
++	// run-2 must survive
++	if _, err := store.Resolve(ctx, "refs/etude/runs/run-2"); err != nil {
++		t.Fatalf("run-2 should survive prune: %v", err)
++	}
++}
++
++func TestPruneEvalPinnedRunRefused(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRef, outBytes := contentRef("output", []byte("pinned content"))
++	writeRun(t, store, makeManifest("pinned-run", []runmanifest.Stage{makeStage("gen", outRef, nil)}), map[string][]byte{outRef.Path: outBytes})
++
++	target := artifactSource("pinned-run", "gen", outRef)
++	writeEval(t, store, rubricEval("eval-1", target))
++
++	pruned, refused, err := Prune(ctx, store, []string{"pinned-run"})
++	if err != nil {
++		t.Fatalf("Prune: %v", err)
++	}
++	if len(pruned) != 0 {
++		t.Fatalf("expected no pruned, got %v", pruned)
++	}
++	if len(refused) != 1 || refused[0].RunID != "pinned-run" {
++		t.Fatalf("refused = %v, want [{pinned-run ...}]", refused)
++	}
++	if !strings.Contains(refused[0].Reason, "pinned") {
++		t.Fatalf("refused reason = %q, want to contain 'pinned'", refused[0].Reason)
++	}
++
++	// ref must still exist
++	if _, err := store.Resolve(ctx, "refs/etude/runs/pinned-run"); err != nil {
++		t.Fatalf("pinned run must survive refusal: %v", err)
++	}
++}
++
++func TestPruneReplaySourceRefused(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	outRefSrc, outBytesSrc := contentRef("output", []byte("source output"))
++	writeRun(t, store, makeManifest("source-run", []runmanifest.Stage{makeStage("gen", outRefSrc, nil)}), map[string][]byte{outRefSrc.Path: outBytesSrc})
++
++	srcCommit := strings.Repeat("c", 40)
++	outRefReplay, outBytesReplay := contentRef("output", []byte("replay output"))
++	replayStage := runmanifest.Stage{
++		Name:       "gen",
++		ProducedBy: "replay",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Output:     outRefReplay,
++		ReplayOf:   &runmanifest.ReplayLink{RunID: "source-run", Stage: "gen", Commit: srcCommit},
++	}
++	writeRun(t, store, makeManifest("replay-run", []runmanifest.Stage{replayStage}), map[string][]byte{outRefReplay.Path: outBytesReplay})
++
++	pruned, refused, err := Prune(ctx, store, []string{"source-run"})
++	if err != nil {
++		t.Fatalf("Prune: %v", err)
++	}
++	if len(pruned) != 0 {
++		t.Fatalf("expected no pruned, got %v", pruned)
++	}
++	if len(refused) != 1 || refused[0].RunID != "source-run" {
++		t.Fatalf("refused = %v, want [{source-run ...}]", refused)
++	}
++}
++
++func TestPruneUnknownIDRefused(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	pruned, refused, err := Prune(ctx, store, []string{"no-such-run"})
++	if err != nil {
++		t.Fatalf("Prune: %v", err)
++	}
++	if len(pruned) != 0 {
++		t.Fatalf("expected no pruned, got %v", pruned)
++	}
++	if len(refused) != 1 || refused[0].RunID != "no-such-run" || refused[0].Reason != "not found" {
++		t.Fatalf("refused = %v, want [{no-such-run not found}]", refused)
++	}
++}
++
++func TestPruneMixedBatchPrunesEligibleRefusesPinned(t *testing.T) {
++	ctx := context.Background()
++	store := refstore.New(initRepo(t))
++
++	// leaf-run: prunable
++	outRefLeaf, outBytesLeaf := contentRef("output", []byte("leaf content"))
++	writeRun(t, store, makeManifest("leaf-run", []runmanifest.Stage{makeStage("gen", outRefLeaf, nil)}), map[string][]byte{outRefLeaf.Path: outBytesLeaf})
++
++	// pinned-run: pinned by eval
++	outRefPinned, outBytesPinned := contentRef("output", []byte("pinned content"))
++	writeRun(t, store, makeManifest("pinned-run", []runmanifest.Stage{makeStage("gen", outRefPinned, nil)}), map[string][]byte{outRefPinned.Path: outBytesPinned})
++	writeEval(t, store, rubricEval("eval-1", artifactSource("pinned-run", "gen", outRefPinned)))
++
++	pruned, refused, err := Prune(ctx, store, []string{"leaf-run", "pinned-run", "ghost-run"})
++	if err != nil {
++		t.Fatalf("Prune: %v", err)
++	}
++	if len(pruned) != 1 || pruned[0] != "leaf-run" {
++		t.Fatalf("pruned = %v, want [leaf-run]", pruned)
++	}
++	if len(refused) != 2 {
++		t.Fatalf("refused count = %d, want 2; got %v", len(refused), refused)
++	}
++
++	refusedIDs := map[string]string{}
++	for _, r := range refused {
++		refusedIDs[r.RunID] = r.Reason
++	}
++	if _, ok := refusedIDs["pinned-run"]; !ok {
++		t.Fatalf("expected pinned-run in refused: %v", refused)
++	}
++	if refusedIDs["ghost-run"] != "not found" {
++		t.Fatalf("ghost-run reason = %q, want 'not found'", refusedIDs["ghost-run"])
++	}
++
++	// leaf-run deleted, pinned-run survives
++	if _, err := store.Resolve(ctx, "refs/etude/runs/leaf-run"); !errors.Is(err, refstore.ErrNotFound) {
++		t.Fatalf("leaf-run should be deleted")
++	}
++	if _, err := store.Resolve(ctx, "refs/etude/runs/pinned-run"); err != nil {
++		t.Fatalf("pinned-run should survive: %v", err)
++	}
++}
+diff --git a/internal/refstore/store.go b/internal/refstore/store.go
+index 5850d03..1c339ae 100644
+--- a/internal/refstore/store.go
++++ b/internal/refstore/store.go
+@@ -272,6 +272,26 @@ func (s Store) ensureCommit(ctx context.Context, oid string) error {
+ 	return nil
+ }
+ 
++// DeleteRef deletes the named ref using git update-ref -d --no-deref.
++// It validates the ref namespace (refs/etude/runs or refs/etude/evals) and
++// rejects symbolic refs before issuing the delete, then errors if the ref
++// does not exist. Git objects are left for normal git gc.
++func (s Store) DeleteRef(ctx context.Context, ref string) error {
++	if err := s.validateRef(ctx, ref); err != nil {
++		return err
++	}
++	if err := s.rejectSymbolicRef(ctx, ref); err != nil {
++		return err
++	}
++	if _, err := s.Resolve(ctx, ref); err != nil {
++		return fmt.Errorf("%w: %s", ErrNotFound, ref)
++	}
++	if _, err := s.git(ctx, nil, nil, "update-ref", "-d", "--no-deref", ref); err != nil {
++		return fmt.Errorf("delete ref %s: %w", ref, err)
++	}
++	return nil
++}
++
+ func (s Store) validateRef(ctx context.Context, ref string) error {
+ 	if !(strings.HasPrefix(ref, runsNS) || strings.HasPrefix(ref, evalsNS)) {
+ 		return fmt.Errorf("%w: %s", ErrInvalidRef, ref)
+diff --git a/internal/refstore/store_test.go b/internal/refstore/store_test.go
+index 1e7edba..d3797db 100644
+--- a/internal/refstore/store_test.go
++++ b/internal/refstore/store_test.go
+@@ -686,6 +686,105 @@ func TestWriteCommitAndCASInSHA256Repo(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// DeleteRef tests
++// ---------------------------------------------------------------------------
++
++func TestDeleteRefDeletesExistingRunRef(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	if _, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{"manifest.json": []byte("{}")}, WriteOptions{}); err != nil {
++		t.Fatalf("WriteCommit returned error: %v", err)
++	}
++
++	if err := store.DeleteRef(ctx, "refs/etude/runs/run-1"); err != nil {
++		t.Fatalf("DeleteRef returned error: %v", err)
++	}
++
++	if _, err := store.Resolve(ctx, "refs/etude/runs/run-1"); !errors.Is(err, ErrNotFound) {
++		t.Fatalf("Resolve after DeleteRef = %v, want ErrNotFound", err)
++	}
++}
++
++func TestDeleteRefErrorsOnMissingRef(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	err := store.DeleteRef(ctx, "refs/etude/runs/nonexistent")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("DeleteRef missing ref = %v, want ErrNotFound", err)
++	}
++}
++
++func TestDeleteRefRejectsOutOfNamespaceRef(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	for _, ref := range []string{
++		"refs/heads/main",
++		"refs/etude/other/id",
++		"HEAD",
++	} {
++		err := store.DeleteRef(ctx, ref)
++		if !errors.Is(err, ErrInvalidRef) {
++			t.Fatalf("DeleteRef(%q) = %v, want ErrInvalidRef", ref, err)
++		}
++	}
++}
++
++func TestDeleteRefRejectsSymbolicRef(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	// Create a real ref to use as the symbolic ref target.
++	seed, err := store.WriteCommit(ctx, "refs/etude/evals/seed", map[string][]byte{"data": []byte("seed")}, WriteOptions{})
++	if err != nil {
++		t.Fatalf("WriteCommit seed returned error: %v", err)
++	}
++	git(t, repo, "update-ref", "refs/heads/main", seed)
++	git(t, repo, "symbolic-ref", "refs/etude/runs/symlink", "refs/heads/main")
++
++	err = store.DeleteRef(ctx, "refs/etude/runs/symlink")
++	if !errors.Is(err, ErrInvalidRef) {
++		t.Fatalf("DeleteRef symbolic ref = %v, want ErrInvalidRef", err)
++	}
++}
++
++func TestDeleteRefLeavesOtherRefsIntact(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	for _, ref := range []string{"refs/etude/runs/a", "refs/etude/runs/b", "refs/etude/runs/c"} {
++		if _, err := store.WriteCommit(ctx, ref, map[string][]byte{"manifest.json": []byte(ref)}, WriteOptions{}); err != nil {
++			t.Fatalf("WriteCommit(%s) returned error: %v", ref, err)
++		}
++	}
++
++	if err := store.DeleteRef(ctx, "refs/etude/runs/b"); err != nil {
++		t.Fatalf("DeleteRef returned error: %v", err)
++	}
++
++	refs, err := store.List(ctx, "refs/etude/runs")
++	if err != nil {
++		t.Fatalf("List returned error: %v", err)
++	}
++	want := []string{"refs/etude/runs/a", "refs/etude/runs/c"}
++	if len(refs) != len(want) {
++		t.Fatalf("refs = %#v, want %#v", refs, want)
++	}
++	for i, r := range refs {
++		if r != want[i] {
++			t.Fatalf("refs[%d] = %q, want %q", i, r, want[i])
++		}
++	}
++}
++
+ // TestMain handles the helper-process pattern for TestStdoutStderrSplit.
+ // When GO_WANT_HELPER_PROCESS=1 the binary acts as a fake git stub.
+ func TestMain(m *testing.M) {
