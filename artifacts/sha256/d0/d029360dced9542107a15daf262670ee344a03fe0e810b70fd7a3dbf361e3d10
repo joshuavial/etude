@@ -1,0 +1,4 @@
+# Verify — etude-gc-command (etude gc)
+Result: PASS. go test ./... green (10 packages; gc 17 tests, cli gc 13, refstore +5 DeleteRef); gofmt/vet/build clean.
+Coverage: DeleteRef (deletes existing ref; errors missing; rejects out-of-namespace refs/heads/main + HEAD + refs/etude/other; rejects symbolic); BuildPinSet (eval target+context, replay source, double-pin dedup, malformed→error); Collect/report (total bytes, oversized boundary just-over/just-under, external pointers, empty store); Prune (leaf deleted, eval-pinned refused, replay-source refused, unknown refused, mixed batch exits non-zero, no-args error). Opus mutation-verified all safety teeth.
+BUILT-BINARY MANUAL TEST (CLI bead, run in a THROWAWAY temp repo per capture-protocol): `etude gc` report (TOTAL logical bytes); `--max-size 50` OVERSIZED section; `--prune <leaf>` deleted (exit 0); `--prune ghost-run` refused not-found (exit 1); `--prune` no-args error (exit 1). All correct.
