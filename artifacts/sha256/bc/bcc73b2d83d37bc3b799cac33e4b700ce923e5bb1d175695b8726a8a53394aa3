@@ -1,0 +1,41 @@
+# Docs report — etude-n9b.2
+
+Documentation now matches the implemented checkout-read contract.
+
+ANCESTOR: `etude-n9b` (P1) delivers GitHub issue #16 while preserving the
+output-only default. MEASUREMENT: the feature changes what evidence a live gate
+seat is authorized to inspect, so the workflow switch, manifest audit field,
+trusted enforcement boundary, and temporary GH #14 restriction must be visible
+to workflow authors and run auditors.
+
+BLAST RADIUS: none: worktree and repo only.
+
+No new tests: this phase changes documentation only; the shipping behavior and
+regressions were exercised in the preceding verify phase.
+
+## Updated
+
+- `docs/run.md` documents `gate.read_checkout: true`, the output-only default,
+  gate-wide model-seat scope, checks-only false resolution, the dedicated
+  detached checkout, supervised-gate rejection, strict-reader compatibility,
+  manifest audit semantics, and the fail-closed gitlink boundary.
+- `docs/gates.md` documents that all live model seats now receive one shared
+  policy-bearing prompt, the exact authoritative-provenance/no-rederived-
+  arithmetic/falsification/BLOCK rule, the trusted prompt/harness boundary,
+  the dedicated pin, and `GateAttempt.read_checkout` semantics.
+
+The docs explicitly avoid claiming OS-level sandboxing. Read-only behavior is a
+policy for trusted configured seat harnesses; the dedicated checkout prevents
+stage and deterministic-check mutations from changing the seat's pinned code.
+
+## Checked, no change
+
+- `docs/replay.md`: stage replay behavior is unchanged. Forward replay reuses
+  the documented live gate path and recorded SHA, so duplicating the gate
+  access contract in the stage-replay guide would be misleading.
+- CLI reference: no CLI command or flag changed.
+
+## Known limitation
+
+GitHub issue #14 is still open. The docs say opted-in reads fail closed on an
+actual submodule gitlink; they do not present submodule reads as shipped support.
