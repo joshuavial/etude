@@ -1,0 +1,97 @@
+✓ etude-assertion-eval · Implement deterministic assertion evaluator   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: Closed
+
+DESCRIPTION
+Support deterministic checks such as required artifact presence or whether a test plan mentions every changed file.
+
+DESIGN
+## Plan (attempt 1)
+
+**Approach:** Add a 3rd concrete Evaluator in internal/eval that is fully DETERMINISTIC — NO Judge, NO LLM, NO exec. It reuses the EXISTING contract (eval.go AssertionCheck/AssertionSpec, ScoreAssertion, Evaluation/Finding) and mirrors the head-validation discipline of rubricevaluator.go/pairwiseevaluator.go, minus the Judge path. It implements the check REGISTRY that eval.go:67 references. Checks operate purely on in-request Targets/Context bytes (NO file IO, NO Root field). Library-only: NO CLI, NO bench wiring. Score persisted as assertion-coherent (Passed set; Value=Max=nil; Winner="") so result.go validateScoreCoherence accepts it.
+
+**Files:**
+- internal/eval/assertionevaluator.go — NEW. AssertionEvaluator type, Evaluate, registry seam, sentinels, the two built-in checks, and a deterministic unified-diff parser (no existing util in repo to reuse).
+- internal/eval/assertionevaluator_test.go — NEW. Table tests per below.
+- (no registry split file — keep registry in assertionevaluator.go; can extract later if a 3rd+ check arrives.)
+
+### Types / signatures (assertionevaluator.go)
+- type checkFunc func(req EvalRequest, args map[string]string) (passed bool, findings []Finding, err error)
+- type AssertionEvaluator struct { Checks map[string]checkFunc } — INJECTABLE per-evaluator (NOT a package-level global) so tests can register fakes and so a future bench caller composes its own set. NewAssertionEvaluator() *AssertionEvaluator returns one seeded with defaultChecks() (the two built-ins). If e.Checks==nil, Evaluate falls back to defaultChecks() (zero-value usable).
+- func defaultChecks() map[string]checkFunc — wires the two built-ins by Kind string.
+- var _ Evaluator = (*AssertionEvaluator)(nil)
+- func (e *AssertionEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error)
+
+### Sentinels (mirror existing naming: ErrXxx = errors.New)
+- ErrUnknownCheck = errors.New("unknown assertion check") — Kind not in registry.
+- ErrAssertionConfig = errors.New("invalid assertion config") — used for head-validation config failures (nil Assertion, empty Checks, rubric set, wrong target count, blank Kind). Method-mismatch can stay a plain fmt.Errorf like the siblings, but config problems use this sentinel so tests can errors.Is them.
+(ErrInvalidEvalResult stays owned by result.go; do not reuse it here.)
+
+### Registry seam + unknown handling
+Resolution: fn, ok := e.checks()[c.Kind]; if !ok -> return Evaluation{}, fmt.Errorf("%w: %q", ErrUnknownCheck, c.Kind). e.checks() returns e.Checks or defaultChecks() if nil. A single unknown Kind aborts the whole Evaluate with an error (NOT a failed Passed) — config error, not a content failure.
+
+### EvalRequest head-validation (order; mirror siblings; all config failures wrap ErrAssertionConfig except the method check)
+1. req.Method=="assertion" else fmt.Errorf(method mismatch).
+2. req.Rubric==nil else ErrAssertionConfig (assertion forbids rubric).
+3. req.Assertion!=nil else ErrAssertionConfig.
+4. len(req.Assertion.Checks) >= 1 else ErrAssertionConfig — EMPTY CHECKS REJECTED (matches result.go validateMethodConfig which already rejects 0 checks; Passed=true vacuous would be un-auditable). DECISION.
+5. each check Kind non-blank (strings.TrimSpace) else ErrAssertionConfig (mirrors result.go).
+6. len(req.Targets)==1 else ErrAssertionConfig (doc: assertion targets len 1).
+
+### Aggregation
+Passed = logical AND over every check (short-circuit NOT required; run all so findings accumulate). passed:=true; for each check: run fn; on err return it; if !ok passed=false; append all returned findings. Findings: FAILURES emit Severity=error finding(s); PASSES emit NOTHING (no info spam) — keeps Findings signal-only. DECISION. Build Score{Kind:ScoreAssertion, Passed:&passed} with Value/Max/Winner/Confidence zero. Return Evaluation{Score, Findings} (Findings nil if none, matching pairwise combineDouble convention).
+
+### Built-in check #1 — required-artifact-presence
+- Kind string: "required-artifact-presence".
+- Args: role (required) — the Role to look for; optional in ("targets"|"context"|"both", default "both").
+- Checks: across the selected input lists, at least one EvalInput whose Role==role has non-empty (len>0) Content. Pass if found.
+- Fail Finding: Severity=error, Message=fmt.Sprintf("required artifact with role %q is absent or empty", role), Pointer=role. Missing 'role' arg -> return err wrapping ErrAssertionConfig.
+
+### Built-in check #2 — test-plan-mentions-every-changed-file
+- Kind string: "test-plan-mentions-every-changed-file".
+- Args: plan_role (default "plan"), diff_role (default "diff"), match ("path"|"basename"|"either", default "either"), case_sensitive ("true"/"false", default "false").
+- (a) Plan text: the single Target's Content if its Role==plan_role OR (fallback) the Context input with Role==plan_role; resolve plan from Targets first then Context. If no plan content found -> fail finding ("test plan artifact (role %q) not found").
+- (b) Changed-file list: the Context input with Role==diff_role; parse its Content as a unified diff. If absent -> fail finding ("diff artifact (role %q) not found").
+- Diff extraction (deterministic, own parser parseChangedFiles([]byte) []string): scan lines; for each '+++ ' line take the post-image path, strip a leading 'b/' (or 'a/'), and the timestamp tail after a tab; SKIP '/dev/null' (pure deletes). Also honor 'diff --git a/X b/Y' to capture renames (record the b/ path). Dedup, stable order (order of first appearance). Handles: adds, modifies, deletes(skip), renames(new path).
+- (c) Mentioned: for each changed file, build candidate strings per match mode — full path and/or basename(filepath.Base) — and test substring containment in plan text. case_sensitive=false (default) lowercases both sides before Contains.
+- (d) Failure Finding: ONE finding PER missing file (Severity=error, Message=fmt.Sprintf("changed file %q not mentioned in test plan", path), Pointer=path) — per-file is more actionable than one blob. DECISION.
+- (e) passed = (len(missing)==0).
+
+### Determinism
+All checks are pure functions of request bytes + args; NO randomness, NO clock, NO IO. Tests need NO seeding (contrast pairwise Seed). Diff parser iterates lines in order and dedups deterministically.
+
+### Scope
+Library-only. NO CLI, NO bench wiring. Registry is injectable so a future bench caller can construct AssertionEvaluator with a custom or default check set; we do NOT wire any caller now.
+
+**Tests (assertionevaluator_test.go):**
+- Evaluate rejects non-assertion method; rejects non-nil Rubric; rejects nil Assertion; rejects empty Checks (errors.Is ErrAssertionConfig); rejects blank Kind; rejects target-count != 1.
+- Unknown check Kind -> errors.Is ErrUnknownCheck.
+- required-artifact-presence: pass (role present, non-empty); fail (role absent); fail (role present but empty Content); missing 'role' arg -> ErrAssertionConfig; 'in' selector targets vs context.
+- test-plan-mentions: pass (plan mentions all files, path + basename modes); fail with one finding per missing file; case-insensitive default vs case_sensitive=true; plan-not-found fail; diff-not-found fail.
+- parseChangedFiles edge cases: add, modify, delete(/dev/null skipped), rename(captures new path), multiple files dedup + stable order, 'a/'+'b/' prefix stripping.
+- Aggregation AND: two checks both pass -> Passed=true; one fails -> Passed=false; failures from both accumulate in Findings.
+- Passes emit no findings (Findings empty on all-pass single check).
+- Score coherence: wrap Evaluation into EvalResult (mirror rubric test) and assert EvalResult.Validate() passes for both pass and fail (Passed=&bool, Value/Max nil, Winner empty).
+
+**Docs:** None required — internal library package, no user-facing surface or generated command reference touched. Phase-3 design epic notes (if any) unchanged by this concrete impl.
+
+**Risks:** Diff-parsing edge cases (renames, tab-stamped paths, quoted/space paths in git diffs). Mitigation: keep parser scope to the common unified-diff headers the bench produces, cover edges with table tests, and document the supported subset in the parser doc comment. Otherwise straightforward — follows established sibling structure.
+
+**Capture:**
+- inputs: bead etude-assertion-eval description + parent epic etude-phase3 + dep etude-eval-interface; files read: internal/eval/eval.go, result.go (validateScoreCoherence + validateMethodConfig), rubricevaluator.go(+_test), pairwiseevaluator.go, judge.go; confirmed NO existing diff-parsing util in internal/.
+- output: bead --design field
+
+
+NOTES
+PLAN gate attempt 1: PASS (3 substantive GO — codex, gemini, Opus; pilms 5th 0-CPU outage, fallback). Opus verified contract: sentinels no-collision (existing ErrRubricLoad/ErrJudge*/ErrInvalidEvalResult), validateMethodConfig rejects 0 checks (result.go:161-163), assertion validateScoreCoherence (result.go:122-138) matches planned Score. Non-blocking refinements to FOLD INTO IMPL (codex+Opus): (1) primary changed-file source = '+++ ' post-image lines, skip /dev/null, strip b/; (2) renames via the 'rename to ' line, NOT diff --git a/X b/Y parsing (ambiguous with spaces); (3) document supported diff subset + unsupported edges (quoted/core.quotePath paths) in parser doc comment; (4) add basename-collision false-pass test. -> phase:implement.
+IMPLEMENT+FINAL gate: PASS at attempt 3 (3 substantive GO each round — codex, gemini, Opus; pilms 6 0-CPU outages, fallback). Two BLOCKs incorporated: (1) parseChangedFiles read hunk-body +++/--- content lines as headers -> phantom files; fixed via inHunk state machine (diff --git/@@ delimiters), 2 mutation-verified regression tests. (2) quoted/core.quotePath paths were appended as bogus strings despite the 'absent not silently-wrong' doc; fixed by skipping leading-quote paths in both +++ and rename-to branches, mutation-verified test. Opus confirmed no residual silently-wrong input. Docs: NO-DOCS (internal library, no CLI/user surface; docs land with eval/bench CLI bead). Committed f473dcb 'add assertion evaluator and check registry'. Full suite green.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-phase3: (EPIC) Phase 3: evals and bench workflow ● P2
+
+DEPENDS ON
+  → ✓ etude-eval-interface: Define evaluator interface and result format ● P2
+
