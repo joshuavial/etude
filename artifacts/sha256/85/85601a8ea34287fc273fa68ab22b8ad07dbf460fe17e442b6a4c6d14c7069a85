@@ -1,0 +1,27 @@
+WHAT SHIPPED
+  init no longer registers a refs/etude fetch refspec, and removes any left by an older version - on the normal AND --force paths, in ONE atomic git config --unset-all using an anchored alternation of regexp.QuoteMeta-escaped literals.
+  The push refspec is preserved, and converged: addRefspecIfAbsent now uses --replace-all with an anchored pattern, so concurrent inits cannot leave duplicates and pre-existing duplicates collapse.
+  Both durable writes share one lock-retrying helper under LC_ALL=C.
+  A safety phase reports, without editing, every remaining exposure it can detect exactly - on the target remote AND on every other remote.
+
+TWELVE ROUNDS, and what they cost and bought. Codex found roughly two dozen real defects. Three of the most serious were introduced BY ME while fixing something else, and none were caught by a green test suite:
+  a colonless fetch refspec parsed as dst=src would have made init DELETE harmless user config - git sends a destination-less fetch refspec to FETCH_HEAD, creating no local ref, so it is not prunable and not ours to remove. The two sides are opposite: colonless means FETCH_HEAD-only for fetch but same-name-on-remote for push.
+  the push-refspec add was read-then-write, so two concurrent inits could both see absent and both add.
+  the cross-remote sweep sat behind an early return on missing-target-remote, making the LEAST protected configuration - no origin plus a hazardous sibling - the one case that reported nothing.
+
+TWO CUTS, both to etude-ldf which was already chartered for them:
+  the general refspec-semantics analyzer (glob coverage, name preservation, grammar validation) - nine of ten findings across two rounds were against it.
+  executable remediation strings embedded in warnings - three consecutive rounds each produced a different defect in them (a placeholder URL git accepts, a preview that dropped --remote, a nested-quote command that will not parse). The defect was never one string; it was a setup command trying to emit context-correct executable remediation for every state it can observe.
+One CUT was later found to have gone too far: the cross-remote scan needed no refspec semantics at all and was swept out by association. Restored as warn-never-edit.
+
+PROCESS LESSON worth carrying: rounds 8 and 9 were spent entirely on my own DECLARATIONS drifting from the code, not on defects. I had been correcting them in per-round addenda and dropped the middle addenda when trimming the brief, so the packet re-shipped declarations I had already fixed. Fixed structurally - declarations live in the base brief only, plus a mechanical stale-claim grep before every build.
+
+BLOCKS
+  ← ◐ etude-jqs: Split etude ref namespace: mirror remote refs under refs/etude/remotes/<remote>/ so fetch and prune are safe ● P1
+  ← ○ etude-ldf: etude doctor: read-only health check for a repo's etude setup ● P1
+  ← ✓ etude-nad: run refs under refs/etude/runs/ have twice disappeared mid-session ● P1
+
+COMMENTS
+  2026-08-15 07:25 joshuavial
+    Opus gate path correction is recorded on etude-4jr: use an UNNAMED one-shot general-purpose Task sub-agent with model opus. The prior named persistent teammates idled by design and do not prove the seat unreachable. Do not lower the tier.
+
