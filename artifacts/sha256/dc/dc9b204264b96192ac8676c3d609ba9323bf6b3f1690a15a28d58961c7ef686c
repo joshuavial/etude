@@ -1,0 +1,4 @@
+# Verify — etude-bench-command.4 (etude bench CLI + win-rate report)
+Result: PASS. go test ./... green; gofmt/vet/build clean.
+Tests: content-aware judge double (deterministic despite per-pair swap); happy-path win-rate-mix, skip-on-run-error, empty cohort, no-judge, total==0 guard, --last validation, --model/--judge-model separation, Aggregate unit (exact 0.625 + total==0), replay-run exclusion. Opus mutation-verified all teeth.
+BUILT-BINARY MANUAL TEST (required, CLI bead): built /tmp/etude, temp repo with 2 original 'plan' runs, content-aware run.sh/judge.sh (absolute paths — runner cwd=worktree). Result: "replay (new skill) wins 100.0% (B=2 A=0) over 2 evals". Re-ran: IDENTICAL (deterministic), and the 4 replay runs recorded by run #1 were correctly SKIPPED (replay-run exclusion → no recursion). Negative checks: --last 0 → error; missing --judge → error; --model/--judge-model land in separate fields. Junk etude refs from testing cleaned up.
