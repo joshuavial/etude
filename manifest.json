@@ -341,6 +341,100 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T05:12:33.995592Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r2",
+          "role": "diff",
+          "artifact": "3ba8d1acd2ddda759bc7491c9510b8c4b3842c0cff6152d8dde24179a6401c59"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `internal/replay/exec_runner.go`: the new `withStderrDiagnostic(base, stderrBuf.Bytes())` on the `ctx.Err()` path reads the capture buffer after `cmd.Run` may have returned via `WaitDelay` with copy goroutines abandoned; this mirrors the pre-existing `runErr` path, but consider snapshotting under a mutex or documenting the accepted race. 2. `resolveRecordedTranscriptPath` compares absolute paths against `scratchDir`/`worktreeDir` without symlink resolution; the `/private/var` alias handled for scratch in `readSessionSidecar` is not handled for an absolute worktree-rooted `transcript_path`, so such a transcript degrades to `retrieval: failed` instead of importing. 3. `buildPriorAttemptInputs` fails the whole run when a prior attempt's artifact is not materialized in the in-memory store; worth an explicit resume-path test that a run resumed mid-gate still rebuilds prior-attempt bundles from `refByPath`. 4. Docs state prior-attempt logs are handed forward unscanned and can carry credentials across attempts — consider a follow-up bead for opt-in log scanning."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "f040089f0973ea1b55824d91541190b5b450fa08787fc3cfaae8ee62a43f70a4",
+            "path": "artifacts/sha256/f0/f040089f0973ea1b55824d91541190b5b450fa08787fc3cfaae8ee62a43f70a4",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1224
+          },
+          "session": {
+            "session_id": "opus-9fd3806d976f067e",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "9fd3806d976f067e4d57ca83ede450b641bc47bf6c6f2d534057b84b5229671c",
+              "path": "artifacts/sha256/9f/9fd3806d976f067e4d57ca83ede450b641bc47bf6c6f2d534057b84b5229671c",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1133
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:15:52.51978Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `internal/replay/exec_runner_test.go` is internally inconsistent: `TestValidateSessionInfoBoundary` expects `SessionID: \"bad\\ufffdid\"` to fail, while `ValidateSessionInfo` accepts U+FFFD and `TestExecRunner_AcceptsReplacementCharacterInSessionID` explicitly expects it accepted."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "77e9784c8d0070e3b9c5cc4062637de1eb82e04ccd4f74299d52ffc758778522",
+            "path": "artifacts/sha256/77/77e9784c8d0070e3b9c5cc4062637de1eb82e04ccd4f74299d52ffc758778522",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 434
+          },
+          "session": {
+            "session_id": "codex-6d9979d77081492d",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "6d9979d77081492da76369c326d5089c25699009c6cad3c2d0133d86866e1df6",
+              "path": "artifacts/sha256/6d/6d9979d77081492da76369c326d5089c25699009c6cad3c2d0133d86866e1df6",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 339
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:19:39.83325Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T05:19:39.836883Z"
     }
   ]
 }

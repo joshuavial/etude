@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `internal/replay/exec_runner_test.go` is internally inconsistent: `TestValidateSessionInfoBoundary` expects `SessionID: "bad\ufffdid"` to fail, while `ValidateSessionInfo` accepts U+FFFD and `TestExecRunner_AcceptsReplacementCharacterInSessionID` explicitly expects it accepted.
+OPTIONAL: none
+CONFIDENCE: high
