@@ -218,6 +218,52 @@
         "degraded_reason": "Seats split: codex GO, opus BLOCK, so the gate does not pass under unanimous quorum. opus is right and the finding was verified independently before folding: the r2 verification grep was anchored on '.sh', so docs/plans/dogfood/review-gate-runbook.md:346 naming 'dogfood-close' extension-less would have survived while the check reported clean. Auditing that site found it stale on two further counts the seat did not report - it asserts docs is not a captured stage and prescribes mapping the docs gate onto the implement diff stage, both of which bead etude-1od reversed two beads ago. opus also correctly showed the Section C rationale was overstated (C1 duplicates B2's flow) and that negative control 2 rested on that overstatement; both are corrected rather than defended. Three of the five recorded corrections are one theme - a verification claim that does not cover what it says it covers - so r3 replaces the narrow grep with an exhaustive tracked-file inventory (25 hits, 13 files) classified into edit sites and an enumerated no-op baseline. The opus seat ran as an in-harness sub-agent per the documented registry exception; the agy fallback is dead and filed as its own P1 bead."
       },
       "timestamp": "2026-08-15T08:52:40Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan",
+          "artifact": "7cac56d97774cfa7651252e16d6f903af7b2bbf722a76f9e238b94ee87e2fefb"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T09:02:11Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T09:02:11Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO on the exhaustive revision. Both independently flagged the same arithmetic error - the inventory is 26 hits in 14 files, not 25 in 13; the wrong count came from a grep that also excluded dogfood-gate-capture, a file that survives and whose comment IS an edit site. opus verified the classification itself was complete, mapping all 26 hits to either the edit table (16) or the no-op table (10) with nothing unclassified, so this was a blemish on a baseline claim rather than a coverage hole. Three optionals folded: the corrected tally; the carry table's missing prerequisites (set -euo pipefail, SCRIPT_DIR, REPO_ROOT), without which the extracted suite aborts on line 1 under set -u; and an explicit instruction that the verification baseline GROWS to cover deliberately reworded lines rather than the grep being narrowed to match, since narrowing a pattern to make a check pass is the exact r2 defect. One optional deliberately not folded and recorded as such: internal/bench/corpus_runrefs.go:15 stays a no-op because it names the protocol rather than the script, the same standard every other no-op is held to. The opus seat ran as an in-harness sub-agent per the documented registry exception; the agy fallback is dead and filed as its own P1 bead."
+      },
+      "timestamp": "2026-08-15T09:02:11Z"
     }
   ]
 }
