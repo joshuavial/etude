@@ -194,6 +194,72 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T00:16:28Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "empty",
+          "failure_note": "orchestrator inlined an empty live-execution.md docs-diff (file-path bug in prompt assembly); gemini correctly declined to verify the docs sweep without evidence — not a code defect",
+          "timestamp": "2026-06-30T00:02:02Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "escalation field not in machine config (intent in skill/L1 use)",
+            "confirm dev-workflow inherits gate config via skill path"
+          ],
+          "timestamp": "2026-06-30T00:02:02Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "per-stage tier assertions in migration_test"
+          ],
+          "timestamp": "2026-06-30T00:02:02Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "gemini empty was an orchestrator payload bug (empty docs diff), resolved by re-inlining the populated diff; opus independently verified the docs sweep + AC5 from the repo"
+      },
+      "timestamp": "2026-06-30T00:02:02Z"
     }
   ]
 }
