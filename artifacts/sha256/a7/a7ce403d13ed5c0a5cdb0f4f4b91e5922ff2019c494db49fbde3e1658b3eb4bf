@@ -1,0 +1,75 @@
+# Plan — etude-5f6: make `etude gate` walk the invocation-fallback ladder
+
+## Why this one matters
+
+This is the defect that stopped this lane. `.etude/registry.yaml` carries an
+ordered `invocation_fallbacks` list per seat, and `Seat.Invocations()` returns
+primary-then-fallbacks in retry order — but `etude gate` never reads it.
+`ResolveGateSeat` builds an `ExecRunner` from `seat.Invoke` alone, so when the
+primary invocation fails the seat is recorded `failed` and the gate escalates,
+with the configured alternatives untouched.
+
+For the opus seat under a Claude Code supervisor that is exactly the wrong
+behaviour: the primary (`claude -p`) cannot authenticate, the next candidate is
+the in-harness sub-agent, and the ladder that would have said so is inert. The
+config describes a recovery path nothing performs — the same shape as the prose
+comment this epic already replaced.
+
+## The two candidate kinds
+
+The ladder mixes two things, and the distinction is load-bearing:
+
+- **exec-able candidates** — a shell command etude can run itself.
+- **`in-harness:` candidates** — NOT commands. They name work only the HOST can
+  do (spawn a sub-agent). etude must never exec one; a consumer that tried would
+  get ENOENT and, correctly but uselessly, record an outage.
+
+## Shape
+
+`ResolveGateSeat` currently returns one runner. It gains a sibling that returns
+the ordered candidates, and `runGateSeats` walks them:
+
+1. For each candidate in `Seat.Invocations()` order:
+   - if it is `in-harness:`, do not exec. Stop the ladder and return a
+     distinguishable outcome (see below).
+   - otherwise exec it. If it yields a USABLE verdict (`go`/`block`), take it.
+   - if it yields `failed`/`empty`/`malfunction`, record why and continue.
+2. If every candidate is exhausted, the seat is `failed` with a note naming each
+   candidate tried and its failure — today's message names only the primary.
+
+**Record which candidate ran.** The registry comment already requires this
+("record the candidate that actually ran in session/provider evidence"). The
+`SeatResult.Harness` field is the natural home: a fallback carries its own
+`harness` (e.g. `agy`), so a run's evidence shows the seat identity AND the
+harness that actually produced the verdict. Without that a reader cannot tell a
+primary verdict from a fallback verdict.
+
+**An `in-harness:` candidate needs a distinct outcome, not a silent failure.**
+If etude simply skipped it the gate would escalate with a misleading "all
+candidates failed". Instead the seat result records `failed` with a failure note
+naming the candidate and stating that the HOST must run it — so a supervisor
+reading the gate output learns what to do rather than that something broke.
+Inventing a new `SeatVerdict` is out of scope: the manifest's verdict set is a
+schema surface, and `failed` + a precise note is honest and needs no migration.
+
+## Tests
+
+- Primary succeeds → fallback never invoked (assert the fallback runner is not
+  called), and the recorded harness is the primary's.
+- Primary fails, fallback succeeds → verdict comes from the fallback and the
+  recorded harness is the FALLBACK's, not the seat's default.
+- All exec-able candidates fail → seat `failed`, note names every candidate tried.
+- `in-harness:` candidate → never exec'd, seat `failed`, note names it and says
+  the host must run it. Planned regression:
+  `seat_in_harness_candidate_is_not_executed`.
+- A seat with NO fallbacks behaves exactly as today (no regression for the
+  common case).
+- Ordering: candidates are tried in `Invocations()` order, not map order.
+
+## Out of scope
+
+- Actually spawning a sub-agent from etude. It cannot; that is the host's job and
+  the `in-harness:` marker exists to say so.
+- Retry/backoff policy within a single candidate. The registry comment is
+  explicit that retry policy belongs to the consumer; this bead adds ordered
+  candidate traversal, not retries.
