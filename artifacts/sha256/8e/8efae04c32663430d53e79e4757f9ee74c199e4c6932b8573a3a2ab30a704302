@@ -1,0 +1,586 @@
+commit eb111a280df9aae53ad39c30d1fc659dc4bbeca3
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 22:59:36 2026 +0800
+
+    add non-beads example workflow
+
+diff --git a/Makefile b/Makefile
+index 7aa6271..6b9d2e5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@ BIN_DIR := bin
+ VERSION ?= dev
+ DOCS_DIR := docs/cli
+ 
+-.PHONY: build test lint clean docs docs-check
++.PHONY: build test lint clean docs docs-check example
+ 
+ build:
+ 	mkdir -p $(BIN_DIR)
+@@ -25,3 +25,6 @@ docs:
+ docs-check:
+ 	@TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT; \
+ 		go run ./cmd/gen-docs -out "$$TMP" && diff -r "$$TMP" $(DOCS_DIR)
++
++example: build
++	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh
+diff --git a/README.md b/README.md
+index 9dae05f..fea196d 100644
+--- a/README.md
++++ b/README.md
+@@ -66,3 +66,6 @@ See [Manual Capture](docs/capture.md) for the capture command.
+ See [Runs](docs/run.md) for the run list and run show commands.
+ See [Sync](docs/sync.md) for the sync command.
+ See [Replay](docs/replay.md) for the replay command.
++
++For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
++[examples/summarize/README.md](examples/summarize/README.md).
+diff --git a/docs/README.md b/docs/README.md
+index 4699384..6a8c46f 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -12,6 +12,7 @@ This directory holds user-facing documentation for implemented behavior.
+ - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.
+ - [GC](gc.md) - report artifact storage and explicitly prune named run refs.
+ - [Reindex](reindex.md) - build the derived SQLite query index from all run and eval refs.
++- [Example](../examples/summarize/README.md) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
+ - [Plans](plans/README.md) - notes on planned components that do not exist yet.
+ - [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).
+ 
+diff --git a/examples/summarize/README.md b/examples/summarize/README.md
+new file mode 100644
+index 0000000..e622fba
+--- /dev/null
++++ b/examples/summarize/README.md
+@@ -0,0 +1,148 @@
++# etude example: tracker-agnostic summarize workflow
++
++This directory is a self-contained, runnable demonstration that etude is a
++**reusable git-native primitive**.  It works with nothing beyond git, bash, and
++the `etude` binary — no beads, no xenota, no issue tracker, no LLM, no network.
++
++## Run it
++
++```bash
++# From the repo root — builds etude from source automatically:
++bash examples/summarize/walkthrough.sh
++
++# Or against a pre-built binary:
++ETUDE_BIN=./bin/etude bash examples/summarize/walkthrough.sh
++```
++
++## What the walkthrough does
++
++Each step is echoed with a `==>` header so you can follow along.
++
++The scenario models a **skill upgrade**: a v1 summarizer that emits only the
++first line of a document is being replaced by a v2 summarizer that adds a word
++count.  The bench proves the new skill is strictly better (longer output →
++picked by the judge).
++
++### Step 1 — `etude init`
++
++Scaffolds `.etude/workflow.yaml` and rubric placeholders in the throwaway
++repository.  Because the throwaway repo has no remote `origin`, the refspec
++step is skipped — that is normal and expected.
++
++Expected output contains:
++```
++created .etude/workflow.yaml
++```
++
++### Step 2 — generate v1 summaries and capture three original runs
++
++The walkthrough first generates a **v1 (original)** summary for each document:
++just the first line — a deliberately terse older-skill output.
++
++```bash
++head -n 1 docs/alpha.txt > summaries/alpha-v1.txt
++```
++
++Three calls to `etude capture summarize` then store those v1 summaries as
++content-addressed artifacts under `refs/etude/runs/doc-alpha`,
++`refs/etude/runs/doc-beta`, and `refs/etude/runs/doc-gamma`.
++
++Run ids are **plain strings** (`doc-alpha`, `doc-beta`, `doc-gamma`).  There is
++no issue-tracker ID here.  Compare `scripts/dogfood-capture.sh` in the repo
++root, which uses `bd show <bead-id>` and is tightly coupled to the bead tracker.
++
++Each capture call looks like:
++```bash
++etude capture summarize \
++  --run doc-alpha \
++  --input  doc=docs/alpha.txt \
++  --output summary=summaries/alpha-v1.txt \
++  --workflow summarize \
++  --produced-by original
++```
++
++### Step 3 — inspect runs
++
++`etude run list` prints a table of all stored runs:
++
++```
++RUN ID      WORKFLOW    CREATED               STAGES
++doc-alpha   summarize   2026-...              1
++doc-beta    summarize   2026-...              1
++doc-gamma   summarize   2026-...              1
++```
++
++`etude run show doc-alpha` prints the detail view including the content-addressed
++artifact paths, stage name, and producer metadata.
++
++### Step 4 — replay
++
++`etude replay doc-alpha summarize --runner ./summarize-runner.sh` re-executes
++the summarize stage using the **v2 runner** (`summarize-runner.sh`): it reads
++the `*-doc` file from `$ETUDE_INPUTS_DIR` and writes a richer summary — first
++line plus word count — to `$ETUDE_OUTPUT_FILE`.
++
++```
++The history of computing is a story of abstraction.
++[94 words]
++```
++
++Because the runner is a pure function of its inputs, the replayed output is
++deterministic across machines.  No LLM, no randomness.
++
++### Step 5 — bench
++
++`etude bench summarize --last 3 --runner ... --judge ...` benchmarks the
++summarize stage across the three-run cohort.  For each run it:
++
++1. Replays the stage with the v2 runner.
++2. Invokes the judge to compare the replay against the v1 original.
++
++The judge (`pick-longer-judge.sh`) decides the winner by byte length — longer
++content wins, equal lengths are a tie.  The v2 output (first line + word count)
++is always longer than the v1 output (first line only), so the new skill wins
++all three comparisons.
++
++**Key caveat:** etude randomises which candidate occupies the left/right
++position per pair (to reduce position bias).  The judge therefore cannot key
++off file position.  The files are named `00-target-left` and `01-target-right`
++in `$ETUDE_INPUTS_DIR`; the judge must decide from **content**.  After the judge
++returns a position-relative winner (`A`=left, `B`=right), etude maps it back to
++the canonical A=original / B=replay orientation.
++
++Expected bench headline:
++```
++bench summarize: replay (new skill) wins 100.0% vs original
++(B=3 A=0 tie=0) over 3 evals; 0 skipped, 0 failed
++```
++
++### Step 6 — maintenance
++
++`etude reindex` rebuilds the SQLite query index at `.git/etude-index.db`.
++`etude gc` prints a storage report (logical artifact bytes, run and eval counts).
++
++## Files
++
++| File | Purpose |
++|------|---------|
++| `walkthrough.sh` | End-to-end driver — run this |
++| `summarize-runner.sh` | Deterministic v2 runner: first line + word count |
++| `pick-longer-judge.sh` | Content-aware pairwise judge: longer wins |
++| `docs/alpha.txt` | Sample document A |
++| `docs/beta.txt` | Sample document B |
++| `docs/gamma.txt` | Sample document C |
++
++## Contrast with the dogfood (beads) usage
++
++`scripts/dogfood-capture.sh` (in the repo root) is the tracker-coupled
++counterpart.  It requires:
++
++- `bd` (bead tracker CLI) to read design fields and task descriptions.
++- A live bead ID and a specific commit SHA.
++- Four stage captures that mirror the dev-workflow phases (plan, implement,
++  verify, review).
++
++This example requires **none of that**.  The run ids are arbitrary strings, the
++runner is a shell one-liner, and the judge is content-based arithmetic.  etude
++is a storage and evaluation layer — the tracker (or absence thereof) is entirely
++up to you.
+diff --git a/examples/summarize/docs/alpha.txt b/examples/summarize/docs/alpha.txt
+new file mode 100644
+index 0000000..8d64425
+--- /dev/null
++++ b/examples/summarize/docs/alpha.txt
+@@ -0,0 +1,7 @@
++The history of computing is a story of abstraction.
++Early programmers worked directly with machine instructions, toggling switches and reading blinking lights.
++Then came assembly language, which gave human-readable names to those raw opcodes.
++Higher-level languages followed, hiding memory addresses behind variables and loops.
++Today a developer can write a handful of lines and invoke capabilities that once required rooms full of hardware.
++Each layer of abstraction trades some control for productivity, some visibility for simplicity.
++The art of software engineering is knowing when to trust the abstraction and when to peer beneath it.
+diff --git a/examples/summarize/docs/beta.txt b/examples/summarize/docs/beta.txt
+new file mode 100644
+index 0000000..345cdf8
+--- /dev/null
++++ b/examples/summarize/docs/beta.txt
+@@ -0,0 +1,7 @@
++Version control systems transformed how teams collaborate on code.
++Before tools like git, sharing work meant emailing files or copying directories with date suffixes.
++Conflicts were resolved by hand, often overwriting someone else's changes without realising it.
++Distributed version control brought each contributor a full copy of the repository's history.
++Branching became cheap and merging became principled.
++The commit graph preserves every change and its context, making it possible to understand not just what changed but why.
++A well-maintained commit history is as valuable as the code itself.
+diff --git a/examples/summarize/docs/gamma.txt b/examples/summarize/docs/gamma.txt
+new file mode 100644
+index 0000000..89ceb23
+--- /dev/null
++++ b/examples/summarize/docs/gamma.txt
+@@ -0,0 +1,7 @@
++Open-source software changed the economics of the industry.
++When source code is freely available, every developer can inspect, adapt, and improve it.
++Bugs get found faster because more eyes are looking.
++Features get built because someone somewhere needed them and had the freedom to contribute.
++The shared infrastructure of the internet runs largely on open-source foundations.
++Licenses define the terms of sharing, from permissive allowance of commercial use to copyleft requirements that keep derivatives open.
++Understanding the license is as important as understanding the code.
+diff --git a/examples/summarize/pick-longer-judge.sh b/examples/summarize/pick-longer-judge.sh
+new file mode 100755
+index 0000000..50c1817
+--- /dev/null
++++ b/examples/summarize/pick-longer-judge.sh
+@@ -0,0 +1,42 @@
++#!/usr/bin/env bash
++# pick-longer-judge.sh — content-aware pairwise judge for the etude example.
++#
++# Judge I/O contract (bench pairwise):
++#   ETUDE_INPUTS_DIR  — directory containing exactly two target files:
++#                         00-target-left   (presented first)
++#                         01-target-right  (presented second)
++#                       Presentation order is randomised per pair by etude to
++#                       reduce position bias; the judge must decide by content.
++#   ETUDE_OUTPUT_FILE — path the judge must write its JSON verdict to:
++#                         {"winner":"A"}  if the LEFT target is better
++#                         {"winner":"B"}  if the RIGHT target is better
++#                         {"winner":"tie"} if equal
++#                       etude maps position-relative (left=A, right=B) back to
++#                       canonical A/B after applying the presentation swap.
++#
++# Decision rule: longer content (more bytes) wins.
++# Equal lengths => tie.
++# This is deterministic and swap-safe: the longer content always maps to the
++# same canonical winner regardless of which position it occupies.
++set -euo pipefail
++
++left_file=$(ls "$ETUDE_INPUTS_DIR"/00-target-* 2>/dev/null | head -1)
++right_file=$(ls "$ETUDE_INPUTS_DIR"/01-target-* 2>/dev/null | head -1)
++
++if [ -z "$left_file" ] || [ -z "$right_file" ]; then
++  echo "pick-longer-judge: expected 00-target-* and 01-target-* in $ETUDE_INPUTS_DIR" >&2
++  exit 1
++fi
++
++left_size=$(wc -c < "$left_file" | tr -d ' ')
++right_size=$(wc -c < "$right_file" | tr -d ' ')
++
++if [ "$left_size" -gt "$right_size" ]; then
++  winner="A"
++elif [ "$right_size" -gt "$left_size" ]; then
++  winner="B"
++else
++  winner="tie"
++fi
++
++printf '{"winner":"%s"}\n' "$winner" > "$ETUDE_OUTPUT_FILE"
+diff --git a/examples/summarize/summarize-runner.sh b/examples/summarize/summarize-runner.sh
+new file mode 100755
+index 0000000..18d894e
+--- /dev/null
++++ b/examples/summarize/summarize-runner.sh
+@@ -0,0 +1,23 @@
++#!/usr/bin/env bash
++# summarize-runner.sh — deterministic document summarizer for the etude example.
++#
++# Runner I/O contract:
++#   ETUDE_INPUTS_DIR  — directory containing <NN>-<role> input files.
++#                       For the summarize stage the input role is "doc", so the
++#                       file is named 00-doc.
++#   ETUDE_OUTPUT_FILE — path the runner must write its output to.
++#
++# Output is a pure function of the input content: first line of the document
++# followed by a word count.  No timestamps, randomness, or network calls.
++set -euo pipefail
++
++doc_file=$(ls "$ETUDE_INPUTS_DIR"/*-doc 2>/dev/null | head -1)
++if [ -z "$doc_file" ]; then
++  echo "summarize-runner: no *-doc file found in $ETUDE_INPUTS_DIR" >&2
++  exit 1
++fi
++
++first_line=$(head -1 "$doc_file")
++word_count=$(wc -w < "$doc_file" | tr -d ' ')
++
++printf '%s\n[%s words]\n' "$first_line" "$word_count" > "$ETUDE_OUTPUT_FILE"
+diff --git a/examples/summarize/walkthrough.sh b/examples/summarize/walkthrough.sh
+new file mode 100755
+index 0000000..2d770dc
+--- /dev/null
++++ b/examples/summarize/walkthrough.sh
+@@ -0,0 +1,167 @@
++#!/usr/bin/env bash
++# walkthrough.sh — end-to-end etude example using only git + sh + the etude binary.
++#
++# This script demonstrates that etude is a reusable git-native primitive that
++# works WITHOUT beads, xenota, any issue tracker, LLM, or network access.
++# Compare scripts/dogfood-capture.sh which is tightly coupled to the bd tracker.
++#
++# Usage:
++#   bash examples/summarize/walkthrough.sh
++#   ETUDE_BIN=/path/to/etude bash examples/summarize/walkthrough.sh
++#
++# When ETUDE_BIN is unset the script builds etude from source into a temp dir.
++# The smoke test (internal/example/example_test.go) always sets ETUDE_BIN so
++# it can supply a freshly compiled binary.
++set -euo pipefail
++
++# ---------------------------------------------------------------------------
++# Resolve repository root (so we can find runner/judge/docs with absolute paths
++# regardless of where this script is invoked from).
++# ---------------------------------------------------------------------------
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
++EXAMPLES_DIR="$SCRIPT_DIR"
++
++# ---------------------------------------------------------------------------
++# Create the temp dirs and install the cleanup trap BEFORE any fallible step
++# (notably the go build below) so nothing leaks if an early command fails.
++# WORK is the throwaway demo repo; BINDIR holds a locally-built binary and
++# stays empty when ETUDE_BIN is supplied. The single trap always removes WORK
++# and removes BINDIR only when we built the binary ourselves (BINDIR non-empty).
++# ---------------------------------------------------------------------------
++WORK="$(mktemp -d)"
++BINDIR=""
++trap '[ -n "$BINDIR" ] && rm -rf "$BINDIR"; rm -rf "$WORK"' EXIT
++
++# ---------------------------------------------------------------------------
++# Build or locate the etude binary.
++# ---------------------------------------------------------------------------
++if [ -n "${ETUDE_BIN:-}" ]; then
++  ETUDE="$ETUDE_BIN"
++  echo "==> Using etude binary: $ETUDE"
++else
++  echo "==> Building etude from source..."
++  BINDIR="$(mktemp -d)"
++  (cd "$REPO_ROOT" && go build -o "$BINDIR/etude" ./cmd/etude)
++  ETUDE="$BINDIR/etude"
++  echo "    built: $ETUDE"
++fi
++
++# ---------------------------------------------------------------------------
++# Initialise the throwaway git repository for the demo.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Initialising throwaway git repo: $WORK"
++git init "$WORK" --quiet
++git -C "$WORK" config user.name  "Etude Example"
++git -C "$WORK" config user.email "example@etude.local"
++
++# ---------------------------------------------------------------------------
++# Commit the sample documents so HEAD resolves (required by etude capture).
++# ---------------------------------------------------------------------------
++mkdir -p "$WORK/docs"
++cp "$EXAMPLES_DIR/docs/alpha.txt" "$WORK/docs/"
++cp "$EXAMPLES_DIR/docs/beta.txt"  "$WORK/docs/"
++cp "$EXAMPLES_DIR/docs/gamma.txt" "$WORK/docs/"
++git -C "$WORK" add docs/
++git -C "$WORK" commit --quiet -m "add sample docs"
++
++cd "$WORK"
++
++# ---------------------------------------------------------------------------
++# Step 1: etude init — scaffold .etude/ config.
++# origin is absent so the refspec step is skipped; that is expected and fine.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 1: etude init"
++"$ETUDE" init
++echo "    .etude/ scaffolded"
++
++# ---------------------------------------------------------------------------
++# Step 2: capture three original summarize runs.
++# The "v1 skill" is deliberately terse: just the first line of each document.
++# Run ids are plain strings — NOT issue-tracker IDs.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 2: generating v1 (original) summaries — first line only"
++mkdir -p "$WORK/summaries"
++for doc in alpha beta gamma; do
++  head -n 1 "docs/$doc.txt" > "summaries/$doc-v1.txt"
++done
++echo "    v1 summaries written to summaries/"
++
++echo ""
++echo "==> Step 2: capture original summarize runs (v1 skill)"
++
++"$ETUDE" capture summarize \
++  --run doc-alpha \
++  --input  doc=docs/alpha.txt \
++  --output summary=summaries/alpha-v1.txt \
++  --workflow summarize \
++  --produced-by original
++
++"$ETUDE" capture summarize \
++  --run doc-beta \
++  --input  doc=docs/beta.txt \
++  --output summary=summaries/beta-v1.txt \
++  --workflow summarize \
++  --produced-by original
++
++"$ETUDE" capture summarize \
++  --run doc-gamma \
++  --input  doc=docs/gamma.txt \
++  --output summary=summaries/gamma-v1.txt \
++  --workflow summarize \
++  --produced-by original
++
++echo "    captured: doc-alpha, doc-beta, doc-gamma (v1 summaries)"
++
++# ---------------------------------------------------------------------------
++# Step 3: inspect runs.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 3: etude run list"
++"$ETUDE" run list
++
++echo ""
++echo "==> Step 3: etude run show doc-alpha"
++"$ETUDE" run show doc-alpha
++
++# ---------------------------------------------------------------------------
++# Step 4: replay one run.
++# Absolute paths for --runner because etude sets cwd to a scratch worktree.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 4: etude replay doc-alpha summarize"
++REPLAY_OUT="$WORK/replayed-alpha.txt"
++"$ETUDE" replay doc-alpha summarize \
++  --runner "$EXAMPLES_DIR/summarize-runner.sh" \
++  --output "$REPLAY_OUT"
++echo "    replayed output:"
++cat "$REPLAY_OUT"
++
++# ---------------------------------------------------------------------------
++# Step 5: bench across the cohort of 3 runs.
++# The judge picks the longer summary (pure content rule, no LLM needed).
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 5: etude bench summarize --last 3"
++"$ETUDE" bench summarize \
++  --last 3 \
++  --runner "$EXAMPLES_DIR/summarize-runner.sh" \
++  --judge  "$EXAMPLES_DIR/pick-longer-judge.sh"
++
++# ---------------------------------------------------------------------------
++# Step 6: maintenance — reindex then gc.
++# ---------------------------------------------------------------------------
++echo ""
++echo "==> Step 6: etude reindex"
++"$ETUDE" reindex
++
++echo ""
++echo "==> Step 6: etude gc"
++"$ETUDE" gc
++
++echo ""
++echo "==> Walkthrough complete."
++echo "    git repo, binary, and temp dirs will be cleaned up on exit."
+diff --git a/internal/example/example_test.go b/internal/example/example_test.go
+new file mode 100644
+index 0000000..bc7a7e7
+--- /dev/null
++++ b/internal/example/example_test.go
+@@ -0,0 +1,88 @@
++// Package example contains a smoke test that executes the summarize walkthrough
++// end-to-end against a freshly compiled etude binary.
++//
++// The test builds etude into a temp directory, passes the binary path via
++// ETUDE_BIN, runs walkthrough.sh, and asserts exit 0 plus the presence of
++// stable output markers.  It is heavier than in-process CLI tests (it compiles
++// a binary, git-inits a repo, runs bench) so it uses a generous timeout.
++package example
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestWalkthroughSmokeTest(t *testing.T) {
++	// Skip if bash or git is unavailable (e.g. minimal CI image).
++	if _, err := exec.LookPath("bash"); err != nil {
++		t.Skip("bash not found on PATH; skipping walkthrough smoke test")
++	}
++	if _, err := exec.LookPath("git"); err != nil {
++		t.Skip("git not found on PATH; skipping walkthrough smoke test")
++	}
++
++	// Locate the repo root: this test lives at internal/example/example_test.go,
++	// so walk up two directories from the file's directory.
++	_, thisFile, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("runtime.Caller(0) failed")
++	}
++	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
++
++	// Build etude into a temp directory.  The binary path is passed to the
++	// walkthrough via ETUDE_BIN so the script never falls back to an ambient
++	// binary on $PATH.
++	binDir := t.TempDir()
++	etudebin := filepath.Join(binDir, "etude")
++	t.Logf("building etude -> %s", etudebin)
++	buildCmd := exec.Command("go", "build", "-o", etudebin, "./cmd/etude")
++	buildCmd.Dir = repoRoot
++	buildOut, buildErr := buildCmd.CombinedOutput()
++	if buildErr != nil {
++		t.Fatalf("go build failed: %v\n%s", buildErr, buildOut)
++	}
++
++	// Generous timeout: the walkthrough git-inits, captures 3 runs, replays 1,
++	// runs bench with a 3-run cohort, reindexes, and gc-reports.
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
++	defer cancel()
++
++	walkthroughPath := filepath.Join(repoRoot, "examples", "summarize", "walkthrough.sh")
++	cmd := exec.CommandContext(ctx, "bash", walkthroughPath)
++	cmd.Env = append(os.Environ(), "ETUDE_BIN="+etudebin)
++
++	output, err := cmd.CombinedOutput()
++	outStr := string(output)
++
++	if err != nil {
++		t.Fatalf("walkthrough.sh exited with error: %v\noutput:\n%s", err, outStr)
++	}
++
++	t.Logf("walkthrough output:\n%s", outStr)
++
++	// Assert stable output markers — checked against substrings that are
++	// unlikely to change even if formatting evolves.
++	assertContains(t, outStr, "doc-alpha", "run list must include doc-alpha")
++	assertContains(t, outStr, "doc-beta", "run list must include doc-beta")
++	assertContains(t, outStr, "doc-gamma", "run list must include doc-gamma")
++	assertContains(t, outStr, "replay (new skill) wins", "bench must print win-rate headline")
++	assertContains(t, outStr, "wins 100.0%", "bench must show new skill winning all 3 runs")
++	assertContains(t, outStr, "B=3", "bench must report B=3 (replay wins all)")
++	assertContains(t, outStr, "reindexed", "reindex must print confirmation line")
++	assertContains(t, outStr, "logical artifact bytes", "gc must print storage report")
++	assertContains(t, outStr, "Walkthrough complete", "walkthrough must reach completion marker")
++}
++
++// assertContains fails the test if s does not contain substr.
++func assertContains(t *testing.T, s, substr, msg string) {
++	t.Helper()
++	if !strings.Contains(s, substr) {
++		t.Errorf("%s: output does not contain %q", msg, substr)
++	}
++}
