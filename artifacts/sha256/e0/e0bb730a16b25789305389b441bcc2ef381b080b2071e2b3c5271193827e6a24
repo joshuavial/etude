@@ -1,0 +1,699 @@
+# Final release documentation review
+
+Scope: review CHANGELOG.md release preparation for v1.1.0 against implemented changes since v1.0.0 and integration evidence. Product fixes already passed their separate strong gates; no production change is introduced by this release-doc diff. Publishing the tag, release archives, local installation and lane cleanup follow this review and are explicitly user-authorized. No existing tag/release will be overwritten. Source release builds use a clean checkout.
+
+Release v1.1.0: integrate both reviewed fixes preserving all code/docs and run mappings; validate full Go suite, lint, shell suite, affected race tests, docs reconciliation, full build, version stamp and real CLI fixtures; capture integration evidence; update release changelog with routine independent review; sync refs and beads, push main, publish tag and GitHub release, install version locally and remove completed worktrees after archiving evidence. Existing _ai/research files are unrelated and remain untouched.
+
+
+Integration verification PASS at 65fe5f2e133bfc76e96be57577829bab279d79fb plus changelog-only release diff. Both product fixes already passed independent Astra/Fable gates. All production/test bytes match approved lanes; docs/run.md combines disjoint additions and run-map preserves both mappings.
+
+## test (exit 0)
+```text
+go test ./...
+?   	github.com/joshuavial/etude/cmd/etude	[no test files]
+ok  	github.com/joshuavial/etude/cmd/gen-docs	0.908s
+ok  	github.com/joshuavial/etude/internal/artifactmedia	(cached)
+ok  	github.com/joshuavial/etude/internal/artifactstore	(cached)
+ok  	github.com/joshuavial/etude/internal/bench	41.117s
+ok  	github.com/joshuavial/etude/internal/cli	148.614s
+ok  	github.com/joshuavial/etude/internal/eval	40.023s
+ok  	github.com/joshuavial/etude/internal/example	17.341s
+ok  	github.com/joshuavial/etude/internal/gc	10.623s
+ok  	github.com/joshuavial/etude/internal/ident	(cached)
+ok  	github.com/joshuavial/etude/internal/index	10.882s
+ok  	github.com/joshuavial/etude/internal/liverun	83.499s
+ok  	github.com/joshuavial/etude/internal/nudge	(cached)
+ok  	github.com/joshuavial/etude/internal/refstore	(cached)
+ok  	github.com/joshuavial/etude/internal/registry	1.945s
+ok  	github.com/joshuavial/etude/internal/replay	55.307s
+ok  	github.com/joshuavial/etude/internal/retro	27.671s
+ok  	github.com/joshuavial/etude/internal/runmanifest	(cached)
+ok  	github.com/joshuavial/etude/internal/sessionevidence	(cached)
+ok  	github.com/joshuavial/etude/internal/subproc	21.604s
+ok  	github.com/joshuavial/etude/internal/workflow	(cached)
+ok  	github.com/joshuavial/etude/internal/worktree	(cached)
+?   	github.com/joshuavial/etude/tmp	[no test files]
+
+```
+## lint (exit 0)
+```text
+test -z "$(gofmt -l cmd internal)"
+go vet ./...
+
+```
+## shell (exit 0)
+```text
+=== exit-code contract ===
+--- TEST: clean run exits 0
+    PASS: clean run exits 0
+--- TEST: clean run says so
+    PASS: clean run says so
+--- TEST: unknown flag is a usage error (exit 2, NOT a gap)
+    PASS: unknown flag is a usage error (exit 2, NOT a gap)
+--- TEST: --last 0 is rejected (exit 2), not treated as an empty window
+    PASS: --last 0 is rejected (exit 2), not treated as an empty window
+--- TEST: --last with a non-numeric value exits 2
+    PASS: --last with a non-numeric value exits 2
+--- TEST: the no-args default audits a window rather than erroring
+    PASS: the no-args default audits a window rather than erroring
+--- TEST: --help exits 0 and prints the exit-code contract
+    PASS: --help exits 0 and prints the exit-code contract
+--- TEST: an allowlist with comments and blank lines still runs to a verdict
+    PASS: an allowlist with comments and blank lines still runs to a verdict
+--- TEST: and the real allowlist entry still applies
+    PASS: and the real allowlist entry still applies
+--- TEST: no closed beads exits 2, not 0
+    PASS: no closed beads exits 2, not 0
+
+=== (a) run ref present ===
+--- TEST: missing run ref is a hard gap (exit 1)
+    PASS: missing run ref is a hard gap (exit 1)
+--- TEST: missing run ref names the bead
+    PASS: missing run ref names the bead
+
+=== (b) run has gates ===
+--- TEST: run ref with zero gates is a hard gap
+    PASS: run ref with zero gates is a hard gap
+--- TEST: zero-gate gap is reported as gateless-run, not missing-run
+    PASS: zero-gate gap is reported as gateless-run, not missing-run
+--- TEST: a run ref with NO manifest.json is a hard gap, not a clean pass
+    PASS: a run ref with NO manifest.json is a hard gap, not a clean pass
+--- TEST: missing manifest is reported as bad-manifest
+    PASS: missing manifest is reported as bad-manifest
+--- TEST: a manifest that is not valid JSON is also a hard gap
+    PASS: a manifest that is not valid JSON is also a hard gap
+--- TEST: a manifest whose 'gates' is not a list is a hard gap
+    PASS: a manifest whose 'gates' is not a list is a hard gap
+--- TEST: malformed bd output is an environment error (exit 2), not a short clean window
+    PASS: malformed bd output is an environment error (exit 2), not a short clean window
+--- TEST: a gated run does not trip (b)
+    PASS: a gated run does not trip (b)
+--- TEST: and that run is clean overall
+    PASS: and that run is clean overall
+--- TEST: a for-each-ref failure is an environment error, not a vacuous pass
+    PASS: a for-each-ref failure is an environment error, not a vacuous pass
+--- TEST: the for-each-ref failure does not report refs as clean
+    PASS: the for-each-ref failure does not report refs as clean
+--- TEST: a python3 failure makes the gate count a gap, not an assumed pass
+    PASS: a python3 failure makes the gate count a gap, not an assumed pass
+--- TEST: the python3 failure is reported as bad-manifest
+    PASS: the python3 failure is reported as bad-manifest
+
+=== (d) refs pushed ===
+--- TEST: a local ref absent from origin is a hard gap
+    PASS: a local ref absent from origin is a hard gap
+--- TEST: unpushed gap names the ref
+    PASS: unpushed gap names the ref
+--- TEST: a ref that diverged from origin is a hard gap
+    PASS: a ref that diverged from origin is a hard gap
+--- TEST: divergence is reported with both shas and the right remedy
+    PASS: divergence is reported with both shas and the right remedy
+--- TEST: an unreachable origin is an environment error (exit 2), not a pile of gaps
+    PASS: an unreachable origin is an environment error (exit 2), not a pile of gaps
+--- TEST: the origin failure is not reported as unpushed refs
+    PASS: the origin failure is not reported as unpushed refs
+--- TEST: a ref behind origin is reported as stale-ref, not unpushed-ref
+    PASS: a ref behind origin is reported as stale-ref, not unpushed-ref
+--- TEST: a behind-origin ref is still a hard gap
+    PASS: a behind-origin ref is still a hard gap
+--- TEST: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+    PASS: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+--- TEST: the unpushed retro ref is named
+    PASS: the unpushed retro ref is named
+--- TEST: a pushed retro ref does not gap
+    PASS: a pushed retro ref does not gap
+--- TEST: an unexpected gate-count value is a hard gap, not a silent pass
+    PASS: an unexpected gate-count value is a hard gap, not a silent pass
+--- TEST: running from another git repo still audits the script's own repo
+    PASS: running from another git repo still audits the script's own repo
+--- TEST: the other repo's refs are not audited
+    PASS: the other repo's refs are not audited
+--- TEST: an undecidable divergence is reported as diverged-ref, not a push instruction
+    PASS: an undecidable divergence is reported as diverged-ref, not a push instruction
+--- TEST: an undecidable divergence does not tell the operator to push
+    PASS: an undecidable divergence does not tell the operator to push
+
+=== (c) retro cadence is WARN only ===
+--- TEST: 3 uncovered beads with clean hard checks still exits 0
+    PASS: 3 uncovered beads with clean hard checks still exits 0
+--- TEST: cadence overdue is reported as WARN
+    PASS: cadence overdue is reported as WARN
+--- TEST: cadence overdue is NOT counted as a hard gap
+    PASS: cadence overdue is NOT counted as a hard gap
+--- TEST: under the threshold, cadence reports ok
+    PASS: under the threshold, cadence reports ok
+
+=== allowlist ===
+--- TEST: an allowlisted bead with no run ref does not gap
+    PASS: an allowlisted bead with no run ref does not gap
+--- TEST: the exemption is REPORTED, not silent
+    PASS: the exemption is REPORTED, not silent
+--- TEST: allowlisted beads leave the active count lower
+    PASS: allowlisted beads leave the active count lower
+--- TEST: allowlisting does NOT exempt a ref from the pushed check
+    PASS: allowlisting does NOT exempt a ref from the pushed check
+--- TEST: explicit named workflow run satisfies bead evidence
+    PASS: explicit named workflow run satisfies bead evidence
+--- TEST: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+--- TEST: duplicate mappings fail closed
+    PASS: duplicate mappings fail closed
+--- TEST: malformed mapping fails closed
+    PASS: malformed mapping fails closed
+--- TEST: recent window uses all closed beads before sorting by closure
+    PASS: recent window uses all closed beads before sorting by closure
+    PASS: recent window uses all closed beads before sorting by closure
+--- TEST: actual newest closure is included in the audited window
+    PASS: actual newest closure is included in the audited window
+    PASS: actual newest closure is included in the audited window
+
+===========================================
+Test results: 58 passed, 0 failed
+===========================================
+
+=== Section B: pre-push hook tests ===
+--- TEST: B1: etude-only push is exempt (exit 0, no audit)
+    PASS: B1: etude-only push is exempt (exit 0, no audit)
+--- TEST: B1: audit not called for etude-only push
+    PASS: B1: audit not called for etude-only push
+--- TEST: B2: code push with clean audit passes (exit 0)
+    PASS: B2: code push with clean audit passes (exit 0)
+--- TEST: B2: audit was called for code push
+    PASS: B2: audit was called for code push
+--- TEST: B3: code push with gap is blocked (exit 1)
+    PASS: B3: code push with gap is blocked (exit 1)
+--- TEST: B3: blocked message points at the current capture/gate/sync flow
+    PASS: B3: blocked message points at the current capture/gate/sync flow
+--- TEST: B3: blocked message no longer names the retired close script
+    PASS: B3: blocked message no longer names the retired close script
+--- TEST: B4: mixed etude+heads push calls the audit
+    PASS: B4: mixed etude+heads push calls the audit
+--- TEST: B5: deletion-only push is exempt (exit 0, no audit)
+    PASS: B5: deletion-only push is exempt (exit 0, no audit)
+--- TEST: B5: audit not called for deletion-only push
+    PASS: B5: audit not called for deletion-only push
+--- TEST: B6: tag push is exempt (exit 0, no audit)
+    PASS: B6: tag push is exempt (exit 0, no audit)
+--- TEST: B6: audit not called for tag push
+    PASS: B6: audit not called for tag push
+--- TEST: B7: empty stdin is exempt (exit 0, no audit)
+    PASS: B7: empty stdin is exempt (exit 0, no audit)
+--- TEST: B7: audit not called for empty stdin
+    PASS: B7: audit not called for empty stdin
+--- TEST: B8: unknown-ref-only push does not trigger audit (exit 0)
+    PASS: B8: unknown-ref-only push does not trigger audit (exit 0)
+--- TEST: B8: audit not called for unknown-ref-only push
+    PASS: B8: audit not called for unknown-ref-only push
+--- TEST: B9: missing audit script exits 0 (no break outside etude repo)
+    PASS: B9: missing audit script exits 0 (no break outside etude repo)
+--- TEST: B10: audit exit 2 on code push fails closed (exit 1)
+    PASS: B10: audit exit 2 on code push fails closed (exit 1)
+
+=== Section C: bd stdin coexistence ===
+--- TEST: C1: bd block and dogfood classifier coexist (stdin not consumed by bd)
+    PASS: C1: bd block and dogfood classifier coexist (stdin not consumed by bd)
+--- TEST: C1: dogfood classifier fired (audit was called after bd block)
+    PASS: C1: dogfood classifier fired (audit was called after bd block)
+
+===========================================
+Test results: 20 passed, 0 failed
+===========================================
+seat-adapter: syntax
+  ok   bash -n
+seat-adapter: verdict parsing
+  ok   clean GO writes a go envelope
+  ok   clean BLOCK writes a block envelope
+  ok   echoed template does not shadow the real verdict
+seat-adapter: fail-closed paths (each must leave NO envelope)
+  ok   CLI non-zero is not a GO
+  ok   truncated reply with no VERDICT is not a GO
+  ok   unrecognized verdict is not a GO
+  ok   prose containing the word go is not a GO
+  ok   PASS is not GO
+  ok   PASS_WITH_FOLLOWUPS is not GO
+  ok   APPROVED is not GO
+  ok   empty reply is not a GO
+seat-adapter: case folding is deliberate, and is the ONLY tolerance
+  ok   mixed-case Go is accepted (same answer, different letter case)
+  ok   lowercase block is accepted
+  ok   GOOD is not GO (case folding is not prefix matching)
+  ok   NOGO is not GO (case folding is not substring matching)
+seat-adapter: whitespace tolerance (must not cause a false outage)
+  ok   trailing whitespace after GO still parses
+  ok   extra inner and trailing whitespace around BLOCK still parses
+  ok   indented RETURN block still parses
+  ok   a VERDICT not at line start is still not a GO
+seat-adapter: BLOCK without a reason is still a BLOCK
+  ok   BLOCK with no stated reason stays blocking
+seat-adapter: contradictory verdicts are refused, not arbitrated by position
+  ok   BLOCK then a later GO is refused, not read as go
+  ok   GO then a later BLOCK is refused too (symmetric)
+  ok   echoed placeholder does not count as a conflicting verdict
+  ok   the same verdict stated twice is not a conflict
+seat-adapter: a GO carrying blocking findings is refused
+  ok   GO with a non-empty BLOCKING body is refused
+seat-adapter: a later placeholder cannot cancel an earlier finding
+  ok   GO whose earlier BLOCKING is cancelled by a later none is refused
+  ok   BLOCK keeps a finding stated after a none
+seat-adapter: an echoed RETURN template is not content
+  ok   echoed template then GO is accepted, not a false outage
+  ok   echoed template then BLOCK still blocks
+seat-adapter: label spelling and placeholder precision
+  ok   BLOCKING with a space before the colon is still seen
+  ok   VERDICT with a space before the colon still parses
+  ok   an angle-wrapped GENUINE finding is content, not a placeholder
+  ok   and it is recorded on a BLOCK
+seat-adapter: a bare label with findings on following lines is refused
+  ok   bare BLOCKING: header with unlabelled findings is refused
+  ok   bare BLOCKING: followed by a blank line is not a false outage
+  ok   bare BLOCKING: followed by another label is not a false outage
+  ok   a spaced-colon label terminates a bare label block
+seat-adapter: an echoed placeholder never reaches required[]
+  ok   only the real finding is recorded, not the echoed template
+seat-adapter: multi-line findings are preserved, not truncated
+  ok   all three blocking findings reach the envelope
+seat-adapter: the prompt is not guessed from several inputs
+  ok   refuses to guess which of several inputs is the prompt
+seat-adapter: the envelope is the adapter's alone (adversarial writers)
+  ok   child sees neither ETUDE_OUTPUT_FILE nor ETUDE_INPUTS_DIR
+  ok   CLI writing its own go envelope does not pass
+  ok   CLI-written go envelope is overwritten by the real BLOCK verdict
+  ok   CLI writing a go envelope then failing does not pass
+  ok   stale envelope from a prior run is cleared
+seat-adapter: session evidence
+  ok   envelope carries session_id and transcript_path
+  ok   transcript written next to the output file
+  ok   transcript preserves the model's raw reply
+seat-adapter: missing environment
+  ok   refuses to run without ETUDE_INPUTS_DIR
+seat-adapter: all checks passed
+
+=== retro-meta-index_test.sh ===
+
+--- TEST: empty-corpus exits 0
+    PASS: empty-corpus exits 0
+--- TEST: empty-corpus zero retros
+    PASS: empty-corpus zero retros
+--- TEST: empty-corpus no failure modes
+    PASS: empty-corpus no failure modes
+
+--- Seeded fixtures:
+  refs/etude/retros/retro-dangling-supersedes
+  refs/etude/retros/retro-new-supersedes-old
+  refs/etude/retros/retro-no-sidecar
+  refs/etude/retros/retro-old-superseded
+  refs/etude/retros/retro-process-noncadence
+  refs/etude/retros/retro-test-a
+  refs/etude/retros/retro-test-b
+
+--- TEST: two-current-retros retros-indexed line
+    PASS: two-current-retros retros-indexed line
+    PASS: two-current-retros retros-indexed line
+--- TEST: two-current-retros failure-mode from A appears
+    PASS: two-current-retros failure-mode from A appears
+--- TEST: two-current-retros failure-mode from B appears
+    PASS: two-current-retros failure-mode from B appears
+--- TEST: two-current-retros durable-change from A appears
+    PASS: two-current-retros durable-change from A appears
+--- TEST: two-current-retros durable-change from B appears
+    PASS: two-current-retros durable-change from B appears
+--- TEST: superseded-excluded OLD failure mode absent
+    PASS: superseded-excluded OLD failure mode absent
+--- TEST: superseded-excluded OLD bead absent
+    PASS: superseded-excluded OLD bead absent
+--- TEST: superseded-excluded OLD durable change absent
+    PASS: superseded-excluded OLD durable change absent
+--- TEST: superseded-excluded NEW failure mode present
+    PASS: superseded-excluded NEW failure mode present
+--- TEST: superseded-excluded NEW bead present
+    PASS: superseded-excluded NEW bead present
+--- TEST: non-cadence process-retro failure mode absent
+    PASS: non-cadence process-retro failure mode absent
+--- TEST: non-cadence process-retro durable change absent
+    PASS: non-cadence process-retro durable change absent
+--- TEST: no-sidecar exits 0
+    PASS: no-sidecar exits 0
+--- TEST: multi-retro bead MULTI-RETRO marker
+    PASS: multi-retro bead MULTI-RETRO marker
+--- TEST: multi-retro bead count=2 retros listed
+    PASS: multi-retro bead count=2 retros listed
+    PASS: multi-retro bead count=2 retros listed
+--- TEST: recurring-failure-mode count=2
+    PASS: recurring-failure-mode count=2
+--- TEST: recurring-failure-mode RECURRING marker
+    PASS: recurring-failure-mode RECURRING marker
+--- TEST: recurring-root-cause count=2
+    PASS: recurring-root-cause count=2
+--- TEST: summary line reports recurring failure modes
+    PASS: summary line reports recurring failure modes
+--- TEST: timeline A before B (dates 2026-05-10 before 2026-05-15)
+    PASS: timeline A before B (dates 2026-05-10 before 2026-05-15)
+--- TEST: timeline date headings present
+    PASS: timeline date headings present
+    PASS: timeline date headings present
+--- TEST: deterministic output
+    PASS: deterministic output
+--- TEST: json-mode exits 0
+    PASS: json-mode exits 0
+--- TEST: json-mode valid JSON
+    PASS: json-mode valid JSON
+--- TEST: json-mode retros_indexed=4
+    PASS: json-mode retros_indexed=4
+--- TEST: json-mode follow_up_beads sorted
+    PASS: json-mode follow_up_beads sorted
+--- TEST: json-mode failure_modes count-desc sorted
+    PASS: json-mode failure_modes count-desc sorted
+--- TEST: dangling-supersedes no crash
+    PASS: dangling-supersedes no crash
+--- TEST: dangling-supersedes retro itself included
+    PASS: dangling-supersedes retro itself included
+
+=== RESULTS: 35 passed, 0 failed ===
+ALL TESTS PASSED
+
+```
+## race (exit 0)
+```text
+ok  	github.com/joshuavial/etude/internal/subproc	17.678s
+ok  	github.com/joshuavial/etude/internal/replay	51.672s
+ok  	github.com/joshuavial/etude/internal/liverun	83.651s
+ok  	github.com/joshuavial/etude/internal/eval	33.384s
+ok  	github.com/joshuavial/etude/internal/retro	24.569s
+ok  	github.com/joshuavial/etude/internal/cli	156.357s
+
+```
+## docs (exit 0)
+```text
+/Applications/Xcode.app/Contents/Developer/usr/bin/make docs-reality
+docs-reality: OK — 16 commands; docs match the shipped CLI.
+/Applications/Xcode.app/Contents/Developer/usr/bin/make docs-check
+generated 26 command docs into /var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/tmp.TYvMo3kM4Q
+
+```
+## build-all (exit 0)
+```text
+
+```
+## build (exit 0)
+```text
+mkdir -p bin
+go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=v1.1.0" -o bin/etude ./cmd/etude
+
+```
+## lifecycle (exit 0)
+```text
+work dir: /var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/tmp.hivDRsnER7
+captured a9c33141fedfecb0efa130e55012d7daec145e19
+ref refs/etude/runs/demo
+action create
+timed out after 1s
+CASE replay-timeout: exit=1 descendant_pid=73533 terminated=yes marker=absent
+timed out after 1s
+CASE retro-timeout: exit=1 descendant_pid=74446 terminated=yes marker=absent
+  replay after SIGINT returned in 2s; log: runner: context done: context canceled 
+CASE replay-sigint: exit=1 descendant_pid=75445 terminated=yes marker=absent
+  retro after SIGTERM returned in 2s; log: generator: generator: context done: context canceled 
+CASE retro-sigterm: exit=1 descendant_pid=76357 terminated=yes marker=absent
+CASE replay-success: exit=0 output=ok-output
+
+```
+## retry (exit 0)
+```text
+exercise_root=/tmp/etude-ikj3-exercise.AkXhEC
+base_forward=expected failure after two pre-fix stage invocations
+fixed_forward=success with plan+review+review retry invocations
+
+```
+
+## Release diff
+```diff
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 48f2c6a..df0f24a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,8 +22,29 @@ mechanics.
+ 
+ ## [Unreleased]
+ 
++## [v1.1.0] — 2026-09-07
++
++### Added
++
++- `etude gate` for independently reviewing captured stage artifacts, and gate
++  prompt benchmarking through `etude bench`.
++- Read-only repository health checks with `etude doctor`.
++- Opt-in caller-workspace runners, pinned read-only checkout evidence for gate
++  seats, and recorded submodule revisions in run worktrees.
++- Stage session/log capture and prior-attempt evidence for live gate reruns.
++- `dev-claude` and `dev-codex` development profiles with scoped reviewer
++  authentication and documentation-driven verification.
++
+ ### Fixed
+ 
++- Init preserves ordinary Git branch pushes, removes exact local legacy metadata
++  push mappings, and configures safe sibling fetch mirrors. Metadata publication
++  remains explicit through `etude sync`.
++- Forward replay resolves generated retry stage names through their logical
++  workflow runners, preserves exact literal-name precedence and recorded inputs,
++  and resolves all runners before execution.
++- Resume recovers captured gate artifacts and retries zero-seat reviewer outages.
++
+ - `etude gate` now hashes the supplied `--artifact` and refuses to run any
+   check or reviewer when it does not match the latest captured output for the
+   stage's role, closing the audit findings where a stale or wrong file could
+
+```
+## Full changelog
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
+format. Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+The authoritative list of what is in v1 versus deferred is
+[`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md).
+
+---
+
+## Versioning
+
+The `etude` binary reports its version via `etude --version`. A plain
+`make build` stamps the binary with `dev`; a release build passes the version
+explicitly (e.g. `make build VERSION=v1.0.0`). See the
+[`## Releasing`](README.md#releasing) section of `README.md` for the full
+mechanics.
+
+---
+
+## [Unreleased]
+
+## [v1.1.0] — 2026-09-07
+
+### Added
+
+- `etude gate` for independently reviewing captured stage artifacts, and gate
+  prompt benchmarking through `etude bench`.
+- Read-only repository health checks with `etude doctor`.
+- Opt-in caller-workspace runners, pinned read-only checkout evidence for gate
+  seats, and recorded submodule revisions in run worktrees.
+- Stage session/log capture and prior-attempt evidence for live gate reruns.
+- `dev-claude` and `dev-codex` development profiles with scoped reviewer
+  authentication and documentation-driven verification.
+
+### Fixed
+
+- Init preserves ordinary Git branch pushes, removes exact local legacy metadata
+  push mappings, and configures safe sibling fetch mirrors. Metadata publication
+  remains explicit through `etude sync`.
+- Forward replay resolves generated retry stage names through their logical
+  workflow runners, preserves exact literal-name precedence and recorded inputs,
+  and resolves all runners before execution.
+- Resume recovers captured gate artifacts and retries zero-seat reviewer outages.
+
+- `etude gate` now hashes the supplied `--artifact` and refuses to run any
+  check or reviewer when it does not match the latest captured output for the
+  stage's role, closing the audit findings where a stale or wrong file could
+  be reviewed and recorded as if it were the captured artifact (A01, A15).
+  Manifest validation now accepts a `reviewed_stages` digest matching any
+  same-named stage occurrence's output, log, or input rather than only the
+  newest, so recapturing a stage under the same name (`--expect append`) keeps
+  earlier gates valid.
+- Stage runners, gate seats, gate checks, bench judges and retro generators
+  now run in their own Unix process group, which is killed on timeout or
+  cancellation and again after the command exits, so backgrounded descendants
+  can no longer keep writing after etude has returned (A03). `Ctrl-C` and
+  `SIGTERM` cancel the running command and its group. Non-Unix platforms keep
+  the previous direct-child cancellation. See
+  [Subprocess lifecycle](docs/run.md#subprocess-lifecycle).
+
+---
+
+## [v1.0.0] — 2026-07-30
+
+### Added
+
+**Commands**
+
+- `etude init` — scaffold `.etude/workflow.yaml` and rubric placeholders;
+  register the `refs/etude/*` fetch/push refspec on a git remote.
+- `etude capture` — record a stage artifact for the current run.
+- `etude capture-gate` — append a structured gate-reviewer record to a run.
+- `etude capture-run` — record a complete multi-stage run from a single YAML
+  spec in one operation.
+- `etude run <workflow>` — drive a workflow's stage graph LIVE: resolve each
+  stage's runner, invoke the external-runner contract, chain output→input
+  roles, execute per-stage gates, and capture each stage incrementally so the
+  run is a byproduct of execution. `--resume <id>` continues a partial run from
+  its frontier; `--task`/`--run-id`/`--git-sha`/`--runner`/`--timeout` flags.
+- `etude run --workflow <name>` — select a named workflow
+  `.etude/workflows/<name>.yaml` so one repo can host several workflows (for
+  example a full dev pipeline plus a narrow gate-only workflow) sharing one run
+  store. Omitting the flag reads the repo default `.etude/workflow.yaml`
+  unchanged; there is no fallback between the two locations. The positional
+  argument keeps asserting the loaded workflow's name. `etude replay` and
+  `etude retro nudge` still read `.etude/workflow.yaml` only.
+- `etude run list` / `etude run show` — list all stored runs; inspect the
+  detail (including gate records) of one run; `run show` works mid-run.
+- `etude sync` — push and fetch `refs/etude/*` with a git remote.
+- `etude replay` — `etude replay <run> <stage>` re-executes one recorded stage;
+  `etude replay <run>` (no stage) FORWARD-replays all stages in order from the
+  captured artifacts. `--allow-env` opts a replay into the workflow's env
+  allowlist (hermetic by default).
+- `etude bench` — benchmark a cohort of runs by replaying and judging
+  replay-vs-original; `eval` is available as an internal library consumed by
+  this command (no standalone `etude eval` command in v1).
+- `etude retro capture` / `etude retro generate` / `etude retro list` /
+  `etude retro show` — store, generate, list, and inspect retrospectives
+  as `refs/etude/retros/*` refs.
+- `etude retro nudge dismiss` / `etude retro nudge status` — opt-in
+  retro-overdue reminder emitted on stderr by any `etude` command when the
+  number of runs since the most recent retro reaches a `retros.nudge`
+  threshold in `.etude/workflow.yaml`; `dismiss` snoozes the reminder for
+  the next N beads, `status` prints the current decision as JSON.
+- `etude gc` — report artifact storage and explicitly prune named run refs.
+- `etude reindex` — rebuild the derived SQLite query index from run and eval
+  refs.
+- `etude prime` — print a structured agent-onboarding primer to stdout (no
+  args, no side effects).
+- `etude log` — narrate runs and retros as a chronological timeline
+  (read-only).
+
+**Live execution** (the `etude-2pc` epic — drive and gate arbitrary workflows
+live, not just replay)
+
+- Live workflow orchestration — `etude run` walks an arbitrary stage graph in a
+  single evolving worktree, auto-generates a sortable run id, captures each
+  stage by compare-and-swap on the run ref (valid partial run on crash), and is
+  resumable from the frontier. Replay is redefined as forward replay.
+- Live gate execution — a stage's `gate` runs deterministic **checks** (any
+  failure hard-blocks) and weighted model **seats**, synthesizes a fail-closed
+  `pass | rerun | escalated` verdict, re-runs the guarded stage with feedback on
+  `rerun`, climbs the tier ladder on `escalated`, and records each attempt as a
+  `GateAttempt` automatically.
+- Workflow schema — optional per-stage `runner` and `gate` blocks, a run-level
+  `default_runner`, and a workflow-level `env_allowlist`, all additive and
+  byte-stable round-tripping for legacy files.
+- Shared seat/runner registry — `.etude/registry.yaml` defines named seats,
+  tier presets (L1–L4), and quorum, referenced by stage runners, gate seats,
+  and the `etude-review` skill alike.
+- Scoped secret/env passthrough — live runners receive only an operator-declared
+  env allowlist (hermetic by default; replay opt-in); the passed NAMES (never
+  values) are recorded in the run manifest for audit.
+
+**Configuration**
+
+- The dev workflow is migrated to the new schema; the former `.etude/gates.yaml`
+  is retired — its seats/tiers/quorum move to `.etude/registry.yaml` and its
+  per-phase gate bindings move onto the workflow stages. `etude init` scaffolds
+  `registry.yaml`.
+
+**Storage**
+
+- Git-native `refs/etude/*` ref store — run records written atomically to
+  per-run refs with no shared write point.
+- Content-addressed inline artifacts — blobs stored by hash inside the ref
+  store.
+
+**Run manifests**
+
+- Run manifests v2 and v3 — v3 adds gate-reviewer records; the producer
+  record is authoritative.
+- Retro-meta sidecars — retrospective metadata stored alongside run records.
+
+---
+
+Deferred / post-v1 items (live xenota capture adapter, `etude import`,
+standalone `etude eval`, `query` command, external artifact pointer capture
+via the CLI, docs site) are tracked in
+[`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md).
+
+## Commits since v1.0.0
+65fe5f2 fix retry replay runner lookup and reviewer authentication
+e885b40 terminate managed subprocess groups on timeout and exit
+e1770da preserve ordinary git pushes when initializing etude
+9da75f5 bind gate reviews to captured artifact bytes
+2ffb195 select recent audit window from all closed beads
+7356a21 configure practical etude development workflows
+c6c9302 Merge pull request #23 from joshuavial/issue/17-stage-attempt-evidence
+717d5f4 test caller rerun evidence composition
+5a5693b compose rerun evidence with pinned checkouts
+34715f2 Address stage evidence review findings
+4565ff2 feed prior attempts into gate reruns
+c2a6c96 Capture stage sessions and logs
+644e717 Merge pull request #22 from joshuavial/gh15/caller-cwd-runner
+ce964cf Reject caller workspace symlink topology changes
+fb7b6f6 Close caller guard provenance edge cases
+f2206fb preserve original checkout provenance across caller stages
+6280950 add guarded caller-workspace runners
+fc86fbc Merge pull request #20 from joshuavial/gh16/seats-read-checkout
+516233d Merge pull request #21 from joshuavial/gh14/worktree-submodules
+5698445 isolate pinned checkout evidence per gate seat
+7d3b1e1 isolate output-only gate seats from checkouts
+39fe56a require adversarial proofs for opt-in capabilities
+9080759 grant gate seats read access to pinned checkouts
+ab921eb add gate checkout read grant to workflow and manifest schemas
+99643ba add read-only repository health checks
+3a37dbf populate run worktree submodules and record their shas
+fd75384 allowlist the allowlist-classification blocker
+74e4053 allowlist two manager blocker resolutions with no repository work
+33fd4bf mirror fetched etude refs to a sibling namespace so fetch and prune are safe
+693f775 regenerate bench CLI reference
+f6b73bb add gate prompt benchmarking to bench
+770584b remove the unreachable gemini seat and the agy fallback
+be1098d stop etude init registering a prunable refs/etude fetch refspec and remove any left behind
+ddc3397 make etude capture distinguish create from append instead of silently starting a fresh run
+5277325 allowlist the supervised-lanes epic rollup like its predecessors
+53d8249 correct the retro verdict count and require appending before the next capture
+f4533af record what the first supervised proof run taught in the supervisor runbook
+8e01765 soften two retro claims to what the gate record can support
+db8eb4c pin the retro cwd-hazard evidence to the commit it was observed at
+1694e14 add fourth retro covering the audit shrink and the first proof run
+752be1a land retro markdown under .etude/retros when a retro ref is written
+1b837a1 shrink the completeness audit to the checks that catch real misses
+f773b54 add third retro for the supervised-lanes epic
+e0c59b6 delete the retroactive capture path and extract the surviving pre-push tests
+5c5cdbc add second retro for the supervised-lanes epic
+3b52135 pin docs-stage gating by produced role and document the role mapping
+17d0ab5 walk a seat's invocation fallback ladder when its primary fails
+bca4719 add first retro for the supervised-lanes epic
+93b8ab9 add etude gate to run a stage's review gate and record the attempt
+1eb1fef improve research replay mismatch diagnostics
+f520c4a make stage name required diagnostics self-contained
+a22c838 record two overdue cadence retros
+77b24b7 land schema hardening
+00abf86 tighten registry and workflow schema handling
+db84538 land registry fallback hardening
+5d51976 record the resolved disk blocker
+204978c make registry fallbacks regeneration-safe
+3c276d6 replace the dogfood capture protocol with a supervisor runbook
+c71c02f harden research replay assertions
+9882f67 isolate the worktree leak tests from the shared temp dir
+b38cece Merge pull request #12 from joshuavial/lane-refactor/xc-n2hwi-resumable-escalation
+2f3204f retry zero-seat gate outages on resume
+600c616 reproduce zero-seat resume failure
+44ebfd9 Merge pull request #11 from joshuavial/bugfix/xc-lpna1-resume-reseed
+26e84f4 fix resume artifact reseeding
+cc28d9a reproduce resume with gate artifacts
+2f6b99f add make install target that stamps the version like make build
