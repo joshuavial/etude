@@ -1,0 +1,3 @@
+# etude-5dr.7 plan round 2
+
+The plan retains `ErrCallerWorkspaceDirty` for same-byte `.git/config` symlink replacement. Empirically, `git rev-parse --path-format=absolute --git-path config` resolves the symlink and returns the target path, so `Lstat` sees the regular target and the before/after snapshot differs on the newly encoded resolved path. The regression passed and requires both `ErrCallerWorkspaceDirty` and `Git control files changed`, proving that exact topology-sensitive snapshot seam. Direct non-regular paths that Git does not resolve use the unsupported sentinel.
