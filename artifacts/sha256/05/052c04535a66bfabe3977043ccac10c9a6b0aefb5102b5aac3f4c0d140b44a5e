@@ -1,0 +1,67 @@
+✓ etude-712 · Make gen-docs TestDriftGuard expectedCommands exhaustive (auto-derive from generated set)   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-26
+Close reason: gen-docs TestDriftGuard now derives expected pages from generated output (checkDrift + 3 failure-mode tests); exhaustive, catches the 3 previously-omitted pages, Tier-2 gate passed, e57d0ee
+
+DESCRIPTION
+TestDriftGuard's expectedCommands list in cmd/gen-docs/main_test.go is hand-maintained and silently OMITS shipped CLI pages (etude_retro.md, etude_retro_capture.md, etude_capture-gate.md, and now etude_retro_list.md/etude_retro_show.md unless added). Effect: go test ./... does NOT catch docs staleness for those commands; only make docs-check (full diff) does. Fix: derive the expected page set from the actual generated output (or from the cobra command tree) so the guard can't drift as commands are added. Surfaced during etude-8t4's plan gate (Opus seat). Dogfood/dev-tooling, not product.
+
+DESIGN
+## Plan
+
+**Approach:** Make the drift guard derive its checked set from the ACTUAL generated output (the cobra tree via the existing run()), not a hand-list. Rewrite TestDriftGuard to: generate into a temp dir, enumerate every generated etude*.md, byte-compare each against docs/cli/, then orphan-check that docs/cli/ has no etude*.md the generator did NOT produce. Remove the hand-maintained expectedCommands slice entirely and fix the two sibling tests that referenced it. Confirmed via temp-dir gen + diff: current committed docs/cli/ is already fully in sync (17 files, byte-identical), so this fix needs NO make docs regen commit and the new guard passes clean. The old hand-list had 14 entries but omits the 3 shipped pages (etude_retro.md, etude_retro_capture.md, etude_capture-gate.md) — that is exactly the completeness hole.
+
+**Files:**
+- cmd/gen-docs/main_test.go - rewrite TestDriftGuard (enumerate-generated + byte-compare + orphan-detect via a checkDrift helper); delete expectedCommands var; repurpose TestGeneratesOneFilePerCommand to assert generated set is non-empty and contains anchors (etude.md, etude_run.md) instead of iterating the hand-list; update TestDeterministicOutput (currently iterates expectedCommands) to enumerate generated files instead; leave TestFilesContainSynopsisAndFlags untouched (its own curated content map, not a completeness list — does not depend on expectedCommands). No change to main.go generation logic.
+
+**Tests:**
+- checkDrift(generatedDir, committedDir) helper — DIR-ARGS-ONLY, pure function (signature confirmed feasible against main.go: it globs `etude*.md` in generatedDir for the source-of-truth expected set, byte-compares each against committedDir, then globs `etude*.md` in committedDir for orphans; it does NOT hardcode docs/cli). Returns []error (one per offending page) so callers feed it any pair of dirs. Real-tree TestDriftGuard resolves committedDir via findCommittedCliDir() and calls checkDrift(tempGeneratedDir, committedDir), asserting zero errors (current docs/cli/ in sync → passes clean).
+- THREE explicit failure-mode sub-tests, each on a TEMP COPY of the committed set (never the real docs/cli), with the generated dir left intact (full set):
+  1. committed-missing: generated = full set; committed-temp = full set MINUS one page → checkDrift returns a non-nil error naming that missing page (proves missing-committed detection — NOT orphan detection, because the generated/expected set is left whole).
+  2. committed-orphan: generated = full set; committed-temp = full set PLUS a stray etude_bogus.md → checkDrift returns a non-nil error naming etude_bogus.md (proves orphan detection).
+  3. byte-stale: generated = full set; committed-temp = full set but one page has CHANGED bytes → checkDrift returns a non-nil error naming that stale page (proves the byte-comparison staleness check fires, not just existence).
+  Happy path: generated == committed-temp, all byte-identical → checkDrift returns no errors. Setup builds both temp dirs by running run() into a temp generated dir, copying it to a temp committed dir, then mutating only the committed copy per case.
+- Orphan glob scoped to etude*.md to mirror the generator's own scoping (cleanMarkdownFiles/countMarkdownFiles use etude*.md) — docs/cli/ confirmed to contain ONLY 17 generated etude*.md files, no README/index/hidden files, so no whitelist needed.
+- TestGeneratesOneFilePerCommand repurposed: assert >0 generated files and presence of etude.md + a known leaf (e.g. etude_run_list.md).
+- TestDeterministicOutput: switch from expectedCommands to enumerating dir1's generated files.
+
+**Docs:**
+- None. Test/dev-tooling only; no CLI commands added or changed, so generated docs/cli/ is unchanged and no user-facing or planning docs need updating. No built-binary manual test (no product behavior change).
+
+**Risks:** None significant. Self-contained test-only change. Current docs/cli/ is already in sync so the rewritten guard passes immediately. Only watch-item: keep the orphan glob scoped to etude*.md so a future hand-written index in docs/cli/ would not false-positive (matches generator scoping). Tier 2.
+
+**Capture:**
+- inputs: bead etude-712 description, cmd/gen-docs/main.go, cmd/gen-docs/main_test.go, Makefile (docs/docs-check targets), live temp-dir generation diff vs docs/cli/, Tier-2 plan-gate failure-mode finding (committed-missing vs orphan conflation + missing byte-stale case)
+- output: bead --design field
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added pure helper checkDrift(generatedDir, committedDir string) []error that globs etude*.md in generatedDir as source of truth, byte-compares each against committedDir (collecting missing/stale errors), then globs committedDir for orphans; takes explicit dir args, does NOT hardcode docs/cli.
+- Rewrote TestDriftGuard to generate into t.TempDir(), resolve committedDir via findCommittedCliDir(), call checkDrift, and fail on each returned error; preserves 'run `make docs` to regenerate' guidance in error messages.
+- Added TestCheckDriftFailureModes with 4 subtests: happy-path (no errors for identical dirs), committed-missing (error names missing page), committed-orphan (error names etude_bogus.md), byte-stale (error names corrupted page). Each uses fresh temp dirs; generatedDir is always the full run() output.
+- Deleted expectedCommands var.
+- Repurposed TestGeneratesOneFilePerCommand: asserts generated set is non-empty and anchor pages etude.md + etude_run_list.md exist.
+- Updated TestDeterministicOutput: enumerates dir1's etude*.md files instead of iterating the removed hand-list.
+- Left TestFilesContainSynopsisAndFlags untouched (uses its own curated content map, no dependency on expectedCommands).
+
+**Checks run:**
+- go build ./...: pass
+- go test ./...: pass (all 15 packages green)
+- go test -v ./cmd/gen-docs/: pass (TestGeneratesOneFilePerCommand, TestFilesContainSynopsisAndFlags, TestNoAutoGeneratedDateFooter, TestDeterministicOutput, TestDriftGuard, TestCheckDriftFailureModes/happy-path, TestCheckDriftFailureModes/committed-missing, TestCheckDriftFailureModes/committed-orphan, TestCheckDriftFailureModes/byte-stale — all PASS)
+- make lint: pass
+- make docs-check: pass (17 files generated == 17 committed, byte-identical)
+
+**Changed files:**
+- cmd/gen-docs/main_test.go
+
+**Plan deviations:**
+- findCommittedCliDir() now returns fs.ErrNotExist (stdlib sentinel) instead of os.ErrNotExist — these are the same value in Go 1.16+; os.ErrNotExist was used in the original, fs.ErrNotExist is the canonical form. No behavioral difference.
+- The unused import change: added io/fs (for fs.ErrNotExist), no other import changes needed.
+
+**Capture:**
+- inputs: approved plan (bead etude-712 --design field), cmd/gen-docs/main.go, cmd/gen-docs/main_test.go, docs/cli/* listing (17 files confirmed in sync)
+- output: working tree diff (only cmd/gen-docs/main_test.go modified) and bead notes
+
