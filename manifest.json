@@ -363,6 +363,68 @@
       ],
       "decision": {},
       "timestamp": "2026-06-30T01:42:15Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-30T01:26:58Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "use a zero-overlap random value (done in raw-blob proof)"
+          ],
+          "timestamp": "2026-06-30T01:26:58Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "want built-binary evidence the secret VALUE is absent from the RAW persisted manifest bytes, not just run show/--json"
+          ],
+          "timestamp": "2026-06-30T01:26:58Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T01:26:58Z"
     }
   ]
 }
