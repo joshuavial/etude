@@ -1,0 +1,6 @@
+# etude-uao Verify
+Not a new CLI surface (widens manifest validation consumed by capture-gate).
+- go test: TestValidateGateRejects gains tier_5 (rejected) + tier_4_is_valid (validates + JSON round-trip Tier==4); TestTierToInt asserts L4->4. Pass.
+- Full make test ALL PASS; make lint clean; make docs-check zero-diff; make docs-reality OK.
+- Opus independently swept every tier-consuming path: no other site assumes tier<=3.
+Scope: internal/{runmanifest/manifest.go, runmanifest/manifest_test.go, liverun/gate.go, liverun/gate_test.go}, docs/{gates.md, plans/product/gate-reviewer-record-schema.md, plans/dogfood/review-gate-runbook.md}.

@@ -1,0 +1,159 @@
+commit ca03f9a221a1a78e2b930de33464cc724e96f5ec
+Author: joshuavial <git@codewithjv.com>
+Date:   Fri Jul 3 07:01:36 2026 +0800
+
+    reconcile manifest gate tier with registry L1-L4 (allow tier 4)
+
+diff --git a/docs/gates.md b/docs/gates.md
+index 5b45e14..7d5dcfb 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -30,7 +30,7 @@ The gate file is a single JSON object. Field names mirror the stored record:
+   "gate_id": "plan.r2",        // unique per run; convention <phase>.r<round>
+   "phase": "plan",             // the phase this gate guards
+   "round": 2,                  // 1-based; each rerun is a new attempt, round+1
+-  "tier": 2,                   // 0 (unknown) | 1 | 2 | 3
++  "tier": 2,                   // 0 (unknown) | 1 | 2 | 3 | 4  (mirrors registry L1..L4)
+   "status": "pass",            // pass | rerun | escalated
+   "reviewed_stages": [         // >=1; each stage must exist on the run
+     {"stage": "plan", "role": "plan", "artifact": ""}  // artifact optional (sha); "" = name-only
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index dc4f5d6..ad7c014 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -1029,7 +1029,7 @@ Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema
+   "gate_id": "<phase>.r<round>",         // unique per run, e.g. "plan.r2"
+   "phase": "plan|implement|verify|review|...",
+   "round": 1,                            // 1-based; rerun => round+1, new attempt
+-  "tier": 1,                             // 0 unknown | 1 | 2 | 3
++  "tier": 1,                             // 0 unknown | 1 | 2 | 3 | 4 (mirrors registry L1..L4; L1 heaviest, so a higher int is NOT higher risk)
+   "status": "pass|rerun|escalated",
+   "reviewed_stages": [                   // >=1; stage must exist on the run
+     { "stage": "implement", "role": "diff", "artifact": "<sha or omit>" }
+diff --git a/docs/plans/product/gate-reviewer-record-schema.md b/docs/plans/product/gate-reviewer-record-schema.md
+index d439ea4..ca89ba7 100644
+--- a/docs/plans/product/gate-reviewer-record-schema.md
++++ b/docs/plans/product/gate-reviewer-record-schema.md
+@@ -104,7 +104,7 @@ type GateAttempt struct {
+     GateID         string        // identifier, e.g. "review.r2"; [A-Za-z0-9_.-]
+     Phase          string        // plan | implement | verify | docs | review (stage-name charset)
+     Round          int           // 1-based; round 1 is the first attempt
+-    Tier           int           // 0 (unknown/backfilled) | 1 | 2 | 3 (review-gate-runbook "Gate Weight")
++    Tier           int           // 0 (unknown/backfilled) | 1 | 2 | 3 | 4 (mirrors registry L1..L4)
+     Status         GateStatus    // aggregate: pass | rerun | escalated
+     ReviewedStages []ReviewedRef // stage names + artifact refs this gate evaluated
+     Seats          []SeatResult  // one entry per reviewer seat that ran or was meant to run
+@@ -303,9 +303,9 @@ stage loop. `gates` is OPTIONAL (zero gates is valid — backward compat). Per g
+   same phase/round could coexist and break queryability. Enforced in
+   `Manifest.Validate()` with a seen-tuple set, rejecting duplicates with
+   `ErrInvalidManifest` (mirrors the existing duplicate-`produces`-role check).
+-- `tier`: required, integer in `{0, 1, 2, 3}`. `0` means UNKNOWN (e.g. a gate
++- `tier`: required, integer in `{0, 1, 2, 3, 4}` (mirrors registry L1..L4). `0` means UNKNOWN (e.g. a gate
+   backfilled by `.5` from prose notes that did not record a tier); live gates
+-  SHOULD use `1`-`3`.
++  SHOULD use `1`-`4` (matching the registry tier L1..L4).
+ - `status` (GateAttempt.Status): must be one of `pass | rerun | escalated`.
+   (There is no `decision.status`; the aggregate status lives only on the gate.)
+ - `reviewed_stages`: at least one entry; each `stage` must be a `validateIdentifier`
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index af058b7..536a4bc 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -185,9 +185,9 @@ func resolveGateDir(path string) (string, error) {
+ }
+ 
+ // tierToInt maps a registry tier name to the manifest integer.
+-// L1→1, L2→2, L3→3; all others (L4, inline, unknown) → 0.
+-// The manifest requires Tier ∈ {0,1,2,3}; L4 and inline share 0 (lossy but
+-// valid; escalation uses tier NAMES not this integer).
++// L1→1, L2→2, L3→3, L4→4; inline/unknown → 0.
++// The manifest requires Tier ∈ {0,1,2,3,4}, so the integer mirrors the registry
++// L-number faithfully (0 is reserved for inline/unknown/backfilled gates).
+ func tierToInt(name string) int {
+ 	if len(name) == 2 && name[0] == 'L' {
+ 		switch name[1] {
+@@ -197,6 +197,8 @@ func tierToInt(name string) int {
+ 			return 2
+ 		case '3':
+ 			return 3
++		case '4':
++			return 4
+ 		}
+ 	}
+ 	return 0
+diff --git a/internal/liverun/gate_test.go b/internal/liverun/gate_test.go
+index 5f0c403..e302e0b 100644
+--- a/internal/liverun/gate_test.go
++++ b/internal/liverun/gate_test.go
+@@ -1110,8 +1110,8 @@ func TestTierToInt(t *testing.T) {
+ 		name string
+ 		want int
+ 	}{
+-		{"L1", 1}, {"L2", 2}, {"L3", 3},
+-		{"L4", 0}, {"", 0}, {"inline", 0}, {"L", 0}, {"L10", 0},
++		{"L1", 1}, {"L2", 2}, {"L3", 3}, {"L4", 4},
++		{"", 0}, {"inline", 0}, {"L", 0}, {"L10", 0},
+ 	}
+ 	for _, tc := range tests {
+ 		if got := tierToInt(tc.name); got != tc.want {
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index cd61576..174d6dc 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -509,8 +509,8 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
+ 	if gate.Round < 1 {
+ 		return fmt.Errorf("%w: %s round must be >= 1", ErrInvalidManifest, prefix)
+ 	}
+-	if gate.Tier < 0 || gate.Tier > 3 {
+-		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3}", ErrInvalidManifest, prefix)
++	if gate.Tier < 0 || gate.Tier > 4 {
++		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3, 4}", ErrInvalidManifest, prefix)
+ 	}
+ 	if !isGateStatus(gate.Status) {
+ 		return fmt.Errorf("%w: %s status %q is not one of {pass, rerun, escalated}", ErrInvalidManifest, prefix, gate.Status)
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 49f03e0..f122b0b 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1292,9 +1292,9 @@ func TestValidateGateRejects(t *testing.T) {
+ 			g.Tier = -1
+ 			m.Gates = []GateAttempt{g}
+ 		}},
+-		{"tier 4", func(m *Manifest) {
++		{"tier 5", func(m *Manifest) {
+ 			g := validGate()
+-			g.Tier = 4
++			g.Tier = 5
+ 			m.Gates = []GateAttempt{g}
+ 		}},
+ 		// status
+@@ -1531,6 +1531,29 @@ func TestValidateGateRejects(t *testing.T) {
+ 			t.Fatalf("Validate returned error for pilms provider: %v", err)
+ 		}
+ 	})
++
++	// Acceptance: tier 4 is valid — the manifest int mirrors registry L1..L4.
++	t.Run("tier 4 is valid", func(t *testing.T) {
++		m := baseManifest()
++		g := validGate()
++		g.Tier = 4
++		m.Gates = []GateAttempt{g}
++		if err := m.Validate(); err != nil {
++			t.Fatalf("Validate returned error for tier 4 gate: %v", err)
++		}
++		// round-trips
++		b, err := m.JSON()
++		if err != nil {
++			t.Fatalf("JSON: %v", err)
++		}
++		back, err := ParseJSON(b)
++		if err != nil {
++			t.Fatalf("ParseJSON: %v", err)
++		}
++		if back.Gates[0].Tier != 4 {
++			t.Fatalf("tier round-trip = %d, want 4", back.Gates[0].Tier)
++		}
++	})
+ }
+ 
+ // TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3

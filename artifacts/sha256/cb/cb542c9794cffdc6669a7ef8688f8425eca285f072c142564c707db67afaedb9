@@ -1,0 +1,13 @@
+◐ etude-uao [BUG] · Reconcile manifest GateAttempt.tier with registry L1-L4 (allow tier 4; map L4 faithfully)   [● P2 · IN_PROGRESS]
+Owner: joshuavial · Type: bug
+Created: 2026-07-02 · Updated: 2026-07-02
+
+DESCRIPTION
+manifest.go:512 validates GateAttempt.Tier to {0,1,2,3}, but registry.yaml defines L1-L4 and workflow gate.tier is a string L1..L4. liverun/gate.go:187 tierToInt deliberately maps L4->0 (lossy: 'L4 and inline share 0'), so L4 (docs/final-review) gates are recorded as tier 0 = UNKNOWN — wrong. Also blocks capturing an L4 gate record with an accurate tier (surfaced closing etude-7ri.6: capture-gate rejected tier 4). Fix: make the manifest int == registry L-number (0=unknown, 1..4=L1..L4); widen validation to {0,1,2,3,4}; tierToInt L4->4 (inline/unknown stays 0); update docs/gates.md + gate-reviewer-record-schema.md + tests. Additive/backward-compatible (existing 0-3 valid); old binaries reject tier 4 (accepted forward-incompat like other additive schema changes). Surfaced by the etude-7ri retro.
+
+DESIGN
+Make manifest GateAttempt.tier int == registry L-number (0=unknown/backfilled, 1..4 = L1..L4). Files: (1) internal/runmanifest/manifest.go:512 widen bound to Tier>4 with message '{0, 1, 2, 3, 4}'. (2) internal/liverun/gate.go tierToInt: add case '4': return 4; fix the L1→1..L3→3 + 'L4 lossy →0' comment to L1..L4→1..4, only inline/unknown→0. (3) internal/runmanifest/manifest_test.go: 'tier 4' is currently an INVALID-case (expects rejection) — remove it from the invalid table and add a 'tier 5' invalid case; add/confirm a valid tier-4 round-trip. (4) docs/gates.md:33,203 + docs/plans/product/gate-reviewer-record-schema.md:107,306: update tier comment/range to include 4. Additive/backward-compatible; old binaries reject tier 4 (accepted forward-incompat). Verify: make test + lint; tier-4 round-trips + validates; tier-5 rejected; tierToInt(L4)=4; capture-gate accepts a tier-4 gate JSON (the etude-7ri.6 failure).
+
+NOTES
+Combined gate (plan+implement+verify) attempt 1, Tier 1/L1: Gemini PASS(High), Codex PASS_WITH_FOLLOWUPS(High), Opus PASS_WITH_FOLLOWUPS(High). Opus swept all enforcement paths (validateGate, tierToInt+caller, index scan/store, capture pass-through, run.go render, backfill) — none assume tier<=3; no inverse int->tier map. Follow-ups folded in: fixed stale docs (schema doc live-gates 1-3->1-4; runbook:1032 tier comment + L1-heaviest note). result: pass.
+

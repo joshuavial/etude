@@ -1,0 +1,2 @@
+# etude-uao Final Review
+Reconciles manifest GateAttempt.tier int with registry L1..L4: int==L-number (0=unknown/backfilled/inline, 1..4=L1..L4). Widen validation {0,1,2,3}->{0,1,2,3,4}; tierToInt L4->4 (was lossy ->0); tests + docs updated. Additive/backward-compatible; old binaries reject tier 4 (accepted forward-incompat). Gate: Gemini/Codex/Opus all GO (2 PASS_WITH_FOLLOWUPS, all folded in). Fixes the L4-records-as-unknown bug surfaced by the etude-7ri retro. Result: pass.
