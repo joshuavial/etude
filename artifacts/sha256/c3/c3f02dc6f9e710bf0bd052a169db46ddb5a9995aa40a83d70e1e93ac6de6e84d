@@ -1,0 +1,224 @@
+✓ etude-bench-command.4 · bench: etude bench CLI + win-rate report   [● P1 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Closed
+
+DESCRIPTION
+User-facing 'etude bench <stage> --last N [--runner --judge producer-overrides]': wire cohort+pipeline, aggregate win_rate_B=(count(B)+0.5*tie)/total (A=original,B=replay; HIGH=new skill winning; guard total==0), report aggregate + per-run reasoning (findings). Mirror replay.go CLI idioms; register in root.go. Built-binary manual test required. Depends on bench-pipeline (cache optional).
+
+DESIGN
+## Plan (.4 — etude bench CLI + win-rate report; FINAL slice) — ATTEMPT 2
+
+Attempt 2 incorporates two gate BLOCKs (codex: --model conflates contestant vs
+referee; Opus: per-pair presentation swap breaks fixed-verdict judges in tests +
+manual test). Both fixes folded in below; everything the gate confirmed sound is
+retained (skip-and-report + exit codes; win_rate_B orientation; resolveJudge
+parallel to resolveRunner for the judge COMMAND; report format; --last default 10
+validated >0; no caching).
+
+**Scope:** Completes `etude bench`. Wires DONE cohort (.1) + pipeline (.2) into the
+user-facing cobra command, aggregates win rates, renders a report, registers in
+root.go. NO caching (.3 is optional, NOT a dependency). --json DEFERRED (matches
+replay precedent).
+
+**Command + flags (Q1):**
+`etude bench <stage> --last N [--runner spec] [--judge spec] [--judge-model jm]
+[--model m] [--seed n]
+[--skill-version|--skill-id|--skill-repo|--harness|--harness-version overrides]`
+- <stage> positional, cobra.ExactArgs(1). --last: int, DEFAULT 10; validate >0
+  BEFORE store access; on <=0 return "--last must be positive" (also surfaces
+  bench.ErrInvalidLast from SelectCohort).
+- Producer-override flags reuse the EXACT replayProducerFlags Changed pattern
+  (replay.go:49-62) mapped onto bench.ProducerOverrides (the *Changed bools).
+- Runner: resolveRunner reused verbatim (--runner -> git config etude.runner ->
+  error "no runner configured (set --runner or git config etude.runner)").
+- Judge COMMAND (NEW): resolveJudge mirrors resolveRunner — r.judge test seam
+  first, else --judge spec, else git config etude.judge; empty -> error "no judge
+  configured (set --judge or git config etude.judge)".
+
+**BLOCK 1 FIX — separate contestant model from referee model (codex):**
+`--model` is the PRODUCER (contestant) model: it feeds ONLY bench.ProducerOverrides
+(the replay producer identity), NEVER the judge. The judge/referee model is a
+SEPARATE input: a NEW `--judge-model` flag with git-config fallback etude.judgeModel
+(resolved exactly like --judge/etude.judge resolves the judge command). resolveJudge
+takes/resolves BOTH the judge command AND the judge model independently and builds
+&eval.ExecJudge{Command: strings.Fields(spec), Model: judgeModel}. If --judge-model
+is omitted and etude.judgeModel is unset, ExecJudge.Model is EMPTY (the judge
+command may encode its own model — state this in docs and the error path is not
+triggered by an empty judge model). Conflating contestant and referee models was a
+correctness/clarity defect; they are now fully decoupled.
+
+**Orchestration flow (Q2):** SelectCohort(stage,--last) -> repoRoot(ctx)
+(init.go:225) -> build Pipeline{Store, Runner, Judge, Recorder: replay.RunRecorder
+{Store, Now}, Seed, Overrides, Now} -> for each cr in result.Selected call
+p.BenchRun(ctx, root, cr). SKIP-AND-REPORT (NOT abort): a single BenchRun error is
+caught into a failedRuns list ({SourceRunID, error}); loop continues. A cohort tool
+must not die on one bad run. result.Skipped (ineligible runs from SelectCohort) is
+reported separately from runtime failures. Inject Recorder + now via benchRunner so
+tests use a fixed clock (deterministic replay run ids). Pass --seed through to
+Pipeline.Seed (folds into the per-pair RNG — see BLOCK 2).
+
+**Win-rate aggregation (Q3):** new internal/bench/aggregate.go,
+Aggregate([]BenchOutcome) Report. total = len(successful outcomes). Counts A/B/tie
+from Outcome.Winner (CANONICAL A=original, B=replay — already back-mapped by
+PairwiseEvaluator before it reaches BenchOutcome.Winner). Headline = win_rate_B =
+(countB + 0.5*countTie)/total — HIGH means the NEW skill (replay) beats original.
+NOTE (Opus, anti-regression): eval.go's doc comment documents win_rate_A =
+(A + 0.5*tie)/total; bench's headline is its COMPLEMENT (win_rate_B = 1 - win_rate_A
+when no missing data). This is intentional (we want "new skill win rate"); add a
+code comment citing eval.go so a future reader does not "fix" it back to win_rate_A.
+Guard total==0: Report.Total==0; CLI prints "no successful evaluations", exits
+non-zero. Report carries WinRateB float, CountA/CountB/CountTie/Total ints, plus the
+per-run outcomes + failure/skip lists for rendering.
+
+**Report format (Q4):** human text to stdout via tabwriter (run.go:83 idiom).
+- Header: "bench <stage>: replay (new skill) wins NN.N% vs original" + line
+  "(B=<n> A=<n> tie=<n>) over <total> evals; <skipped> skipped, <failed> failed".
+- Per-run table: SOURCE RUN | REPLAY RUN | WINNER | CONF | EVAL ID | FINDING (first
+  finding message, or "-").
+- Skipped section: source run id + SkipReason + Detail.
+- Failed section: source run id + error message.
+Orientation stated explicitly so a high % is unambiguous.
+
+**Errors + exit codes (Q5):**
+- last<=0 -> error, exit 1 (before any work).
+- no runner / no judge command -> error, exit 1 (before any work). Empty judge
+  MODEL is NOT an error (see BLOCK 1).
+- cohort empty (zero Selected) -> error "no runs contain stage \"<s>\" with a
+  replayable output", exit 1.
+- All selected runs failed (total==0, all in failedRuns) -> render failures, return
+  error (exit non-zero).
+- Partial failure (some succeed) -> exit 0; failures shown in report.
+
+**BLOCK 2 FIX — determinism vs the per-pair presentation swap (Opus):**
+VERIFIED in internal/eval/pairwiseevaluator.go: evaluateSingle (l.63) calls
+perPairSwap (l.137) which derives a per-pair swap from Seed + each target's pairKey
+(Source.Artifact, else Role+":"+sha256(Content)); buildJudgeRequest (l.201) then
+presents the two targets with NEUTRAL roles "left" (first) and "right" (second),
+hiding which is original/replay; mapWinnerBack (l.182) converts the judge's
+POSITION-relative winner back to canonical A/B. So a judge that blindly emits
+{"winner":"B"} is position-relative and yields a non-deterministic canonical mix
+across pairs/seeds. FIX = make judge doubles AND judge.sh CONTENT-AWARE so the
+canonical outcome is deterministic regardless of presentation order:
+- The judge sees JudgeRequest.Targets = [{Role:"left",Content:first},
+  {Role:"right",Content:second}]. ExecJudge materializes these into ETUDE_INPUTS_DIR
+  as 00-target-left and 01-target-right (exec_judge.go fmt "%02d-target-%s" over
+  req.Targets). The content-aware judge keys off CONTENT, not position.
+- Test seam: seed the REPLAY output bytes with a unique marker the original bytes
+  lack (e.g. stub runner emits "<<REPLAY>>" + input bytes; original captured output
+  has no such marker). Content-aware stub Judge reads jr.Targets[].Content, finds
+  which presented side contains "<<REPLAY>>" (= canonical B), and returns
+  POSITION-relative winner so that after mapWinnerBack the CANONICAL winner is what
+  the test intends. To assert an exact A/B/tie MIX across N runs: vary the marker
+  per source run (e.g. replay carries "<<WIN:B>>" / "<<WIN:A>>" / "<<WIN:TIE>>"
+  injected by a per-run stub runner) and have the stub Judge emit the position-
+  relative winner that back-maps to that canonical verdict. Because the stub reads
+  Content, the per-pair swap is irrelevant and the canonical mix is deterministic;
+  assert exact CountA/CountB/CountTie and win_rate_B. Confirmed: eval.StubJudge only
+  returns Canned, so use a TEST-LOCAL Judge (implements eval.Judge) that inspects
+  jr.Targets[].Content — NOT eval.StubJudge and NOT a verdicts[i++] sequence (a
+  position-blind sequence would NOT survive back-mapping).
+- Manual test: judge.sh inspects ETUDE_INPUTS_DIR/00-target-left and
+  01-target-right, greps for the replay marker, and prints the position-relative
+  winner so the canonical winner is deterministic. (Alternatives, NOT chosen:
+  pin --seed and hand-compute perPairSwap per pair; or assert only total/skipped/
+  failed and document the headline % as non-deterministic. Content-aware is most
+  robust and is what this plan uses.)
+
+**New/changed files:**
+- internal/cli/bench.go — NEW: type benchRunner{runner replay.Runner; judge
+  eval.Judge; now func()time.Time}; newBenchCommand(out,errOut); buildBenchCommand
+  (out,errOut,*benchRunner) [injectable seam mirroring buildReplayCommand];
+  (r*benchRunner) run(...); resolveJudge(spec, judgeModel) [command + model];
+  report rendering.
+- internal/bench/aggregate.go — NEW: Report struct + Aggregate([]BenchOutcome).
+- internal/cli/root.go — EDIT: AddCommand(newBenchCommand(out,errOut)) at :40;
+  update rootLong (drop "bench ... not implemented yet").
+- *_test.go for bench.go and aggregate.go.
+
+**Tests (Q7):**
+- aggregate (unit, isolated): A/B/tie mix -> exact win_rate_B incl. 0.5*tie;
+  all-B=100%; all-A=0%; total==0 guard. (Operates on []BenchOutcome with canonical
+  winners — no judge/swap involved here.)
+- cli (buildBenchCommand + injected stubs, mirror executeReplay helper at
+  replay_test.go:20; seed runs via captureStageForReplay-style helper l.36):
+  - happy path: 3 captured runs; stub runner injects a per-run canonical-winner
+    marker into the replay output; CONTENT-AWARE test Judge (reads
+    jr.Targets[].Content) returns the position-relative winner that back-maps to the
+    intended canonical A/B/tie mix -> assert header win_rate_B + table rows
+    DETERMINISTICALLY (default seed).
+  - skip-on-run-error: stub runner errors for one run -> that run in failures
+    section, others still evaluated, exit 0.
+  - empty cohort (stage absent) -> error message, exit 1.
+  - no-judge(command) error; no-runner error.
+  - BLOCK 1: --model sets producer override only (assert recorded producer model)
+    and does NOT change ExecJudge.Model; --judge-model sets judge model only.
+  - total==0 guard: all runs fail -> "no successful evaluations", non-zero exit.
+  - --last validation (<=0).
+  - producer override applied (--skill-version) reaches the recorded producer.
+
+**Built-binary manual test (REQUIRED — CLI bead):**
+1. `go build -o /tmp/etude ./cmd/etude`
+2. Scratch git repo: `git init`, commit a file (real HEAD sha), `/tmp/etude init`.
+3. Capture >=3 runs with a `plan` stage, inline content input+output at HEAD:
+   `/tmp/etude capture plan --run r1 --input prompt=in.txt --output plan=out.md`
+   (repeat r2,r3; commit between so each has a valid git_sha).
+4. run.sh (chmod +x): `#!/bin/sh`
+   `printf '<<REPLAY>>'; cat "$ETUDE_INPUTS_DIR"/*` > "$ETUDE_OUTPUT_FILE"
+   so every replay output carries the marker the original lacks.
+   judge.sh (chmod +x), CONTENT-AWARE so the swap can't flip the verdict:
+   `#!/bin/sh`
+   `if grep -q '<<REPLAY>>' "$ETUDE_INPUTS_DIR/00-target-left"; then`
+   `  printf '{"winner":"A"}' > "$ETUDE_OUTPUT_FILE"   # left is replay -> pos A`
+   `else`
+   `  printf '{"winner":"B"}' > "$ETUDE_OUTPUT_FILE"   # right is replay -> pos B`
+   `fi`
+   (Either branch back-maps to CANONICAL B = replay wins, regardless of swap.)
+5. Run: `/tmp/etude bench plan --last 3 --runner ./run.sh --judge ./judge.sh`
+6. EXPECT (DETERMINISTIC): header "replay (new skill) wins 100.0% vs original
+   (B=3 A=0 tie=0) over 3 evals; 0 skipped, 0 failed" + 3 per-run rows w/ eval ids.
+7. Optional: confirm independence of contestant vs referee model —
+   `--model gpt-x` (producer override) and `--judge-model claude-y`
+   (ExecJudge.Model) both accepted; producer model lands in the recorded replay
+   manifest, judge model in the judge env (ETUDE_MODEL).
+8. Negative checks: omit --judge -> "no judge configured" exit 1;
+   `bench missing ...` -> "no runs contain stage ... replayable output" exit 1.
+
+**Docs:** docs/bench.md NEW (mirror docs/replay.md): synopsis, flags table incl.
+--judge/--judge-model and git config etude.judge/etude.judgeModel, contestant-model
+(--model) vs referee-model (--judge-model) distinction, win-rate orientation +
+the win_rate_A complement note, presentation-swap caveat (judges should be
+content/provenance-aware, not position-blind), skip-vs-fail behavior, errors/exit
+codes, limits: --last only, no --json, no caching. docs/README.md EDIT (index link).
+root.go rootLong updated. Done in Docs phase.
+
+**Risks:** Replay non-determinism — real replays vary run-to-run; v1 reports a
+single sample per run (documented). New git config keys etude.judge +
+etude.judgeModel — additive, low risk. Per-pair presentation swap means any
+position-blind judge (incl. the naive {"winner":"B"} from attempt 1) gives
+non-deterministic canonical results; mitigated by content-aware doubles/scripts
+(BLOCK 2). win_rate_B is the documented win_rate_A's complement — flagged in-code to
+prevent a regression "fix" (BLOCK 2/Opus note).
+
+**Capture:**
+- inputs: bead etude-bench-command.4 + parent etude-bench-command design; gate
+  BLOCKs (codex: model conflation; Opus: presentation-swap determinism); files
+  read: internal/bench/cohort.go, internal/bench/run.go,
+  internal/eval/pairwiseevaluator.go, internal/eval/exec_judge.go,
+  internal/eval/eval.go, internal/eval/judge.go, internal/cli/replay.go,
+  internal/cli/replay_test.go, internal/cli/root.go, internal/cli/init.go:225.
+- output: bead --design field (attempt 2).
+
+NOTES
+PLAN gate attempt 1: BLOCK x2 (codex, Opus; gemini GO missed both). (1) codex: --model conflates CONTESTANT (replay producer model) and REFEREE (judge model) — plan wired producer --model into ExecJudge.Model, so changing the contestant changes/mislabels the judge. FIX: separate --judge-model (+ etude.judgeModel config); producer --model feeds ONLY the replay producer override; ExecJudge.Model = judge-model. (2) Opus: TEST/MANUAL-TEST determinism — PairwiseEvaluator applies per-pair presentation swap (pairwiseevaluator.go:137), so a judge that blindly returns {winner:B} is position-relative and mapWinnerBack flips it on swapped pairs; the manual test's '100% B' and the win-rate-mix sequence-judge assertions are non-deterministic. FIX: judge doubles + judge.sh must be CONTENT-AWARE (decide by inspecting which presented target is the replay) OR pin seed + compute per-pair swaps; assert canonical winners. -> plan attempt 2.
+PLAN gate attempt 2: PASS (3 substantive GO — codex flipped GO, gemini GO, Opus GO; pilms outage; codex needed 1 reroll for an empty-completion glitch). Both BLOCKs fixed + verified vs code: (1) judge-model decoupled — --judge-model/etude.judgeModel populate ExecJudge.Model independently; producer --model feeds only ProducerOverrides; (2) determinism — content-aware judge doubles + judge.sh read presented target Content (JudgeRequest.Targets[].Content; materialized 00-target-left/01-target-right per exec_judge.go:105) and return position-relative winners that mapWinnerBack recovers to deterministic canonical A/B/tie despite per-pair swap. win_rate_B noted as intentional complement of eval.go win_rate_A. -> phase:implement.
+IMPLEMENT+FINAL gate: PASS (3 substantive GO — codex, gemini [no shell-detour: inlined per runbook], Opus mutation-verified; pilms outage). Verified: replay-run exclusion (cohort.go amendment, discovered during built-binary manual test where bench recursively re-benched its own recorded replays — now produced_by:replay -> SkipReplayRun, idempotent; test has teeth); judge-model isolation (--model never reaches ExecJudge.Model; --judge-model/etude.judgeModel independent); win_rate_B=(B+0.5tie)/total guarded; skip-and-report + exit codes. Built-binary manual test PASSED: 2-original-run cohort -> 'replay wins 100.0% (B=2 A=0)', deterministic across runs, replays correctly skipped. Cleaned up junk etude refs created during testing. Stale exec_judge.go ETUDE_MODEL comment fixed in follow-up commit. Committed 8a0ad27. Full suite green.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-bench-command: Implement etude bench ● P1
+
+DEPENDS ON
+  → ✓ etude-bench-command.2: bench: per-run replay->record->pairwise-eval pipeline ● P2
+
