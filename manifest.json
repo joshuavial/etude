@@ -106,6 +106,95 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-17T05:01:31.735081Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "eac95a2928955fcda8e11248021da55dcb1f97818f49354a81ea232d3796719b"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) The plan removes GH #16's gitlink preflight rejection but does not say what the observable failure mode becomes when a pinned submodule cannot be fetched or fails OID validation during `worktree.Checkout` — worth asserting a clear seat-level error rather than a silently empty submodule dir. 2) The four-distinct-checkouts assertion should also cover cleanup on the failure/abort path, not just the happy sequence, so a blocked seat cannot leak a checkout. 3) Consider naming which conflict hunks are \"retain both sides\" versus genuinely superseded (the #16 preflight is one supersession), so the rebase does not resurrect removed code by rote."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "26c5638f69dd2f1083db38778290441655bc1930908baef589931bdb424d42c0",
+            "path": "artifacts/sha256/26/26c5638f69dd2f1083db38778290441655bc1930908baef589931bdb424d42c0",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 799
+          },
+          "session": {
+            "session_id": "opus-8576bdd33348b4c9",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "8576bdd33348b4c98da3ea996556bc35582c3187ee3ee5f71a7baaf3ea96b40d",
+              "path": "artifacts/sha256/85/8576bdd33348b4c98da3ea996556bc35582c3187ee3ee5f71a7baaf3ea96b40d",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 706
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:02:20.845188Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "path": "artifacts/sha256/83/831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:02:52.980073Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T05:02:52.994119Z"
     }
   ]
 }
