@@ -1,0 +1,40 @@
+diff --git a/.etude/tmp/etude-ps9/plan.md b/.etude/tmp/etude-ps9/plan.md
+new file mode 100644
+index 0000000..64c3d25
+--- /dev/null
++++ b/.etude/tmp/etude-ps9/plan.md
+@@ -0,0 +1,34 @@
++# etude-ps9 plan — prior-attempt inputs for gate reruns
++
++ANCESTOR: GitHub issue #17 ask 3 requires attempt r2 to read every prior attempt's session identity, transcript, runner log, output, and killing gate verdict from declared inputs. The o9z commit already supplies durable stage sessions and logs; this bead is only the rerun handoff.
++
++MEASUREMENT: the current RERUN branch appends only `gate-feedback`, so a rerun can read why the gate blocked but none of the prior attempt evidence already present in the manifest and artifact store. A two-round gate therefore loses one complete attempt's execution context; later rounds lose all prior contexts.
++
++BLAST RADIUS: `internal/liverun/gate.go`, focused live-gate tests, and `docs/run.md`. The change creates one small canonical JSON index per rerun and reuses existing content-addressed output/log/transcript blobs as additional stage inputs. It adds no schema, env var, credential, external write, new ref namespace, or runner-side resume behavior. Normal test/build caches and ignored gate packets are the only worktree-external disk effects.
++
++IRREVERSIBLE SEQUENCES: none
++
++TOPOLOGY: one Engine invocation advances one run through its gate loop serially. Each gate and stage ref update is CAS-ordered; this change adds no goroutine, second writer, or cross-process mutation. A later resume rehydrates the already committed manifest before continuing.
++
++DURABILITY CLASS: successful rerun handoff publication is exactly-once per committed rerun Stage because its input refs and Stage record become visible in the same existing CAS manifest update. A gate `rerun` verdict may remain durably committed without its following stage when evidence validation fails; resume already treats that as a terminal interrupted rerun rather than duplicating it. There is no generation guard and no current/latest resource identity proxy in this change.
++
++COMPLETE SET: the handoff enumerates every prior stage attempt reviewed by a `rerun` gate for this phase. For every such attempt it covers the mandatory output, optional log, optional session id, optional safely imported transcript, and the complete killing aggregate/seat verdict. The single fail-closed site covers both transcript failure states: retrieval failure and redaction failure. No other transcript importer feeds stage reruns.
++
++TRUST BOUNDARY: manifest Stage/Gate records, CAS artifact bytes, and their validated digests are trusted engine inputs. Stage runners and their reported session fields are untrusted; existing session validation, transcript containment/regular-file checks, secret scanning, and manifest hash verification establish the facts admitted to the handoff. The runner may choose to resume an external session, but Etude neither trusts nor claims that external state is replayable.
++
++## Contract
++
++1. On each `rerun` verdict, build a complete prior-attempt bundle from the stage records reviewed by rerun-status gate attempts for this phase, including the gate attempt just written.
++2. Add a canonical `prior-attempts` JSON input. Each ordered entry carries the stage name, gate round, session id, whether that attempt reused an earlier session id, output/log/transcript digests and input roles, plus the killing gate id/status and each seat verdict/required list.
++3. Add each available output, stage log, and imported transcript as a direct input with deterministic roles such as `prior-attempt-1-output`. The index names those roles, and the rerun Stage records all of them in `inputs`; no evidence travels through environment variables.
++4. Before appending inputs, remove the prior bundle from the previous round and rebuild it from full durable history. Preserve all ordinary stage inputs and cumulative `gate-feedback` inputs.
++5. Fail the rerun before invoking its runner if any prior attempt reports failed transcript retrieval or redaction, because a retry may now depend on that transcript. A session with no transcript remains valid and is represented with empty transcript fields.
++6. Keep runner-side resume out of Etude. If a completed attempt reports a session id equal to an earlier attempt's, the manifest and the next index mark it resumed. Such an attempt is deliberately not reproducible from inputs alone because the resumed conversation is external session state; no schema change is required.
++
++## Tests
++
++- Extend the two-round rerun test so r2 reads and validates the JSON index plus direct original output/log/transcript bytes, and the persisted r2 Stage declares those inputs.
++- Add a three-round test proving r3 receives both prior attempts and that equal session ids mark the second attempt resumed.
++- Add a failed transcript-import/redaction test proving the gate attempt is committed but the rerun runner is not invoked and the error names the missing safe evidence.
++- Pin deterministic ordering, empty optional evidence fields, and replacement rather than duplicate prior bundles where practical.
++- Run `make test`, `make lint`, and a focused race test for `internal/liverun`.
