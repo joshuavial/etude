@@ -1,0 +1,7 @@
+# Verify — etude-phase-prep.5 (docs reality check guard) — PASS
+- New scripts/docs-reality-check.sh + scripts/docs-reality-allow.txt + Makefile docs-reality target + docs-checklist Final-Review step. No Go code.
+- bash -n clean; bash 3.2.57-portable (while-read, not mapfile).
+- Real-repo run flags EXACTLY the 6 current drifts (README missing bench/capture-gate/gc/reindex usage; docs/README index missing capture-gate; BRIEF.md:351 stale bench), zero false positives on present commands.
+- Throwaway test: clean docs→exit 0; README with only `etude capture-gate`→still flags `capture` (prefix-safe); orphan page→flagged; stale claim→flagged; allowlist→suppresses.
+- make docs-reality fails (exit 1, expected until phase-prep.2); make docs-check stays GREEN (separate target).
+- AC: CLI-inventory vs README/docs-README/docs-cli ✓; stale-claim scan of docs/plans ✓; wired into docs-checklist (+ make docs-reality) ✓; how-to-run documented (script header + checklist) ✓.
