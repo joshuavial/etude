@@ -205,6 +205,37 @@
         "degraded_reason": "Tier 3 docs-only bead; ran 2 seats (codex+opus, above the Tier-3 single-seat minimum) given the meta-importance of refactoring the gate process. gemini+pilms not seated. Both GO: every-seat-all-lenses forced by the runbook's cross-lens catch evidence; PRESERVE constraints additive; naming guard correct."
       },
       "timestamp": "2026-05-27T11:31:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T11:50:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat (the Tier-3 standard). GO — PRESERVE anchors intact (additive diff), compact ~35-line lens layer, rationale cross-referenced not restated, all 3 plan NITs landed (P1→Spec, no caveat duplication, scope-fence placed). Trivial #4 mapping/tag inconsistency fixed before commit."
+      },
+      "timestamp": "2026-05-27T11:51:00Z"
     }
   ]
 }
