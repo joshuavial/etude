@@ -975,6 +975,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:58:24.792901Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "099348d54f2bd5f07802cb40accee5894c53398ca5a3fdfef3b3c9f3e6422921"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Gate history skips implement r2 and verify r2 with no stated outcome — record why those rounds ended (superseded vs BLOCK) so the STRICT history reads continuously. 2. Scope claim \"changes only GH #17 behavior plus the focused composition proof\" is asserted without an inlined diffstat or per-file summary; a diffstat against 644e717 would make the diff-vs-plan check self-contained for output-only seats. 3. The four rebased issue commits are unnamed (only base 644e717 and integration 717d5f4 given) — list their SHAs for reproducible provenance. 4. Issue #24 is named as owner of broader manifest version semantics; confirm it is filed and linked from PR #23 before merge."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "d70c5fe5bcb7491cb12d898ec178123f75e728af4073f849b246795a6ce0650b",
+            "path": "artifacts/sha256/d7/d70c5fe5bcb7491cb12d898ec178123f75e728af4073f849b246795a6ce0650b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 835
+          },
+          "session": {
+            "session_id": "opus-85a98229ca49f8d2",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "85a98229ca49f8d29c442ff55f98bf26d118a7a01f1f477d71261b467500013f",
+              "path": "artifacts/sha256/85/85a98229ca49f8d29c442ff55f98bf26d118a7a01f1f477d71261b467500013f",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 737
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:59:36.548064Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:59:36.548964Z"
     }
   ]
 }
