@@ -236,6 +236,79 @@
         "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
       },
       "timestamp": "2026-06-07T09:12:12Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Ensure validateMethodConfig explicitly checks that rubric/assertion configs are nil when method is gate.",
+            "Clarify in validation whether context inputs other than gate-prompt are allowed."
+          ],
+          "timestamp": "2026-06-07T09:14:37Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Clarify that GateEvaluator requires exactly one gate-prompt context input, but may still pass through additional non-prompt context inputs.",
+            "Add a focused test that GateEvaluator forwards the full context, not only the gate-prompt, since later CLI work may depend on extra gate inputs."
+          ],
+          "timestamp": "2026-06-07T09:14:37Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "Extend the per-kind Score coherence comment to explicitly document gate rules.",
+            "Keep result.go method/gate validation error messages consistent with existing style.",
+            "Add a brief godoc note on EvalInput or EvalRequest.Context documenting the gate-prompt role convention.",
+            "Confirm exactly one gate-prompt context with non-empty content is enforced before the Judge call.",
+            "Consider adding a symmetric true ExecJudge end-to-end gate case if validateJudgeOutput table tests do not cover it."
+          ],
+          "timestamp": "2026-06-07T09:14:37Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
+      },
+      "timestamp": "2026-06-07T09:14:37Z"
     }
   ]
 }
