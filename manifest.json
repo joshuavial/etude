@@ -1145,6 +1145,100 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T06:13:30.572805Z"
+    },
+    {
+      "gate_id": "implement.r16",
+      "phase": "implement",
+      "round": 16,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r15",
+          "role": "diff",
+          "artifact": "921ac0a98d6c11839c2325f5274b57fb3aa374ac3b295d060a037b1f10ef7d45"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) docs/run.md says the resumed-session flag reports whether the id \"appeared on an earlier attempt\", but `sessionSeenBefore` scans every earlier stage including non-attempt producers (asserted by TestBuildPriorAttemptInputsSeedsSessionHistoryFromPassedAttempts) — tighten the wording to \"an earlier stage\". 2) Stage-log artifact role is derived from the stage name, so gate reruns emit roles like `plan.r2-log` while the output keeps the stable chain role `plan`; worth confirming consumers of `run show --json` are fine with the dotted role. 3) docs/gates.md permanently documents readers accepting a stage log at manifest_version 2/3 solely for development-build refs; consider dropping that carve-out before release since no released writer emitted that shape. 4) Asymmetry worth revisiting: transcripts are secret-scanned and a failed scan hard-stops the rerun, while stage logs are never scanned yet are re-fed raw to every later rerun and stored durably — disclosed in docs, but a scan-and-mark on logs would close the gap."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "2be7c63b1e631511b882850c4051e4cc7140c5bcbe4f2946ac54ae1de60e4bea",
+            "path": "artifacts/sha256/2b/2be7c63b1e631511b882850c4051e4cc7140c5bcbe4f2946ac54ae1de60e4bea",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1189
+          },
+          "session": {
+            "session_id": "opus-26cad8b1c9482ea9",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "26cad8b1c9482ea910f208b61327188af14c0e4ef262546f8605890e7f0a497a",
+              "path": "artifacts/sha256/26/26cad8b1c9482ea910f208b61327188af14c0e4ef262546f8605890e7f0a497a",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1091
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:18:03.690004Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `buildPriorAttemptInputs` finds reviewed stages by name using `stageByName`, which searches from the end. For the first rerun gate reviewing `\"plan\"`, later attempts such as `\"plan.r2\"` can already exist, so the lookup returns the newest `\"plan\"`-role stage only if names collide? More importantly, resumed-session history is sliced from that resolved index; this can misattribute evidence when gates are rebuilt from durable history instead of current-loop state. The prior-attempt bundle must bind to the exact `ReviewedStages[0]` record, not a last-name heuristic."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "9e67a9b635d8585c35ea1072710159020cba291054b079b8c54327eedd059e99",
+            "path": "artifacts/sha256/9e/9e67a9b635d8585c35ea1072710159020cba291054b079b8c54327eedd059e99",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 726
+          },
+          "session": {
+            "session_id": "codex-6e1ff517c251578a",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "6e1ff517c251578a51606c0ad80f9c4bfb06a2b47964a41d8c709d9e2aa8e6f5",
+              "path": "artifacts/sha256/6e/6e1ff517c251578a51606c0ad80f9c4bfb06a2b47964a41d8c709d9e2aa8e6f5",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 630
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T06:35:22.054278Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T06:35:22.059044Z"
     }
   ]
 }

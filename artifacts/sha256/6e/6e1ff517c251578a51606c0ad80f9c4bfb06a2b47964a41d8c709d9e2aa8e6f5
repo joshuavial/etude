@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `buildPriorAttemptInputs` finds reviewed stages by name using `stageByName`, which searches from the end. For the first rerun gate reviewing `"plan"`, later attempts such as `"plan.r2"` can already exist, so the lookup returns the newest `"plan"`-role stage only if names collide? More importantly, resumed-session history is sliced from that resolved index; this can misattribute evidence when gates are rebuilt from durable history instead of current-loop state. The prior-attempt bundle must bind to the exact `ReviewedStages[0]` record, not a last-name heuristic.
+OPTIONAL: none
+CONFIDENCE: medium
