@@ -134,6 +134,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:09:30Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "eff34525a82fa1f3ef03a61e34043f6be1ae1f4a7697924f2b4481bea098cee0"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep legacy manifest fixtures independently pinned.",
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r2.md sha256 d40e69993b4ba669c2921b00fb9f214800e14f1a283e7ddad4eb127be5ae6887"
+          ],
+          "timestamp": "2026-08-16T03:13:50Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "State and prove whether clean history rewrites are allowed; the post-run SHA rather than ancestry is the authoritative provenance.",
+            "Remove branch-context-dependent effective-config comparison or define the branch-change restriction."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r2.md sha256 d40e69993b4ba669c2921b00fb9f214800e14f1a283e7ddad4eb127be5ae6887"
+          ],
+          "timestamp": "2026-08-16T03:13:50Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:13:50Z"
     }
   ]
 }
