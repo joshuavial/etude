@@ -1,0 +1,19 @@
+# Verify — etude-2ku (optional retro-meta JSON sidecar)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` green (incl. `cmd/gen-docs` after Docs regen); `make lint` clean (gofmt + go vet).
+- 8 new tests: cli — TwoStages, NoMetaFileSingleStage, MalformedJSON, Stdin, ShowWithMetaStageStillRendersSingleBody, GenerateWithCannedMeta, GenerateWithoutMetaSingleStage; retro — StubGenerator CannedMeta returns Meta, nil-canned → nil Meta.
+- Existing q87/n0t retro tests (round-trip, create-only, list, show, passthrough refs) pass UNCHANGED.
+
+## Built-binary, throwaway git+etude-init repo (empirical)
+- `retro capture cohort --file body.md --subject-run r1 --meta-file meta.json` → manifest has exactly 2 stages: [0] `stage:retro` produced_by=retro role=retro `text/markdown`; [1] `stage:retro-meta` produced_by=retro-meta role=retro-meta `application/json`. Body is Stages[0], meta is Stages[1]. produced_by is `retro-meta` (NOT "replay").
+- retro-meta blob byte-identical to source meta.json (47 bytes); both body + meta blobs present in the ref tree and readable via `git show`.
+- `retro show <id>` still renders the body (Stages[0]); meta stage does not disturb rendering.
+- No `--meta-file` (scope=phase) → exactly 1 stage [retro] — identical single-stage shape as before (backward compatible).
+- Malformed JSON (`--meta-file bad.json`, scope=gate) → `retro meta file "bad.json" is not valid JSON`, exit 1, ref count unchanged (nothing written; json.Valid gates before any AddContent/Write).
+- Stdin sidecar (`--meta-file -`, scope=bench) → 2 stages [retro, retro-meta].
+
+## Scope
+4 product/test files + Docs-phase updates (regenerated docs/cli/etude_retro_capture.md, docs/retro.md retro-meta section). No manifest-schema change. ExecGenerator leaves Meta nil (no-op for the generate exec path).
