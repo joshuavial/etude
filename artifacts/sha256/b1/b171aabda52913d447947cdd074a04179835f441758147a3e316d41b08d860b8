@@ -1,0 +1,25 @@
+# Final review evidence for etude-5dr.5
+
+PR #22's blocking provenance defect is fixed without weakening the caller-tree
+mutation guard. Manifest v4 now stores the immutable run checkout in top-level
+`original_git_sha`, while caller-stage `git_sha` remains clean post-run HEAD.
+Resume, recovered gates, direct replay, forward replay, recorded replay, and
+bench all consume the run-level identity.
+
+Regression coverage uses distinct commits A and B so the former stage-zero
+lookup fails observably. The live built-binary proof likewise created caller
+commit B, then observed resume and replay worktrees at original commit A. Legacy
+manifests retain their previous fallback; malformed or old caller-manifest v4
+records without the new identity fail closed.
+
+Final checks:
+
+- `make test`: pass
+- `make lint`: pass
+- `make docs-check`: pass
+- `make docs-reality`: pass
+- `git diff --check`: pass
+- built-binary resume and replay proof: pass (A selected, B remains caller HEAD)
+
+Scope is limited to the original-checkout provenance correction, its named
+consumers and regression tests, and matching shipped documentation.
