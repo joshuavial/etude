@@ -251,6 +251,54 @@
         ]
       },
       "timestamp": "2026-08-15T06:33:29Z"
+    },
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Derive or explicitly establish the mode contract before rejecting existing input",
+            "Preserve empty-string behavior when moving to a whole-string identifier predicate",
+            "Drop the test-only node encoder seam"
+          ],
+          "timestamp": "2026-08-15T06:26:14Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T06:26:14Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T06:26:14Z"
     }
   ]
 }
