@@ -1,0 +1,17 @@
+# Final Review — etude-assertion-eval
+
+## PLAN gate
+- Attempt 1: PASS (3 substantive GO — codex, gemini, Opus; pilms outage). Non-blocking diff-parser refinements folded into impl: primary changed-file source = `+++` post-image (skip /dev/null, strip b/), renames via `rename to`, document supported subset, basename-collision test.
+
+## Combined Implement+Final gate (3 attempts)
+- Attempt 1: BLOCK (Opus) — parseChangedFiles read hunk-body `+++`/`---` content lines as file headers → phantom changed-file → false-FAIL; violated the parser's "not silently wrong" doc. (gemini GO; codex glitched/no-verdict; pilms outage.)
+- Fix: inHunk state machine (`diff --git`→!inHunk, `@@`→inHunk; headers read only when !inHunk). 2 regression tests (added `++ note` body line; `-- foo`/`++ bar` body pair), mutation-verified to fail without the guard.
+- Attempt 2: BLOCK (codex) — doc promised quoted/core.quotePath paths "simply absent (not silently wrong)" but the code appended the raw escaped string (`+++ "b/foo\303\251.go"`) as a bogus changed-file. (gemini GO, Opus GO.)
+- Fix: skip leading-quote paths in both `+++` and `rename to` branches → quoted paths absent, honoring the doc. Regression test (3-file diff: plain + quoted + rename-to-quoted → only plain), mutation-verified.
+- Attempt 3: PASS — codex GO, gemini GO, Opus GO. Opus confirmed both fixes correct/complete, no residual silently-wrong input, inHunk intact, rest unchanged.
+
+pilms: 6 reproducible 0-CPU client hangs this session (LM Studio backend healthy) → documented tooling outage; proceeded on 3 substantive seats per review-gate-runbook.
+
+## Outcome
+Docs: NO-DOCS — internal library, no CLI/user surface; docs land with the eval/bench CLI bead.
+Committed f473dcb "add assertion evaluator and check registry". Full suite green.
