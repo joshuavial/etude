@@ -1,0 +1,5 @@
+# Final Review — etude-hp7 (README: document retro generate/list/show)
+Verdict: GO (Tier 3, single Opus seat). Commit 50e22af.
+- Closes a docs-audit finding: README listed only `etude retro capture` though `retro generate`, `retro list`, `retro show` all ship (docs-reality missed it — it only checks top-level commands, and `retro` is present). Added the three subcommands to the implemented-features list, the CLI surface sentence, and the `## CLI` usage block with valid examples.
+- All three subcommands + the example flags verified real against internal/cli/retro.go (generate --subject-run/--generator; list NoArgs; show <retro-id> ExactArgs(1)); descriptions match shipped behavior; no overclaim.
+- Guards: docs-reality (13) + docs-check green; README is hand-written so no docs/cli regen. Scope: README.md only.

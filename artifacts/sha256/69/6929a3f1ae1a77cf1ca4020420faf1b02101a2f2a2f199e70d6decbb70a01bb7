@@ -1,0 +1,6 @@
+# Verify — etude-hp7 (README: document retro generate/list/show)
+Result: PASS. Docs-only (README.md), Tier 3.
+- make docs-reality OK (13 cmds; parses README usage block); make docs-check clean (README hand-written, no docs/cli regen); go test ./... unaffected.
+- Accuracy verified against built binary + retro.go: retro generate (--subject-run retro.go:826, --generator :843), retro list (cobra.NoArgs :146), retro show <retro-id> (ExactArgs(1) :157) all ship; descriptions + example flags real; the three new ./bin/etude examples are valid invocations.
+- No overclaim (only shipped commands listed); existing retro capture entry preserved; consistent with docs/retro.md + docs/README.md.
+Scope: README.md only. 1-bead=1-commit.
