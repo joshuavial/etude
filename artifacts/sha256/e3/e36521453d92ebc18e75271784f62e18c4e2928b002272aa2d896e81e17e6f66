@@ -1,0 +1,75 @@
+# Final Review — etude-2bm.1 (init plan/apply refactor + --dry-run + idempotent skip/--force)
+
+Recommendation: close
+
+Reviewed:
+- plan artifact (bead --design, Tier-2 round-4 PASS)
+- implementation diff (scoped: init.go, init_test.go, retro_nudge.go, docs/init.md, docs/cli/etude_init.md)
+- verify artifact (tmp/gates-2bm.1/verify.md)
+- docs artifact (docs/init.md hand-written guide + docs/cli/etude_init.md generated reference)
+
+## Diff vs. plan + five MUST-HOLD invariants
+
+Matches the approved round-4 plan with no deviations. All five invariants confirmed in the actual diff:
+
+1. Write-then-error: refspec action is appended LAST (init.go:242) and runs inside apply() after the
+   write actions; force + remoteChanged + absent returns remoteNotFoundErr only after writes already
+   executed. Locked by TestInitExplicitMissingRemoteWritesThenErrors (non-force + force subtests).
+2. --force refspec silence: refspecAction force gate returns (nil, nil) for present remote and for all
+   cases except explicit-missing-error; dry-run force+present also returns (nil, nil). Locked by the
+   strengthened TestInitForceMissingDefaultOriginSucceeds (prefix-specific assertions, not bare summary
+   words) and TestInitForceDryRun ("0 to configure", no plan: configure line).
+3. --dry-run read-only / never-errors / count-parity: dryRun branch touches only os.Stat / remoteExists;
+   dryRun is checked BEFORE the force missing-remote error path, so dry-run never errors on a missing
+   remote even under --force. writeScaffoldFile / MkdirAll / WriteFile / git --add are never reached
+   under dryRun. Locked by TestInitDryRunWritesNothing, TestInitDryRunMissingRemoteReports,
+   TestInitDryRunExistingScaffoldSkips, TestInitDryRunForceMissingRemoteReports.
+4. apply() sole print site + byte-identical legacy consts + plan() never calls remoteExists: every
+   fmt.Fprintln/Fprintf for action output and the summary lives in apply(); the five legacy strings are
+   hoisted to fmt* consts (init.go:32-36) and remain byte-identical; plan() builds the action list and
+   never calls remoteExists or returns remoteNotFoundErr (only the refspecAction closure, executed in
+   apply, does).
+5. configured bucket = statusConfigured + statusAlreadyConfigured; statusNote uncounted: apply tally
+   collapses both configured statuses into one counter and has no case for statusNote. Locked by
+   TestInitSummaryCounts (re-run reports 2 configured via already-configured).
+
+## Docs review
+
+- policy applied: repo convention — generated CLI reference (docs/cli/*) is produced by `make docs`
+  (cmd/gen-docs) and must not be hand-edited; hand-written guides (docs/init.md) are edited directly.
+- user-facing changes documented: yes — new --dry-run flag, plan→apply summary line, idempotent
+  already-configured bucket, and --force refspec silence are all documented in docs/init.md.
+- shipped docs describe implemented and verified behavior only: pass — every documented behavior is
+  realized in init.go and exercised by the Verify manual matrix / unit tests.
+- planned material remains in planning docs: not applicable — no planning/unshipped material leaked.
+- generated references handled separately: pass — `make docs-check` exits 0 (docs/cli/etude_init.md is
+  byte-identical to generator output; the --dry-run help string matches the BoolVar help verbatim).
+- docs disposition: close.
+
+## Findings
+
+- None blocking.
+- retro_nudge.go is genuinely gofmt-only: `gofmt -d` is empty (canonical) and
+  `git diff --ignore-all-space` shows zero non-whitespace changes (struct-field alignment of Use/Short
+  + removed trailing blank line). No logic change. Incidental but acceptable in this commit.
+
+## Commit readiness
+
+- One atomic commit covering the init plan/apply refactor + --dry-run + idempotent skip/--force, its
+  tests, and the matching docs. Clean single-bead scope.
+- Scoped files only: internal/cli/init.go, internal/cli/init_test.go, internal/cli/retro_nudge.go,
+  docs/init.md, docs/cli/etude_init.md.
+- Out-of-scope session work (.gitignore, .etude/gates.yaml, .claude/skills/etude-review/, tmp/) is
+  correctly excluded from the commit.
+- Independent checks at review time: `go test ./internal/cli/... -run TestInit -count=1` → ok;
+  `go vet ./internal/cli/...` → exit 0; `gofmt -l` on the three Go files → empty; `make docs-check`
+  → exit 0.
+
+## Capture
+
+- inputs: bead --design (round-4 plan), Implement artifact (--notes), Verify artifact
+  (tmp/gates-2bm.1/verify.md), scoped working-tree diff.
+- output: this append-only Final Review note.
+
+Suggested commit message:
+  refactor etude init into a plan/apply pipeline with --dry-run and idempotent scaffold skip/--force

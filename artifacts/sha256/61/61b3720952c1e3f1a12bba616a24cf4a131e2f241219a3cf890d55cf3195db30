@@ -1,0 +1,775 @@
+commit ed5e37e2a08f7d21485203cd04e5010c9ad5f9ca
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Jun 7 13:15:51 2026 +0800
+
+    refactor etude init into a plan/apply pipeline with --dry-run and idempotent scaffold skip/--force
+
+diff --git a/docs/cli/etude_init.md b/docs/cli/etude_init.md
+index 501de07..4441c76 100644
+--- a/docs/cli/etude_init.md
++++ b/docs/cli/etude_init.md
+@@ -11,6 +11,7 @@ etude init [flags]
+ ### Options
+ 
+ ```
++      --dry-run         preview the planned actions without writing files or modifying git config
+       --force           overwrite existing scaffolded files with fresh generated content
+   -h, --help            help for init
+       --remote string   git remote to configure refspecs on (default: origin) (default "origin")
+diff --git a/docs/init.md b/docs/init.md
+index 259bc26..b27e1fb 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -56,12 +56,49 @@ trailing space), init treats it as a different value and adds the canonical one
+ alongside it, resulting in two entries for the same key. Init does not attempt
+ to detect or merge semantically equivalent refspecs.
+ 
++## Plan → apply pipeline
++
++`etude init` runs a plan → apply pipeline. `plan` derives an ordered action
++list (read-only: no writes, no git config queries). `apply` executes each
++action and is the sole site that prints output and tallies counts.
++
++After all actions run, a summary line is printed:
++
++```
++init: 2 created, 0 skipped, 2 configured
++```
++
++The `configured` count covers both freshly configured and already-configured
++refspecs. A second `init` run reports `2 configured` (idempotent, already-configured
++entries fall into the same bucket).
++
++## --dry-run
++
++`--dry-run` previews the planned actions without writing any files or modifying
++git config. It prints `plan: create <path>` / `plan: skip <path>` lines for the
++scaffold and `plan: configure fetch refspec on <remote>` / `plan: configure push
++refspec on <remote>` lines for the refspecs, followed by a summary:
++
++```
++dry-run: 2 to create, 0 to skip, 2 to configure
++```
++
++Dry-run behavior:
++- **Never errors on a missing remote.** It reports a would-skip note and exits
++  with code 0. Use this to preview what `init` would do before a remote is added.
++- **Syntactic `--remote` validation still runs.** A malformed name (e.g. `--remote
++  "bad name"`) errors immediately, before any reads.
++- **Workflow self-check still runs.** The YAML round-trip validation runs during
++  plan (read-only) and can error under dry-run.
++- **`--force --dry-run`** previews 0 to configure (force is silent on refspecs).
++
+ ## Flags
+ 
+ | Flag | Default | Description |
+ |------|---------|-------------|
+-| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Does not modify git config. |
+-| `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error. |
++| `--dry-run` | false | Preview the planned actions without writing files or modifying git config. |
++| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Does not modify git config. `--force` is always silent on refspec configuration. |
++| `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error (even under `--force`). |
+ 
+ ## Example
+ 
+diff --git a/internal/cli/init.go b/internal/cli/init.go
+index 6721901..2afe27f 100644
+--- a/internal/cli/init.go
++++ b/internal/cli/init.go
+@@ -14,9 +14,41 @@ import (
+ 	"github.com/spf13/cobra"
+ )
+ 
++// actionStatus classifies the outcome of an initAction for tallying.
++type actionStatus string
++
++const (
++	statusCreated           actionStatus = "created"
++	statusSkipped           actionStatus = "skipped"
++	statusConfigured        actionStatus = "configured"
++	statusAlreadyConfigured actionStatus = "already configured"
++	// statusNote is uncounted — used for informational messages (e.g. remote not found).
++	statusNote actionStatus = "note"
++)
++
++// Shared format strings — kept here so apply output and dry-run reporting
++// cannot drift from each other.
++const (
++	fmtCreated           = "created %s"
++	fmtSkipped           = "skipped %s"
++	fmtConfigured        = "configured %s = %s"
++	fmtAlreadyConfigured = "already configured %s = %s"
++	fmtRemoteNotFound    = "remote %s not found, skipping refspec configuration"
++)
++
++type actionLine struct {
++	status actionStatus
++	text   string
++}
++
++type initAction struct {
++	run func(force, dryRun bool) ([]actionLine, error)
++}
++
+ func newInitCommand(out, errOut io.Writer) *cobra.Command {
+ 	var force bool
+ 	var remote string
++	var dryRun bool
+ 
+ 	cmd := &cobra.Command{
+ 		Use:           "init",
+@@ -24,77 +56,67 @@ func newInitCommand(out, errOut io.Writer) *cobra.Command {
+ 		SilenceUsage:  true,
+ 		SilenceErrors: true,
+ 		RunE: func(cmd *cobra.Command, args []string) error {
+-			runner := initRunner{stdout: out, stderr: errOut}
+-			return runner.run(cmd.Context(), force, remote, cmd.Flags().Changed("remote"))
++			runner := initRunner{
++				stdout: out,
++				stderr: errOut,
++				stdin:  cmd.InOrStdin(),
++			}
++			return runner.run(cmd.Context(), force, dryRun, remote, cmd.Flags().Changed("remote"))
+ 		},
+ 	}
+ 	cmd.SetOut(out)
+ 	cmd.SetErr(errOut)
+ 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing scaffolded files with fresh generated content")
+ 	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote to configure refspecs on (default: origin)")
++	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the planned actions without writing files or modifying git config")
+ 	return cmd
+ }
+ 
+ type initRunner struct {
+ 	stdout io.Writer
+ 	stderr io.Writer
++	stdin  io.Reader
+ }
+ 
+-func (r initRunner) run(ctx context.Context, force bool, remote string, remoteChanged bool) error {
+-	// Validate the --remote value before ANY git invocation so a malformed
+-	// value fails fast and never reaches a git subprocess or a config key.
++func (r initRunner) run(ctx context.Context, force, dryRun bool, remote string, remoteChanged bool) error {
+ 	if err := validateRemoteName(remote); err != nil {
+ 		return err
+ 	}
+ 
+-	// Resolve repo root using git rev-parse --show-toplevel.
+ 	root, err := repoRoot(ctx)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	// Scaffold .etude/ working-tree files.
+-	if err := r.scaffoldFiles(root, force); err != nil {
++	actions, err := plan(ctx, root, force, remote, remoteChanged)
++	if err != nil {
+ 		return err
+ 	}
+ 
+-	// Directive D: --force regenerates scaffolded files only; it must NOT modify
+-	// git config. But the explicit-remote invariant still holds under --force: an
+-	// explicitly named remote that does not exist is an error regardless, so a
+-	// typo in `--force --remote <name>` surfaces instead of silently succeeding.
+-	// This check is read-only (no config write), so directive D is preserved.
+-	if force {
+-		if remoteChanged && !remoteExists(ctx, root, remote) {
+-			return remoteNotFoundErr(remote)
+-		}
+-		return nil
+-	}
+-
+-	return r.configureRefspecs(ctx, root, remote, remoteChanged)
++	return apply(r.stdout, actions, force, dryRun)
+ }
+ 
+-// scaffoldFiles writes .etude/workflow.yaml and rubric placeholder files into root.
+-func (r initRunner) scaffoldFiles(root string, force bool) error {
++// plan performs read-only derivation and builds the ordered action list.
++// It never calls remoteExists and never returns remoteNotFoundErr.
++func plan(ctx context.Context, root string, force bool, remote string, remoteChanged bool) ([]initAction, error) {
+ 	etudDir := filepath.Join(root, ".etude")
+ 
+-	// Directive C: guard against .etude/ existing as a regular file.
++	// Guard: .etude exists as a regular file.
+ 	if info, err := os.Stat(etudDir); err == nil && !info.IsDir() {
+-		return fmt.Errorf(".etude exists as a regular file, not a directory: %s", etudDir)
++		return nil, fmt.Errorf(".etude exists as a regular file, not a directory: %s", etudDir)
+ 	}
+ 
+-	// Generate workflow.yaml bytes from the canonical default.
++	// Generate workflow.yaml bytes and self-check.
+ 	wf := workflow.Default()
+ 	yamlBytes, err := wf.YAML()
+ 	if err != nil {
+-		return fmt.Errorf("generate workflow.yaml: %w", err)
++		return nil, fmt.Errorf("generate workflow.yaml: %w", err)
+ 	}
+-
+-	// Self-check: round-trip parse before writing anything.
+ 	if _, err := workflow.ParseYAML(yamlBytes); err != nil {
+-		return fmt.Errorf("workflow.yaml self-check failed: %w", err)
++		return nil, fmt.Errorf("workflow.yaml self-check failed: %w", err)
+ 	}
+ 
+-	// Derive rubric placeholder paths dynamically from Default().Stages.
++	// Derive rubric placeholder paths from the workflow.
+ 	type rubricEntry struct {
+ 		path  string
+ 		stage string
+@@ -106,97 +128,199 @@ func (r initRunner) scaffoldFiles(root string, force bool) error {
+ 		}
+ 	}
+ 
+-	// Write workflow.yaml.
++	var actions []initAction
++
++	// Workflow.yaml write action.
+ 	workflowPath := filepath.Join(etudDir, "workflow.yaml")
+-	if err := writeScaffoldFile(r.stdout, workflowPath, yamlBytes, force); err != nil {
+-		return err
+-	}
++	actions = append(actions, writeAction(workflowPath, yamlBytes))
+ 
+-	// Write rubric placeholders.
++	// Rubric placeholder write actions.
+ 	for _, entry := range rubrics {
+ 		fullPath := filepath.Join(etudDir, entry.path)
+-		// Directive F: self-documenting placeholder content.
+ 		content := fmt.Sprintf("# Rubric for %s\nTODO: define evaluation criteria.\n", entry.stage)
+-		if err := writeScaffoldFile(r.stdout, fullPath, []byte(content), force); err != nil {
+-			return err
+-		}
++		actions = append(actions, writeAction(fullPath, []byte(content)))
+ 	}
+ 
+-	return nil
++	// Refspec phase — exactly one action.
++	actions = append(actions, refspecAction(ctx, root, remote, remoteChanged))
++
++	return actions, nil
+ }
+ 
+-// writeScaffoldFile writes content to path, creating parent dirs as needed.
+-// If force is false and the file already exists it prints "skipped <path>".
+-// If force is true or the file does not exist it writes and prints "created <path>".
+-func writeScaffoldFile(out io.Writer, path string, content []byte, force bool) error {
+-	if _, err := os.Stat(path); err == nil && !force {
+-		fmt.Fprintf(out, "skipped %s\n", path)
+-		return nil
+-	}
+-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
++// writeAction returns an initAction for creating a scaffold file.
++func writeAction(path string, content []byte) initAction {
++	return initAction{
++		run: func(force, dryRun bool) ([]actionLine, error) {
++			if dryRun {
++				_, err := os.Stat(path)
++				exists := err == nil
++				if exists && !force {
++					return []actionLine{{statusSkipped, fmt.Sprintf("plan: skip %s", path)}}, nil
++				}
++				return []actionLine{{statusCreated, fmt.Sprintf("plan: create %s", path)}}, nil
++			}
++			status, err := writeScaffoldFile(path, content, force)
++			if err != nil {
++				return nil, err
++			}
++			var text string
++			switch status {
++			case statusSkipped:
++				text = fmt.Sprintf(fmtSkipped, path)
++			default:
++				text = fmt.Sprintf(fmtCreated, path)
++			}
++			return []actionLine{{status, text}}, nil
++		},
+ 	}
+-	if err := os.WriteFile(path, content, 0o644); err != nil {
+-		return fmt.Errorf("write %s: %w", path, err)
++}
++
++// refspecAction returns the single refspec-phase initAction.
++func refspecAction(ctx context.Context, root, remote string, remoteChanged bool) initAction {
++	return initAction{
++		run: func(force, dryRun bool) ([]actionLine, error) {
++			fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
++			fetchVal := "+refs/etude/*:refs/etude/*"
++			pushKey := fmt.Sprintf("remote.%s.push", remote)
++			pushVal := "refs/etude/*:refs/etude/*"
++
++			// Dry-run is always read-only and NEVER errors on a missing remote,
++			// even under --force with an explicit missing remote. Check dryRun
++			// BEFORE the force missing-remote error path.
++			if dryRun {
++				present := remoteExists(ctx, root, remote)
++				if !present {
++					// Report the would-skip condition; for force+explicit-missing
++					// note that a real run would error.
++					if force && remoteChanged {
++						note := fmt.Sprintf("plan: remote %s not found — a real run would error", remote)
++						return []actionLine{{statusNote, note}}, nil
++					}
++					note := fmt.Sprintf("remote %s not found -> would skip refspec configuration", remote)
++					return []actionLine{{statusNote, note}}, nil
++				}
++				if force {
++					// force + present → zero output (silent on refspecs).
++					return nil, nil
++				}
++				// Non-force + present: preview distinct fetch and push lines (both counted).
++				return []actionLine{
++					{statusConfigured, fmt.Sprintf("plan: configure fetch refspec on %s", remote)},
++					{statusConfigured, fmt.Sprintf("plan: configure push refspec on %s", remote)},
++				}, nil
++			}
++
++			// Normal (non-dry-run) run.
++
++			// Force gate: --force is always silent on refspecs EXCEPT for the
++			// explicit-missing-remote error case.
++			if force {
++				if remoteChanged && !remoteExists(ctx, root, remote) {
++					return nil, remoteNotFoundErr(remote)
++				}
++				// Force + all other cases: zero output (silent).
++				return nil, nil
++			}
++
++			// Non-force normal run.
++			if !remoteExists(ctx, root, remote) {
++				if remoteChanged {
++					return nil, remoteNotFoundErr(remote)
++				}
++				note := fmt.Sprintf(fmtRemoteNotFound, remote)
++				return []actionLine{{statusNote, note}}, nil
++			}
++
++			// Remote present: add refspecs if absent.
++			lines, err := addRefspecIfAbsent(ctx, root, fetchKey, fetchVal)
++			if err != nil {
++				return nil, err
++			}
++			pushLines, err := addRefspecIfAbsent(ctx, root, pushKey, pushVal)
++			if err != nil {
++				return nil, err
++			}
++			return append(lines, pushLines...), nil
++		},
+ 	}
+-	fmt.Fprintf(out, "created %s\n", path)
+-	return nil
+ }
+ 
+-// configureRefspecs sets up fetch and push refspecs on the named remote.
+-// If the remote does not exist and was not explicitly named, it skips with a
+-// printed note (init still succeeds). If --remote was passed explicitly and
+-// the remote is absent it returns an error.
+-func (r initRunner) configureRefspecs(ctx context.Context, root, remote string, remoteChanged bool) error {
+-	// Check remote existence.
+-	if !remoteExists(ctx, root, remote) {
+-		if remoteChanged {
+-			return remoteNotFoundErr(remote)
++// apply calls run(force, dryRun) on each action, prints output, tallies
++// statuses, and prints the summary. It is the sole fmt.Fprintf site for
++// action output.
++func apply(w io.Writer, actions []initAction, force, dryRun bool) error {
++	var created, skipped, configured int
++
++	for _, action := range actions {
++		lines, err := action.run(force, dryRun)
++		if err != nil {
++			return err
++		}
++		for _, line := range lines {
++			fmt.Fprintln(w, line.text)
++			switch line.status {
++			case statusCreated:
++				created++
++			case statusSkipped:
++				skipped++
++			case statusConfigured, statusAlreadyConfigured:
++				configured++
++				// statusNote is uncounted.
++			}
+ 		}
+-		fmt.Fprintf(r.stdout, "remote %s not found, skipping refspec configuration\n", remote)
+-		return nil
+ 	}
+ 
+-	fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
+-	fetchVal := "+refs/etude/*:refs/etude/*"
+-	pushKey := fmt.Sprintf("remote.%s.push", remote)
+-	pushVal := "refs/etude/*:refs/etude/*"
++	if dryRun {
++		fmt.Fprintf(w, "dry-run: %d to create, %d to skip, %d to configure\n", created, skipped, configured)
++	} else {
++		fmt.Fprintf(w, "init: %d created, %d skipped, %d configured\n", created, skipped, configured)
++	}
+ 
+-	if err := addRefspecIfAbsent(ctx, r.stdout, root, fetchKey, fetchVal); err != nil {
+-		return err
++	return nil
++}
++
++// writeScaffoldFile writes content to path, creating parent dirs as needed.
++// Returns the actionStatus and any error; the caller is responsible for printing.
++func writeScaffoldFile(path string, content []byte, force bool) (actionStatus, error) {
++	if _, err := os.Stat(path); err == nil && !force {
++		return statusSkipped, nil
+ 	}
+-	if err := addRefspecIfAbsent(ctx, r.stdout, root, pushKey, pushVal); err != nil {
+-		return err
++	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+ 	}
+-	return nil
++	if err := os.WriteFile(path, content, 0o644); err != nil {
++		return "", fmt.Errorf("write %s: %w", path, err)
++	}
++	return statusCreated, nil
+ }
+ 
+ // addRefspecIfAbsent adds value to key only when no byte-exact match already
+-// exists, ensuring idempotency. Exit code 1 from --get-all means no entries
+-// (key absent); only non-zero codes other than 1 are treated as errors.
++// exists, ensuring idempotency. Returns actionLines for the caller to print.
++// Exit code 1 from --get-all means no entries (key absent); only non-zero
++// codes other than 1 are treated as errors.
+ //
+ // Note: every git invocation is pinned with `git -C <root>` rather than relying
+ // on the process working directory, which is more robust when the cwd changes
+ // between calls (e.g. tests chdir). This deliberately differs from capture.go,
+ // which runs git relative to the current directory.
+-func addRefspecIfAbsent(ctx context.Context, out io.Writer, root, key, value string) error {
++func addRefspecIfAbsent(ctx context.Context, root, key, value string) ([]actionLine, error) {
+ 	existing, err := gitGetAll(ctx, root, key)
+ 	if err != nil {
+-		return fmt.Errorf("git config --get-all %s: %w", key, err)
++		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
+ 	}
+ 	for _, v := range existing {
+ 		if v == value {
+-			fmt.Fprintf(out, "already configured %s = %s\n", key, value)
+-			return nil
++			text := fmt.Sprintf(fmtAlreadyConfigured, key, value)
++			return []actionLine{{statusAlreadyConfigured, text}}, nil
+ 		}
+ 	}
+ 	// Directive A: use --local explicitly.
+ 	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--add", key, value)
+ 	if output, err := cmd.CombinedOutput(); err != nil {
+-		return fmt.Errorf("git config --add %s: %w\n%s", key, err, output)
++		return nil, fmt.Errorf("git config --add %s: %w\n%s", key, err, output)
+ 	}
+-	fmt.Fprintf(out, "configured %s = %s\n", key, value)
+-	return nil
++	text := fmt.Sprintf(fmtConfigured, key, value)
++	return []actionLine{{statusConfigured, text}}, nil
+ }
+ 
+ // gitGetAll returns all values for a git config key. Exit code 1 means the
+diff --git a/internal/cli/init_test.go b/internal/cli/init_test.go
+index 914f02c..f8414e1 100644
+--- a/internal/cli/init_test.go
++++ b/internal/cli/init_test.go
+@@ -1,6 +1,7 @@
+ package cli
+ 
+ import (
++	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+@@ -304,11 +305,13 @@ func TestInitFromSubdirectoryScaffoldsAtRoot(t *testing.T) {
+ 
+ // --force with the default origin absent must succeed silently and write NO git
+ // config (locks directive D against a refactor accidentally touching config).
++// Strengthened: also asserts the skip-note is ABSENT (--force is silent on refspecs).
+ func TestInitForceMissingDefaultOriginSucceeds(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	chdir(t, repo)
+ 
+-	if _, stderr, err := execute("init", "--force"); err != nil {
++	stdout, stderr, err := execute("init", "--force")
++	if err != nil {
+ 		t.Fatalf("init --force with no origin errored: %v (stderr %q)", err, stderr)
+ 	}
+ 	// --list always exits 0 (local config exists from initCaptureRepo); assert no
+@@ -316,6 +319,17 @@ func TestInitForceMissingDefaultOriginSucceeds(t *testing.T) {
+ 	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
+ 		t.Fatalf("--force should not write refspec config, got %q", out)
+ 	}
++	// --force must be silent on refspecs: no skip-note, no configure line.
++	// Assert against specific prefixes (NOT bare "configured"/"skipped" which appear in summary).
++	if strings.Contains(stdout, "not found, skipping") {
++		t.Fatalf("--force should not emit skip-note, got %q", stdout)
++	}
++	if strings.Contains(stdout, "plan: configure") {
++		t.Fatalf("--force should not emit configure plan line, got %q", stdout)
++	}
++	if strings.Contains(stdout, "configured remote.") {
++		t.Fatalf("--force should not emit configured refspec line, got %q", stdout)
++	}
+ }
+ 
+ // A valid name with an embedded (non-leading) dash must be accepted — the dash
+@@ -453,6 +467,237 @@ func TestInitEtudeIsAFile(t *testing.T) {
+ 	}
+ }
+ 
++// ---------------------------------------------------------------------------
++// --dry-run: writes nothing, reports plan lines and summary.
++// ---------------------------------------------------------------------------
++
++func TestInitDryRunWritesNothing(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("init", "--dry-run")
++	if err != nil {
++		t.Fatalf("init --dry-run returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	// No files should be written.
++	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
++		t.Fatalf("--dry-run must not write workflow.yaml (stat err=%v)", statErr)
++	}
++
++	// No refspecs should be configured.
++	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
++		t.Fatalf("--dry-run must not modify git config, got %q", out)
++	}
++
++	// Stdout must show plan lines and dry-run summary.
++	if !strings.Contains(stdout, "plan: create") {
++		t.Fatalf("--dry-run stdout missing 'plan: create': %q", stdout)
++	}
++	if !strings.Contains(stdout, "dry-run:") {
++		t.Fatalf("--dry-run stdout missing summary 'dry-run:': %q", stdout)
++	}
++	if !strings.Contains(stdout, "to create") {
++		t.Fatalf("--dry-run stdout missing 'to create': %q", stdout)
++	}
++}
++
++// TestInitDryRunMissingRemoteReports: missing remote under --dry-run exits 0
++// and reports would-skip; nothing is written.
++func TestInitDryRunMissingRemoteReports(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("init", "--dry-run", "--remote", "upstream")
++	if err != nil {
++		t.Fatalf("init --dry-run --remote upstream should not error: %v\nstderr: %s", err, stderr)
++	}
++
++	// Nothing written.
++	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
++		t.Fatalf("--dry-run must not write workflow.yaml")
++	}
++
++	// Should report the would-skip note for the remote.
++	if !strings.Contains(stdout, "would skip refspec") {
++		t.Fatalf("--dry-run with missing remote should report would-skip, got %q", stdout)
++	}
++}
++
++// TestInitExplicitMissingRemoteWritesThenErrors: non-dry-run with an explicit
++// missing remote errors BUT the scaffold files are written first (write-then-error).
++func TestInitExplicitMissingRemoteWritesThenErrors(t *testing.T) {
++	// Non-force case.
++	t.Run("non-force", func(t *testing.T) {
++		repo := initCaptureRepo(t)
++		chdir(t, repo)
++
++		_, _, err := execute("init", "--remote", "upstream")
++		if err == nil {
++			t.Fatal("init --remote upstream should have errored")
++		}
++
++		// workflow.yaml must exist despite the error (write-then-error ordering).
++		if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); statErr != nil {
++			t.Fatalf("workflow.yaml must exist after write-then-error, got: %v", statErr)
++		}
++	})
++
++	// --force case: same invariant.
++	t.Run("force", func(t *testing.T) {
++		repo := initCaptureRepo(t)
++		chdir(t, repo)
++
++		_, _, err := execute("init", "--force", "--remote", "upstream")
++		if err == nil {
++			t.Fatal("init --force --remote upstream should have errored")
++		}
++
++		if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); statErr != nil {
++			t.Fatalf("workflow.yaml must exist after write-then-error, got: %v", statErr)
++		}
++	})
++}
++
++// TestInitDryRunExistingScaffoldSkips: dry-run in a populated repo shows skip
++// lines and skip counts; nothing mutated.
++func TestInitDryRunExistingScaffoldSkips(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
++	chdir(t, repo)
++
++	// Pre-populate scaffold files via a real init.
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
++	}
++
++	// Record git config state.
++	configBefore := gitCapture(t, repo, "config", "--local", "--list")
++
++	stdout, stderr, err := execute("init", "--dry-run")
++	if err != nil {
++		t.Fatalf("init --dry-run on populated repo returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	// Must show skip lines, not create.
++	if !strings.Contains(stdout, "plan: skip") {
++		t.Fatalf("--dry-run on populated repo missing 'plan: skip': %q", stdout)
++	}
++
++	// Config must be unchanged.
++	configAfter := gitCapture(t, repo, "config", "--local", "--list")
++	if configBefore != configAfter {
++		t.Fatalf("--dry-run mutated git config: before=%q after=%q", configBefore, configAfter)
++	}
++
++	// Summary must report to-skip count > 0.
++	if !strings.Contains(stdout, "to skip") {
++		t.Fatalf("--dry-run summary missing 'to skip': %q", stdout)
++	}
++}
++
++// TestInitForceDryRun: force + dry-run + present remote → 0 to configure, nothing written.
++func TestInitForceDryRun(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("init", "--force", "--dry-run")
++	if err != nil {
++		t.Fatalf("init --force --dry-run returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	// Nothing written.
++	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
++		t.Fatalf("--force --dry-run must not write files")
++	}
++
++	// No git config changes.
++	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
++		t.Fatalf("--force --dry-run must not modify git config, got %q", out)
++	}
++
++	// Summary must show 0 to configure (--force is silent on refspecs).
++	if !strings.Contains(stdout, "0 to configure") {
++		t.Fatalf("--force --dry-run should show '0 to configure': %q", stdout)
++	}
++
++	// No refspec-related lines (no plan: configure, no skip-note).
++	if strings.Contains(stdout, "plan: configure") {
++		t.Fatalf("--force --dry-run should not emit plan: configure, got %q", stdout)
++	}
++	if strings.Contains(stdout, "not found, skipping") {
++		t.Fatalf("--force --dry-run should not emit skip-note, got %q", stdout)
++	}
++}
++
++// TestInitSummaryCounts: verifies the summary counts on first and second runs.
++func TestInitSummaryCounts(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
++	chdir(t, repo)
++
++	// Count how many files will be created (workflow.yaml + rubrics).
++	wf := workflow.Default()
++	rubricCount := 0
++	for _, s := range wf.Stages {
++		if s.Eval != nil && s.Eval.Method == "rubric" {
++			rubricCount++
++		}
++	}
++	expectedCreated := 1 + rubricCount // workflow.yaml + rubrics
++
++	// First run: all created + 2 configured (fetch + push).
++	stdout, stderr, err := execute("init")
++	if err != nil {
++		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
++	}
++	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 2 configured", expectedCreated)
++	if !strings.Contains(stdout, wantSummary1) {
++		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
++	}
++
++	// Second run: all skipped + 2 configured (already-configured → still in configured bucket).
++	stdout2, stderr2, err := execute("init")
++	if err != nil {
++		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
++	}
++	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 2 configured", expectedCreated)
++	if !strings.Contains(stdout2, wantSummary2) {
++		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
++	}
++}
++
++// TestInitDryRunForceMissingRemoteReports: --dry-run --force --remote <missing>
++// must exit 0 and report the condition, writing nothing. This locks the invariant
++// that dry-run NEVER errors on a missing remote, even under --force.
++func TestInitDryRunForceMissingRemoteReports(t *testing.T) {
++	repo := initCaptureRepo(t)
++	// Intentionally do NOT add "missing" remote.
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("init", "--dry-run", "--force", "--remote", "missing")
++	if err != nil {
++		t.Fatalf("init --dry-run --force --remote missing should not error: %v\nstderr: %s", err, stderr)
++	}
++
++	// Nothing written.
++	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
++		t.Fatalf("--dry-run must not write files (stat err=%v)", statErr)
++	}
++
++	// No git config changes.
++	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
++		t.Fatalf("--dry-run must not modify git config, got %q", out)
++	}
++
++	// Must report the condition (real run would error).
++	if !strings.Contains(stdout, "would error") {
++		t.Fatalf("--dry-run --force missing remote should report would-error condition: %q", stdout)
++	}
++}
++
+ // ---------------------------------------------------------------------------
+ // helpers
+ // ---------------------------------------------------------------------------
+diff --git a/internal/cli/retro_nudge.go b/internal/cli/retro_nudge.go
+index 35402f8..d9c8404 100644
+--- a/internal/cli/retro_nudge.go
++++ b/internal/cli/retro_nudge.go
+@@ -20,8 +20,8 @@ import (
+ // The group itself prints its own help when called with no subcommand.
+ func newRetroNudgeCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd := &cobra.Command{
+-		Use:           "nudge",
+-		Short:         "Manage the retro overdue reminder (nudge)",
++		Use:   "nudge",
++		Short: "Manage the retro overdue reminder (nudge)",
+ 		Long: "The retro nudge is an opt-in reminder emitted on stderr by any etude " +
+ 			"command when, per .etude/workflow.yaml, the number of captured runs since " +
+ 			"the most recent retro has reached a configured threshold. The dismiss " +
+@@ -135,4 +135,3 @@ func newRetroNudgeStatusCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd.SetErr(errOut)
+ 	return cmd
+ }
+-

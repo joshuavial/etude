@@ -1,0 +1,110 @@
+◐ etude-2bm.1 · init: refactor to plan/apply action model + --dry-run + idempotent skip/--force   [● P2 · IN_PROGRESS]
+Owner: joshuavial · Assignee: joshuavial · Type: task
+Created: 2026-06-07 · Updated: 2026-06-07
+
+DESCRIPTION
+Restructure etude init as plan->confirm->apply over an explicit ordered Action list (create-file, append-gitignore, set-refspec, run-subcommand), each reporting created|skipped(exists)|configured|error. Add --dry-run (print plan, write nothing) and idempotent behavior: default skip existing files (never clobber edits), --force overwrites. Foundation; no new scaffold content yet. Inject r.stdin alongside r.stdout for later interactive use.
+
+DESIGN
+## Plan (round 4)
+
+**Approach:** Refactor `internal/cli/init.go` into a plan -> apply pipeline over an ordered Action list, preserving EVERY observable behavior (write-then-error ordering, --force silence on refspecs, the five legacy strings, refspec idempotency) and adding `--dry-run` + a summary line, with `r.stdin` threaded unused. Round-4 adopts a READ-ONLY-AWARE action signature so dry-run never mutates and never needs separate preview metadata, fixing the round-3 --force output regression and the dry-run count gaps in one model.
+
+UNIFIED ACTION MODEL:
+- `run func(force, dryRun bool) ([]actionLine, error)`. In dryRun the action is READ-ONLY (os.Stat / remoteExists only) and returns PREVIEW lines reflecting the ACTUAL outcome; otherwise it performs the effect and returns result lines. apply() calls run(force, dryRun) for EVERY action and is the SOLE print + tally site.
+- `type actionLine struct { status actionStatus; text string }`.
+- `type actionStatus string` consts: `statusCreated`, `statusSkipped`, `statusConfigured`, `statusAlreadyConfigured`, plus uncounted sentinel `statusNote`. Errors flow through Go `error`.
+- `type initAction struct { describe string; run func(force, dryRun bool) ([]actionLine, error) }`.
+
+Behavior to preserve (verified init.go:43-74): `run()` writes the scaffold (prints `created`) BEFORE any remote-existence check, so `init --remote <bad>` and `init --force --remote <bad>` write then error. Legacy `--force` is SILENT on every refspec outcome EXCEPT (remoteChanged && absent) which errors (init.go:66-71 returns nil after the explicit-missing check; it never prints a skip note and never configures).
+
+plan(ctx, root, force, remote, remoteChanged) ([]initAction, error): read-only DERIVATION only — `.etude`-is-a-file guard (init.go:81), workflow self-check (`workflow.Default()` -> `YAML()` -> round-trip ParseYAML, init.go:86-95), rubric derivation (init.go:102-107). These two guards legitimately error PRE-APPLY even under --dry-run (pure validation, no writes) — explicitly acceptable. plan() builds, deterministically: workflow.yaml write action, one write action per rubric placeholder, then EXACTLY ONE refspec-phase action. plan() NEVER calls remoteExists and NEVER returns remoteNotFoundErr.
+
+Write action run(force, dryRun):
+- dryRun: os.Stat(path) ONLY (read-only). Exists && !force -> return `{statusSkipped, "skipped <path>"}` previewed as a `plan: skip <path>` line; else -> `{statusCreated, "plan: create <path>"}`. (Use the SHARED string consts; see below.) No MkdirAll, no WriteFile.
+- normal: call writeScaffoldFile(path, content, force) -> returns (actionStatus, error); wrap into one actionLine with the verbatim `created %s` / `skipped %s` text.
+
+Refspec phase = ONE action (so the skip note prints at most once). run(force, dryRun):
+- FORCE GATE FIRST (fixes blocker 1): if `force`, the phase produces ZERO output lines in ALL cases except the explicit-missing error. Specifically: if remoteChanged && !remoteExists -> return error remoteNotFoundErr(remote) (writes already happened -> write-then-error preserved); otherwise (force) return NO lines (no skip-note, no configure) in BOTH normal and dryRun. This matches legacy --force silence and gives dry-run --force a "to configure" count of 0 (directive D).
+- NON-FORCE:
+  - dryRun: remoteExists? present -> `{statusConfigured x2}` preview lines `plan: configure refspecs on <remote>` counted as 2 to-configure (so dry-run agrees with a real run); absent -> ONE `{statusNote, "remote <remote> not found -> would skip refspec configuration"}`, uncounted; NEVER errors on a missing remote (even when remoteChanged — dry-run is report-only).
+  - normal: remote absent + remoteChanged -> return error remoteNotFoundErr; remote absent + !remoteChanged -> ONE `{statusNote, "remote %s not found, skipping refspec configuration"}` (verbatim, uncounted); remote present -> addRefspecIfAbsent for fetch then push -> TWO actionLines each `{status, "configured %s = %s" | "already configured %s = %s"}`.
+
+apply(ctx, w, actions, force, dryRun) error — the SOLE fmt.Fprintf + tally site:
+- for each action call run(force, dryRun). On error, return it immediately (in a normal run the earlier write actions already printed -> realizes write-then-error). Else print each line.text and tally each line.status.
+- After all actions, print the summary: normal `init: %d created, %d skipped, %d configured`; dry-run `dry-run: %d to create, %d to skip, %d to configure`.
+
+Status -> bucket mapping (pinned, identical normal & dry-run):
+- created  <- statusCreated
+- skipped  <- statusSkipped
+- configured <- statusConfigured + statusAlreadyConfigured (both)
+- statusNote UNCOUNTED.
+
+run() collapses to: `validateRemoteName(remote)` (syntactic, pre-everything, unchanged — errors even under --dry-run) -> `repoRoot(ctx)` -> `plan(...)` -> `apply(..., force, dryRun)`.
+
+Helper change (retained): writeScaffoldFile + addRefspecIfAbsent RETURN `(actionStatus, error)` and REMOVE internal fmt.Fprintf; apply() is the one print site. (For dryRun the write action does NOT call writeScaffoldFile at all — it does its own os.Stat preview — so writeScaffoldFile never writes during dry-run.)
+
+Shared string consts (optional-but-doing-it, prevents drift): hoist the five legacy strings into package consts used by BOTH apply normal output and dry-run preview where applicable: `created %s`, `skipped %s`, `configured %s = %s`, `already configured %s = %s`, `remote %s not found, skipping refspec configuration`. These stay BYTE-IDENTICAL.
+
+r.stdin: add `stdin io.Reader` to initRunner (init.go:38), wire `stdin: cmd.InOrStdin()` in newInitCommand. Unused this bead.
+
+Verbatim-string discipline (pinned):
+- `--dry-run` BoolVar help: "preview the planned actions without writing files or modifying git config".
+- dry-run per-action lines: `plan: create <path>`, `plan: skip <path>`, `plan: configure refspecs on <remote>`; absent-remote uses the would-skip note text above.
+- Normal summary: `init: %d created, %d skipped, %d configured`.
+- Dry-run summary: `dry-run: %d to create, %d to skip, %d to configure`.
+
+Existing-test compatibility (verified): init_test.go asserts via strings.Contains(stdout, ...) (substrings/counts), NOT full-buffer equality -> the trailing summary line does NOT break the 14 existing tests; they stay as-is.
+
+**Files:**
+- internal/cli/init.go - add actionStatus consts (incl. statusNote) + actionLine + initAction with run(force, dryRun); add plan() and apply(ctx, w, actions, force, dryRun); rewrite run(); force-gate the refspec phase output; write action does read-only os.Stat preview under dryRun; change writeScaffoldFile + addRefspecIfAbsent to return actionStatus and stop printing; hoist five legacy strings to consts; add `--dry-run` BoolVar; add `stdin io.Reader` from cmd.InOrStdin(). repoRoot, remoteExists, gitGetAll, validateRemoteName, remoteNotFoundErr unchanged.
+- internal/cli/init_test.go - add new tests below; existing 14 stay green.
+- docs/init.md - --dry-run flags-table row + plan/apply summary note + statement that --dry-run never errors on a missing remote (reports + writes nothing) while a malformed --remote name still errors; note --force stays silent on refspecs.
+- docs/cli/etude_init.md - regenerate via `make docs` (generated; do not hand-edit).
+
+**Tests (via execute() against a real temp git repo from initCaptureRepo + chdir):**
+- TestInitDryRunWritesNothing: fresh repo + origin; `init --dry-run`; NO files on disk, NO refs/etude in `git config --local --list`, stdout shows `plan: create` lines + dry-run summary, exit 0.
+- TestInitDryRunExistingScaffoldSkips (NEW, blocker 2): pre-create .etude/workflow.yaml + rubric files; `init --dry-run`; stdout shows `plan: skip` lines, dry-run summary skip count matches existing files, still nothing mutated.
+- TestInitDryRunExistingRemoteNoAdd: fresh repo + origin; `init --dry-run`; assert refspec config UNCHANGED (no refs/etude added, no git config --add) AND dry-run summary "2 to configure".
+- TestInitForceDryRun (NEW, blocker 3): origin present; `init --force --dry-run`; assert "0 to configure", no refspec line / no skip-note in stdout, nothing written.
+- TestInitDryRunMissingRemoteReports: `init --dry-run --remote upstream` (missing); exit 0, nil error, stdout reports would-skip, nothing written.
+- TestInitDryRunMalformedRemoteErrors: `init --dry-run --remote "bad name"` -> "invalid remote name" (syntactic validation pre-everything).
+- TestInitExplicitMissingRemoteWritesThenErrors: non-dry-run `init --remote upstream` (missing) -> error AND .etude/workflow.yaml EXISTS after; same for `--force --remote upstream`.
+- TestInitForceMissingDefaultOriginSucceeds STRENGTHENED (blocker 1): `init --force` (no origin) -> success AND assert the skip-note substring ("not found, skipping") is ABSENT and stdout shows NO refspec line (force is silent on refspecs).
+- TestInitSummaryCounts: fresh repo+origin; `init`; `init:` summary with correct created count (incl. rubrics) + configured=2; second run summary shows skipped + configured=2 (already-configured in configured bucket).
+- Behavior-preservation harness kept green: TestInitIdempotency, TestInitForceOverwritesFilesNotConfig, TestInitNoOriginSkipsRefspecs, TestInitExplicitMissingRemoteErrors.
+- Optional TestInitDryRunIdempotentNoState: two --dry-run runs, identical output, nothing on disk.
+
+**Docs:** docs/init.md gets the --dry-run row, a plan->apply + summary paragraph, an explicit note that --dry-run validates syntactic --remote names + the workflow self-check but does NOT error on a missing remote (reports a would-skip, writes nothing), and a note that --force remains silent on refspec configuration. Regenerate docs/cli/etude_init.md.
+
+**Risks (behavior-preservation traps):**
+- --FORCE SILENCE (round-3 regression, blocker 1): the refspec phase must be force-gated so it emits ZERO lines under --force in every case except the explicit-missing error — no skip-note, no configure. Strengthened TestInitForceMissingDefaultOriginSucceeds asserts the note is ABSENT.
+- DRY-RUN COUNT FIDELITY (blockers 2+3): write actions os.Stat to preview create-vs-skip so counts match a real run in fresh AND populated repos; the refspec preview respects force (force+present -> 0 to configure per directive D; !force+present -> 2; absent -> 0, no error). TestInitDryRunExistingScaffoldSkips + TestInitForceDryRun lock these.
+- WRITE-THEN-ERROR: refspec-phase action runs in apply() AFTER write actions; absent+remoteChanged returns error after writes. TestInitExplicitMissingRemoteWritesThenErrors asserts post-error file existence.
+- dry-run is READ-ONLY: actions touch only os.Stat / remoteExists in dryRun; writeScaffoldFile / addRefspecIfAbsent / git config --add are never reached. TestInitDryRunExistingRemoteNoAdd locks no-add.
+- Status->bucket: configured = statusConfigured + statusAlreadyConfigured; statusNote uncounted; identical mapping for normal and dry-run so counts never diverge.
+- Shared string consts keep apply output and dry-run reporting from drifting; five legacy strings byte-identical.
+- Refspec add-if-absent semantics (verified git 2.47.1): `git remote add` auto-seeds remote.<n>.fetch (fetch -> value-compare/already-configured branch), push -> get-all exit-1 empty branch; `git remote get-url` exits 2 for missing. addRefspecIfAbsent keeps calling gitGetAll unchanged; only its print/return shape changes.
+- Deterministic ordering (workflow.yaml -> rubrics -> refspec phase) keeps dry-run lines + counts stable; stderr empty on success (summary on stdout).
+- Existing tests use strings.Contains, not full-buffer equality, so the trailing summary line is safe.
+
+**Capture:**
+- inputs: bead etude-2bm.1 description + epic etude-2bm context; round-1/2/3 plan-gate feedback (incl. round-3 --force output regression + dry-run count gaps and the adopted read-only-aware run(force,dryRun) model); internal/cli/init.go (run() 43-74 incl. force-silence 66-71, writeScaffoldFile 131-144, addRefspecIfAbsent 182-200, remoteExists 246-250), internal/cli/init_test.go (verified strings.Contains assertion style), internal/cli/root.go, internal/cli/root_test.go, cmd/etude/main.go; docs/init.md, docs/cli/etude_init.md; empirical git 2.47.1 exit-code probe.
+- output: bead --design field.
+
+NOTES
+## Verify
+Status: PASS — Recommendation: proceed to Docs.
+Automated: go test ./internal/cli/... (25 TestInit* + full suite green, -count=1); make lint clean (gofmt + go vet).
+Built-binary manual (make build -> ./bin/etude, 8 scenarios in mktemp git repos): (1) fresh+origin -> 3 created/2 configured, refspecs set; (2) re-run -> skipped+already-configured, exactly 1 etude refspec/key; (3) --dry-run fresh -> nothing written, counts MATCH subsequent real run (3 create/2 configure); (4) --dry-run populated -> 0 create/3 skip/2 configure; (5) --remote bogus -> write-then-error exit 1, workflow.yaml exists; (6) --force --remote bogus -> write-then-error exit 1; (7) --dry-run --force --remote bogus -> exit 0, 'would error', nothing written; (8) --force no origin -> exit 0, NO refspec/skip line (force silence, prefix-grep verified).
+All five MUST-HOLD invariants confirmed (write-then-error; force refspec silence; dry-run read-only/never-errors-on-missing/count-parity; apply() sole print site + byte-identical legacy consts + plan() never calls remoteExists; configured=configured+already-configured, statusNote uncounted).
+No implementation changes needed. retro_nudge.go diff is gofmt-only. Artifact: tmp/gates-2bm.1/verify.md
+
+LABELS: phase:review
+
+PARENT
+  ↑ ○ etude-2bm: (EPIC) etude init: full repo setup with interactive + non-interactive modes ● P2
+
+BLOCKS
+  ← ○ etude-2bm.2: init: expand scaffold set — gates.yaml (+self-check), .gitignore entries, optional project.md ● P2
+

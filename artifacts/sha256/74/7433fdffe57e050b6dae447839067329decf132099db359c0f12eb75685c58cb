@@ -1,0 +1,150 @@
+# Verify — etude-2bm.1 (init plan/apply refactor + --dry-run + idempotent skip/--force)
+
+Status: pass
+Recommendation: proceed to Docs
+
+## Automated tests
+
+- changes: none added in Verify (implementation already shipped 6 new tests +
+  strengthened TestInitForceMissingDefaultOriginSucceeds). Coverage judged
+  adequate; no dev-test-writer spawn needed.
+- commands:
+  - `go test ./internal/cli/... -run TestInit -count=1 -v`
+  - `go test ./internal/cli/...`
+  - `make lint`
+- result:
+  - All 25 TestInit* cases PASS (includes TestInitDryRunWritesNothing,
+    TestInitDryRunMissingRemoteReports, TestInitExplicitMissingRemoteWritesThenErrors
+    [non-force + force subtests], TestInitDryRunExistingScaffoldSkips,
+    TestInitForceDryRun, TestInitSummaryCounts, TestInitDryRunForceMissingRemoteReports).
+  - Full `internal/cli` suite: `ok` (3.4s, -count=1).
+  - `make lint`: clean (`gofmt -l` empty, `go vet ./...` clean).
+
+## Manual tests
+
+- required: yes (CLI bead — built-binary manual test mandated).
+- reason: init has git-config + filesystem side effects and new --dry-run /
+  --force / missing-remote behavior that unit tests alone cannot fully prove on
+  the real installed binary.
+- result: `make build` produced ./bin/etude (dev). All 8 scenarios run against
+  the actual binary in throwaway `mktemp -d` + `git init` repos. PASS.
+
+Exact commands + observed output (paths abbreviated):
+
+1. Fresh repo + origin — `etude init`
+   stdout:
+   ```
+   created .../.etude/workflow.yaml
+   created .../.etude/evals/plan-rubric.md
+   created .../.etude/evals/test-plan-rubric.md
+   configured remote.origin.fetch = +refs/etude/*:refs/etude/*
+   configured remote.origin.push = refs/etude/*:refs/etude/*
+   init: 3 created, 0 skipped, 2 configured
+   ```
+   EXIT=0. .etude/ + evals exist; refspecs set (etude fetch + push present
+   alongside git's auto-seeded default fetch).
+
+2. Re-run (idempotent) — second `etude init`
+   stdout:
+   ```
+   skipped .../workflow.yaml
+   skipped .../evals/plan-rubric.md
+   skipped .../evals/test-plan-rubric.md
+   already configured remote.origin.fetch = +refs/etude/*:refs/etude/*
+   already configured remote.origin.push = refs/etude/*:refs/etude/*
+   init: 0 created, 3 skipped, 2 configured
+   ```
+   EXIT=0. `--get-all` shows exactly ONE etude entry per key (etude fetch count=1,
+   push count=1). already-configured stays in the configured bucket (=2).
+
+3. `etude init --dry-run` (fresh + origin)
+   stdout:
+   ```
+   plan: create .../workflow.yaml
+   plan: create .../evals/plan-rubric.md
+   plan: create .../evals/test-plan-rubric.md
+   plan: configure fetch refspec on origin
+   plan: configure push refspec on origin
+   dry-run: 3 to create, 0 to skip, 2 to configure
+   ```
+   EXIT=0. .etude does NOT exist; no etude refspec in git config.
+   COUNT PARITY: subsequent REAL `etude init` on same repo printed
+   `init: 3 created, 0 skipped, 2 configured` — matches the dry-run plan exactly.
+
+4. `etude init --dry-run` (populated repo)
+   stdout:
+   ```
+   plan: skip .../workflow.yaml
+   plan: skip .../evals/plan-rubric.md
+   plan: skip .../evals/test-plan-rubric.md
+   plan: configure fetch refspec on origin
+   plan: configure push refspec on origin
+   dry-run: 0 to create, 3 to skip, 2 to configure
+   ```
+   EXIT=0. Counts reflect real on-disk state (3 to skip).
+
+5. `etude init --remote bogus` (missing, non-force)
+   stdout: 3 `created` lines then `remote "bogus" not found`. EXIT=1.
+   .etude/workflow.yaml EXISTS post-error (write-then-error preserved);
+   no remote.bogus.* config written.
+
+6. `etude init --force --remote bogus` (missing)
+   stdout: 3 `created` lines then `remote "bogus" not found`. EXIT=1.
+   .etude/workflow.yaml EXISTS post-error (write-then-error preserved).
+
+7. `etude init --dry-run --force --remote bogus` (missing)
+   stdout:
+   ```
+   plan: create ...workflow.yaml / plan-rubric.md / test-plan-rubric.md
+   plan: remote bogus not found — a real run would error
+   dry-run: 3 to create, 0 to skip, 0 to configure
+   ```
+   EXIT=0. NOTHING written (.etude absent, no bogus config). Reports the
+   would-error condition; 0 to configure (force silence honored in dry-run).
+
+8. `etude init --force` (repo with NO origin)
+   stdout: 3 `created` lines + `init: 3 created, 0 skipped, 0 configured`.
+   EXIT=0. Force silence verified via prefix-specific grep
+   (`configured remote.` / `plan: configure` / `not found, skipping` all ABSENT).
+
+## QA findings
+
+- correctness: All five MUST-HOLD invariants realized and observed end-to-end:
+  (a) bad explicit remote (force & non-force) WRITES scaffold then errors exit 1
+      — scenarios 5 & 6, plus TestInitExplicitMissingRemoteWritesThenErrors.
+  (b) --force silent on refspec output except (remoteChanged && absent) error —
+      scenario 8 (no origin, silent) + scenarios 5/6 (explicit-missing errors);
+      code force-gates the refspec phase (init.go:217-223). Verified via
+      prefix-specific assertions, not bare summary words.
+  (c) --dry-run read-only, never errors on missing remote, counts match real
+      runs — scenarios 3 (fresh, count parity vs real run), 4 (populated), 7
+      (force+missing reports "would error", exit 0). os.Stat/remoteExists only
+      under dryRun; no WriteFile/MkdirAll/git --add reached.
+  (d) apply() is the SOLE print site (all fmt.Fprint* at init.go:260/274/276);
+      five legacy strings hoisted to byte-identical consts (init.go:32-36);
+      plan() confirmed to never call remoteExists.
+  (e) configured bucket = statusConfigured + statusAlreadyConfigured;
+      statusNote uncounted (apply tally init.go:262-269). Observed: re-run still
+      reports configured=2 via already-configured.
+- coverage: Adequate. 25 init tests cover dry-run write-nothing, populated skip
+  counts, force dry-run silence, write-then-error (both force modes), summary
+  counts, idempotency, force-overwrites-files-not-config, no-origin skip. Manual
+  matrix adds real-binary + count-parity evidence beyond unit scope.
+- regressions: None. Full internal/cli suite green; behavior-preservation tests
+  (Idempotency, ForceOverwrites, NoOriginSkips, ExplicitMissingErrors) pass.
+  retro_nudge.go change is gofmt-only (alignment + trailing newline), no
+  behavior change — incidental, acceptable.
+- code quality: Clean. Single print/tally site, shared consts prevent string
+  drift, force gate is explicit and commented, dryRun checked before the
+  force-missing error path so dry-run stays non-erroring. gofmt + go vet clean.
+- risks: none blocking. Minor note: dry-run on a populated repo reports
+  "2 to configure" even when refspecs already exist (would be already-configured
+  on a real run) — this is intentional per the pinned bucket mapping
+  (configured includes already-configured), so dry-run and real counts agree.
+  Documented behavior, not a defect.
+
+## Capture
+
+- inputs: approved plan (bead --design, Tier-2 round-4 PASS) and Implement
+  artifact (bead --notes); working-tree diff for init.go/init_test.go/docs.
+- output: this append-only Verify note + bead --notes summary.
