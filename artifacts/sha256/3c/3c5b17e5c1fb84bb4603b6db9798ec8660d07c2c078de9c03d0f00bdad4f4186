@@ -1,0 +1,148 @@
+# Verify — etude-9uf.2: Supervisor + worker-lane runbook
+
+## Acceptance criteria, checked one by one
+
+**1. "docs/plans/dogfood describes the worker-lane + supervisor model with no
+references to dogfood-capture.sh or dogfood-close.sh."**
+
+```
+$ grep -rn 'dogfood-capture\.sh\|dogfood-close\.sh' docs/plans/dogfood/
+$ echo $?
+1
+```
+
+That is only the NEGATIVE half of the criterion (the banned names are absent). A
+grep cannot demonstrate the positive half — "describes the worker-lane +
+supervisor model" — so here is that evidence directly.
+
+`docs/plans/dogfood/supervisor-runbook.md`, new in this bead, 321 lines. Its
+full section structure:
+
+```
+# Supervisor Runbook
+## The two roles                         <- worker lane vs supervisor
+## Where a phase artifact lands          <- .etude/tmp/<bead>/<phase>.md, run ref is durable
+## The per-phase loop                    <- the two commands the supervisor types
+## `etude gate`
+### Contract (prescriptive — this is what bead .1 must build)
+### The record must match the bootstrap path
+## The seat contract                     <- the $ETUDE_OUTPUT_FILE envelope
+## The shared prompt
+## Degraded gates and stop-the-line
+## The bootstrap path
+## What the supervisor may not do
+## Session boot
+## Close
+```
+
+Every element the bead description asks for has a named home: *how a bead is
+handed to a worker lane* (`## The two roles`), *what the worker produces per
+phase* and *where the artifact lands* (`## Where a phase artifact lands`), and
+*how the supervisor advances it with `etude gate`* (`## The per-phase loop` plus
+the `## `etude gate`` contract).
+
+The model is stated in the runbook's own words, not paraphrased here:
+
+> A **worker lane** [...] produces each phase's artifact and nothing else: it
+> does not run its own gate, does not write verdicts, and does not decide
+> whether a phase advances.
+>
+> **Supervisor.** [...] never produces the artifact under review and never
+> writes a verdict by hand. Its whole job at a boundary is two commands: record
+> the stage, then run the gate.
+
+And the directory's index now leads with it rather than burying it —
+`docs/plans/dogfood/README.md` opens:
+
+> A bead is worked by a **worker lane** and advanced by a **supervisor** who
+> runs each phase gate with a command. Start at the
+> [Supervisor runbook](supervisor-runbook.md) — it owns the operational loop and
+> is the specification for `etude gate`.
+
+`retro-ledger.md` is included in the grep sweep above and was edited in this bead
+rather than exempted.
+
+**2. "loop.local.md names the current epic and does not claim a hook that does
+not exist."**
+
+`.etude/loop.local.md` names `etude-9uf` in both `## Milestone` and
+`## Current epic`, with the bead order and the docs-first rationale. The false
+claim ("pre-push audit hook must pass") is replaced with the verified truth:
+
+> No git hook is installed — the repo's hooks directory holds only `*.sample`
+> files, so pushing the run ref is a manual step nothing will catch for you.
+
+Verified: `ls $(git rev-parse --git-common-dir)/hooks/` contains only `*.sample`
+entries. `.beads/hooks/pre-push` exists as a file but nothing points git at it.
+
+The file is gitignored (`git check-ignore -v` → `.gitignore:20`), so it is
+refreshed in the worktree and is necessarily absent from this bead's commit. That
+is a property of the repo, not an omission.
+
+**3. "`make docs-check` passes."** → passes; 24 command docs generated, no diff.
+No CLI changed in this bead, so this is a no-drift assertion.
+
+## Checks required by the verify stage's `gate.checks`
+
+| check | result |
+|---|---|
+| `make test` | all packages ok |
+| `make lint` | `gofmt -l cmd internal` empty; `go vet ./...` clean |
+
+## Additional checks
+
+| check | result |
+|---|---|
+| `make docs-reality` | OK — 14 commands; docs match the shipped CLI |
+| repo-wide relative-link sweep over `docs/` | only 4 pre-existing broken `../run.md` links in `docs/plans/product/live-execution.md`, reproduced identically on clean `origin/main` by stashing this change; filed as **etude-gxt** |
+| no dogfood doc links to a deleted file | confirmed — the two links into `capture-protocol.md` were repointed to the extracted `retro-capture.md` |
+
+`docs-reality` is the check that matters most here, because it is the one that
+would catch the new runbook naming a command or flag that does not exist. It
+passes, and `gate` is correctly absent from the shipped command inventory.
+
+## Not CLI-facing
+
+This bead changes no command, flag, or output. `etude --help` is unchanged (the
+docs-reality inventory is the same 14 commands as before). No process, server, or
+app was started, so there is nothing to tear down.
+
+## Deliberate divergences from the gated plan, disclosed
+
+Both are argued in full in the implement artifact and were adjudicated at the
+implement gate (codex and opus both PASS_WITH_FOLLOWUPS, no blocking findings):
+
+1. `capture-protocol.md` was not deleted wholesale. Its retro-capture material
+   documents the live `etude retro` command and was cited as authoritative by
+   two other docs, so it was extracted to `retro-capture.md` and the links
+   repointed. The plan's claim that nothing in the file survives was wrong.
+2. `## Gate Orchestration (Claude Code)` was retitled `## Supervisor discipline`
+   rather than removed, because `etude gate` does not take over pre-gate
+   verification, scratch hygiene, or commit scope.
+
+## Folded gate follow-ups
+
+Both implement-gate seats raised the same theme — the contract section could read
+as shipped behavior, and the docs-reality tripwire only catches stale wording,
+not a command that ships behaving differently. Folded into the runbook as a
+`### Contract (prescriptive — this is what bead .1 must build)` subheading whose
+lead paragraph requires bead .1's VERIFY phase to exercise the built binary
+against each of the ten contract items and report item by item. All checks above
+were re-run after the fold.
+
+The opus seat's second follow-up (the packet omitted the review-gate-runbook
+diff) is packet hygiene for future gates, not a change to this diff; it is
+recorded in the gate record and applied going forward.
+
+## Known incident affecting this bead's own record
+
+`refs/etude/runs/etude-9uf.2` disappeared mid-bead, and the subsequent
+`etude capture implement` silently created a fresh manifest, discarding the
+recorded `plan.r1`/`r2`/`r3` gate attempts. The ref was rebuilt from the
+artifacts and seat verdicts still on disk, so the verdicts it now carries are the
+originals rather than re-runs, and it was pushed to `origin` immediately so a
+further local loss cannot destroy it. Filed as **etude-nad** (P1) with both
+incidents, the bisect that failed to reproduce it, and the second-order finding
+that `etude capture` cannot distinguish "create" from "append" and so reports
+success either way. Not fixed here — it is not this bead's scope, and it wants
+its own commit.
