@@ -1,0 +1,5 @@
+# Verify — etude-4o0 (epic-close reconciliation hard gate)
+Status: PASS (inline). Process/docs + thin Makefile target; no product code.
+- make reconcile exits 0 on clean tree (docs-reality "OK 10 commands" + docs-check). Teeth-tested both legs (executor, in stash sandbox): append # stale to a generated cli page -> exit 2 (docs-check leg); remove etude bench from README -> exit 2 (docs-reality leg); restored, tree clean.
+- go build ./... + go test ./... green (unaffected). make docs-check + docs-reality green.
+- Scope: Makefile + 3 dogfood docs (docs-checklist, review-gate-runbook, retro-ledger). No cmd/internal. README NOT modified after teeth test.
