@@ -1,0 +1,7 @@
+## Verify — etude-phase2.2 (status: pass, recommend proceed to Docs)
+
+Automated: go test ./internal/worktree/ -count=1 -race -v -> 18/18 PASS (was 15); go test ./... -race all 7 packages PASS; vet clean; gofmt clean. Production worktree.go UNCHANGED (test-only Verify changes).
+Test improvements (gate-approved optionals): strengthened TestNoTempDirLeakOnSHANotFound (non-asserting -> before/after snapshot, fails on leak); added TestNoTempDirLeakOnWorktreeAddFailure (induces rc=128 add failure by clobbering .git/worktrees into a file; covers the add-failure cleanup path); added Test40HexBranchNameRejectedSHA1 (-> ErrSHANotFound, same-width regression).
+Discrimination proof: disabling the production add-failure RemoveAll made the leak test FAIL, then PASS after restore.
+Manual built-binary: N/A — grep confirms zero importers of internal/worktree (no CLI wired; replay command wires it later). Unit tests exercise real git worktree add/remove/prune against real temp repos.
+QA: safety invariants verified (full-hex validateSHA; resolvedOID==sha; -- option-injection-safe add; idempotent cleanup prune-last; Close->Cleanup). No regressions.

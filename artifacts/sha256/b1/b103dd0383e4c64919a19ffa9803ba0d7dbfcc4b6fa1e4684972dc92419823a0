@@ -1,0 +1,131 @@
+## Plan
+
+**Approach:** New `internal/worktree` package (sibling of refstore/replay) exposing `func Checkout(ctx, root, sha string) (*Worktree, error)` where `Worktree` has `Dir string` and `Cleanup(ctx) error` (also implementing io.Closer via `Close()` calling `Cleanup(context.Background())`). It shells out to git mirroring refstore.gitBytes: `exec.CommandContext`, `git -C <root>`, env = os.Environ() plus strict additions (GIT_TERMINAL_PROMPT=0, GIT_OPTIONAL_LOCKS=0), stdout/stderr captured into buffers, errors wrapped with the joined args + trimmed stderr. Sentinel errors: ErrInvalidSHA, ErrSHANotFound, ErrWorktreeAdd, ErrCleanup. Chose a dedicated package (not a function in internal/replay) so the replay command (etude-replay-command) and any later eval-replay path import a leaf utility with no replay-internals coupling; import direction stays clean (worktree depends only on stdlib, replay/cli depend on worktree).
+
+Flow of Checkout:
+1. validateSHA(sha): reject empty/whitespace; reject leading '-' (option-injection guard, see Risks); require hex of len 4..64 (allow short/prefix forms because the manifest only guarantees git_sha is non-empty, e.g. test fixtures use "abc123"/"deadbeef" — REPRODUCED: `rev-parse --verify <short>^{commit}` resolves prefixes fine).
+2. Pre-resolve+validate against the repo: `git -C <root> rev-parse --verify <sha>^{commit}` (REPRODUCED rc=128 'Not a valid object name' for an unresolvable sha) → map to ErrSHANotFound; capture the full resolved OID for the Worktree record.
+3. `dir, _ := os.MkdirTemp("", "etude-worktree-*")` OUTSIDE the repo working tree (REPRODUCED: nesting a worktree inside the repo is the failure mode we avoid; MkdirTemp uses TMPDIR which is outside). MkdirTemp guarantees a unique dir → concurrency-safe (see Risks).
+4. `git -C <root> worktree add --detach <dir> <resolvedOID>` (REPRODUCED: an empty pre-existing dir like MkdirTemp creates is ACCEPTED; a non-empty path fails 'already exists'; on add failure with a bad ref the dir is NOT populated). On failure: best-effort `os.RemoveAll(dir)` then return ErrWorktreeAdd. Pass resolved full OID (not raw sha) to add for determinism.
+5. Return &Worktree{Dir: dir, root: root, sha: resolvedOID}.
+
+Cleanup(ctx): `git -C <root> worktree remove --force <dir>`; then `git -C <root> worktree prune` (best-effort, error ignored); then `os.RemoveAll(dir)` as a backstop. REPRODUCED: a SECOND `worktree remove --force` errors rc=128 'is not a working tree' — so Cleanup must be idempotent: track a `removed bool`, and if remove fails but `os.Stat(dir)` shows the dir already gone, treat as success (already cleaned). Cleanup errors are RETURNED (callers/defer can log) but Cleanup never panics and always attempts prune+RemoveAll even if remove fails. Safe to call twice (second call is a no-op returning nil).
+
+**Files:**
+- internal/worktree/worktree.go - new; Worktree type, Checkout, Cleanup/Close, validateSHA, private git() helper (mirrors refstore.gitBytes env/error style).
+- internal/worktree/worktree_test.go - new; unit tests in t.TempDir() git repos.
+
+**Tests** (each builds a real repo with init + identity config + two commits where file.txt differs v1→v2, mirroring internal/replay/resolve_test.go initRepo helper):
+- Checkout at HEAD returns a Dir whose file.txt == v2; Checkout at older commit (HEAD~1) returns Dir whose file.txt == v1 (proves correct tree materialized).
+- Checkout accepts a short/prefix sha and a full OID.
+- `git worktree list` (or reading the worktree's HEAD) shows the new worktree after Checkout and NOT after Cleanup.
+- Dir is outside the repo root (assert !strings.HasPrefix(dir, root)).
+- Cleanup removes the dir (os.Stat → not-exist) and de-registers the worktree.
+- Cleanup is idempotent: calling it twice returns nil the second time (regression guard for the REPRODUCED rc=128 double-remove).
+- Error paths: empty sha → ErrInvalidSHA; leading-dash sha → ErrInvalidSHA; well-formed-but-unresolvable sha (e.g. 40 random hex) → ErrSHANotFound; assert no temp dir leaks on the failure path.
+- (If feasible) concurrent Checkout x N goroutines each get a distinct Dir and all Cleanup cleanly.
+
+**Docs:** None. Internal helper with no CLI surface yet (BRIEF §4.7 step 2 wiring lands in etude-replay-command); no user-facing or generated-reference change. Confirmed: `etude replay` is not yet a command. Package doc comment on worktree.go covers the API.
+
+**Risks:**
+- Option injection: manifest git_sha is arbitrary (validateStage only requires non-empty). A value like '--help' could be parsed as a git flag. Mitigation: validateSHA rejects leading '-', AND pass the sha after a literal separator where git supports it. REPRODUCED: exec.Command uses no shell so metacharacters are inert; leading-dash is the only real vector.
+- Double-remove rc=128 (REPRODUCED) — handled by idempotent Cleanup.
+- Interrupted process leaves an orphan worktree dir + a .git/worktrees/<id> admin entry; `worktree prune` (run in Cleanup, and naturally by later etude/git GC) reclaims it. Cleanup is best-effort and ordered (remove → prune → RemoveAll) so a partial failure still makes progress.
+- Concurrency: multiple replays may Checkout concurrently. os.MkdirTemp yields unique dirs; git serializes worktree metadata writes via its internal lock on .git/worktrees, so parallel adds are safe (note: no external mutex needed).
+
+**Capture:**
+- inputs: bead etude-phase2.2 fields; internal/refstore/store.go (git exec/env/OID-validation/error style); internal/cli/init.go (repoRoot, git -C <root> pattern); internal/replay/resolve.go (ResolvedStage.GitSHA source) + resolve_test.go (initRepo test pattern); internal/runmanifest/manifest.go (git_sha only required non-empty); BRIEF.md §4.7; REPRODUCED git worktree add/remove/prune behavior in a scratch repo (git 2.47.1, go 1.26.1).
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: BLOCK (3 GO / 1 BLOCK; but all four converge on the same fixes)
+- Claude Opus: GO (insisted validateSHA enforce full hex); Gemini Pro: GO; GPT-5.5 xhigh (codex): GO (same: tighten to full OIDs, reject mutable names, revalidate resolved OID); pi/pilms: first run EMPTY (model glitch, reran) -> rerun BLOCK.
+- pi/pilms REQUIRED: (1) resolve Close()/Cleanup(ctx) API duality — Close() must call Cleanup(context.Background()); (2) validateSHA must validate full hex format (40/64 lowercase), reuse/mirror refstore.validateOID, not just reject leading-dash.
+
+## PLAN AMENDMENT (incorporated for gate attempt 2 — all 4 seats converge)
+1. validateSHA enforces FULL 40/64 lowercase hex (mirror refstore.validateOID): rejects empty, leading-dash, non-hex, short prefixes, AND mutable names like 'main'/'HEAD' -> ErrInvalidSHA. (A recorded manifest git_sha is ALWAYS a full OID, so this is correct; it guarantees replay never checks out a moving ref.) The leading-dash rejection is now a subset (kept for a clear message).
+2. After 'git rev-parse --verify <sha>^{commit}', REVALIDATE the resolved output is a full OID and pass THAT captured OID (never the raw input) to 'git worktree add --detach -- <dir> <oid>' (note the '--' separator). Make 'uses captured OID' an explicit invariant + test.
+3. API: Cleanup(ctx) error is primary; Close() is the io.Closer/defer-friendly wrapper that calls Cleanup(context.Background()) (documented: no cancellation, appropriate for cleanup). Both idempotent; calling Close after an explicit Cleanup is a no-op (swallow 'not a working tree' rc=128 + RemoveAll-of-missing as success).
+4. On 'worktree add' failure: RemoveAll the temp dir THEN 'worktree prune' to clear partial registration.
+5. Tests add: branch-name/'main'/short-sha input -> ErrInvalidSHA (proves no moving-ref checkout); resolved-OID invariant; idempotent Close-after-Cleanup no-op.
+6. Docstring: clarify 'root' is the repo root for 'git -C'; temp dir via os.MkdirTemp("") in the system temp dir (outside the repo).
+## Plan gate (attempt 2) — Tier 1 four-seat: BLOCK (3 GO / 1 BLOCK)
+- Claude Opus: GO (empirically validated); Gemini Pro: GO; pi/pilms: GO; GPT-5.5 xhigh (codex): BLOCK — two subtle valid catches:
+  1. Full 40/64-hex validateSHA is NOT sufficient: in a SHA-1 repo a 64-hex string (or in SHA-256 a 40-hex string) can be a BRANCH NAME that rev-parse resolves to a moving tip; capturing the resolved OID merely freezes that unsafe resolution. REQUIRED: require resolvedOID == inputSHA (input must BE the commit OID, not just resolve to one) + a regression test for a hex-looking ref of the other width.
+  2. Cleanup ordering remove->prune->RemoveAll can leave stale .git/worktrees metadata if 'worktree remove' fails but the filesystem delete succeeds. REQUIRED: prune AFTER RemoveAll.
+
+## PLAN AMENDMENT (incorporated for gate attempt 3)
+1. After 'git rev-parse --verify <sha>^{commit}' -> resolvedOID, REQUIRE resolvedOID == inputSHA (both lowercase full hex; rev-parse emits lowercase). If they differ, the input resolved to something other than itself (a hex-looking branch/tag/mismatched-width ref) -> reject with ErrInvalidSHA. This guarantees the input IS the recorded commit OID, immune to hex-looking moving refs in either object format. (Legitimate recorded git_sha is a direct commit OID, so equality always holds.)
+2. Cleanup ordering: 'git worktree remove --force <dir>' -> os.RemoveAll(dir) -> 'git worktree prune' (prune runs LAST so it reaps any admin entry left when remove failed but the dir was deleted). Idempotent + no-leak preserved.
+3. Tests add: a branch named with 64-hex chars in a SHA-1 repo (and/or a tag whose name/oid is hex) -> ErrInvalidSHA via the resolvedOID==input guard (proves no moving-ref/peeled-tag checkout); a cleanup case where 'remove' is forced to fail but RemoveAll+prune still leaves no stale .git/worktrees entry.
+## Plan gate (attempt 3) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (both holes closed; 40-hex-name-in-SHA1 edge is a minor error-semantics nit, still safely rejected as ErrSHANotFound); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Converged after 2 BLOCK rounds (full-hex validateSHA + Close/Cleanup; then resolvedOID==input + prune-after-RemoveAll).
+Optionals folded into Implement: TrimSpace resolved OID before == compare; cleanup test inspects BOTH 'git worktree list --porcelain' AND .git/worktrees/ absence; pin the 40-hex-name-in-SHA1 ambiguity test (accept ErrSHANotFound); swallow prune errors on the add-failure path symmetrically; (cheap) same-width OID-named-ref regression; MkdirTemp prefix 'etude-worktree-*'.
+## Implement
+
+**Implemented:**
+- Created `internal/worktree/worktree.go`: new `Worktree` type, `Checkout` func, `Cleanup`/`Close` methods, `gitCmd` helper (mirrors refstore.gitBytes), `validateSHA` (mirrors refstore.validateOID).
+- Created `internal/worktree/worktree_test.go`: 15 tests covering file-content correctness at HEAD and HEAD~1, dir-outside-repo, worktree registered/cleaned, validateSHA table, branch-name/unknown-SHA/hex-looking-branch errors, idempotent cleanup, Close-after-Cleanup, no-stale-metadata (prune-last), no-temp-dir-leak on ErrSHANotFound.
+- Key decisions: validateSHA enforces full 40/64 lowercase hex; resolvedOID==sha invariant rejects hex-looking moving refs; Cleanup ordering is remove→RemoveAll→prune (prune last reaps stale .git/worktrees entries); idempotent via `removed bool` guard; Close is io.Closer wrapper over Cleanup(context.Background()).
+
+**Checks run:**
+- `gofmt -l cmd internal`: pass (no output)
+- `go vet ./...`: pass (no output)
+- `go build ./...`: pass
+- `go test ./internal/worktree/ -count=1 -v`: 15/15 PASS (1.664s)
+- `go test ./... -count=1 -race`: all packages PASS
+
+**Changed files:**
+- internal/worktree/worktree.go (new)
+- internal/worktree/worktree_test.go (new)
+
+**Plan deviations:** None. Implemented exactly the gate-approved design.
+
+**Capture:**
+- inputs: approved plan (bead etude-phase2.2 --design, attempt 3, 4/4 GO), Plan gate notes, internal/refstore/store.go (gitBytes/validateOID patterns), internal/replay/resolve_test.go (initRepo pattern)
+- output: working tree diff (two new files) and this bead note
+## Implement gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (reproduced both attack shapes; safety invariant genuine; cleanup sound; tests discriminate); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Files: internal/worktree/worktree.go + worktree_test.go (new). 15/15 -race PASS; vet/gofmt clean.
+Optionals (converging Opus+codex) to implement in Verify (test-only): (1) strengthen TestNoTempDirLeakOnSHANotFound from non-asserting Logf to snapshot-before/after-and-fail-on-leak, and/or add a test for the worktree-add-failure cleanup path (currently uncovered); (2) add a 40-hex branch/ref-name-in-SHA-1-repo regression (asserts rejected, ErrSHANotFound via the ambiguous rev-parse failure).
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes (test-only; production worktree.go NOT modified):
+  - internal/worktree/worktree_test.go: strengthened TestNoTempDirLeakOnSHANotFound from non-asserting t.Logf to a before/after snapshot of etude-worktree-* entries in os.TempDir() that fails on a NEWLY-appeared leak (robust to shared temp dir / concurrent tests via snapshotWorktreeTempDirs + newlyLeakedWorktreeTempDirs helpers).
+  - Added TestNoTempDirLeakOnWorktreeAddFailure: exercises the previously-uncovered worktree-add failure cleanup path (worktree.go lines ~64-69). Induces a deterministic add failure by replacing the repo's .git/worktrees admin dir with a regular file (REPRODUCED rc=128 "could not create leading directories ... Not a directory"), so MkdirTemp IS allocated, then asserts no etude-worktree-* dir leaks (proving os.RemoveAll(dir) runs). Also asserts the error is the "worktree add" wrap, not ErrInvalidSHA/ErrSHANotFound.
+  - Added Test40HexBranchNameRejectedSHA1: same-width regression — a branch named with exactly 40 lowercase hex chars in a SHA-1 repo. The ambiguous 40-hex token makes rev-parse --verify fail, so Checkout returns ErrSHANotFound (sentinel pinned). Complements the existing 64-hex branch test (rejected by resolvedOID==input). Skips gracefully if object format != sha1.
+- commands:
+  - go test ./internal/worktree/ -count=1 -race -v  -> 18/18 PASS (was 15; +3)
+  - go test ./... -count=1 -race  -> all 7 packages PASS (artifactstore, cli, replay, refstore, runmanifest, workflow, worktree)
+  - go vet ./...  -> clean (rc=0)
+  - gofmt -l cmd internal  -> clean (no output)
+- discrimination proof: temporarily disabled the production os.RemoveAll(dir) on the add-failure path in a throwaway copy; TestNoTempDirLeakOnWorktreeAddFailure FAILED catching the leaked dir (etude-worktree-3607111416), then PASSED again after restoring the production file. The strengthened leak assertion is genuinely discriminating. Production worktree.go restored byte-for-byte (os.RemoveAll(dir) confirmed at line 66; no production change committed).
+
+Manual tests:
+- required: no
+- reason: internal/worktree has NO CLI command wired to it (verified: grep -rn "internal/worktree" --include="*.go" finds zero importers outside the package itself; the replay command wires it in a later bead etude-replay-command). So a built-binary manual test is N/A for this bead. The unit tests DO provide genuine integration coverage: they run real `git init`, `git worktree add --detach`, `git worktree remove --force`, and `git worktree prune` against real temp repos (git 2.47.1), exercising the actual git plumbing, not mocks.
+- result: not applicable (no CLI surface)
+
+QA findings:
+- correctness: Implementation matches the gate-approved plan (attempt 3, 4/4 GO) exactly. Safety invariants verified in code: full-hex validateSHA (rejects empty/leading-dash/wrong-len/non-hex/uppercase); rev-parse --verify <sha>^{commit} -> ErrSHANotFound; resolvedOID==sha invariant rejecting hex-looking moving refs (both same-width-40-hex and other-width-64-hex now have regression tests); `worktree add --detach --` passes the resolved OID after a `--` separator (option-injection safe); Cleanup ordering remove->RemoveAll->prune with prune LAST; idempotent via `removed bool` + "is not a working tree" rc=128 swallow; Close() wraps Cleanup(context.Background()). File-content correctness proven (HEAD->v2, HEAD~1->v1).
+- coverage: Adequate and now stronger. 18 tests cover content correctness at two commits, dir-outside-repo, registered+cleaned (porcelain list), idempotent cleanup, close-after-cleanup, no-stale-.git/worktrees metadata (prune-last), validateSHA table, branch-name/unknown-SHA/64-hex-branch/40-hex-branch errors, and BOTH leak paths (rev-parse-fail-before-MkdirTemp AND worktree-add-fail-after-MkdirTemp). The two prior gaps flagged at Implement gate (non-asserting leak test; uncovered add-failure path; missing same-width regression) are closed.
+- regressions: None. Full repo suite passes with -race; vet/gofmt clean.
+- code quality: Clean. Leaf package, stdlib-only deps, mirrors refstore gitBytes env/error style. Good doc comments and inline rationale for the safety invariant and cleanup ordering.
+- risks: None blocking. Note for the later wiring bead (etude-replay-command): the leak tests inspect the shared system temp dir (MkdirTemp("", ...)); the new helpers use before/after diffing so they are concurrency-tolerant, but if future parallel tests are added they should keep using the diff helpers rather than absolute counts.
+
+Capture:
+- inputs: approved plan (etude-phase2.2 --design attempt 3, 4/4 GO) and Implement artifact (notes); changed files internal/worktree/worktree.go + worktree_test.go
+- output: append-only Verify note (this); test-only changes to worktree_test.go
+## Verify gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (independently reproduced the add-failure leak-test discrimination proof); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Verify status pass; -race suite green; the 3 added/strengthened tests genuinely discriminate (leak tests assert + fail on real leak; 40-hex same-width regression rejects). worktree.go unchanged in Verify (test-only). Manual built-binary N/A (no CLI wired; unit tests exercise real git worktree ops). No required changes.
+
+ACCEPTANCE CRITERIA
+Creates a throwaway worktree at the recorded git_sha, exposes its path to callers, and removes it on success and on failure. Errors clearly if the sha is missing locally. Tested for create+cleanup including the failure path.
+
