@@ -1,0 +1,51 @@
+◐ etude-97y · Align default workflow scaffold with Etude dogfood loop   [● P1 · IN_PROGRESS]
+Owner: joshuavial · Type: task
+Created: 2026-06-29 · Updated: 2026-06-30
+
+DESCRIPTION
+workflow.Default(), etude init docs, and golden tests still describe/scaffold the older six-stage test-plan/test workflow using dev-coder and dev-test-writer, while the checked-in .etude/workflow.yaml and current dogfood loop use plan -> implement -> verify -> docs -> review with dev-executor and dev-qa. Align the canonical generated default with the actual Etude-native loop so downstream consumers, including the Xenota dev projection, can treat Etude workflow config as the authority without xrs/repertoire assumptions. Scope: update workflow.Default() to emit plan/implement/verify/docs/review; use roles plan/diff/verify/docs-diff/review; use dev-executor for implement and dev-qa for verify; replace test-plan-rubric scaffolding with verify-rubric; update golden workflow tests and implemented init docs; reconcile product/dogfood planning references that still present test-plan/test as the default or explicitly mark them historical/planned if not current.
+
+DESIGN
+Goal: Align workflow.Default() (what `etude init` scaffolds) with the shipped Etude-native loop in .etude/workflow.yaml — plan/implement/verify/docs/review — replacing the stale 6-stage test-plan/test default that used dev-coder/dev-test-writer.
+
+Approach (stage shape only; NOT gate blocks):
+New Default() emits 5 stages, matching the stage shape of .etude/workflow.yaml:
+  1. plan     produces plan      inputs [task]            skill dev-planner    eval rubric evals/plan-rubric.md
+  2. implement produces diff     inputs [plan,repo-state] skill dev-executor
+  3. verify   produces verify    inputs [plan,diff]       skill dev-qa         eval rubric evals/verify-rubric.md
+  4. docs     produces docs-diff inputs [diff]            skill dev-docs-writer optional true
+  5. review   produces review    inputs [diff,plan,verify] skill dev-pr-reviewer eval pairwise
+Stage order matches .etude/workflow.yaml (docs before review). review now consumes verify (a valid earlier-produced role).
+
+Rationale for NOT emitting gate blocks: the bead scope lists stage/skill/role/eval changes only. .etude/workflow.yaml's gate tiers + abstraction prose are this repo's dogfood-specific customization layered on top of the scaffold; baking etude's tiers into every scaffolded project is out of scope. Default() stays gate-free as today; "same five-stage shape" = same stage sequence/skills/produces/evals.
+
+Files (in scope):
+- internal/workflow/workflow.go: rewrite Default() to the 5 stages above; fix the doc comment ("canonical 6-stage ... BRIEF.md 4.1" -> 5-stage Etude-native loop).
+- internal/workflow/workflow_test.go: update goldenDefaultYAML to the new exact bytes (regenerate from the failing test's "got:" output to guarantee byte-exactness).
+- internal/workflow/example_test.go: update ExampleDefault() doc ("six-stage") + its // Output: block (regenerate from test output).
+- docs/init.md: tree comment "canonical 6-stage default workflow" -> 5-stage; "test-plan-rubric.md ... test-plan stage" -> verify-rubric.md / verify stage; the workflow.yaml field-doc example skill dev-coder -> dev-executor for consistency.
+- docs/plans/product/BRIEF.md 4.1: add a concise note marking the 6-stage example as superseded by the shipped 5-stage default (Default() / .etude/workflow.yaml); do not rewrite the whole section.
+
+Out of scope (NOT touched): eval built-in check kinds test-plan-exists / test-plan-mentions-every-changed-file (internal/eval/*) and capture-run dev-coder fixtures/examples (capture_run*.go, docs/capture-run.md) — these are separate features, not the workflow default.
+
+Verify: gofmt; go test ./internal/workflow/... ./internal/cli/... (init_test round-trips parsed==Default(), shape-agnostic); make test; make lint; make docs-check (no generated-doc change expected — init.md/BRIEF are hand-written); build binary + run `etude init` in a temp dir and assert the scaffolded .etude/workflow.yaml has the 5 stages and parses (CLI-facing per directive 13). Confirm no xrs/repertoire import introduced.
+
+
+NOTES
+Plan gate attempt 1, Tier 1 (product code + public CLI scaffold):
+- Gemini Pro: GO (no required changes).
+- Claude Opus (in-harness subagent): GO; ground-truthed Validate() trace, decoupling of eval check-kinds/capture fixtures, and that migration_test reads the checked-in yaml not Default().
+- fresh GPT-5.5 xhigh (codex): GO (no required changes).
+- result: pass. Optional folded in: state gate-free/runner-free rationale in Default() doc comment; make BRIEF 4.1 superseded note explicit; verify no stray old-default doc language remains.
+Final gate attempt 1, Tier 1 (combined implement+verify+docs+review), diff-based:
+- Gemini Pro: PASS (5/5). - Claude Opus (in-harness): PASS (High); byte-verified golden, ExampleDefault, full Validate() trace, docs-reality. - fresh GPT-5.5 xhigh (codex): PASS (High).
+- required changes: none.
+- follow-ups: Gemini's init.md field-example input alignment DECLINED (task is a valid special role in the single-stage snippet; plan would be a dangling input). capture-run.md:105 dev-coder left out of scope (separate capture feature).
+- result: pass.
+
+ACCEPTANCE CRITERIA
+etude init scaffolds the same five-stage workflow shape as .etude/workflow.yaml; workflow.Default().Validate() and golden tests pass; docs/init.md no longer claims a canonical six-stage default or test-plan-rubric; references to the old default are removed or marked non-current; no xrs/repertoire dependency is introduced.
+
+PARENT
+  ↑ ○ etude-2bm: (EPIC) etude init: full repo setup with interactive + non-interactive modes ● P2
+

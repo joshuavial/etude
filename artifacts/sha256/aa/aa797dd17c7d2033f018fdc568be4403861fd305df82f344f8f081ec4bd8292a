@@ -1,0 +1,19 @@
+# etude-97y Verify
+
+## Surface classification
+CLI-facing (`etude init` scaffold output changes). Manual command-surface coverage performed (directive 13).
+
+## Evidence
+- gofmt clean; `make lint` (gofmt -l cmd internal + go vet ./...) clean.
+- `make test` (go test ./...): ALL packages PASS (workflow, cli, eval, bench, replay, retro, gc, index, liverun, nudge, example, runmanifest, gen-docs, ...).
+- `make docs-check`: generated 24 cli/*.md, zero diff. `make docs-reality`: OK — 14 commands match shipped CLI.
+- Built binary (`make build` -> bin/etude), ran `etude init` in a fresh temp git repo:
+  - created .etude/workflow.yaml with stages: plan, implement, verify, docs, review (5 stages).
+  - created .etude/evals/plan-rubric.md and .etude/evals/verify-rubric.md (init derives rubric placeholders from the workflow's rubric-eval stages).
+  - created .etude/registry.yaml. Output: "init: 4 created, 0 skipped".
+  - Matches updated docs/init.md tree exactly.
+- workflow.Default().Validate() passes (TestDefaultValidatesClean); golden byte-exact (TestDefaultYAMLIsDeterministicAndExact); round-trip parse equal (TestParseYAMLRoundTripsDefault); ExampleDefault output updated.
+- No xrs/repertoire import introduced.
+
+## Scope
+5 files: internal/workflow/{workflow.go, workflow_test.go, example_test.go}, docs/init.md, docs/plans/product/BRIEF.md. _ai/research/ excluded (unrelated).

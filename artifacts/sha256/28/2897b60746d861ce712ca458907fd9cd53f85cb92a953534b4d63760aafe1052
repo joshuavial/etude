@@ -1,0 +1,203 @@
+commit ba1ca49066724358d74cd15bc3a0dbe1b11cbd79
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 14:31:49 2026 +0800
+
+    align workflow.Default() with the five-stage Etude-native loop
+
+diff --git a/docs/init.md b/docs/init.md
+index 2674c4d..48c96cc 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -12,11 +12,11 @@ and works whether or not `init` configured the remote.
+ 
+ ```
+ .etude/
+-  workflow.yaml           # canonical 6-stage default workflow
++  workflow.yaml           # canonical 5-stage default workflow
+   registry.yaml           # seat/tier registry (edit to configure reviewers)
+   evals/
+     plan-rubric.md        # rubric placeholder for the plan stage
+-    test-plan-rubric.md   # rubric placeholder for the test-plan stage
++    verify-rubric.md      # rubric placeholder for the verify stage
+ ```
+ 
+ All files are written to the working tree for normal review and commit on main.
+@@ -213,7 +213,7 @@ stages:
+   - name: implement
+     produces: diff
+     inputs: [task, repo-state]
+-    skill: dev-coder
++    skill: dev-executor
+     runner:                # optional; overrides default_runner for this stage
+       name: opus           # -- OR --
+       # command: "make implement"  (name and command are mutually exclusive)
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index 6f8743d..01b6b73 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -98,6 +98,14 @@ code-reviews, so they live in the normal working tree on `main`:
+ 
+ Example `workflow.yaml`:
+ 
++> **Non-current.** This early six-stage `test-plan`/`test` listing (skills
++> `dev-coder`/`dev-test-writer`) is a historical illustration and is NOT the
++> shipped default. The canonical default that `etude init` scaffolds is now the
++> five-stage Etude-native loop `plan → implement → verify → docs → review`
++> (skills `dev-executor`/`dev-qa`) — see `workflow.Default()` and this repo's
++> `.etude/workflow.yaml`. The block below is kept only to show the original
++> design sketch.
++
+ ```yaml
+ name: default
+ stages:
+diff --git a/internal/workflow/example_test.go b/internal/workflow/example_test.go
+index aa37b07..4ed9485 100644
+--- a/internal/workflow/example_test.go
++++ b/internal/workflow/example_test.go
+@@ -66,7 +66,7 @@ stages:
+ 	// L3
+ }
+ 
+-// ExampleDefault shows the canonical six-stage workflow returned by Default.
++// ExampleDefault shows the canonical five-stage workflow returned by Default.
+ func ExampleDefault() {
+ 	wf := workflow.Default()
+ 	fmt.Println(wf.Name)
+@@ -76,11 +76,10 @@ func ExampleDefault() {
+ 	}
+ 	// Output:
+ 	// default
+-	// 6
++	// 5
+ 	// plan
+ 	// implement
+-	// test-plan
+-	// test
+-	// review
++	// verify
+ 	// docs
++	// review
+ }
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index 5108174..4d50d6d 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -636,8 +636,18 @@ func ensureEOF(dec *yaml.Decoder) error {
+ 	return fmt.Errorf("%w: trailing data after first document", ErrInvalidWorkflow)
+ }
+ 
+-// Default returns the canonical 6-stage workflow from BRIEF.md §4.1.
+-// This is the workflow that etude-init-command scaffolds via Default().YAML().
++// Default returns the canonical 5-stage Etude-native workflow that
++// etude-init-command scaffolds via Default().YAML(): plan -> implement ->
++// verify -> docs -> review. It mirrors the stage shape of this repo's own
++// .etude/workflow.yaml (the dogfood loop).
++//
++// Default() deliberately emits NO per-stage gate or runner blocks. Those are
++// repo-specific customizations (gate tiers, runner bindings to named registry
++// seats) that a freshly-initialized project does not yet have; baking them into
++// the scaffold would reference seats/tiers that do not exist in the new repo.
++// "Same shape as .etude/workflow.yaml" means the stage sequence, produced/input
++// roles, skills, optionality, and eval config — not the gate tuning a project
++// layers on afterward.
+ func Default() Workflow {
+ 	rubricEval := func(path string) *Eval { return &Eval{Method: "rubric", Rubric: path} }
+ 	return Workflow{
+@@ -654,35 +664,29 @@ func Default() Workflow {
+ 				Name:     "implement",
+ 				Produces: "diff",
+ 				Inputs:   []string{"plan", "repo-state"},
+-				Skill:    "dev-coder",
++				Skill:    "dev-executor",
+ 			},
+ 			{
+-				Name:     "test-plan",
+-				Produces: "test-plan",
++				Name:     "verify",
++				Produces: "verify",
+ 				Inputs:   []string{"plan", "diff"},
+-				Skill:    "dev-test-writer",
+-				Eval:     rubricEval("evals/test-plan-rubric.md"),
++				Skill:    "dev-qa",
++				Eval:     rubricEval("evals/verify-rubric.md"),
+ 			},
+ 			{
+-				Name:     "test",
+-				Produces: "test-diff",
+-				Inputs:   []string{"test-plan", "diff"},
+-				Skill:    "dev-test-writer",
++				Name:     "docs",
++				Produces: "docs-diff",
++				Inputs:   []string{"diff"},
++				Skill:    "dev-docs-writer",
++				Optional: true,
+ 			},
+ 			{
+ 				Name:     "review",
+ 				Produces: "review",
+-				Inputs:   []string{"diff", "plan"},
++				Inputs:   []string{"diff", "plan", "verify"},
+ 				Skill:    "dev-pr-reviewer",
+ 				Eval:     &Eval{Method: "pairwise"},
+ 			},
+-			{
+-				Name:     "docs",
+-				Produces: "docs-diff",
+-				Inputs:   []string{"diff"},
+-				Skill:    "dev-docs-writer",
+-				Optional: true,
+-			},
+ 		},
+ 	}
+ }
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index ce33a01..43b3691 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -26,36 +26,31 @@ stages:
+     inputs:
+       - plan
+       - repo-state
+-    skill: dev-coder
+-  - name: test-plan
+-    produces: test-plan
++    skill: dev-executor
++  - name: verify
++    produces: verify
+     inputs:
+       - plan
+       - diff
+-    skill: dev-test-writer
++    skill: dev-qa
+     eval:
+       method: rubric
+-      rubric: evals/test-plan-rubric.md
+-  - name: test
+-    produces: test-diff
++      rubric: evals/verify-rubric.md
++  - name: docs
++    produces: docs-diff
+     inputs:
+-      - test-plan
+       - diff
+-    skill: dev-test-writer
++    skill: dev-docs-writer
++    optional: true
+   - name: review
+     produces: review
+     inputs:
+       - diff
+       - plan
++      - verify
+     skill: dev-pr-reviewer
+     eval:
+       method: pairwise
+-  - name: docs
+-    produces: docs-diff
+-    inputs:
+-      - diff
+-    skill: dev-docs-writer
+-    optional: true
+ `
+ 
+ // TestDefaultYAMLIsDeterministicAndExact asserts exact byte output from

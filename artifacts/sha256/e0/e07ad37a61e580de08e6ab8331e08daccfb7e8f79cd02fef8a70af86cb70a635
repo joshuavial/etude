@@ -1,0 +1,23 @@
+Goal: Align workflow.Default() (what `etude init` scaffolds) with the shipped Etude-native loop in .etude/workflow.yaml — plan/implement/verify/docs/review — replacing the stale 6-stage test-plan/test default that used dev-coder/dev-test-writer.
+
+Approach (stage shape only; NOT gate blocks):
+New Default() emits 5 stages, matching the stage shape of .etude/workflow.yaml:
+  1. plan     produces plan      inputs [task]            skill dev-planner    eval rubric evals/plan-rubric.md
+  2. implement produces diff     inputs [plan,repo-state] skill dev-executor
+  3. verify   produces verify    inputs [plan,diff]       skill dev-qa         eval rubric evals/verify-rubric.md
+  4. docs     produces docs-diff inputs [diff]            skill dev-docs-writer optional true
+  5. review   produces review    inputs [diff,plan,verify] skill dev-pr-reviewer eval pairwise
+Stage order matches .etude/workflow.yaml (docs before review). review now consumes verify (a valid earlier-produced role).
+
+Rationale for NOT emitting gate blocks: the bead scope lists stage/skill/role/eval changes only. .etude/workflow.yaml's gate tiers + abstraction prose are this repo's dogfood-specific customization layered on top of the scaffold; baking etude's tiers into every scaffolded project is out of scope. Default() stays gate-free as today; "same five-stage shape" = same stage sequence/skills/produces/evals.
+
+Files (in scope):
+- internal/workflow/workflow.go: rewrite Default() to the 5 stages above; fix the doc comment ("canonical 6-stage ... BRIEF.md 4.1" -> 5-stage Etude-native loop).
+- internal/workflow/workflow_test.go: update goldenDefaultYAML to the new exact bytes (regenerate from the failing test's "got:" output to guarantee byte-exactness).
+- internal/workflow/example_test.go: update ExampleDefault() doc ("six-stage") + its // Output: block (regenerate from test output).
+- docs/init.md: tree comment "canonical 6-stage default workflow" -> 5-stage; "test-plan-rubric.md ... test-plan stage" -> verify-rubric.md / verify stage; the workflow.yaml field-doc example skill dev-coder -> dev-executor for consistency.
+- docs/plans/product/BRIEF.md 4.1: add a concise note marking the 6-stage example as superseded by the shipped 5-stage default (Default() / .etude/workflow.yaml); do not rewrite the whole section.
+
+Out of scope (NOT touched): eval built-in check kinds test-plan-exists / test-plan-mentions-every-changed-file (internal/eval/*) and capture-run dev-coder fixtures/examples (capture_run*.go, docs/capture-run.md) — these are separate features, not the workflow default.
+
+Verify: gofmt; go test ./internal/workflow/... ./internal/cli/... (init_test round-trips parsed==Default(), shape-agnostic); make test; make lint; make docs-check (no generated-doc change expected — init.md/BRIEF are hand-written); build binary + run `etude init` in a temp dir and assert the scaffolded .etude/workflow.yaml has the 5 stages and parses (CLI-facing per directive 13). Confirm no xrs/repertoire import introduced.

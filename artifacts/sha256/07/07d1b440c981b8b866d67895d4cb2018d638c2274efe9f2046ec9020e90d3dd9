@@ -1,0 +1,21 @@
+# etude-97y Final Review
+
+## Diff vs plan
+Exactly the gated plan: Default() -> 5-stage plan/implement/verify/docs/review (dev-planner/dev-executor/dev-qa/dev-docs-writer/dev-pr-reviewer), no gate/runner blocks (documented rationale in doc comment); golden + ExampleDefault updated; docs/init.md tree + field example aligned; BRIEF 4.1 marked non-current. Eval check-kinds + capture dev-coder fixtures left untouched (separate feature, sanctioned by plan gate).
+
+## Acceptance check
+- init scaffolds 5-stage shape matching .etude/workflow.yaml: YES (built-binary verified).
+- Default().Validate() + golden tests pass: YES.
+- docs/init.md no longer claims 6-stage / test-plan-rubric: YES (grep clean).
+- old-default refs removed or marked non-current: YES (BRIEF 4.1 noted; only remaining dev-coder is an out-of-scope capture example).
+- no xrs/repertoire dependency: YES.
+
+## Gates
+- Plan gate (Tier 1): Gemini GO, Opus GO, Codex GO.
+- Final gate (Tier 1, combined implement+verify+docs+review): Gemini PASS, Opus PASS, Codex PASS.
+
+## Follow-ups (non-blocking, declined/deferred)
+- Gemini suggested aligning docs/init.md field-example implement inputs to [plan, repo-state]: DECLINED — that snippet is a standalone single-stage field-syntax example where `task` is a valid special role and `plan` would be a dangling input (no plan stage in the snippet). Current [task, repo-state] is correct.
+- Opus/Codex flagged docs/capture-run.md:105 `id: dev-coder` — out of scope (capture producer-id example, separate feature); left for a future cross-doc consistency pass.
+
+## Result: pass
