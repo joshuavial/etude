@@ -1,0 +1,63 @@
+# Plan — etude-1od: capture docs stages in run manifests
+
+## The bead as filed, and why its stated fix is now wrong
+
+Filed: `scripts/dogfood-capture.sh` creates only plan/implement/verify/review
+stages, so `capture-gate` rejects a docs gate because `reviewed_stages`
+references a stage absent from the manifest.
+
+That script is deleted by bead `etude-9uf.3`. Patching it would be work thrown
+away one bead later, and would leave the real question unanswered.
+
+**The underlying defect is real and is about the MODEL, not the script.** The
+workflow has five stages, `docs` among them, and a docs gate must attach to a
+`docs` stage that exists on the run. What changed is who creates it: the
+supervisor runs `etude capture docs --run <bead> --output docs-diff=<file>`, so
+the stage exists at gate time rather than being reconstructed afterwards.
+
+## What this bead does
+
+**Prove it, don't re-implement it.** The capability already works — this epic's
+own beads `.2` and `.1` both carry a `docs` stage producing `docs-diff`, captured
+that way, and `.2`'s docs gate attached to it. So the change here is a
+REGRESSION that pins the behaviour, plus the documentation that tells a
+supervisor to do it.
+
+1. **A test in `internal/liverun`**: a run whose only stage produces `docs-diff`
+   is gateable at `--stage docs`. Concretely: seed a run with a `docs` stage,
+   call `GateStage` for the workflow's `docs` stage, and assert it resolves the
+   reviewed stage and records an attempt. Today `latestStageForRole` is what
+   makes this work; without a test, a change to role resolution could silently
+   restore the original defect.
+
+2. **The negative half, which is the actual bug being pinned**: a run with NO
+   stage producing `docs-diff` must fail with `ErrNoReviewableStage` and record
+   nothing — not write a gate attempt referencing a stage that does not exist.
+   That is precisely what `capture-gate` used to reject downstream; the fix is
+   that `etude gate` refuses it upstream with a clear message.
+
+3. **`docs/plans/dogfood/supervisor-runbook.md`**: the per-phase loop already
+   shows `etude capture <phase> --output <role>=…`, but the `docs` stage is the
+   one where the role name (`docs-diff`) differs from the stage name (`docs`),
+   which is exactly the trip hazard that produced this bead. Call that out
+   explicitly with the concrete command.
+
+## Why not add a docs stage to `capture-run`
+
+`etude capture-run` builds a whole run from a YAML spec and already accepts any
+stage name and role — it has no hardcoded stage list. The old limitation was in
+the dogfood script's hardcoded four stages, not in etude. Nothing to fix there,
+and I checked rather than assuming.
+
+## Verification
+
+- New tests green; `make test`, `make lint` green.
+- `make docs-check` / `make docs-reality` green.
+- Evidence that this is already true in practice, not just in tests:
+  `etude run show etude-9uf.2` lists a `docs` stage with `role=docs-diff`, and
+  its run ref carries `gate: docs.r1` attached to it.
+
+## Out of scope
+
+- Deleting `scripts/dogfood-capture.sh` — bead `.3`.
+- Any change to the manifest schema. The schema was never the problem.
