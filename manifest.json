@@ -413,6 +413,61 @@
         ]
       },
       "timestamp": "2026-08-15T06:10:48Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verification"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Track the gate packet Go test extractor defect",
+            "etude-9uf remains the production consumer of Invocations",
+            "Generalize the repository-specific init documentation wording"
+          ],
+          "timestamp": "2026-08-15T05:58:59Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Track the gate packet Go test extractor defect"
+          ],
+          "timestamp": "2026-08-15T05:58:59Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-kcd"
+        ]
+      },
+      "timestamp": "2026-08-15T05:58:59Z"
     }
   ]
 }
