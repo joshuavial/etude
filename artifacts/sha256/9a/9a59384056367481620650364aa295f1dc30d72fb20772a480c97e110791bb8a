@@ -1,0 +1,21 @@
+# etude-ldf final review round 2
+
+The full shipping diff was re-reviewed after the first final-review BLOCK.
+
+The complete correction set is present:
+
+- workflow and registry read/parse failures are independent;
+- adapter reviewer argv retains quoted argument boundaries;
+- opaque wrappers and unreproducible Windows `env -i` lookup are NOT CHECKED;
+- configured pushurl endpoints suppress automatic sync advice;
+- control-bearing Git config never receives a corrupted runnable remedy;
+- Unix and Windows use platform-specific command argument quoting;
+- Windows PATH/PATHEXT lookup is case-insensitive and accepts `/` paths;
+- C1 terminal controls are escaped;
+- every Git stdout and stderr read is bounded;
+- exact config-removal quoting has an independent literal test oracle;
+- documentation names the trusted host `git` executable boundary.
+
+The offline mirror model, sibling namespace, non-zero-on-FAIL behavior, and
+human-authorship contract are unchanged. Focused regression tests and Windows
+test-binary compilation pass; repository-wide checks are rerun before commit.
