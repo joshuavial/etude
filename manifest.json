@@ -696,6 +696,52 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T12:43:45.920197Z"
+    },
+    {
+      "gate_id": "verify.r4",
+      "phase": "verify",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "bd2d9d94d442d7cd977c8c54ad0bf5fcccb614bbf1d93397341f5ca8db1b5c68"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T13:05:06Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T13:05:06Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. The deterministic checks (make test, make lint) were executed live by 'etude gate' on this artifact at verify.r3 and both returned go; that attempt escalated only because the opus seat has no working subprocess path, so it was run in-harness per the documented registry exception and this record carries the completed panel. The verify gate is where this bead was actually tested, because the seat did not take the test COUNT on faith - it mutated the script and watched the suite. Round 1 blocked on a real hole: every one of the 34 cases minted only run refs, so dropping refs/etude/retros from check (d)'s sweep left the suite fully green, meaning half a hard check was silently removable - and unpushed retro refs are exactly the invisible-until-the-worktree-is-gone case (d) exists for. Two more mutations also survived: deleting the fail-closed catch-all case arm, and neutering cd REPO_ROOT. All three pinned, each pin verified by re-running its mutation. The cd test had to be rewritten to mean anything, since running from a subdirectory proves nothing when git walks up to the same repo. Round 2 then ran a full sweep of all 90 executable lines plus 12 semantic mutations and found exactly two survivors, both subprocess-error branches of the same fail-open family and asymmetric because the git ls-remote sibling was already pinned: a for-each-ref guard downgraded to || true, and a python3 failure defaulting to 'one gate' rather than the sentinel - which would have recorded every run as gated had python3 ever been broken. Both now pinned via PATH shims that invoke the real binary by absolute path so they cannot recurse. Suite went 34 -> 45 cases across this gate. Stale numbers corrected and three limitations added, including that check (d) does not cover refs/etude/evals/* and that check (c)'s coverage computation is unpinned."
+      },
+      "timestamp": "2026-08-15T13:05:06Z"
     }
   ]
 }
