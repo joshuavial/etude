@@ -232,6 +232,77 @@
         "degraded_reason": "pilms down (0 CPU). 3-seat unanimous GO; all three independently dry-ran the title parser over the live 17-ref corpus (flags only B16, B5 date false-positive fenced, workflow retros SKIP). B16 repair via supersede + --bead etude-nm6; guard WARN-only."
       },
       "timestamp": "2026-05-27T09:12:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T09:40:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T09:40:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T09:41:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T09:41:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. 3-seat unanimous GO on check (g) code: collects bead.* AND subject_run.* (critical), etude-prefix normalized, anchored fullmatch, WARN-only, batch-only. Opus ran 57 tests + real audit + confirmed the bead.*-only g.3 case asserts no-WARN."
+      },
+      "timestamp": "2026-05-27T09:42:00Z"
     }
   ]
 }
