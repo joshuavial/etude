@@ -1,0 +1,89 @@
+# Implement — etude-5f6: `etude gate` walks the invocation-fallback ladder
+
+## What the implementation taught us
+
+**Two defects my own tests caught before any seat saw them**, both in code I had
+just written:
+
+1. **Double-run.** The first exhaustion path re-ran the primary after the loop had
+   already run it, so a dead primary was invoked twice per gate. Fixed by keeping
+   the last executed candidate's result rather than re-running.
+
+2. **A write the manifest would have rejected.** Attaching the ladder note to a
+   SUCCESSFUL fallback violates `runmanifest`'s rule that `failure_note` is
+   forbidden on `go`/`block` — validated at write time, so the whole gate attempt
+   would have failed to record. A fallback that worked would have produced no
+   record at all.
+
+   That constraint forced the better design rather than a workaround: on a usable
+   verdict the rung that ran is carried by `Harness.Name` (the durable signal a
+   reader actually wants), and the fallthrough is recorded at GATE level in
+   `decision.degraded_reason` — which is semantically right, because a gate whose
+   seat fell through to a fallback did run degraded.
+
+   This is the same class as the `harness.name` catch the opus seat made at plan
+   time. The manifest's validation rules are doing real work on this bead.
+
+## Changes
+
+**`internal/liverun/resolve.go`** — `SeatCandidate` and
+`ResolveGateSeatCandidates`. `InHarnessPrefix` is exported so the marker has one
+definition. `SeatMeta` is built PER CANDIDATE, because
+`requiresSessionEvidence` derives from the harness and the harness changes down
+the ladder (`claude-code` → `claude-code-subagent` → `agy`); resolving once would
+apply the primary's evidence requirement to a fallback with a different one.
+
+**`internal/liverun/engine.go`** — optional `ResolveSeatCandidates` field. When
+nil the engine uses the existing single-runner path, so every current caller and
+test is untouched. A seat with no configured fallbacks behaves identically either
+way, which is every seat except `opus` today.
+
+**`internal/liverun/gate.go`** — `runSeatLadder` walks the candidates:
+
+- a `go` or `block` STOPS the ladder (a real verdict is not an outage);
+- only `failed`/`empty`/`malfunction` moves to the next rung;
+- an `in-harness:` rung is skipped, never exec'd, and does NOT terminate the
+  walk. etude cannot know whether its caller can spawn a sub-agent, so stopping
+  there would decide on the caller's behalf and leave a rung it could have run
+  unreached. Both plan-gate seats caught that independently;
+- exhausted → the last executed result, with the seat's declared identity so
+  `harness.name` is never blank;
+- nothing exec-able at all → a runner failure, not an empty result, because
+  "produced no output" would imply something was attempted.
+
+Notes are machine-readable rather than prose:
+`IN_HARNESS_CANDIDATE_SKIPPED harness=… invoke=…` and
+`CANDIDATE_FAILED harness=… invoke=… verdict=…`, one line per rung, so a
+supervisor can detect the case without string-matching English.
+
+**`internal/cli/gate.go` and `internal/cli/run.go`** — both wire the resolver
+from the same closure. Wiring only one would leave two paths resolving seats
+differently, which is the second-seat-path problem this machinery exists to
+avoid, and would mean a seat that recovers under `etude gate` still dies under
+`etude run` for no reason a reader could infer.
+
+## Tests
+
+Five, in `internal/liverun/gate_once_test.go`:
+
+- primary succeeds → fallback never invoked, primary's harness recorded;
+- primary fails → verdict comes from the fallback and `Harness.Name` is the
+  FALLBACK's, with the failed rung in `degraded_reason` and NO `failure_note`
+  (asserted explicitly, since a note there is what breaks the write);
+- an `in-harness:` rung is never executed AND does not stop the walk — the
+  exec-able rung after it still supplies the verdict;
+- exhausted ladder names every rung, keeps `harness.name` non-empty, and the
+  attempt is verified present on the run rather than only in memory;
+- an all-in-harness ladder executes nothing and still records.
+
+## What this does NOT fix
+
+It does not make a Claude Code supervisor's gate PASS. The in-harness seat is
+still skipped, so synthesis still sees too few usable seats and escalates. What
+changes is that an exec-able fallback now gets its turn, and when none works the
+record names the candidate etude could not run, in a greppable form. Closing the
+loop needs verdict injection — **etude-4ed**.
+
+## Checks
+
+`make test` green · `make lint` green.
