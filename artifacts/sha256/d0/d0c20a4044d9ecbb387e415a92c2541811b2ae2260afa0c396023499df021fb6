@@ -1,0 +1,5 @@
+# Verify — etude-roadmap.2.6 (Document gate reviewer visibility) — PASS
+- New docs/gates.md + cross-links (README/run/capture). No code.
+- gofmt/vet/build unaffected (docs-only); `make docs-check` exit 0 no diff (DOCS_DIR=docs/cli; hand-written docs outside it).
+- Accuracy: JSON skeleton field names match the real gateInputJSON DTOs; verdict list + failure_note rule match validateSeat; run-show example is a verbatim paste from `etude run show etude-roadmap.2.4`; all cross-link targets exist.
+- Acceptance: capture+inspect explained; producer-vs-reviewer distinguished; provider/model/harness incl pilms/lmstudio/qwen; generated docs/cli kept separate; planning docs referenced not churned.
