@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-ikj3-dev-codex",
   "workflow": "dev-codex",
   "workflow_version": "manual-v1",
@@ -140,6 +140,57 @@
         "size": 307578
       },
       "timestamp": "2026-09-07T03:17:41.836187Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "56db85c5fe23a945db1579feba933f0565e5cad000709897fefe27b7ee9266be"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=codex invoke=/Users/jv/projects/etude/.worktrees/etude-ikj3-dev-codex/scripts/seat-adapter.sh astra codex exec --ephemeral -m gpt-6-astra -c model_reasoning_effort=high -s read-only - verdict=failed; runner failed: runner failed: /private/var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/etude-output-only-seat-1471100197/etude-seat-candidate-0: exit status 1: stderr: seat astra: model CLI exited non-zero\nWARNING: proceeding, even though we could not create PATH aliases: Operation not permitted (os error 1)\nError: failed to initialize in-process app-server client: Operation not permitted (os error 1)",
+          "timestamp": "2026-09-07T03:17:52.500157Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/etude-ikj3-dev-codex/scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools= verdict=failed; runner failed: runner failed: /private/var/folders/ym/vzmy3b6d4qd4v0flhq8_f4q80000gn/T/etude-output-only-seat-1361022647/etude-seat-candidate-0: exit status 1: stderr: seat fable: model CLI exited non-zero",
+          "timestamp": "2026-09-07T03:20:53.417574Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-09-07T03:20:53.419639Z"
     }
   ]
 }
