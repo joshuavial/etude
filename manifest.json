@@ -763,6 +763,52 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T09:48:37.895722Z"
+    },
+    {
+      "gate_id": "verify.r5",
+      "phase": "verify",
+      "round": 5,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify",
+          "artifact": "114d790729ada04ef1e0466edde32ac7ce343303301e4f87f2fff245f266ac8d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T10:03:53Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T10:03:53Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO on the corrected verify artifact; the two deterministic checks (make test, make lint) were executed live by 'etude gate' on this same artifact at verify.r4 and both returned go. This attempt records the completed panel: verify.r4 escalated only because the opus seat has no working subprocess path, so it was run in-harness per the documented registry exception and its verdict is recorded here. Five verify rounds, and the three that did not pass all found real defects in the ARTIFACT rather than the code. r1: an opus seat proved the claim that pushes had exercised the edited hook was false - core.hooksPath resolves to the MAIN checkout, whose pre-push is still unedited, so no push has run the edited copy and none will until this lands. r3: codex found the corrected section still opened by asserting the very thing it retracted three paragraphs later. r5 optionals folded: the suite header carried the same imprecision the Makefile comment had just been fixed for; B3 asserted the NEW wording is present but nothing asserted the OLD script name is absent, so a message naming both would have passed - assert_output_not_contains was carried back and both assertions now have negative controls; the sweep's case sensitivity is documented rather than left to be rediscovered; and a Go comment describing the removed mechanism in present tense was moved to past tense. The wider case-insensitive sweep also found three references to capture-protocol.md surviving its deletion in bead .2 - out of this bead's scope, folded into bead etude-gxt with line numbers. Suite is now 20 cases, all green, with 11 + 18 = 29 parity preserved against the deleted file plus the two added assertions."
+      },
+      "timestamp": "2026-08-15T10:03:53Z"
     }
   ]
 }
