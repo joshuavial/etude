@@ -1680,6 +1680,43 @@
         "degraded_reason": "LATE RECORD, and the epic's own target defect committed on the way out the door. This is the review gate's ROUND 2 verdict, on stage review.r2 (b717b734). It was produced, read, and acted on - its finding is why 'six' was corrected to three throughout, and its optionals are why the EPIC's acceptance was amended in bd - and then never appended. Round 4's seat found it by checking which review stages carry attempts, and noted it is strictly worse than the docs.r8 case the artifact does disclose: docs.r8 was never read by a seat, whereas review.r2 was read and BLOCKED. Recorded now, with the originals and the round numbering left as they fell: this phase's recorded round numbers do not track its actual rounds (review.r2 holds round 1, review.r3 holds round 3, this holds round 2), which is itself a second concrete instance of why etude-a1i needs a manifest marker rather than round arithmetic. Six beads into an epic about records that do not match reality, on the bead offered as proof of the model, having written the runbook section instructing supervisors to append before acting - I did not. That is the finding, and it belongs in the record rather than in a retro alone."
       },
       "timestamp": "2026-08-15T21:04:05Z"
+    },
+    {
+      "gate_id": "review.r5",
+      "phase": "review",
+      "round": 5,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review.r4",
+          "role": "review",
+          "artifact": "efa1a4eccc822d5b6700fbb8f6a7c86b312e2d0129783537b3903b3f05aa8762"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. This bead's review gate has an unrecorded seat BLOCK. Round 2's verdict - the one that caught 'six' surviving in the conclusion, and whose optionals produced the bd amendment on etude-9uf - exists nowhere in the run ref. Stage review.r2 (b717b734) is an ungated stage artifact that a seat DID review and BLOCK, strictly worse than docs.r8 which no seat read, and it is absent from the disclosure list. This is the epic's target defect committed on the way out the door, on the bead offered as proof.",
+            "2. 'This round's own attempt is necessarily not included; that regress is unavoidable, being one round behind was not' is false as written: the pin was set one commit behind the state that existed at freeze."
+          ],
+          "timestamp": "2026-08-15T21:05:47Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, and the single most important finding of the epic: the review gate's own ROUND 2 verdict had been acted on and never appended. Its finding is why 'six' became three throughout, and its optionals are why the epic's acceptance was amended in bd - and stage review.r2 carried no attempt at all. Strictly worse than docs.r8, which no seat read. Recorded now as review.r4, disclosed in the artifact in its own right, and used to file a second correction on etude-a1i, because this phase's recorded round numbers do not track its actual rounds - review.r2 holds round 1, review.r3 holds round 3, review.r4 holds round 2 - so no arithmetic over the manifest can recover the true ordering. That is the second independent argument for a manifest MARKER rather than smarter inference. The seat also caught the pin being five seconds behind the state at freeze, the same class as round 3's nine minutes with a decimal place moved; counts recomputed and re-pinned to a9b9db88, and the artifact now says a pin is a claim rather than a guarantee about the future. Six beads into an epic about records that do not match reality, having written the runbook section instructing supervisors to append before acting, I did not - and only a seat checking which stages carry attempts found it."
+      },
+      "timestamp": "2026-08-15T21:05:47Z"
     }
   ]
 }
