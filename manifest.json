@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-n9b.1",
   "workflow": "default",
   "workflow_version": "1",
@@ -32,6 +32,74 @@
         "size": 3995
       },
       "timestamp": "2026-08-16T00:13:45.063308Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "0.45.0"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "failed",
+          "failure_note": "The configured adapter and a registry model fallback both exited before review with IneligibleTierError: this client is no longer supported for Gemini Code Assist for individuals.",
+          "timestamp": "2026-08-16T00:25:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Use an independent literal manifest golden in tests.",
+            "State the old-reader compatibility premise explicitly."
+          ],
+          "timestamp": "2026-08-16T00:25:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T00:25:00Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "Required L1 Gemini seat failed reproducibly before reviewing the packet; STRICT forbids advancing on two seats or using agy.",
+        "deferred_beads": [
+          "etude-n9b.3"
+        ]
+      },
+      "timestamp": "2026-08-16T00:25:00Z"
     }
   ]
 }
