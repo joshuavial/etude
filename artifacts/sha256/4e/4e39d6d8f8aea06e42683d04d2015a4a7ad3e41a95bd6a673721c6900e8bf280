@@ -1,0 +1,70 @@
+# Final Review — etude-9uf.1: `etude gate`
+
+## Diff vs plan
+
+| Plan said | Shipped | Divergence |
+|---|---|---|
+| One exported entry point in `liverun`, not six exported helpers | `Engine.GateStage` + two error sentinels | none |
+| Reuse `runGateChecks`/`runGateSeats`/`synthesizeVerdict` unchanged | reused verbatim | none |
+| Write via `runmanifest.Writer` + `ExpectedOld`, same call as `capture-gate` | done | none |
+| Compose the shared prompt carrying `gate.abstraction` | done; a test asserts both seats get byte-identical input | none |
+| Seat adapters, registry `invoke` repointed | done | none |
+| Repo root as worktree; scratch outside it | done | none |
+| Exit 0 only on `pass` | done | none |
+| `env_allowlist: [HOME]` | done | none |
+| — | merged with another lane's `invocation_fallbacks`; added the in-harness sub-agent candidate; updated `registry.Default()` and two of their tests | **not in the plan** — the rebase brought it |
+
+The merge is the only material departure, and it was forced by `origin/main`
+moving. Both mechanisms were kept: fallbacks are the config-level candidate list,
+the adapter is the execution-level bridge.
+
+## Gate history
+
+| gate | codex | opus | result |
+|---|---|---|---|
+| plan.r1 | GO | GO | **pass** |
+| implement.r1 | BLOCK — near-miss verdict tokens accepted as `go` | — | rerun |
+| implement.r2 | BLOCK — "literal GO" overclaim while case-folding | — | rerun |
+| implement.r3 | BLOCK — **fail-open**: child inherited `ETUDE_OUTPUT_FILE` | — | rerun |
+| implement.r4 | PASS_WITH_FOLLOWUPS | — | rerun (one seat only) |
+| implement.r5 | GO | (this gate) | — |
+
+Every BLOCK was a real defect in my work. None was argued down, no tier was
+lowered, and no seat was dropped. The r3 finding is the one that mattered: every
+seat behind this gate is an agentic CLI with file-write tools, so a reviewer
+could have fabricated its own passing envelope. Fixed by auditing the whole
+invariant rather than the named site.
+
+## A correction I owe the record
+
+I reported the opus seat unreachable across six attempts and filed `etude-zc3`
+(P0) on that basis. The seat was available throughout: I had been NAMING the
+spawned agent, which makes it a persistent teammate that idles instead of
+returning a report. Unnamed spawns return normally. The bead is updated with the
+root cause rather than closed quietly, because "a seat returning nothing should
+prompt a check of the invocation shape before it is called an outage" is the
+durable lesson.
+
+## Commit scope
+
+16 files by explicit path. Verified absent: `.etude/tmp/**` (gitignored scratch),
+`.etude/loop.local.md` (gitignored), `.lane-done`, `bin/`.
+
+## Checks
+
+`make test` · `make lint` · `make docs-check` · `make docs-reality` (15 commands)
+· `make seat-adapter-test` (30 checks) — all green after the rebase.
+
+## Known limitations, disclosed and tracked
+
+- **etude-5f6** (P2): `etude gate` reads `invocation_fallbacks` but does not act
+  on them; a failed primary is recorded `failed` rather than retried down the
+  ladder. No doc claims otherwise.
+- **etude-zc3**: retitled in substance by the correction above; what survives is
+  that `claude -p` cannot authenticate as a subprocess under a Claude Code
+  orchestrator, which is exactly what the fallback ladder now encodes.
+
+## Readiness
+
+Acceptance met and demonstrated against the built binary item by item, not
+asserted. Ready to land once this gate returns two seats.
