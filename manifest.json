@@ -460,6 +460,48 @@
         ]
       },
       "timestamp": "2026-06-29T20:47:17Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "etude-g12 nits already deferred"
+          ],
+          "timestamp": "2026-06-29T22:07:22Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-g12",
+          "etude-dp7"
+        ]
+      },
+      "timestamp": "2026-06-29T22:07:22Z"
     }
   ]
 }
