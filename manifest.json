@@ -105,6 +105,77 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-09-06T23:31:49.790295Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "58ae302590eaaab69f7d5875f1b393fab3d6b28fc68c60ac6635e77a78997f0f"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `docs/plans/dogfood/supervisor-runbook.md:139-148` prescribes `.r2` rerun stage names on recapture — after digest-aware validation, same-name recapture is also valid, so say which convention operators should follow. 2) Make the mismatch error print the supplied hash, the bound `reviewed.Output.Artifact`, and the resolved stage name, so an operator can tell \"stale file\" from \"wrong run\" without re-hashing by hand. 3) `buildGatePrompt` still appends a trailing newline to a newline-less artifact, so seat-visible bytes differ cosmetically from the bound digest — harmless, but worth a comment where the hash is taken."
+          ],
+          "raw_output": {
+            "role": "opus-transcript",
+            "artifact": "54b226ebe64f14da70df37537b4e3c93039d9264ec9dbc35363a5ec6cd866726",
+            "path": "artifacts/sha256/54/54b226ebe64f14da70df37537b4e3c93039d9264ec9dbc35363a5ec6cd866726",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 681
+          },
+          "timestamp": "2026-09-06T23:35:34.06019Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Plan content is only available at a local path, and read-only file inspection was disallowed, so I cannot independently review the plan."
+          ],
+          "optional": [
+            "Provide the plan text directly or allow read-only file access for the retry."
+          ],
+          "raw_output": {
+            "role": "codex-transcript",
+            "artifact": "5d914b8ab968ed341fbdcf8fae665f40df2056e18f1d23937fd8d1a4e3f6be8b",
+            "path": "artifacts/sha256/5d/5d914b8ab968ed341fbdcf8fae665f40df2056e18f1d23937fd8d1a4e3f6be8b",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 2434
+          },
+          "timestamp": "2026-09-06T23:35:50.538147Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Bootstrap auth-profile exception: standard Opus runner lacks active CLI profile and returns not logged in. Both external reviewers received the same plan-path prompt with the authenticated orchestrator environment; Codex could not read files under that prompt, so this attempt is not passed. Next retry inlines the plan."
+      },
+      "timestamp": "2026-09-06T23:37:20.503644Z"
     }
   ]
 }

@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1) `docs/plans/dogfood/supervisor-runbook.md:139-148` prescribes `.r2` rerun stage names on recapture — after digest-aware validation, same-name recapture is also valid, so say which convention operators should follow. 2) Make the mismatch error print the supplied hash, the bound `reviewed.Output.Artifact`, and the resolved stage name, so an operator can tell "stale file" from "wrong run" without re-hashing by hand. 3) `buildGatePrompt` still appends a trailing newline to a newline-less artifact, so seat-visible bytes differ cosmetically from the bound digest — harmless, but worth a comment where the hash is taken.
+CONFIDENCE: high
