@@ -1,0 +1,131 @@
+diff --git a/docs/gates.md b/docs/gates.md
+index 50bf99a..24d0330 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -69,8 +69,11 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
+ recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+ strictly: an unknown or misspelled field (at any nesting level) is rejected
+ rather than silently dropped, as is any trailing content after the gate object.
+-Invalid input is rejected without changing the run. A run that carries
+-any gates is written as `manifest_version` 3; gate-less runs are unchanged.
++Invalid input is rejected without changing the run. A run that carries gates
++is written as `manifest_version` 3 unless it also carries a stage-log artifact,
++which requires version 4; gate-less runs without stage logs are unchanged. For
++compatibility with durable refs written by development builds, readers also
++accept a stage log in version 2 or 3, but new writers always emit version 4.
+ 
+ The capture input above uses `session.transcript_path` because it points at a
+ local file to import. Stored manifests replace that input-only path with:
+@@ -271,7 +274,8 @@ live-specific characteristics:
+   empty, or malfunction) — even when the gate still passes — so the audit
+   record reflects a degraded panel.
+ - `decision.escalation_reason` is required when `status="escalated"`.
+-- A run that carries any gate attempts is stored as `manifest_version` 3.
++- A run that carries gate attempts is stored as `manifest_version` 3, or
++  version 4 when any stage carries a log artifact.
+ 
+ ### Resuming an unusable-seat outage
+ 
+diff --git a/docs/plans/product/V1-SCOPE.md b/docs/plans/product/V1-SCOPE.md
+index b959b52..2d67e60 100644
+--- a/docs/plans/product/V1-SCOPE.md
++++ b/docs/plans/product/V1-SCOPE.md
+@@ -42,7 +42,8 @@ Source: `internal/cli/root.go:36-48`.
+   per-run refs; no shared write point (`internal/refstore`).
+ - **Content-addressed inline artifacts** — blobs stored by hash inside the
+   ref store (`internal/artifactstore/store.go`).
+-- **Run manifests v2 and v3** — v3 adds gate-reviewer records; the producer
++- **Run manifests v2, v3, and v4** — v3 adds gate-reviewer records; v4 adds
++  stage-log artifact references; the producer
+   record is authoritative (`internal/runmanifest/manifest.go:932-935, 1063,
+   1196`).
+ - **Retro-meta sidecars** — retrospective metadata stored alongside run
+diff --git a/docs/replay.md b/docs/replay.md
+index 10f6c0e..6a479d0 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -68,6 +68,11 @@ The new run contains a single stage with:
+ - `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
+   content-addressed refs).
+ - `output` — the artifact produced by the replay run.
++- `log` — the bounded successful runner stdout/stderr artifact, when either
++  stream was non-empty.
++- `producer.session` — the replay runner's reported session identity and, when
++  `transcript_path` resolves beneath replay scratch or its pinned worktree, the
++  imported and secret-scanned transcript artifact.
+ - `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
+   `commit` is the immutable git commit of the source run ref (not the stage's
+   `git_sha`). This pins the link durably even if the source run ref is later
+@@ -76,6 +81,13 @@ The new run contains a single stage with:
+ The `replay_of` field is required for any stage with `produced_by: "replay"`,
+ and forbidden otherwise. The manifest validator enforces this bidirectionally.
+ 
++Transcript capture is best-effort at record time, matching live-stage capture.
++An unreadable transcript or one that fails the secret scan leaves durable
++failed evidence but does not discard an otherwise valid replay output;
++rejected bytes are never stored. If a later gate rerun would depend on a
++redaction-failed transcript, that handoff fails closed before invoking the next
++stage runner.
++
+ ### Confirmation and output
+ 
+ After the new run is written, `etude replay` prints:
+@@ -114,18 +126,23 @@ The runner is invoked as an external process with:
+ 
+ - **Working directory** set to the throwaway worktree (a pristine checkout of
+   the stage's recorded git SHA).
+-- **Environment** restricted to three variables:
++- **Environment** restricted to four variables:
+   - `PATH` — inherited from the calling process.
+   - `ETUDE_INPUTS_DIR` — path to a directory containing one file per stage
+     input, named `<NN>-<role>` (two-digit zero-padded index, then the input
+     role). For example: `00-context`, `01-rubric`.
+   - `ETUDE_OUTPUT_FILE` — path the runner must write its output to. The file
+     does not exist before the runner is called; the runner must create it.
+-- **Stdout and stderr** are captured but not forwarded to the terminal. Stderr
+-  appears in error messages only when the runner exits non-zero.
+-
+-All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`, and
+-`ETUDE_OUTPUT_FILE` are stripped from the runner's environment.
++  - `ETUDE_SESSION_FILE` — optional JSON sidecar path for session identity and
++    transcript location; publish it atomically as described in
++    [Runs](run.md#producer-session-evidence).
++- **Stdout and stderr** are captured but not forwarded to the terminal. On a
++  successful recorded replay they are stored as the bounded stage-log artifact;
++  stderr appears in error messages when the runner exits non-zero.
++
++All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`,
++`ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE` are stripped from the runner's
++environment.
+ 
+ After the runner exits, `etude replay` reads the file at `ETUDE_OUTPUT_FILE`
+ and emits its bytes as the replay output (to stdout or to `--output <path>`).
+diff --git a/docs/run.md b/docs/run.md
+index 332466e..b5632db 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -386,7 +386,10 @@ rerun continues without transcript bytes. The redaction status reports whether
+ the transcript secret scan passed or failed. A transcript that was imported
+ but failed that scan stops the rerun before its stage runner is invoked.
+ Output and stage-log artifacts follow their existing storage contract and are
+-not secret-scanned.
++not secret-scanned. Prior-attempt logs are handed to every later rerun as raw
++inputs, so a credential printed by a producer can persist in the run and cross
++attempt boundaries; runner authors must treat stdout and stderr as durable,
++shared evidence rather than an ephemeral console.
+ 
+ Session ids are opaque and compared byte-for-byte; whitespace is used only to
+ recognize an empty id. Reusing an exact non-empty id marks the later attempt as
+@@ -410,9 +413,9 @@ by unusable model seats is resumable; substantive reviewer decisions remain
+ terminal.
+ 
+ Each gate attempt is recorded automatically as a `GateAttempt` in the run
+-manifest (`manifest_version` 3); gate attempts appear after stages in
+-`etude run show`. No separate `etude capture-gate` call is required for live
+-runs.
++manifest (`manifest_version` 3, or version 4 when a stage log is present); gate
++attempts appear after stages in `etude run show`. No separate
++`etude capture-gate` call is required for live runs.
+ 
+ ### Env passthrough
+ 
