@@ -1,0 +1,90 @@
+# Plan — etude-n9b.1 workflow and manifest contract
+
+Goal: add the additive schema surface for an opt-in gate-seat checkout-read
+grant while leaving every absent or false grant output-only.
+
+ANCESTOR: etude-n9b (P1) — deliver GitHub issue #16 as an opt-in verification
+capability whose default remains output-only. MEASUREMENT: the current
+`runGateSeats` always passes the run worktree as every model seat's working
+directory, so zero workflow declarations distinguish or audit that access.
+
+BLAST RADIUS: none: worktree and repo only. This child changes Go schema models,
+their YAML/JSON codecs, and tests. It performs no host install, external write,
+service call, or per-run large-artifact generation.
+
+## Build decision
+
+Build. The premise is verified in source: `workflow.GateConfig` has no checkout
+access field, `runmanifest.GateAttempt` has no grant field, and
+`runGateSeats` unconditionally receives the checkout directory. No existing
+schema primitive represents this per-gate policy.
+
+## Contract
+
+- Add `ReadCheckout bool` to `workflow.GateConfig`, encoded as
+  `read_checkout: true` under a stage's `gate:` block.
+- A missing key, `false`, and the Go zero value all mean output-only. Encoding
+  omits false with `omitempty`, preserving the default and legacy output.
+- Add `ReadCheckout bool` to `runmanifest.GateAttempt`, encoded as
+  `read_checkout: true` only for a granted attempt. Absence means output-only.
+- Keep manifest format compatibility additive: no version bump beyond the
+  existing gate-bearing manifest version 3. Unknown fields remain rejected.
+- Forward compatibility is intentionally one-way: the current binary reads
+  manifests written by older binaries, while an older strict reader may reject
+  a newer manifest containing `read_checkout`. This matches the existing
+  additive-leaf policy; etude does not promise old binaries can read future
+  manifests.
+- This child adds the contract only. Runtime consumption and prompt wording are
+  deliberately the dependent child `etude-n9b.2`, preventing schema and runtime
+  edits from being reviewed as one oversized commit.
+
+## Files
+
+- `internal/workflow/workflow.go`
+- `internal/workflow/workflow_test.go`
+- `internal/runmanifest/manifest.go`
+- `internal/runmanifest/manifest_test.go`
+
+## Planned regressions
+
+Planned regression: workflow gate read_checkout true parse and encode round-trip.
+
+Planned regression: workflow gate absent and false omit read_checkout and retain
+the output-only zero value.
+
+Planned regression: GateAttempt read_checkout true JSON round-trip.
+
+Planned regression: GateAttempt false omits read_checkout while legacy gate JSON
+still parses.
+
+Every encode assertion pins an independent inline YAML or JSON literal rather
+than deriving its oracle with the production encoder. Round-trip equality alone
+is insufficient because matching encode/decode mistakes can agree with each
+other.
+
+## L2 author declarations
+
+TOPOLOGY: no concurrency change; pure in-memory schema decode, validate, and
+encode at the existing single call sites.
+
+DURABILITY CLASS: no irreversible action and no delivery operation. The change
+adds an optional leaf field to workflow YAML and manifest JSON; existing git CAS
+writes remain unchanged.
+
+COMPLETE SET / all-sites enumeration: the complete representation set is four
+sites — workflow domain model, workflow YAML codec, manifest domain model, and
+manifest JSON codec — plus one focused test surface for each codec. No other
+serializer exists for either type.
+
+TRUST BOUNDARY: workflow YAML and manifest JSON are untrusted parsed inputs;
+`yaml.v3` KnownFields and `json.Decoder.DisallowUnknownFields` are the validation
+roots. The typed boolean is trusted after successful decode. Arbitrary
+same-process code execution is outside scope.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Verification
+
+- Run focused workflow and runmanifest package tests.
+- Run `make test` and `make lint` before the verify gate.
+- Confirm the diff is limited to the four named files.
