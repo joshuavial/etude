@@ -1120,6 +1120,120 @@
         "degraded_reason": "LATE RECORD, filed at the final review gate which found it missing. This is the in-harness opus verdict on the FIRST verify artifact (sha ce317bc0, stage 'verify'), the revision verify.r1 reviewed. verify.r1 recorded that seat as 'failed' because etude gate cannot invoke it as a subprocess; it was then run in-harness per the documented registry exception and returned this BLOCK, which changed the code - three mutation survivors pinned and the suite taken from 34 to 40 cases - but the verdict was never appended. The round number is the next free attempt counter, not the chronological position; reviewed_stages names the artifact actually reviewed, which is what identifies the revision. This does not reopen the phase: it records what a seat said about a superseded revision, and is filed because a BLOCK that changed the shipped work and left no durable record is the exact defect this epic exists to end."
       },
       "timestamp": "2026-08-15T13:52:00Z"
+    },
+    {
+      "gate_id": "verify.r6",
+      "phase": "verify",
+      "round": 6,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify",
+          "artifact": "ea641e95c3cde1c585667d2fbf9b40ffa69205168779268cf389f1cee68a96fd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "5b4e901014265cdd6f4fda03c11b2c23e19469e11cc9bc4c82b7c3560fee3ed3",
+            "path": "artifacts/sha256/5b/5b4e901014265cdd6f4fda03c11b2c23e19469e11cc9bc4c82b7c3560fee3ed3",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1253
+          },
+          "timestamp": "2026-08-15T13:53:58.409001Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T13:53:58.630267Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T13:53:59.682861Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add follow-up coverage for WARN-only check (c)'s supersedes/trigger/subject_run computation, even if etude-3xt owns semantic changes."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "87369414ddafb49a766181469cfd2197b60a9e0fbc769c4b3ed3c56c0fa305ab",
+            "path": "artifacts/sha256/87/87369414ddafb49a766181469cfd2197b60a9e0fbc769c4b3ed3c56c0fa305ab",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 283
+          },
+          "session": {
+            "session_id": "codex-224f9ea4ee961f0f",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "224f9ea4ee961f0f8d08797bfa2a7306bffa2bf489e7188ffa7486f07bdd3232",
+              "path": "artifacts/sha256/22/224f9ea4ee961f0f8d08797bfa2a7306bffa2bf489e7188ffa7486f07bdd3232",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 193
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T13:54:19.749915Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T13:54:19.750004Z"
     }
   ]
 }
