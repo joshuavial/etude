@@ -1004,6 +1004,120 @@
         "degraded_reason": "Both seats GO. This attempt is recorded by hand because the stage gate.checks (make test / make lint) could not run under etude gate until this bead fixed them: execCheckRunner ignored env_allowlist, so the checks died on a missing Go module cache. The literal --stage verify run that a seat asked for is what exposed it. Five optionals raised, all actioned: two drifted counts refreshed; a genuine OVERCLAIM corrected (the artifact said the in-harness fallback is machine-honored, but a seat verified live that etude gate never reaches it — it is expressed in config, not consumed, tracked as etude-5f6); a scope note added to contract item 3 about --workflow; and a stray gate attempt the seat s own probing left on the unrelated ref refs/etude/runs/etude-04i was discarded by restoring that ref to origin. The seat also warned that the round-8 regression file was untracked and would be lost on commit — staged by name."
       },
       "timestamp": "2026-08-15T07:31:35Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "c5ae1b9fcfe29cde9bfc689e8494fd2cc0f8a66c44724bd4e77e7ed581a711b8"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "2112684ef9b98041decb6950cdfa9e9341d989db5e9014cbbc7960cb6083e05b",
+            "path": "artifacts/sha256/21/2112684ef9b98041decb6950cdfa9e9341d989db5e9014cbbc7960cb6083e05b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1196
+          },
+          "timestamp": "2026-08-15T07:33:41.968828Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T07:33:42.196194Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T07:33:43.311344Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Follow up on etude-5f6 so invocation_fallbacks become executable behavior, not just documented configuration."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "24e20ffe6e4a2b78a1523122230e520d60dfacee8014ea1aab9d0c577e5770ac",
+            "path": "artifacts/sha256/24/24e20ffe6e4a2b78a1523122230e520d60dfacee8014ea1aab9d0c577e5770ac",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 259
+          },
+          "session": {
+            "session_id": "codex-4f2a4b149ec80ad5",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "4f2a4b149ec80ad544dc5c998c24a26fee5b68c1a4fa40d04e28d35b4327ba1a",
+              "path": "artifacts/sha256/4f/4f2a4b149ec80ad544dc5c998c24a26fee5b68c1a4fa40d04e28d35b4327ba1a",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 169
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T07:34:04.471053Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T07:34:04.471517Z"
     }
   ]
 }
