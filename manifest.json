@@ -292,6 +292,55 @@
         "degraded_reason": "Both seats BLOCK and both independently found the same fail-open, which is the strongest possible signal: a run ref with no readable manifest.json exited 0 CLEAN on what is supposed to be a hard check, on a script that gates every lane's push. Reproduced before fixing. Root cause is a pipefail interaction - a failing git cat-file makes the command substitution non-zero even though python already printed its -1 sentinel, so the '|| echo -1' fallback appends a second line and the result matches no case arm. The 902-line predecessor handled this correctly, so it was a regression introduced by this bead, and the new test had no bad-manifest coverage at all, which is why it survived author review. codex additionally found that git ls-remote failure was swallowed by '|| true', turning an unreachable origin into a repo-wide pile of unpushed-ref gaps and exit 1 rather than the promised exit 2 - which tells a blocked operator to push their refs when the real problem is their network or auth. Both fixed with regressions, and both regressions negative-controlled by reinstating the broken line and watching them fail 26/2 before restoring 28/28. Six further optionals folded, including a stale hook comment the first sweep missed and check (c) silently losing the superseded-retro skip. The opus seat ran as an in-harness sub-agent per the documented registry exception."
       },
       "timestamp": "2026-08-15T11:45:18Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r2",
+          "role": "diff",
+          "artifact": "1995edeeeaf73a0172675c95f024ce1d18662241c0fe368acc9f94de77e39358"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T11:57:44Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The docs sweep leaves a live false-enforcement claim: docs/plans/dogfood/retro-ledger.md 'Cadence retro-meta sidecar' is a PRESCRIPTIVE convention block, not a historical entry, and states in the present tense that a post-cutoff cadence retro missing or with a malformed sidecar is a hard gap (exit 1) in check (f). Check (f) is deleted; nothing enforces this. It is the identical claim the bead correctly rewrote in docs/retro.md and retro-meta-cadence.example.json, so the omission is inconsistent within one sweep, and it reproduces the exact defect this bead's headline correction exists to fix. Compounding it, the artifact lists retro-ledger.md as a deliberate no-op because its own line-11 note says this bead owns the sweep - but that note DEFERS the sweep to this bead and is itself now false."
+          ],
+          "timestamp": "2026-08-15T11:57:44Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Seats split - codex GO, opus BLOCK - so no pass under unanimous quorum. Both round-1 fail-opens were confirmed fixed. opus's new finding is correct and is the same class the bead exists to remove: I had classified the whole retro-ledger as historical no-ops, but it contains a prescriptive convention block asserting in the present tense that a check deleted by this bead still enforces the sidecar. Its own deferral note, which I had cited as justification for the no-op classification, deferred the sweep TO this bead and so was false the moment the bead landed. The durable lesson recorded in the artifact: 'this file is historical' is a judgement about a file, and a file is not uniformly one thing. Six optionals also folded, five of them the same fail-open family as round 1, audited together rather than patched one at a time: a case statement with no default arm, an unchecked non-list gates value, mapfile discarding its producer's exit status so a truncated window read as clean, a for-each-ref failure that would have made check (d) pass vacuously, and a ref BEHIND origin reported as unpushed - telling the operator to push when they need to fetch. Three were inherited from the 902-line predecessor, which does not make them acceptable in a rewrite whose subject is a check that must not fail open. Four new regressions added; suite is 32 green."
+      },
+      "timestamp": "2026-08-15T11:57:44Z"
     }
   ]
 }
