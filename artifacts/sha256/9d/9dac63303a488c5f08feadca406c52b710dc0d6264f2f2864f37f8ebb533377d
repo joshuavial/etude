@@ -1,0 +1,18 @@
+# Verify — etude-n0t (retro generate + Generator seam, Phase C)
+
+Status: PASS. Recommendation: proceed to Docs.
+
+## Automated
+- `go build ./...` clean; `go test ./...` green across 14 pkgs (fresh -count=1 on internal/retro + internal/cli); `make lint` clean. The only docs gap is make docs-check (red until Docs regen) — handled in Docs; TestDriftGuard stays green (known-incomplete expectedCommands).
+
+## Built-binary manual test (throwaway temp git repo; real external generator script)
+- Happy path: `etude retro generate cohort --subject-run <id> --generator <abs gen.sh>` -> exit 0, `generated <commit>` + `ref refs/etude/retros/<id>`; `retro show` renders gen.sh body inline; stored body BYTE-MATCHES gen.sh output (sha256 36fe47ff…, storage=content, media text/markdown; charset=utf-8); metadata block shows produced_via: generate + generator: <abs path>.
+- Multi-subject materialization: 00-<run>-output + 01-<run>-output (NN-runid disambiguation, no collision); inputs as NN-runid-input-<role>.
+- Stage selection: multi-stage run + no --stage -> clear "has multiple stages (plan, implement); specify --stage" (exit 1, no retro); --stage implement -> generates; --stage nosuch -> "stage not found"; single-stage run auto-selects.
+- Provenance guard: --ref generator=hack AND --ref produced_via=hack both rejected "reserved" (exit 1).
+- Error paths: no generator configured -> "not configured"; generator nonzero-exit -> failure surfaced (stderr); empty $ETUDE_OUTPUT_FILE -> "output missing"; zero --subject-run for cohort -> clear error. All exit 1, NO partial retro written (ref count unchanged).
+- Env isolation: generator saw ONLY PATH/ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE (+ sh-injected PWD/SHLVL/_); exported sentinel + HOME did not leak; cwd a fresh scratch dir. No shell injection (`--generator "gen.sh; touch /tmp/PWNED"` -> ; literal, never created).
+- Capture parity: `etude retro capture` still works end-to-end; captured retro has NO produced_via/generator keys (generated vs captured distinguishable). assembleAndWriteRetro extraction did not regress capture.
+
+## QA findings
+Matches the approved plan; faithfully mirrors replay.Runner/eval.Judge seam + strict-env exec contract. Coverage thorough (seam + CLI). No regressions. Post-verify: removed dead applyGenerateResultDefaults (never called, zero behavior change). Scope: internal/cli/retro.go + retro_test.go modified + 4 new internal/retro generator files.
