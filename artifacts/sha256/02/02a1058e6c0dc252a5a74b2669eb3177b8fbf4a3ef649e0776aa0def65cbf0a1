@@ -1,0 +1,120 @@
+## Plan
+
+**Approach:** Add a `Runner` seam to `internal/replay` (new file `runner.go`, alongside `resolve.go`) so the replay command can invoke a skill headlessly without an LLM in tests. Define a `Runner` interface plus `RunRequest`/`RunResult` value types, and a `StubRunner` with configurable deterministic behavior. The exec runner (phase2.4) and the replay command will both depend on these types; this bead ships ONLY the interface + stub (no exec, no LLM). Package choice: `internal/replay` (not a sub-package) — it consumes `ResolvedInput`/`ResolvedStage` (resolve.go), `worktree.Worktree.Dir`, and `runmanifest.Skill`; keeping it next to resolve.go matches import direction (replay already imports runmanifest/artifactstore/refstore) and avoids a circular dep, since phase2.4's exec runner and the replay command sit at/above this layer.
+
+**I/O contract (the load-bearing decision):**
+- Inputs are MATERIALIZED AS FILES into the worktree under a fixed convention dir, `.etude/inputs/`, one file per resolved input. Filename = `<NN>-<role>` (zero-padded index preserves order + disambiguates duplicate roles; no extension assumptions). The request also carries the in-memory role+bytes+mediatype list so a runner may choose stdin/args instead, but the canonical, always-present channel is files-in-worktree.
+- Output is read from a NAMED OUTPUT FILE the runner writes: `.etude/output` in the worktree. `RunResult` returns the bytes read from it (the stub/exec runner is responsible for reading and returning them), plus the MediaType and the actually-used Skill identity.
+- Justification: (a) Natural for `claude -p` later — a coding-agent skill runs IN a working tree, reads/writes files there, and is prompted to read `.etude/inputs/*` and write `.etude/output`; we do not have to serialize everything onto stdin or fight argv length limits, and binary/large inputs are first-class files. (b) Composes with internal/worktree: the runner operates against `Worktree.Dir`, and the materialize step is a plain file write under that dir. (c) Composes with internal/replay: `ResolvedInput` already exposes `Role` + `ReadContent(ctx)`; pointer inputs return `ErrPointerNotMaterialized`, which the materialize step surfaces clearly (replay of a stage with unmaterialized pointer inputs is an explicit, named failure, not a silent empty file). (d) Trivially stubbable: the stub ignores files and returns canned bytes, OR (config option) concatenates the request's in-memory inputs — no filesystem or exec needed for the deterministic-transform test. Output-as-file mirrors how `capture` turns bytes into an artifact via `artifactstore.AddContent(role, mediaType, content)`, so the replay command can hand `RunResult.Output`+`MediaType` straight to the store with no reshaping.
+
+**Interface shapes (pinned):**
+- `type Runner interface { Run(ctx context.Context, req RunRequest) (RunResult, error) }`
+- `type RunInput struct { Role string; MediaType string; Content []byte }` — resolved input flattened for the runner (decouples runner from resolve's lazy `ReadContent`; the replay command resolves bytes once, up front, surfacing `ErrPointerNotMaterialized` before invoking the runner).
+- `type RunRequest struct { WorktreeDir string; Inputs []RunInput; OutputRole string; Skill runmanifest.Skill }` — `WorktreeDir` from `Worktree.Dir`; `OutputRole` is the produces role the new artifact will carry (defaults to the original stage output's role); `Skill` is the requested skill identity (id/repo/version) to run.
+- `type RunResult struct { Output []byte; MediaType string; Skill runmanifest.Skill }` — `Output`+`MediaType` feed `artifactstore.AddContent`; `Skill` is the identity ACTUALLY used (the exec runner may resolve/echo a concrete version; the stub echoes `req.Skill`), recorded on the new `produced_by: replay` stage.
+- `type StubRunner struct { ... }` configurable behavior: a canned-output mode (return fixed bytes+mediatype) and a transform mode (e.g. concatenate input contents in order, default mediatype `text/plain; charset=utf-8`), plus an optional injected error. `StubRunner` satisfies `Runner`. Stub does not touch the filesystem or exec; it works purely from `RunRequest.Inputs`.
+- Helper (small, optional this bead): `func MaterializeInputs(dir string, inputs []RunInput) error` writing `.etude/inputs/<NN>-<role>` — exercised by the exec runner in phase2.4; include the path-convention constants here so both runners and the command agree on them.
+
+**Files:**
+- `internal/replay/runner.go` - NEW: `Runner` interface, `RunInput`/`RunRequest`/`RunResult`, `StubRunner`, path-convention constants (`.etude/inputs/`, `.etude/output`), optional `MaterializeInputs`.
+- `internal/replay/runner_test.go` - NEW: stub + interface tests.
+
+**Tests:**
+- `StubRunner` returns canned output deterministically for a given request (table-driven: empty inputs, single input, multiple inputs).
+- `StubRunner` transform mode concatenates inputs in order and sets expected MediaType.
+- `StubRunner` returns the configured injected error unchanged (errors.Is).
+- `StubRunner` echoes/returns the requested `Skill` identity in `RunResult.Skill`.
+- Compile-time `var _ Runner = (*StubRunner)(nil)` assertion that the stub satisfies the interface.
+- (If `MaterializeInputs` lands) it writes one file per input under `.etude/inputs/` with index-prefixed names and correct contents; ordering/duplicate-role disambiguation holds. No LLM, no real exec — exec runner tests are phase2.4.
+
+**Docs:** None. Internal Go interface with no CLI surface yet (the `replay` command and its docs land in etude-replay-command). The I/O contract is documented in this bead's design field per the acceptance criteria; no user-facing or generated-reference docs change. Will note the `.etude/inputs/` + `.etude/output` convention in the replay command's docs when that bead ships.
+
+**Risks:** Low. The single real design risk is the I/O contract; mitigated by grounding it in the actual `claude -p` target (file-based working-tree I/O) and in the existing capture→artifactstore bytes+mediatype shape, and by keeping the in-memory `Inputs` slice on the request so a future runner can prefer stdin/args without an interface change. Pointer inputs are an explicit failure (`ErrPointerNotMaterialized`) surfaced before the runner runs, not a silent gap.
+
+**Capture:**
+- inputs: bead etude-phase2.3 description + acceptance criteria; dep etude-phase2.2; internal/replay/resolve.go (ResolvedInput/ResolvedStage, ErrPointerNotMaterialized); internal/worktree/worktree.go (Worktree.Dir); internal/runmanifest/manifest.go (Skill, ArtifactRef); internal/cli/capture.go (addFileArtifact -> artifactstore.AddContent bytes+mediatype); internal/artifactstore/store.go (AddContent signature, StorageType); internal/replay/resolve_test.go (test helpers/patterns); BRIEF.md §4.7 + §8.
+- output: bead --design field
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: BLOCK (1 GO / 3 BLOCK)
+- pi/pilms: GO. Claude Opus: BLOCK; Gemini Pro: BLOCK; GPT-5.5 xhigh (codex): BLOCK — converged required changes:
+  1. (.etude/ COLLISION — Opus+Gemini+codex) materializing inputs to .etude/inputs/ + output to .etude/output INSIDE the checked-out worktree collides with the REAL .etude/ config (workflow.yaml, evals/) present in every checked-out commit of this repo (NOT gitignored). Move replay scratch I/O OUT of the worktree into an external scratch dir; keep the detached worktree BYTE-IDENTICAL to the recorded commit (the GitSHA is the provenance anchor — mutating the tree breaks the match).
+  2. (OUTPUT MEDIA TYPE — codex) the exec runner cannot infer media type from an extensionless output file, and artifactstore.AddContent REQUIRES a media type. RunRequest must carry OutputMediaType (from ResolvedStage.Output.MediaType); RunResult.MediaType defaults to it.
+
+## PLAN AMENDMENT (incorporated for gate attempt 2)
+- RunRequest{ WorktreeDir (the PRISTINE detached checkout == recorded GitSHA, read-only for the skill), ScratchDir (external os.MkdirTemp dir where phase2.4 materializes inputs + reads output — NEVER inside the worktree), Inputs []RunInput, OutputRole string, OutputMediaType string (from the original stage Output.MediaType), Skill runmanifest.Skill }.
+- RunResult{ Output []byte, MediaType string (defaults to req.OutputMediaType; runner may override), Skill runmanifest.Skill }.
+- File convention (DOCUMENTED here, IMPLEMENTED in phase2.4 exec runner): inputs at <ScratchDir>/inputs/<NN>-<role>, output at <ScratchDir>/output. The worktree stays clean.
+- StubRunner: uses ONLY the in-memory Inputs (NO FS, NO exec); canned + concat (documented separator/order) modes; injectable error; echoes req.Skill into RunResult.Skill; RunResult.MediaType defaults to req.OutputMediaType. This bead = interface + value types + stub; materialization is phase2.4 — keep this bead's tests FS-free.
+- Docs in code comments: RunRequest.Inputs are always fully-materialized content bytes (pointers rejected pre-run via ErrPointerNotMaterialized); RunResult.Skill MAY differ from RunRequest.Skill (the new replay skill identity — the whole point); compile-time var _ Runner = (*StubRunner)(nil).
+## Plan gate (attempt 2) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (collision resolved via external ScratchDir; OutputMediaType feeds AddContent; stub FS/exec-free); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Amendment (external ScratchDir + pristine worktree + OutputMediaType) incorporated and verified.
+Optionals folded into Implement (clarity): reword pointer-rejection as the caller/materializer's responsibility (RunInput has no Storage; the stub never sees a pointer); document RunResult.MediaType=='' triggers the default-to-req.OutputMediaType in Run; name the concat separator as a constant so test+doc can't drift.
+Carry to phase2.4/replay-command (codex): validate ScratchDir absolute/exists/outside-WorktreeDir before exec; centralize the MediaType=='' -> OutputMediaType fallback at the artifact-write boundary.
+## Implement
+
+**Implemented:**
+- Runner interface (Run method, context + RunRequest -> RunResult/error)
+- RunInput struct: Role, MediaType, Content (fully-materialized bytes; no Storage field)
+- RunRequest struct: WorktreeDir (pristine/read-only), ScratchDir (external, never inside WorktreeDir), Inputs, OutputRole, OutputMediaType, Skill
+- RunResult struct: Output, MediaType (empty => defaults to req.OutputMediaType), Skill (identity actually used, MAY differ from req.Skill)
+- stubConcatSeparator named constant ("\n") shared between impl and tests
+- StubRunner: CANNED mode (CannedOutput + optional CannedMediaType), CONCAT mode (inputs joined by separator), Err mode (injected error returned unchanged), SkillOverride field, MediaType default applied in Run
+- compile-time interface check: var _ Runner = (*StubRunner)(nil)
+- 8 tests in runner_test.go: canned empty/single/multi/mediatype-default, concat order/empty, injected error, skill echo — no FS, no exec
+
+**Key decisions:**
+- Used switch{} (CannedOutput != nil / Concat) matching plan modes; CannedOutput == []byte{} (non-nil empty slice) triggers CANNED
+- SkillOverride zero-value check uses struct comparison (runmanifest.Skill{}) — no extra bool field needed
+- stubConcatSeparator is the canonical n constant used in both Run and test assertions
+
+**Checks run:**
+- gofmt -l cmd internal: pass (no output)
+- go vet ./...: pass (no output)
+- go build ./...: pass
+- go test ./internal/replay/ -count=1 -v: PASS (8 new + 11 existing = 19 total)
+- go test ./... -count=1 -race: PASS (all packages green)
+
+**Changed files:**
+- internal/replay/runner.go (new)
+- internal/replay/runner_test.go (new)
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (etude-phase2.3 --design), resolve.go patterns, manifest.go Skill type, artifactstore AddContent signature
+- output: working tree diff (two new files), this bead notes
+## Implement gate (attempt 1) — Tier 1 four-seat: BLOCK (3 GO / 1 BLOCK)
+- Claude Opus: GO (flagged SkillOverride test as optional); Gemini Pro: GO; GPT-5.5 xhigh (codex): GO (same SkillOverride optional); pi/pilms: BLOCK.
+- pi/pilms REQUIRED (test-only; production runner.go correct + unchanged): (1) TestStubRunner_SkillOverride — non-zero SkillOverride -> RunResult.Skill == override (not req.Skill); (2) TestStubRunner_PassThrough — CannedOutput=nil + Concat=false -> Output nil + MediaType defaults to req.OutputMediaType; (3) TestStubRunner_CannedWinsOverConcat — both set -> CANNED path wins. (Unanimous: all 4 seats want the SkillOverride test.)
+Adding the 3 tests (test-only), then rerunning the full gate.
+## Implement (rework — test-only addition)
+
+**Implemented:**
+- Added TestStubRunner_SkillOverride: asserts res.Skill == SkillOverride (not req.Skill) when SkillOverride is non-zero; fails if override branch removed
+- Added TestStubRunner_PassThrough: asserts res.Output == nil and res.MediaType == req.OutputMediaType for zero-value StubRunner (pass-through mode)
+- Added TestStubRunner_CannedWinsOverConcat: asserts CannedOutput takes precedence over Concat when both are set; fails if switch-case order flipped
+- runner.go was NOT modified
+
+**Checks run:**
+- gofmt -l internal/replay/: pass (no output)
+- go vet ./internal/replay/: pass
+- go test ./internal/replay/ -count=1 -v: all 11 existing + 3 new tests pass
+- go test ./... -count=1: all packages pass
+
+**Changed files:**
+- internal/replay/runner_test.go (3 functions appended after TestStubRunner_SkillEcho)
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan, existing runner_test.go and runner.go
+- output: working tree diff (runner_test.go only, runner.go untouched)
+## Implement gate (attempt 2) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (3 new tests genuinely discriminate; runner.go unchanged+correct); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Test-coverage BLOCK resolved (test-only): added TestStubRunner_SkillOverride, _PassThrough, _CannedWinsOverConcat — covering the override / zero-value-passthrough / canned-precedence branches. runner.go untouched. All replay tests green.
+
+ACCEPTANCE CRITERIA
+A SkillRunner interface defines invoke(inputs, worktree) -> output and captures skill repo+version identity. A stub runner implements it for tests. The chosen I/O contract is documented in the bead before EXECUTE. Interface is unit tested via the stub.
+
