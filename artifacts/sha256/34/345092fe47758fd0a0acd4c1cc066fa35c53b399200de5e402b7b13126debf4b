@@ -1,0 +1,2 @@
+# Final Review — etude-quk (folded into the Tier-2 gate)
+Verdict: GO. The 2 deleted exported funcs were wrappers delegating to the retained unexported originals; zero callers (build+test pass = compiler proof; internal pkg); WriteManifestTree still uses the originals; 1-file deletion-only diff. Completes the 0rt consolidation (the wrappers existed only for retro's pre-0rt hand-copy). Commit 260ae54.
