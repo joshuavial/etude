@@ -1,0 +1,7 @@
+# Verify — etude-kb0.3 (CHANGELOG + version mechanics)
+Docs-only (Tier 3). New CHANGELOG.md + README `## Releasing` section.
+## Checks
+- `make docs-reality` OK; `make reconcile` green; `git status` only CHANGELOG.md + README.md.
+- Version flow documented matches code exactly: root.go:11 var version="dev" / :24 Version / :35 SetVersionTemplate; Makefile:3 VERSION?=dev / :8-10 ldflags. `make build VERSION=v1.0.0` -> `etude v1.0.0` (verified by implement-gate Opus).
+- CHANGELOG: Keep-a-Changelog, [v1.0.0]-Unreleased (tag NOT cut), all 13 command families at release-notes granularity matching cobra Short + V1-SCOPE; deferred list matches V1-SCOPE (pointer, not re-listed). README `## Releasing` additive (Status/Still-planned untouched); kb0.4 forward-ref is prose.
+## Result: PASS

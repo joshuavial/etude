@@ -1,0 +1,113 @@
+## Plan
+
+**Approach:** Docs-only (Tier 3). Two deliverables: (a) a new top-level
+`CHANGELOG.md` in Keep-a-Changelog style with a single `## [v1.0.0] — Unreleased`
+entry that enumerates the v1 surface at release-notes granularity (NOT a commit
+dump), consistent with and linking to `docs/plans/product/V1-SCOPE.md`; (b) a new
+`## Releasing` section in the top-level `README.md` documenting the EXACT version
+wiring (`version = "dev"` default + the `VERSION` ldflags build path) and the
+tag→version flow (`make build VERSION=v1.0.0`). The CHANGELOG carries a short
+`## Versioning` pointer to the README Releasing section. NO git tag is cut, NO
+code/behavior change, NO release CHECKLIST (kb0.4 owns that). All edits are
+additive so `make docs-reality` / `make docs-check` / `make reconcile` stay green.
+
+**Current state observed (cite):**
+- No CHANGELOG / RELEASE doc exists (glob + `find . -iname 'changelog*' -o -iname
+  'release*'` return nothing).
+- Version wiring (document EXACTLY this, do not invent tooling):
+  - `internal/cli/root.go:11` — `var version = "dev"` (package-level default).
+  - `internal/cli/root.go:24` — `Version: version` on the cobra root command.
+  - `internal/cli/root.go:35` — `cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")`,
+    so `etude --version` prints `etude <version>`.
+  - `Makefile:3` — `VERSION ?= dev` (default when not overridden).
+  - `Makefile:8-10` — `build:` target runs
+    `go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=$(VERSION)" -o bin/etude ./cmd/etude`.
+  - `internal/cli/root_test.go:52-64` (`TestVersion`) asserts the default build
+    prints `etude dev`; `root_test.go:72` asserts `cmd.Version == "dev"`.
+  - Net flow: a plain `go build` / `make build` reports `etude dev`; a release
+    build sets the version via `make build VERSION=v1.0.0` (or
+    `go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=v1.0.0"`),
+    after which `etude --version` reports `etude v1.0.0`.
+- v1 surface to enumerate is authoritative in `docs/plans/product/V1-SCOPE.md`
+  (13 top-level commands at lines 17-29; subcommands 35-37; storage/manifest
+  features 41-49; `eval`-as-library note 53-56). CHANGELOG references this doc
+  rather than re-deriving/contradicting it.
+- `scripts/docs-reality-check.sh` only scans `README.md`, `docs/README.md`,
+  `docs/cli/`, and `docs/plans/**` (lines 57-101). It does NOT read
+  `CHANGELOG.md`, and its stale-claim scan (line 88, `not yet|...`) only targets
+  `docs/plans/**`. So: a new CHANGELOG.md is invisible to the check (safe), and a
+  new README "## Releasing" section is additive (removes no `etude <cmd>` usage
+  mention) so coverage stays satisfied (lines 69-73).
+
+**Boundary with sibling beads (state clearly, avoid collisions):**
+- **kb0.2 (README coherence)** owns the README **Status** section, the single
+  "Still planned / not yet built" consolidation, the BRIEF→V1-SCOPE cross-link,
+  and V1-SCOPE indexing. kb0.3 adds ONLY a NEW `## Releasing` section to README
+  and touches nothing in Status/deferred — no overlap. (If a merge orders kb0.3
+  before kb0.2, the new section is self-contained and append-only after
+  `## Build And Test`, so kb0.2's later Status edits do not conflict.)
+- **kb0.4 (release checklist/handoff)** owns the step-by-step RELEASE PROCEDURE
+  (green-gate steps: build/test/lint/reconcile; the sync/refs caveat; links to
+  the scope doc). kb0.3 owns ONLY the version MECHANICS reference that kb0.4
+  cites (kb0.4's own description says it references "the mechanics doc from
+  etude-kb0.3 — e.g. `make build VERSION=v1.0.0`"). kb0.3 documents WHAT the
+  version flow is; kb0.4 documents the ordered procedure to execute a release.
+
+**Files:**
+- `CHANGELOG.md` (NEW, top-level) — Keep-a-Changelog style:
+  - Header: title + 1-line note that the format follows Keep a Changelog and
+    versioning is semver; link to V1-SCOPE.md as the authoritative in/out scope.
+  - `## Versioning` — 2-3 lines: where the version comes from (`--version`,
+    `dev` default, `make build VERSION=v1.0.0`) with a pointer to README
+    "Releasing" for the full mechanics (avoids duplicating the build detail).
+  - `## [v1.0.0] — Unreleased` (explicitly Unreleased; the tag is NOT cut here):
+    - `### Added` grouped release-notes bullets:
+      - Git-native run records: 13 `etude` commands — `init`, `capture`,
+        `capture-gate`, `capture-run`, `run` (list/show), `sync`, `replay`,
+        `bench`, `retro` (capture/generate/list/show), `gc`, `reindex`, `prime`,
+        `log` (one bullet per command-family, short value-oriented descriptions
+        consistent with V1-SCOPE.md 17-37, NOT a commit log).
+      - Storage: git-native `refs/etude/*` ref store; content-addressed inline
+        artifacts (V1-SCOPE.md 41-45).
+      - Run manifests v2 + v3 (gate-reviewer records; producer record
+        authoritative) and retro-meta sidecars (V1-SCOPE.md 46-49).
+      - `eval` available as an internal library consumed by `bench` (no
+        standalone `etude eval` in v1) (V1-SCOPE.md 53-56).
+    - A trailing one-line "Deferred / post-v1" pointer to V1-SCOPE.md "Deferred"
+      so the CHANGELOG does not re-list deferred items.
+- `README.md` — ONE new section appended after `## Build And Test`
+  (around current line 61), NOT touching Status/CLI/deferred content:
+  - `## Releasing` — document the exact flow: `etude --version` reads the
+    `version` var (`internal/cli/root.go:11,24,35`); default builds report
+    `etude dev`; a release build stamps the version via the Makefile ldflags
+    (`Makefile:8-10`), e.g. `make build VERSION=v1.0.0` →
+    `./bin/etude --version` prints `etude v1.0.0`. State that cutting the git
+    tag itself is a human release action (out of scope here) and point to the
+    kb0.4 release checklist for the full procedure (forward reference; if kb0.4
+    not yet landed, phrase as "see the v1 release checklist").
+
+**Tests:** None (docs-only). Validation = the existing gates stay green:
+`make build`, `make test`, `make docs-reality`, `make docs-check` / `make
+reconcile`. The implementer should eyeball that the README "Releasing" commands
+are copy-pasteable and that the documented `etude --version` outputs match
+`root_test.go:52-64`.
+
+**Docs:** This bead IS the docs work — `CHANGELOG.md` (new) + README `##
+Releasing` section. No generated CLI-reference change (no `make docs`), no
+behavior change, no tag.
+
+**Risks:**
+- Sibling collision with kb0.2's README edits — mitigated by confining kb0.3 to a
+  NEW append-only `## Releasing` section and never editing Status/deferred.
+- Stating the version flow inaccurately — mitigated by citing exact
+  root.go/Makefile/root_test.go lines and reusing them verbatim.
+- (Watch) If the implementer discovers a real defect in the version wiring, NOTE
+  it for the user — do NOT silently change the version code (out of Tier-3 scope).
+
+**Capture:**
+- inputs: bead etude-kb0.3 (`bd show`), sibling beads kb0.2/kb0.4 (boundary),
+  `internal/cli/root.go:11,24,35`, `Makefile:3,8-10`,
+  `internal/cli/root_test.go:52-64,72`, `docs/plans/product/V1-SCOPE.md`,
+  `README.md`, `docs/README.md`, `scripts/docs-reality-check.sh`; confirmed no
+  existing CHANGELOG/RELEASE via glob + find.
+- output: bead --design field
