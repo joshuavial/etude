@@ -1,0 +1,17 @@
+# Verify — etude-assertion-eval
+
+Result: PASS.
+
+- `go test ./...` green; `gofmt -l internal/eval/`, `go vet ./...`, `go build ./...` clean.
+
+Coverage:
+- Head-validation: wrong method, Rubric!=nil, nil Assertion, empty Checks→ErrAssertionConfig, blank Kind, target-count!=1.
+- Registry: injectable map + defaultChecks() nil-fallback; unknown Kind→ErrUnknownCheck; check-internal error propagates (Evaluate returns err, not Passed=false).
+- required-artifact-presence: pass; fail (role absent / empty content); missing role arg→ErrAssertionConfig; in=targets|context|both.
+- test-plan-mentions-every-changed-file: pass (path + basename modes); one finding per missing file; case-insensitive default vs case_sensitive; plan/diff missing; basename-collision false-pass guard.
+- parseChangedFiles: add/modify/delete(/dev/null skip)/rename(rename-to)/dedup/prefix-strip/timestamp-strip; plus two phantom-header regression tests (inHunk state machine) and a quoted-path-absent test.
+- AND-aggregation; passes emit no findings; Score{Kind:assertion,Passed} round-trips through validateScoreCoherence (pass + fail).
+
+Mutation-verified the two highest-risk fixes (phantom-header inHunk guard; quoted-path skip) — both regression tests fail under the corresponding mutation.
+
+No CLI surface (library only) → no built-binary manual test applies.
