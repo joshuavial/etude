@@ -1,0 +1,4 @@
+# Final Review — etude-docs-site (generated CLI reference; Hugo deferred)
+PLAN gate: GO x3. Scope: DEFER Hugo (existing hand-written docs cover public docs); v1 = auto-generate CLI reference from cobra tree (no dep in etude binary). Determinism verified vs cobra source (footer gated per-command md_docs.go:112; children+flags sorted). Standalone cmd/gen-docs using exported cli.NewRootCommand; drift guard.
+IMPLEMENT+FINAL gate: attempt 1 gemini BLOCK x2 (cleanMarkdownFiles *.md footgun -> could delete hand-written docs; Makefile docs-check temp-dir leak on drift). Fixed: clean scoped to etude*.md prefix (verified preserves hand-written docs); docs-check single-shell + trap EXIT (cleans on success+drift, still fails on drift). attempt 2 GO x3 (codex, gemini, Opus). pilms 0-CPU outage throughout; 3-substantive-seat fallback.
+Docs: docs/cli/*.md (11 generated) + README link; docs/run.md note. Committed 1c28486.
