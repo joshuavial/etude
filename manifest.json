@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-nad",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -113,6 +113,83 @@
         "size": 3480
       },
       "timestamp": "2026-08-16T00:51:28.411031Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "e90a5a1223d57d3a32f9dade3303ed241a14c4ab4ed5a81410f4ed03440c185d"
+        },
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "d03e8fcf6388c903eeaf0d5c18981639aa629967e34e6426cb4c88e100f722a3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness-subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "adopt --expect append at multi-stage call sites; audit stdout consumers (etude-3jb)",
+            "consider making the expectation default or inferable (etude-97g)"
+          ],
+          "raw_output": {
+            "role": "opus-verdict",
+            "artifact": "6beea0f8d9d5e2f267948ca4ed355247ea7fc643fa4c772b31471a2f071e0e36",
+            "path": "artifacts/sha256/6b/6beea0f8d9d5e2f267948ca4ed355247ea7fc643fa4c772b31471a2f071e0e36",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 891
+          },
+          "timestamp": "2026-08-16T00:52:26Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec-ephemeral"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-verdict",
+            "artifact": "e85ac8ffc563c86ea6a557528489b35f08fef14c48c4a35a765580ce4747522c",
+            "path": "artifacts/sha256/e8/e85ac8ffc563c86ea6a557528489b35f08fef14c48c4a35a765580ce4747522c",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 601
+          },
+          "timestamp": "2026-08-16T00:52:26Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "L2 panel (opus + codex) per the committed workflow.yaml gate tier. The registry gemini seat is unreachable: the gemini CLI returns IneligibleTierError, a client/tier error, so every entry in the seat's model_fallbacks fails identically; agy is removed as a substitute path. Tracked as etude-3rq and blocker etude-84z. No seat was waived to clear a finding.",
+        "deferred_beads": [
+          "etude-3jb",
+          "etude-97g"
+        ]
+      },
+      "timestamp": "2026-08-16T00:52:26Z"
     }
   ]
 }

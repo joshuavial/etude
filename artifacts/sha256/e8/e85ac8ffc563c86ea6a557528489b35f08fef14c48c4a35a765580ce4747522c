@@ -1,0 +1,7 @@
+codex seat — etude-nad verify gate, round 2. VERDICT: PASS.
+"The declared blast radius matches the diff. The opt-in default is acceptable because every successful
+invocation now explicitly reports `action create|append`, while `--expect append` fails before writes when
+history is missing. The existing exact-commit CAS remains authoritative against deletion, recreation, and
+concurrent updates. No new concurrent writer, irreversible operation, schema change, trust-boundary
+expansion, or undeclared external effect appears. Coverage: All five stated Go tests are present with
+substantive bodies."

@@ -1,0 +1,10 @@
+opus seat — etude-nad verify gate. VERDICT: PASS_WITH_FOLLOWUPS. BLOCKING: none.
+Confirmed the guards consume the already-computed resolveErr from the single existing Resolve, add no second
+git call and no new TOCTOU window; the durable write is unchanged in both classes (CREATE ExpectedOld=""
+enforced by git, APPEND CAS on the authoritative tip OID); expect is validated before any artifact read or
+object write; a non-ErrNotFound resolve error still falls through to the pre-existing return, so no real git
+failure can be swallowed. Adjudicated the opt-in scope as acceptable for this bead against the disjunctive
+acceptance criteria.
+Follow-ups tracked as etude-3jb (adopt --expect at multi-stage call sites; audit stdout consumers) and
+etude-97g (consider making the expectation default or inferable). One folded: pin the first two stdout lines
+on the CREATE path as well as append.
