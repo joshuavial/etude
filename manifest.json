@@ -663,6 +663,58 @@
         "degraded_reason": "Opus ran as the required unnamed in-harness Task."
       },
       "timestamp": "2026-08-16T00:16:00Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Strengthen percentage denominator, label-source column, distinct count, literal warning, replay-only flag, and one-line finding assertions; tracked as etude-aul.6.",
+            "Confirm verify.md remains an ignored phase artifact rather than a committed file."
+          ],
+          "timestamp": "2026-08-16T00:24:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T00:24:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness Task.",
+        "deferred_beads": [
+          "etude-aul.6"
+        ]
+      },
+      "timestamp": "2026-08-16T00:24:00Z"
     }
   ]
 }
