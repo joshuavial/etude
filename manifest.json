@@ -502,6 +502,58 @@
         ]
       },
       "timestamp": "2026-08-16T00:03:00Z"
+    },
+    {
+      "gate_id": "implement.r4",
+      "phase": "implement",
+      "round": 4,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r4",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Land aul.5 immediately after aul.4 so generated-doc drift is never terminal.",
+            "Consider updating the root bench help summary in a coordinated generated-doc change; tracked as etude-qcr."
+          ],
+          "timestamp": "2026-08-16T00:08:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T00:08:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus was run as the required unnamed in-harness general-purpose Task with model opus because that seat cannot be represented by the subprocess gate adapter.",
+        "deferred_beads": [
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:08:00Z"
     }
   ]
 }
