@@ -947,6 +947,47 @@
         ]
       },
       "timestamp": "2026-08-16T00:41:00Z"
+    },
+    {
+      "gate_id": "docs.r4",
+      "phase": "docs",
+      "round": 4,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r4",
+          "role": "docs"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Tighten ETUDE_INPUTS_DIR and replay-caching mode wording.",
+            "Preserve renamed heading anchors and keep winner prose replay-scoped.",
+            "Clean one short documentation line wrap."
+          ],
+          "timestamp": "2026-08-16T00:47:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task. The Docs round cap is now exhausted; remaining non-blocking polish is recorded on etude-qcr and does not justify a fifth round.",
+        "deferred_beads": [
+          "etude-aul.6",
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:47:00Z"
     }
   ]
 }
