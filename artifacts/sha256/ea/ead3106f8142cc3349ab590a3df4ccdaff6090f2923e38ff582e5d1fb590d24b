@@ -1,0 +1,26 @@
+# Verify — etude-roadmap.2.2 (Implement gate reviewer capture)
+
+Status: PASS · Recommendation: proceed to close
+
+## Automated
+- gofmt -l cmd internal: clean; go vet ./...: clean; go build ./...: clean.
+- `go test ./...`: all 13 packages pass (incl. new runmanifest gate tests + capture-gate CLI tests).
+- `make docs-check`: diff-empty (generated CLI reference current; new etude_capture-gate.md).
+- New tests: TestGateRoundTrip, TestGatelessManifestStaysV2ByteIdentical, TestValidateGateRejects (35 reject + 6 accept), TestVersionAllowlist, TestArtifactPathsWalksGateRawOutput; 5 capture-gate CLI tests.
+
+## Built-binary manual test (throwaway git repo; no real refs/etude/* touched)
+- capture-gate appends a GateAttempt to an existing run; manifest_version becomes 3.
+- pilms seat recorded verbatim: provider {lmstudio, qwen/qwen3.6-35b-a3b} (slash intact), verdict disregarded + failure_note.
+- codex seat raw_output transcript hashed into the artifactstore + referenced; blob retrievable from the tree and carried forward across a later append.
+- Multiple attempts same phase (round 1 + round 2) both land.
+- Non-existent run → "run %q not found; a gate must attach to an existing run".
+- Duplicate gate_id rejected (cross-gate uniqueness).
+- Dangling reviewed_stages artifact rejected ("...not found on stage \"plan\" output or inputs"); the same gate with the matching output sha accepted.
+- Regression: existing `capture <stage>` + `run list` unchanged; gates survive a later stage capture; `etude gc` runs on a v3 manifest.
+
+## QA findings
+- correctness: validateGate implements every spec §6 rule; Opus mutation-testing (on a /tmp copy) proved each guard real (a mutation removing it fails a test) — incl. both halves of the ArtifactPaths dual-walk.
+- backward-compat: gate-less runs stay byte-identical manifest_version 2 (frozen-byte/golden tests green); parser allowlist {0,2,3}.
+- scope: out-of-scope doc-drift produced by the coder was reverted pre-commit (belongs to etude-phase-prep.2); the commit (3906d8b) is exactly the implementation.
+- regressions: none; capture <stage> path unchanged.
+- risks: deferred per spec §6 — gc size under-count of gate blobs; run-show rendering (.3); Writer.Write doesn't re-hash gate raw_output at write time (CLI always content-addresses; validateArtifactRef enforces path==sha).
