@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.4",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -41,6 +41,63 @@
         "size": 7012
       },
       "timestamp": "2026-08-16T03:07:22.406313Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "2cf24712d72b0f4c2566f01e4be1450f81900df217f5afba7e646d8504bb3d01"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Specify fail-closed behavior when the invocation directory is not the guarded repository.",
+            "Keep legacy manifest expectations independently pinned.",
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r1.md sha256 e455069e6fbf8cf40f2b4b9a6963f1ed42c3888a7458a708d0304b4a7307953d"
+          ],
+          "timestamp": "2026-08-16T03:09:30Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Prove pre-existing assume-unchanged or skip-worktree index flags reject before invoking a destructive runner."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.4/plan-gate-r1.md sha256 e455069e6fbf8cf40f2b4b9a6963f1ed42c3888a7458a708d0304b4a7307953d"
+          ],
+          "timestamp": "2026-08-16T03:09:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:09:30Z"
     }
   ]
 }
