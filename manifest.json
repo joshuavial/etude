@@ -698,6 +698,140 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:52:29.370143Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "02402340a79cf649a00f4f1b4cd42fe251ef1d0b19d45c88096a67fd9eed1586"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "97b4e6db6cdb2879132b0c8baebf704f5a3a493a7446433bd5151a75035ea880",
+            "path": "artifacts/sha256/97/97b4e6db6cdb2879132b0c8baebf704f5a3a493a7446433bd5151a75035ea880",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1253
+          },
+          "timestamp": "2026-08-17T09:56:38.644062Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-17T09:56:38.904797Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) The excerpted manifest JSON omits the post-run SHA fields, so the console's `captured f475e3e…` / `captured 6a1424f…` cannot be cross-matched against the shown stage `git_sha` values from the artifact alone — include those fields in the PR Manual QA excerpt. 2) The final paragraph (sidecar transcript import, no-sidecar `producer_session: null`, collision workflow exit 1 with absent sentinel) is asserted in summary form only; paste the retained command output inline like the other scenarios so each claim carries its own evidence."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "d6acd7f1aa3b48f633ec41e42f57a04772cf4d5eeb2d9cdb6cb578d8d6b58c80",
+            "path": "artifacts/sha256/d6/d6acd7f1aa3b48f633ec41e42f57a04772cf4d5eeb2d9cdb6cb578d8d6b58c80",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 697
+          },
+          "session": {
+            "session_id": "opus-1c74f766a9783782",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "1c74f766a97837822d5c25f78aafd1b8bd7c03bc1929445daf133c1c178aaea1",
+              "path": "artifacts/sha256/1c/1c74f766a97837822d5c25f78aafd1b8bd7c03bc1929445daf133c1c178aaea1",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 598
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:57:11.836246Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Record the full separate-run command snippets in future reports for the sidecar, no-sidecar, and collision checks."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "097418a5bda9f4f032ed1ce447af56b1666ba3e8914693ab61769e44a0bbbb64",
+            "path": "artifacts/sha256/09/097418a5bda9f4f032ed1ce447af56b1666ba3e8914693ab61769e44a0bbbb64",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 264
+          },
+          "session": {
+            "session_id": "codex-01f6db3634a318df",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "01f6db3634a318df12b6fa8a6ceda02f53f8d6f5c45377ab9d27f3bf902dce40",
+              "path": "artifacts/sha256/01/01f6db3634a318df12b6fa8a6ceda02f53f8d6f5c45377ab9d27f3bf902dce40",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 172
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:57:31.581301Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:57:31.582618Z"
     }
   ]
 }
