@@ -1,0 +1,177 @@
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index 13344b7..02faf88 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -294,6 +294,12 @@ Notes:
+ - Each artifact entry carries `role`, `artifact` (sha256 hex), `path`
+   (content-addressed path in the run tree), `media_type`, `storage`
+   (`"content"` or `"pointer"`), and `size`.
++- Stages produced by replay carry an optional `replay_of` object:
++  `{"run_id": "<source-run-id>", "stage": "<source-stage>", "commit": "<git-oid>"}`.
++  `commit` is the immutable git commit of the source run ref, pinning the link
++  durably. `produced_by: "replay"` and `replay_of` are bidirectionally required:
++  each implies the other and the manifest validator rejects any stage that has
++  one without the other.
+ 
+ ### 4.5 Query index (rebuildable cache)
+ 
+@@ -318,14 +324,31 @@ Two capture paths:
+ 
+ ### 4.7 Replay
+ 
+-`etude replay <run-id> --stage plan --skill-version <new>`:
++`etude replay <run-id> <stage>` re-executes one stage end-to-end:
+ 
+-1. Read the run manifest; find the `plan` stage entry.
++1. Read the run manifest; find the named stage entry.
+ 2. Check out the recorded `git_sha` in a throwaway git worktree.
+-3. Resolve the recorded input artifacts and feed them to the (new version of
+-   the) skill via the **skill-runner adapter** (see open questions).
+-4. Capture the new output as a fresh artifact; record a new stage entry with
+-   `produced_by: replay` and the new skill identity.
++3. Resolve the recorded input artifacts and feed them to the runner via the
++   **skill-runner adapter** (`--runner` or `git config etude.runner`).
++4. Emit the produced output to stdout or `--output <path>`.
++
++Without `--record`, no data is persisted; the command is emit-only.
++
++With `--record`, the output is also persisted as a **new linked run**:
++
++- The new run id is `<source-run-id>-replay-<yyyymmddThhmmssZ>` (UTC), with a
++  numeric suffix (`-2` through `-10`) on collision.
++- The new run contains a single stage: same name as the source, `produced_by:
++  "replay"`, the source stage's `git_sha`, inputs copied verbatim from the
++  source, and a `replay_of` link (`{run_id, stage, commit}` — see §4.4).
++- The source commit is pinned in `replay_of.commit` for durable linkage.
++- The source run is never modified.
++- Producer-override flags (`--skill-version`, `--skill-id`, `--skill-repo`,
++  `--model`, `--harness`, `--harness-version`) let the caller record a
++  different producer identity (skill, model, and/or harness) for bench; unset
++  fields inherit from the source.
++
++Eval (`etude eval`) and bench (`etude bench`) are future work (Phase 3).
+ 
+ ### 4.8 Eval
+ 
+diff --git a/docs/replay.md b/docs/replay.md
+index c64c045..ad75b8c 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -4,8 +4,8 @@
+ stage's recorded inputs, checks out the recorded git SHA into a throwaway
+ worktree, invokes an external runner, and emits the produced output.
+ 
+-Replay does **not** persist a new stage back into the run. It only emits the
+-output. Recording a replayed stage is deferred to a later release.
++Without `--record`, replay only emits the output and does not persist anything.
++With `--record`, it writes a new linked run; see [Recording (--record)](#recording---record) below.
+ 
+ ```bash
+ etude replay <run-id> <stage>
+@@ -16,6 +16,8 @@ Example:
+ ```bash
+ etude replay run-1 plan --runner ./run.sh
+ etude replay run-1 plan --runner ./run.sh --output result.md
++etude replay run-1 plan --runner ./run.sh --record
++etude replay run-1 plan --runner ./run.sh --record --output result.md
+ ```
+ 
+ ## Flags
+@@ -23,7 +25,77 @@ etude replay run-1 plan --runner ./run.sh --output result.md
+ | Flag | Description |
+ |------|-------------|
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+-| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. |
++| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. |
++| `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
++| `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
++| `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
++| `--skill-repo <repo>` | Override `producer.skill.repo` in the recorded producer. |
++| `--model <model>` | Override `producer.model` in the recorded producer. |
++| `--harness <name>` | Override `producer.harness.name` in the recorded producer. |
++| `--harness-version <v>` | Override `producer.harness.version` in the recorded producer. |
++
++## Recording (--record)
++
++When `--record` is passed, `etude replay` persists the replay output as a new
++**linked run** rather than simply emitting it. The source run is never modified.
++
++### New run id
++
++The new run id is derived from the source run id and the current UTC timestamp:
++
++```
++<source-run-id>-replay-<yyyymmddThhmmssZ>
++```
++
++For example, replaying `run-1` at `2026-05-25T10:30:00Z` produces
++`run-1-replay-20260525T103000Z`. If that id is already taken, a numeric suffix
++is appended (`-2` through `-10`) until a free slot is found.
++
++The new run is stored at `refs/etude/runs/<new-run-id>`.
++
++### Recorded stage
++
++The new run contains a single stage with:
++
++- `stage` — same name as the source stage.
++- `produced_by` — `"replay"`.
++- `git_sha` — the source stage's recorded git SHA (the replay runs at that
++  commit, so the SHA is preserved).
++- `producer` — the source stage's producer, merged with any producer-override
++  flags (`--skill-version`, `--model`, etc.). Unset override flags inherit from
++  the source.
++- `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
++  content-addressed refs).
++- `output` — the artifact produced by the replay run.
++- `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
++  `commit` is the immutable git commit of the source run ref (not the stage's
++  `git_sha`). This pins the link durably even if the source run ref is later
++  updated.
++
++The `replay_of` field is required for any stage with `produced_by: "replay"`,
++and forbidden otherwise. The manifest validator enforces this bidirectionally.
++
++### Confirmation and output
++
++After the new run is written, `etude replay` prints:
++
++```
++recorded replay run <new-run-id> (commit <git-oid>)
++```
++
++Here `<git-oid>` is the commit of the **new replay run** (not the source
++commit recorded in `replay_of.commit`).
++
++Recording does not suppress emitting: after the confirmation line, the replay
++output is still emitted — to stdout when `--output` is not given, or written to
++`<path>` when it is. So `--record` and `--output` may coexist: the output is
++both written to `<path>` and recorded as the new run's output artifact.
++
++If the runner produces no output, `--record` fails with:
++
++```
++replay produced no output; cannot record empty run
++```
+ 
+ ### Runner resolution
+ 
+@@ -84,6 +156,4 @@ finishes, whether it succeeds or fails.
+   script instead.
+ - Pointer/external artifact inputs are not replayable yet. All stage inputs
+   must be stored as inline content artifacts.
+-- Replay does not persist the output as a new stage in the run. Emitting only;
+-  recording is deferred.
+ - There is no `--json` or machine-readable output flag.
+diff --git a/docs/run.md b/docs/run.md
+index 0087bde..cdf330e 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -79,6 +79,7 @@ printed in sorted order.
+ Per stage, the detail view shows:
+ 
+ - `produced_by`, `git sha`
++- `replay of:` — printed as `<run-id>/<stage>` immediately after `produced_by`; only present for replay stages (`produced_by: replay`)
+ - `harness` — harness name and optional version; omitted for manual/legacy captures that did not record a harness
+ - `model` — model name; omitted for manual/legacy captures that did not record a model
+ - `skill` — always printed as `id@version (repo)`
