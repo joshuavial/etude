@@ -1,0 +1,42 @@
+# etude-ps9 verification
+
+ANCESTOR: GitHub issue #17 ask 3 requires each gate rerun to receive digest-bound evidence for every prior attempt, including stage, round, session identity, transcript, log, output, and killing verdict.
+
+MEASUREMENT: live Engine tests exercise two- and three-attempt rerun paths and inspect both runner inputs and committed manifest inputs.
+
+BLAST RADIUS: internal live-run evidence assembly, workflow role validation, and tests only. This is not CLI-facing and adds no irreversible or external operation.
+
+TOPOLOGY: one `Engine.Run` owns a run's in-memory stage/gate history and appends through refstore CAS; this change adds no concurrent writer or background worker.
+
+DURABILITY CLASS: no irreversible action exists. Each rerun stage records one deterministic set of content-addressed inputs in its manifest append; refstore CAS prevents a stale competing append.
+
+TRUST BOUNDARY: validated run-manifest history and artifact digests are trusted structural facts. Stage output, log, and transcript bytes are untrusted producer content; only safely imported, redaction-passed transcript bytes are attached, while output/log behavior remains the pre-existing artifact contract.
+
+COMPLETENESS ENUMERATION: the complete injected evidence set is output, optional log, optional safely imported transcript, session identity/status, and killing aggregate/seat verdicts for every prior rerun attempt. The complete reserved-role collision set is every stage `produces` role and every declared stage input, checked both by workflow validation and at Engine entry for programmatic callers.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Binding correction evidence
+
+- Missing `Producer.Session` is valid no-transcript: `TestValidatePriorTranscriptEvidenceStateMachine` admits nil; `TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs` includes a nil-session attempt and asserts it is not resumed and carries an empty session ID.
+- Reserved namespace fails at Engine entry: `TestEngineRejectsPriorAttemptRoleBeforeRunnerInvocation` supplies programmatic workflows colliding in both `inputs` and `produces`, constructs the Engine without a store, asserts `ErrInvalidWorkflow`, and asserts zero runner resolutions. This proves failure precedes checkout and stage invocation.
+
+## Issue #17 ask 3 evidence
+
+- `TestGateAC3_RerunWithFeedback` drives a real rerun, validates an independent exact JSON index golden, checks direct output/log/transcript bytes, and checks the rerun stage's committed manifest input roles.
+- `TestGateThirdAttemptReceivesRebuiltHistoryAndResumedSession` proves attempt three receives both earlier attempts, cumulative gate feedback, a repeated exact session ID marked resumed, and exactly one copy of each rebuilt reserved role.
+- `TestValidatePriorTranscriptEvidenceStateMachine` covers the closed transcript tuple state machine.
+- `TestGateRerunStopsBeforeRunnerWhenPriorTranscriptRedactionFailed` proves a durable redaction failure prevents the rerun runner from being invoked.
+- `TestGateRerunReportsTranscriptRetrievalFailureAndContinues` proves retrieval failure is explicit in the index and remains a valid no-transcript rerun.
+- `TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs` proves exact opaque session comparison, nil-session handling, and distinct roles for byte-identical outputs.
+- `TestBuildPriorAttemptInputsRequiresOneReviewedStage` pins the live rerun invariant instead of silently dropping reviewed stages.
+- The existing resume escalation test now produces a stage log, proving resume re-materializes log evidence used by a later rerun.
+
+## Commands
+
+- `make test` — PASS, all packages.
+- `make lint` — PASS (`gofmt` check and `go vet ./...`).
+- `go test -race ./internal/liverun` — PASS.
+- Focused `go test ./internal/liverun ./internal/workflow` — PASS.
+
+No process, service, container, or external resource was launched; no teardown was required.
