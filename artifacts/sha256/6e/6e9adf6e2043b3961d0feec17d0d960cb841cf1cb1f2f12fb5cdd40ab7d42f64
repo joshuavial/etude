@@ -1,0 +1,47 @@
+# etude-5dr.5 verification
+
+Status: pass
+
+Recommendation: proceed to documentation and final review.
+
+Automated tests:
+
+- `go test ./internal/runmanifest ./internal/replay ./internal/liverun ./internal/cli ./internal/bench` — pass.
+- `make test` — exit 0, all packages pass.
+- `make lint` — exit 0 (`gofmt` and `go vet`).
+- `make docs-check` — exit 0.
+- `make docs-reality` — exit 0, 15 commands match shipped CLI.
+
+Regression strength:
+
+- Resume test creates original commit A, caller stage commit B, fails the next
+  hermetic stage, resumes, and asserts the resumed worktree HEAD is A, not B.
+- Single replay, forward replay, and bench tests likewise use distinct A/B
+  commits and inspect the runner worktree's real Git HEAD.
+- Replay resolution retains caller-stage B while exposing run checkout A;
+  recorded replay uses A and explicitly drops caller workspace.
+- Manifest tests require v4 `original_git_sha`, validate it as an immutable
+  40/64-character lowercase Git OID on write and parse, and preserve legacy
+  stage-zero fallback.
+- A caller gate test asserts the gate-attempt rewrite retains A.
+
+Built-binary manual QA:
+
+- Built `bin/etude`; SHA-256
+  `d1d627f208c0f1ff3bacb91fa8f837520168b48af1c90990e28db407e8ef7afc`.
+- Original checkout A:
+  `1647c396c5900d235129ebbc1b79882ef4b3bc28`.
+- Caller stage committed B:
+  `8e0dfed875b9fbdfd02c1d76e336fecb833c0463`.
+- First run exited 1 after capturing only caller stage 0 because stage 1's
+  runner intentionally exited 23.
+- Partial manifest v4 recorded `original_git_sha=A`, stage-0 `git_sha=B`, and
+  `runner_workspace=caller`.
+- After selecting the precommitted success runner, `--resume` exited 0. Its
+  output reported `runner_pwd=/private/.../etude-worktree-*` and
+  `runner_head=A`; final stage `git_sha=A` while the live repository stayed B.
+- `etude replay final-resume-qa produce --runner .etude/replay-head.sh` exited
+  0 and reported another `etude-worktree-*` with `replay_head=A`.
+
+No material unresolved risks remain for this fix. Test-fixture polish that does
+not affect product correctness is tracked separately as `etude-gunr`.
