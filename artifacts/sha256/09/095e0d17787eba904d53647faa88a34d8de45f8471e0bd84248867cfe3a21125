@@ -1,0 +1,1080 @@
+commit 1def3c7b7bc815dc7e6ffce7f832773e1e65c36c
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 21:54:23 2026 +0800
+
+    add timeout and output-size cap to exec runner generator and judge
+
+diff --git a/docs/bench.md b/docs/bench.md
+index 8587148..83ba4de 100644
+--- a/docs/bench.md
++++ b/docs/bench.md
+@@ -71,6 +71,7 @@ that failed mid-benchmark. A `CACHED` marker flags rows served from the cache.
+ | `--judge <command>` | Judge command spec (whitespace-split into argv). Falls back to `git config etude.judge`. Required (via flag or config). |
+ | `--judge-model <model>` | Model passed to the judge process as `ETUDE_MODEL`. Falls back to `git config etude.judgeModel`. Empty is allowed (the judge command may encode its own model). This is the **referee** model and is independent of `--model`. |
+ | `--seed <n>` | Seed for per-pair presentation randomisation (position-bias mitigation). |
++| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process is killed when the timeout elapses. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. Runner and judge output is also read through a hard size cap (default 64 MiB). |
+ | `--no-cache` | Force re-evaluation; skip the eval-result cache. |
+ | `--model`, `--skill-id`, `--skill-repo`, `--skill-version`, `--harness`, `--harness-version` | Override the corresponding field in the **contestant** (replay) producer. These describe the new skill being benchmarked; they never affect the judge. |
+ 
+diff --git a/docs/cli/etude_bench.md b/docs/cli/etude_bench.md
+index 129530f..8159d82 100644
+--- a/docs/cli/etude_bench.md
++++ b/docs/cli/etude_bench.md
+@@ -24,6 +24,7 @@ etude bench <stage> [flags]
+       --skill-id string          override skill id in recorded producer (contestant)
+       --skill-repo string        override skill repo in recorded producer (contestant)
+       --skill-version string     override skill version in recorded producer (contestant)
++      --timeout duration         per-invocation timeout for the runner and judge (0 disables) (default 10m0s)
+ ```
+ 
+ ### SEE ALSO
+diff --git a/docs/cli/etude_replay.md b/docs/cli/etude_replay.md
+index f6d3c41..234379f 100644
+--- a/docs/cli/etude_replay.md
++++ b/docs/cli/etude_replay.md
+@@ -21,6 +21,7 @@ etude replay <run> <stage> [flags]
+       --skill-id string          override skill id in recorded producer
+       --skill-repo string        override skill repo in recorded producer
+       --skill-version string     override skill version in recorded producer
++      --timeout duration         per-invocation timeout for the runner (0 disables) (default 10m0s)
+ ```
+ 
+ ### SEE ALSO
+diff --git a/docs/cli/etude_retro_generate.md b/docs/cli/etude_retro_generate.md
+index eb11a5a..5741963 100644
+--- a/docs/cli/etude_retro_generate.md
++++ b/docs/cli/etude_retro_generate.md
+@@ -30,6 +30,7 @@ etude retro generate <scope> [flags]
+       --stage string              stage name to use for each subject run; required when a subject run has multiple stages
+       --subject-run stringArray   run id of a subject run (repeatable; >=1 required unless scope=workflow)
+       --supersedes string         retro id this retro supersedes
++      --timeout duration          per-invocation timeout for the generator (0 disables) (default 10m0s)
+       --trigger string            trigger that prompted this retro (e.g. manual, post-bench) (default "manual")
+ ```
+ 
+diff --git a/docs/replay.md b/docs/replay.md
+index ad75b8c..285ca18 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -26,6 +26,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
+ |------|-------------|
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+ | `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. |
++| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
+ | `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
+ | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+ | `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
+@@ -128,6 +129,9 @@ All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`, and
+ 
+ After the runner exits, `etude replay` reads the file at `ETUDE_OUTPUT_FILE`
+ and emits its bytes as the replay output (to stdout or to `--output <path>`).
++The output is read through a hard size cap (default 64 MiB); a runner whose
++output exceeds the cap is rejected with an "output too large" error rather than
++read into memory unbounded.
+ 
+ The worktree and all scratch files are always removed when the command
+ finishes, whether it succeeds or fails.
+diff --git a/docs/retro.md b/docs/retro.md
+index 99fb10c..d9b5b02 100644
+--- a/docs/retro.md
++++ b/docs/retro.md
+@@ -126,6 +126,15 @@ git config etude.retroGenerator ./scripts/retro.sh
+ `--generator` takes precedence over git config. An error is returned when
+ neither is set.
+ 
++### Generator timeout and output limits
++
++`--timeout <duration>` bounds each generator invocation (default `10m`; `0`
++disables). The generator process is killed when the timeout elapses and the
++command returns a "timed out" error; a small grace period bounds cleanup even if
++the generator backgrounds a child that holds its output pipe open. The
++generator's output file is read through a hard size cap (default 64 MiB) — an
++output exceeding the cap is rejected rather than read into memory unbounded.
++
+ ### Stage selection
+ 
+ When a subject run has exactly one stage, that stage is selected automatically.
+diff --git a/internal/cli/bench.go b/internal/cli/bench.go
+index 085771c..f1f4161 100644
+--- a/internal/cli/bench.go
++++ b/internal/cli/bench.go
+@@ -24,10 +24,12 @@ type benchRunner struct {
+ 	judge eval.Judge
+ 	// now returns the current time. Defaults to time.Now; tests inject a fixed clock.
+ 	now func() time.Time
++	// timeout overrides the default ExecRunner and ExecJudge timeout when non-zero.
++	timeout time.Duration
+ }
+ 
+ func newBenchCommand(out, errOut io.Writer) *cobra.Command {
+-	return buildBenchCommand(out, errOut, &benchRunner{now: time.Now})
++	return buildBenchCommand(out, errOut, &benchRunner{now: time.Now, timeout: 10 * time.Minute})
+ }
+ 
+ // buildBenchCommand constructs the bench cobra.Command backed by r. Tests call
+@@ -39,6 +41,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 		seed                                                             int64
+ 		skillVersion, skillID, skillRepo, model, harness, harnessVersion string
+ 		noCache                                                          bool
++		timeoutFlag                                                      time.Duration
+ 	)
+ 
+ 	cmd := &cobra.Command{
+@@ -48,6 +51,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 		SilenceUsage:  true,
+ 		SilenceErrors: true,
+ 		RunE: func(cmd *cobra.Command, args []string) error {
++			r.timeout = timeoutFlag
+ 			overrides := bench.ProducerOverrides{
+ 				SkillIDChanged:        cmd.Flags().Changed("skill-id"),
+ 				SkillRepoChanged:      cmd.Flags().Changed("skill-repo"),
+@@ -80,6 +84,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
+ 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer (contestant)")
+ 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer (contestant)")
+ 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "force re-evaluation; skip the eval-result cache")
++	cmd.Flags().DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the runner and judge (0 disables)")
+ 
+ 	return cmd
+ }
+@@ -184,7 +189,11 @@ func (r *benchRunner) resolveRunner(ctx context.Context, spec string) (replay.Ru
+ 	if spec == "" {
+ 		return nil, fmt.Errorf("no runner configured (set --runner or git config etude.runner)")
+ 	}
+-	return &replay.ExecRunner{Command: strings.Fields(spec)}, nil
++	return &replay.ExecRunner{
++		Command:        strings.Fields(spec),
++		Timeout:        r.timeout,
++		MaxOutputBytes: 64 << 20,
++	}, nil
+ }
+ 
+ // resolveJudge returns r.judge if injected (test seam), otherwise resolves the
+@@ -213,7 +222,12 @@ func (r *benchRunner) resolveJudge(ctx context.Context, spec, judgeModel string)
+ 		judgeModel = gitConfigGet(ctx, "etude.judgeModel")
+ 	}
+ 
+-	return &eval.ExecJudge{Command: strings.Fields(spec), Model: judgeModel}, nil
++	return &eval.ExecJudge{
++		Command:        strings.Fields(spec),
++		Model:          judgeModel,
++		Timeout:        r.timeout,
++		MaxOutputBytes: 64 << 20,
++	}, nil
+ }
+ 
+ // renderReport writes the bench report to out using tabwriter for alignment.
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index d53f227..2895bb0 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -24,10 +24,12 @@ type replayRunner struct {
+ 	// now returns the current time. Defaults to time.Now; tests inject a fixed clock
+ 	// to make replay run ids deterministic.
+ 	now func() time.Time
++	// timeout overrides the default ExecRunner timeout when non-zero.
++	timeout time.Duration
+ }
+ 
+ func newReplayCommand(out, errOut io.Writer) *cobra.Command {
+-	return buildReplayCommand(out, errOut, &replayRunner{now: time.Now})
++	return buildReplayCommand(out, errOut, &replayRunner{now: time.Now, timeout: 10 * time.Minute})
+ }
+ 
+ // buildReplayCommand constructs the replay cobra.Command backed by r. Tests
+@@ -38,6 +40,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 	var outputPath string
+ 	var record bool
+ 	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
++	var timeoutFlag time.Duration
+ 
+ 	cmd := &cobra.Command{
+ 		Use:           "replay <run> <stage>",
+@@ -46,6 +49,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 		SilenceUsage:  true,
+ 		SilenceErrors: true,
+ 		RunE: func(cmd *cobra.Command, args []string) error {
++			r.timeout = timeoutFlag
+ 			producerFlags := replayProducerFlags{
+ 				skillIDChanged:        cmd.Flags().Changed("skill-id"),
+ 				skillRepoChanged:      cmd.Flags().Changed("skill-repo"),
+@@ -74,6 +78,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
+ 	cmd.Flags().StringVar(&model, "model", "", "override model in recorded producer")
+ 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer")
+ 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer")
++	cmd.Flags().DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the runner (0 disables)")
+ 	return cmd
+ }
+ 
+@@ -267,7 +272,11 @@ func (r *replayRunner) resolveRunner(ctx context.Context, spec string) (replay.R
+ 		return nil, fmt.Errorf("no runner configured (set --runner or git config etude.runner)")
+ 	}
+ 
+-	return &replay.ExecRunner{Command: strings.Fields(spec)}, nil
++	return &replay.ExecRunner{
++		Command:        strings.Fields(spec),
++		Timeout:        r.timeout,
++		MaxOutputBytes: 64 << 20,
++	}, nil
+ }
+ 
+ // gitConfigGet reads a single git config value for key using any scope.
+diff --git a/internal/cli/retro.go b/internal/cli/retro.go
+index 818ed86..fa82143 100644
+--- a/internal/cli/retro.go
++++ b/internal/cli/retro.go
+@@ -781,6 +781,8 @@ type retroGenerateRunner struct {
+ 	now       func() time.Time
+ 	store     refstore.Store
+ 	stdout    io.Writer
++	// timeout overrides the default ExecGenerator timeout when non-zero.
++	timeout time.Duration
+ }
+ 
+ // newRetroGenerateCommand constructs the 'retro generate' subcommand. The
+@@ -792,6 +794,7 @@ func newRetroGenerateCommand(out, errOut io.Writer, injectedGenerator retro.Gene
+ 		now:       time.Now,
+ 		store:     refstore.New(""),
+ 		stdout:    out,
++		timeout:   10 * time.Minute,
+ 	})
+ }
+ 
+@@ -803,6 +806,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
+ 		skillRepo:    defaultSkillRepo,
+ 		skillVersion: defaultSkillVersion,
+ 	}
++	var timeoutFlag time.Duration
+ 
+ 	cmd := &cobra.Command{
+ 		Use:           "generate <scope>",
+@@ -811,6 +815,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
+ 		SilenceUsage:  true,
+ 		SilenceErrors: true,
+ 		RunE: func(cmd *cobra.Command, args []string) error {
++			r.timeout = timeoutFlag
+ 			return r.run(cmd.Context(), args[0], cfg)
+ 		},
+ 	}
+@@ -837,6 +842,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
+ 	flags.StringVar(&cfg.message, "message", "", "retro ref commit message")
+ 	flags.StringVar(&cfg.generatorSpec, "generator", "", "generator command spec (e.g. ./gen.sh); falls back to git config etude.retroGenerator")
+ 	flags.StringVar(&cfg.stage, "stage", "", "stage name to use for each subject run; required when a subject run has multiple stages")
++	flags.DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the generator (0 disables)")
+ 
+ 	return cmd
+ }
+@@ -1016,7 +1022,9 @@ func (r *retroGenerateRunner) resolveGenerator(ctx context.Context, spec string)
+ 		return nil, fmt.Errorf("no generator configured (set --generator or git config etude.retroGenerator)")
+ 	}
+ 
+-	return retro.NewExecGenerator(spec), nil
++	gen := retro.NewExecGenerator(spec)
++	gen.Timeout = r.timeout
++	return gen, nil
+ }
+ 
+ // resolveSubjectStage resolves a stage of a run for use as a generator subject.
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+index 37c1b23..f5c77ca 100644
+--- a/internal/eval/exec_judge.go
++++ b/internal/eval/exec_judge.go
+@@ -4,14 +4,25 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+ 	"strings"
++	"time"
+ )
+ 
++// judgeWaitDelay is the grace period after context cancellation or process
++// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
++// caused by a script that backgrounds a child holding inherited pipe
++// write-ends open. Declared as var so tests can override for speed.
++var judgeWaitDelay = 10 * time.Second
++
++// ErrJudgeOutputTooLarge is returned when the judge output file exceeds MaxOutputBytes.
++var ErrJudgeOutputTooLarge = errors.New("judge output too large")
++
+ // ExecJudge satisfies Judge by invoking a configured external command headlessly.
+ //
+ // # Judge I/O contract
+@@ -50,6 +61,13 @@ type ExecJudge struct {
+ 	Command []string
+ 	// Model is passed as ETUDE_MODEL to the judge command. May be empty.
+ 	Model string
++	// Timeout, when > 0, wraps the execution context with a per-invocation
++	// deadline. Zero means unlimited (default, backward compatible).
++	Timeout time.Duration
++	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
++	// file. Outputs exceeding the cap are rejected with ErrJudgeOutputTooLarge.
++	// Zero means unlimited (default, backward compatible).
++	MaxOutputBytes int64
+ }
+ 
+ // compile-time interface satisfaction assertion.
+@@ -83,11 +101,23 @@ type findingWire struct {
+ 
+ // Judge implements Judge for ExecJudge. It materialises inputs, runs the
+ // command, reads the output file, and validates the result per method.
++//
++// When Timeout > 0, the execution context is wrapped with a per-invocation
++// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
++// the process exits or the context fires, preventing hangs from backgrounded
++// grandchild processes that hold inherited pipe write-ends open.
+ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+ 	if len(e.Command) == 0 {
+ 		return JudgeResponse{}, ErrJudgeNotConfigured
+ 	}
+ 
++	// Apply per-invocation timeout when configured.
++	if e.Timeout > 0 {
++		var cancel context.CancelFunc
++		ctx, cancel = context.WithTimeout(ctx, e.Timeout)
++		defer cancel()
++	}
++
+ 	// Create a fresh temp dir for this invocation; clean it up on return.
+ 	scratch, err := os.MkdirTemp("", "etude-judge-*")
+ 	if err != nil {
+@@ -147,11 +177,18 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
+ 	cmd.Dir = scratch
+ 	cmd.Env = env
+ 	cmd.Stderr = &stderrBuf
++	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
++	// Without it, a backgrounded grandchild holding inherited pipe write-ends
++	// open can cause cmd.Run to hang indefinitely.
++	cmd.WaitDelay = judgeWaitDelay
+ 
+ 	runErr := cmd.Run()
+ 
+ 	// Context cancellation/timeout takes precedence over generic exit-status errors.
+ 	if ctx.Err() != nil {
++		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++			return JudgeResponse{}, fmt.Errorf("judge: timed out after %v: %w", e.Timeout, ctx.Err())
++		}
+ 		return JudgeResponse{}, fmt.Errorf("judge: context done: %w", ctx.Err())
+ 	}
+ 	if runErr != nil {
+@@ -171,9 +208,32 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
+ 		return JudgeResponse{}, ErrJudgeOutputNotRegular
+ 	}
+ 
+-	data, err := os.ReadFile(outputPath)
+-	if err != nil {
+-		return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
++	// Cheap pre-check: reject early if the file is already known to exceed the cap.
++	if e.MaxOutputBytes > 0 && fi.Size() > e.MaxOutputBytes {
++		return JudgeResponse{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrJudgeOutputTooLarge, fi.Size(), e.MaxOutputBytes, outputPath)
++	}
++
++	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
++	// regular file is valid.
++	var data []byte
++	if e.MaxOutputBytes > 0 {
++		f, openErr := os.Open(outputPath)
++		if openErr != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, openErr)
++		}
++		data, err = io.ReadAll(io.LimitReader(f, e.MaxOutputBytes+1))
++		f.Close()
++		if err != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
++		}
++		if int64(len(data)) > e.MaxOutputBytes {
++			return JudgeResponse{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrJudgeOutputTooLarge, int64(len(data)), e.MaxOutputBytes, outputPath)
++		}
++	} else {
++		data, err = os.ReadFile(outputPath)
++		if err != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
++		}
+ 	}
+ 
+ 	// Decode with DisallowUnknownFields + trailing-data check (reuses ensureEOF).
+diff --git a/internal/eval/exec_judge_test.go b/internal/eval/exec_judge_test.go
+index e690791..cac432e 100644
+--- a/internal/eval/exec_judge_test.go
++++ b/internal/eval/exec_judge_test.go
+@@ -680,3 +680,135 @@ func TestExecJudge_WithFindings(t *testing.T) {
+ 		t.Errorf("finding[1] = %+v", resp.Findings[1])
+ 	}
+ }
++
++// TestExecJudge_TimeoutExceeded proves that a configured Timeout causes the
++// judge to fail with context.DeadlineExceeded and a "timed out" message.
++func TestExecJudge_TimeoutExceeded(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := judgeWaitDelay
++	judgeWaitDelay = 200 * time.Millisecond
++	defer func() { judgeWaitDelay = orig }()
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `sleep 30`)
++
++	j := &ExecJudge{
++		Command: []string{script},
++		Timeout: 150 * time.Millisecond,
++	}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want context.DeadlineExceeded, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "timed out") {
++		t.Errorf("want 'timed out' in error message, got: %v", err)
++	}
++}
++
++// TestExecJudge_OutputExceedsCap proves that judge output larger than
++// MaxOutputBytes is rejected with ErrJudgeOutputTooLarge naming the cap.
++func TestExecJudge_OutputExceedsCap(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	// Write 20 bytes of output, cap is 10.
++	writeJudgeScript(t, script, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{
++		Command:        []string{script},
++		MaxOutputBytes: 10,
++	}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputTooLarge) {
++		t.Fatalf("want ErrJudgeOutputTooLarge, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "10") {
++		t.Errorf("want cap value in error message, got: %v", err)
++	}
++}
++
++// TestExecJudge_OutputWithinCap proves that normal output under the cap
++// still succeeds unchanged.
++func TestExecJudge_OutputWithinCap(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":5.0,"max":10.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{
++		Command:        []string{script},
++		MaxOutputBytes: 100,
++	}
++	resp, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte("rubric"),
++	})
++	if err != nil {
++		t.Fatalf("want success, got %v", err)
++	}
++	if resp.Value == nil || *resp.Value != 5.0 {
++		t.Errorf("Value = %v, want 5.0", resp.Value)
++	}
++}
++
++// TestExecJudge_SpawnsSurvivingChild proves that WaitDelay prevents the judge
++// from hanging when the script backgrounds a long-lived child that holds
++// inherited pipe write-ends open.
++//
++// Without WaitDelay: cmd.Wait blocks indefinitely.
++// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
++// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
++// any infinite hang), so a regression is a test FAILURE, not an infinite hang.
++func TestExecJudge_SpawnsSurvivingChild(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := judgeWaitDelay
++	judgeWaitDelay = 200 * time.Millisecond
++	defer func() { judgeWaitDelay = orig }()
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	// Background a long-lived child, write valid output, then exit 0.
++	writeJudgeScript(t, script, `sleep 300 &
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{
++		Command: []string{script},
++		Timeout: 150 * time.Millisecond,
++	}
++
++	done := make(chan error, 1)
++	go func() {
++		_, err := j.Judge(context.Background(), JudgeRequest{
++			Method:  "rubric",
++			Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		})
++		done <- err
++	}()
++
++	select {
++	case err := <-done:
++		if err == nil {
++			t.Error("expected an error (timeout), got nil")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("ExecJudge.Judge did not return within 5s; WaitDelay regression: surviving child held pipes open")
++	}
++}
+diff --git a/internal/replay/exec_runner.go b/internal/replay/exec_runner.go
+index 628e6c4..0b963a5 100644
+--- a/internal/replay/exec_runner.go
++++ b/internal/replay/exec_runner.go
+@@ -5,10 +5,12 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+ 	"strings"
++	"time"
+ 
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+ )
+@@ -22,8 +24,15 @@ var (
+ 	ErrRunnerFailed        = errors.New("runner failed")
+ 	ErrOutputMissing       = errors.New("output missing")
+ 	ErrOutputNotRegular    = errors.New("output is not a regular file")
++	ErrOutputTooLarge      = errors.New("output too large")
+ )
+ 
++// runnerWaitDelay is the grace period after context cancellation or process
++// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
++// caused by a script that backgrounds a child holding inherited pipe
++// write-ends open. Declared as var so tests can override for speed.
++var runnerWaitDelay = 10 * time.Second
++
+ // ExecRunner satisfies Runner by invoking a configured external command
+ // headlessly. The command is launched with a strict environment (PATH,
+ // ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) and its working directory set to
+@@ -32,6 +41,13 @@ type ExecRunner struct {
+ 	// Command is the executable and its arguments. Command[0] is the binary;
+ 	// Command[1:] are arguments. Must be non-empty to run.
+ 	Command []string
++	// Timeout, when > 0, wraps the execution context with a per-invocation
++	// deadline. Zero means unlimited (default, backward compatible).
++	Timeout time.Duration
++	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
++	// file. Outputs exceeding the cap are rejected with ErrOutputTooLarge.
++	// Zero means unlimited (default, backward compatible).
++	MaxOutputBytes int64
+ }
+ 
+ // compile-time interface satisfaction assertion.
+@@ -40,6 +56,11 @@ var _ Runner = (*ExecRunner)(nil)
+ // Run implements Runner for ExecRunner. It materializes inputs into
+ // <ScratchDir>/inputs/<NN>-<role>, invokes the configured command, and reads
+ // the output from <ScratchDir>/output.
++//
++// When Timeout > 0, the execution context is wrapped with a per-invocation
++// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
++// the process exits or the context fires, preventing hangs from backgrounded
++// grandchild processes that hold inherited pipe write-ends open.
+ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+ 	// Step 1: command must be configured.
+ 	if len(r.Command) == 0 {
+@@ -99,7 +120,14 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		}
+ 	}
+ 
+-	// Step 6: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
++	// Step 6: apply per-invocation timeout when configured.
++	if r.Timeout > 0 {
++		var cancel context.CancelFunc
++		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
++		defer cancel()
++	}
++
++	// Step 7: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
+ 	pathVal := extractPATH(os.Environ())
+ 	env := []string{
+ 		"PATH=" + pathVal,
+@@ -113,11 +141,18 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 	cmd.Env = env
+ 	cmd.Stdout = &stdoutBuf
+ 	cmd.Stderr = &stderrBuf
++	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
++	// Without it, a backgrounded grandchild holding inherited pipe write-ends
++	// open can cause cmd.Run to hang indefinitely.
++	cmd.WaitDelay = runnerWaitDelay
+ 
+ 	runErr := cmd.Run()
+ 
+-	// Step 7: ctx taxonomy — context cancellation/timeout takes precedence.
++	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
+ 	if ctx.Err() != nil {
++		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++			return RunResult{}, fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
++		}
+ 		return RunResult{}, fmt.Errorf("runner: context done: %w", ctx.Err())
+ 	}
+ 	if runErr != nil {
+@@ -125,7 +160,7 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		return RunResult{}, fmt.Errorf("%w: %s: %v: %s", ErrRunnerFailed, r.Command[0], runErr, stderr)
+ 	}
+ 
+-	// Step 8: read output (symlink-safe via Lstat).
++	// Step 9: read output (symlink-safe via Lstat).
+ 	fi, statErr := os.Lstat(outputPath)
+ 	if statErr != nil {
+ 		if os.IsNotExist(statErr) {
+@@ -137,14 +172,36 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 		return RunResult{}, ErrOutputNotRegular
+ 	}
+ 
+-	// An empty-but-present regular file is valid: Output will be empty bytes,
+-	// not ErrOutputMissing. Only absence triggers ErrOutputMissing.
+-	data, err := os.ReadFile(outputPath)
+-	if err != nil {
+-		return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
++	// Cheap pre-check: reject early if the file is already known to exceed the cap.
++	if r.MaxOutputBytes > 0 && fi.Size() > r.MaxOutputBytes {
++		return RunResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrOutputTooLarge, fi.Size(), r.MaxOutputBytes, outputPath)
++	}
++
++	// Read via LimitReader for a TOCTOU-safe hard cap: a concurrent writer
++	// (e.g. backgrounded grandchild) cannot sneak bytes past the cap between
++	// the Lstat and the read. An empty-but-present regular file is valid.
++	var data []byte
++	if r.MaxOutputBytes > 0 {
++		f, openErr := os.Open(outputPath)
++		if openErr != nil {
++			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, openErr)
++		}
++		data, err = io.ReadAll(io.LimitReader(f, r.MaxOutputBytes+1))
++		f.Close()
++		if err != nil {
++			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
++		}
++		if int64(len(data)) > r.MaxOutputBytes {
++			return RunResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrOutputTooLarge, int64(len(data)), r.MaxOutputBytes, outputPath)
++		}
++	} else {
++		data, err = os.ReadFile(outputPath)
++		if err != nil {
++			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
++		}
+ 	}
+ 
+-	// Step 9: assemble result and apply defaults.
++	// Step 10: assemble result and apply defaults.
+ 	res := RunResult{
+ 		Output:   data,
+ 		Producer: req.Producer,
+diff --git a/internal/replay/exec_runner_test.go b/internal/replay/exec_runner_test.go
+index 800bdaa..54ef5b3 100644
+--- a/internal/replay/exec_runner_test.go
++++ b/internal/replay/exec_runner_test.go
+@@ -668,3 +668,138 @@ func TestExecRunner_EnvIsolation(t *testing.T) {
+ 		t.Errorf("env isolation failure: parent ETUDE_SECRET_PROBE leaked into child env, output: %q", res.Output)
+ 	}
+ }
++
++// TestExecRunner_TimeoutExceeded proves that a configured Timeout causes the
++// run to fail with context.DeadlineExceeded and a "timed out" message.
++func TestExecRunner_TimeoutExceeded(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := runnerWaitDelay
++	runnerWaitDelay = 200 * time.Millisecond
++	defer func() { runnerWaitDelay = orig }()
++
++	worktree, scratch := makeSiblingDirs(t)
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `sleep 30`)
++
++	r := &ExecRunner{
++		Command: []string{scriptPath},
++		Timeout: 150 * time.Millisecond,
++	}
++	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
++	_, err := r.Run(context.Background(), req)
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want context.DeadlineExceeded, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "timed out") {
++		t.Errorf("want 'timed out' in error message, got: %v", err)
++	}
++}
++
++// TestExecRunner_OutputExceedsCap proves that output larger than MaxOutputBytes
++// is rejected with ErrOutputTooLarge naming the cap.
++func TestExecRunner_OutputExceedsCap(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	// Write 20 bytes of output, cap is 10.
++	writeScript(t, scriptPath, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command:        []string{scriptPath},
++		MaxOutputBytes: 10,
++	}
++	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
++	_, err := r.Run(context.Background(), req)
++	if !errors.Is(err, ErrOutputTooLarge) {
++		t.Fatalf("want ErrOutputTooLarge, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "10") {
++		t.Errorf("want cap value in error message, got: %v", err)
++	}
++}
++
++// TestExecRunner_OutputWithinCap proves that normal output under the cap
++// still succeeds unchanged.
++func TestExecRunner_OutputWithinCap(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	worktree, scratch := makeSiblingDirs(t)
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	writeScript(t, scriptPath, `printf 'hello' > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command:        []string{scriptPath},
++		MaxOutputBytes: 100,
++	}
++	req := RunRequest{
++		WorktreeDir:     worktree,
++		ScratchDir:      scratch,
++		OutputMediaType: "text/plain",
++	}
++	res, err := r.Run(context.Background(), req)
++	if err != nil {
++		t.Fatalf("want success, got %v", err)
++	}
++	if string(res.Output) != "hello" {
++		t.Errorf("want output %q, got %q", "hello", res.Output)
++	}
++}
++
++// TestExecRunner_SpawnsSurvivingChild proves that WaitDelay prevents the run
++// from hanging when the script backgrounds a long-lived child that holds
++// inherited pipe write-ends open.
++//
++// Without WaitDelay: cmd.Wait blocks indefinitely because the grandchild keeps
++// the stdout/stderr pipes open, so the test would hang until the test timeout
++// guard fires.
++// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
++// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
++// any infinite hang), so a regression is a test FAILURE, not a hang.
++func TestExecRunner_SpawnsSurvivingChild(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++	orig := runnerWaitDelay
++	runnerWaitDelay = 200 * time.Millisecond
++	defer func() { runnerWaitDelay = orig }()
++
++	worktree, scratch := makeSiblingDirs(t)
++
++	scriptPath := filepath.Join(scratch, "script.sh")
++	// Background a long-lived child, then exit 0. The grandchild holds inherited
++	// pipe write-ends, which would cause cmd.Wait to hang without WaitDelay.
++	writeScript(t, scriptPath, `sleep 300 &
++printf 'done' > "$ETUDE_OUTPUT_FILE"`)
++
++	r := &ExecRunner{
++		Command: []string{scriptPath},
++		Timeout: 150 * time.Millisecond,
++	}
++	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
++
++	done := make(chan error, 1)
++	go func() {
++		_, err := r.Run(context.Background(), req)
++		done <- err
++	}()
++
++	// Guard: the run MUST return within Timeout + WaitDelay + generous margin.
++	// If it doesn't return, WaitDelay is not working (regression).
++	select {
++	case err := <-done:
++		// The run returned — WaitDelay worked. The error is expected (timeout).
++		if err == nil {
++			t.Error("expected an error (timeout), got nil")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("ExecRunner.Run did not return within 5s; WaitDelay regression: surviving child held pipes open")
++	}
++}
+diff --git a/internal/retro/exec_generator.go b/internal/retro/exec_generator.go
+index 4416538..2ab624d 100644
+--- a/internal/retro/exec_generator.go
++++ b/internal/retro/exec_generator.go
+@@ -5,10 +5,12 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+ 	"strings"
++	"time"
+ )
+ 
+ // Sentinel errors for ExecGenerator.
+@@ -17,8 +19,15 @@ var (
+ 	ErrGeneratorFailed           = errors.New("generator failed")
+ 	ErrGeneratorOutputMissing    = errors.New("generator output missing")
+ 	ErrGeneratorOutputNotRegular = errors.New("generator output is not a regular file")
++	ErrGeneratorOutputTooLarge   = errors.New("generator output too large")
+ )
+ 
++// generatorWaitDelay is the grace period after context cancellation or process
++// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
++// caused by a script that backgrounds a child holding inherited pipe
++// write-ends open. Declared as var so tests can override for speed.
++var generatorWaitDelay = 10 * time.Second
++
+ // ExecGenerator satisfies Generator by invoking a configured external command
+ // headlessly. The command is launched with a strict environment (PATH,
+ // ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) — the same exec contract as
+@@ -42,17 +51,36 @@ type ExecGenerator struct {
+ 	// Command is the executable and its arguments. Command[0] is the binary.
+ 	// Must be non-empty to run.
+ 	Command []string
++	// Timeout, when > 0, wraps the execution context with a per-invocation
++	// deadline. Zero means unlimited (default, backward compatible).
++	Timeout time.Duration
++	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
++	// file. Outputs exceeding the cap are rejected with ErrGeneratorOutputTooLarge.
++	// Zero means unlimited (default, backward compatible).
++	MaxOutputBytes int64
+ }
+ 
+ // compile-time interface satisfaction assertion.
+ var _ Generator = (*ExecGenerator)(nil)
+ 
+ // Generate implements Generator for ExecGenerator.
++//
++// When Timeout > 0, the execution context is wrapped with a per-invocation
++// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
++// the process exits or the context fires, preventing hangs from backgrounded
++// grandchild processes that hold inherited pipe write-ends open.
+ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
+ 	if len(g.Command) == 0 {
+ 		return GenerateResult{}, ErrGeneratorNotConfigured
+ 	}
+ 
++	// Apply per-invocation timeout when configured.
++	if g.Timeout > 0 {
++		var cancel context.CancelFunc
++		ctx, cancel = context.WithTimeout(ctx, g.Timeout)
++		defer cancel()
++	}
++
+ 	// Create a fresh temp dir for this invocation; clean it up on return.
+ 	scratch, err := os.MkdirTemp("", "etude-generator-*")
+ 	if err != nil {
+@@ -109,11 +137,18 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
+ 	cmd.Dir = scratch
+ 	cmd.Env = env
+ 	cmd.Stderr = &stderrBuf
++	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
++	// Without it, a backgrounded grandchild holding inherited pipe write-ends
++	// open can cause cmd.Run to hang indefinitely.
++	cmd.WaitDelay = generatorWaitDelay
+ 
+ 	runErr := cmd.Run()
+ 
+ 	// Context cancellation/timeout takes precedence over generic exit-status errors.
+ 	if ctx.Err() != nil {
++		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++			return GenerateResult{}, fmt.Errorf("generator: timed out after %v: %w", g.Timeout, ctx.Err())
++		}
+ 		return GenerateResult{}, fmt.Errorf("generator: context done: %w", ctx.Err())
+ 	}
+ 	if runErr != nil {
+@@ -133,9 +168,32 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
+ 		return GenerateResult{}, ErrGeneratorOutputNotRegular
+ 	}
+ 
+-	data, err := os.ReadFile(outputPath)
+-	if err != nil {
+-		return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
++	// Cheap pre-check: reject early if the file is already known to exceed the cap.
++	if g.MaxOutputBytes > 0 && fi.Size() > g.MaxOutputBytes {
++		return GenerateResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrGeneratorOutputTooLarge, fi.Size(), g.MaxOutputBytes, outputPath)
++	}
++
++	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
++	// regular file is valid.
++	var data []byte
++	if g.MaxOutputBytes > 0 {
++		f, openErr := os.Open(outputPath)
++		if openErr != nil {
++			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, openErr)
++		}
++		data, err = io.ReadAll(io.LimitReader(f, g.MaxOutputBytes+1))
++		f.Close()
++		if err != nil {
++			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
++		}
++		if int64(len(data)) > g.MaxOutputBytes {
++			return GenerateResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrGeneratorOutputTooLarge, int64(len(data)), g.MaxOutputBytes, outputPath)
++		}
++	} else {
++		data, err = os.ReadFile(outputPath)
++		if err != nil {
++			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
++		}
+ 	}
+ 
+ 	return GenerateResult{
+@@ -178,6 +236,11 @@ func sanitizeForFilename(s string) string {
+ 
+ // NewExecGenerator builds an ExecGenerator from a command spec string
+ // (e.g. "./retro.sh arg1"). Uses strings.Fields to split.
++// Default Timeout is 10 minutes; default MaxOutputBytes is 64 MiB.
+ func NewExecGenerator(spec string) *ExecGenerator {
+-	return &ExecGenerator{Command: strings.Fields(spec)}
++	return &ExecGenerator{
++		Command:        strings.Fields(spec),
++		Timeout:        10 * time.Minute,
++		MaxOutputBytes: 64 << 20,
++	}
+ }
+diff --git a/internal/retro/exec_generator_test.go b/internal/retro/exec_generator_test.go
+index a854e7a..e8f6d91 100644
+--- a/internal/retro/exec_generator_test.go
++++ b/internal/retro/exec_generator_test.go
+@@ -231,3 +231,108 @@ func TestExecGenerator_EmptyOutputFile(t *testing.T) {
+ 		t.Errorf("want empty Body, got %q", res.Body)
+ 	}
+ }
++
++// TestExecGenerator_TimeoutExceeded proves that a configured Timeout causes the
++// generate to fail with context.DeadlineExceeded and a "timed out" message.
++func TestExecGenerator_TimeoutExceeded(t *testing.T) {
++	orig := generatorWaitDelay
++	generatorWaitDelay = 200 * time.Millisecond
++	defer func() { generatorWaitDelay = orig }()
++
++	scratch := t.TempDir()
++	scriptPath := filepath.Join(scratch, "gen.sh")
++	writeGenScript(t, scriptPath, `sleep 30`)
++
++	g := &ExecGenerator{
++		Command: []string{scriptPath},
++		Timeout: 150 * time.Millisecond,
++	}
++	_, err := g.Generate(context.Background(), GenerateRequest{})
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want context.DeadlineExceeded, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "timed out") {
++		t.Errorf("want 'timed out' in error message, got: %v", err)
++	}
++}
++
++// TestExecGenerator_OutputExceedsCap proves that output larger than
++// MaxOutputBytes is rejected with ErrGeneratorOutputTooLarge naming the cap.
++func TestExecGenerator_OutputExceedsCap(t *testing.T) {
++	scratch := t.TempDir()
++	scriptPath := filepath.Join(scratch, "gen.sh")
++	// Write 20 bytes of output, cap is 10.
++	writeGenScript(t, scriptPath, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
++
++	g := &ExecGenerator{
++		Command:        []string{scriptPath},
++		MaxOutputBytes: 10,
++	}
++	_, err := g.Generate(context.Background(), GenerateRequest{})
++	if !errors.Is(err, ErrGeneratorOutputTooLarge) {
++		t.Fatalf("want ErrGeneratorOutputTooLarge, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "10") {
++		t.Errorf("want cap value in error message, got: %v", err)
++	}
++}
++
++// TestExecGenerator_OutputWithinCap proves that normal output under the cap
++// still succeeds unchanged.
++func TestExecGenerator_OutputWithinCap(t *testing.T) {
++	scratch := t.TempDir()
++	scriptPath := filepath.Join(scratch, "gen.sh")
++	writeGenScript(t, scriptPath, `printf 'hello' > "$ETUDE_OUTPUT_FILE"`)
++
++	g := &ExecGenerator{
++		Command:        []string{scriptPath},
++		MaxOutputBytes: 100,
++	}
++	res, err := g.Generate(context.Background(), GenerateRequest{})
++	if err != nil {
++		t.Fatalf("want success, got %v", err)
++	}
++	if string(res.Body) != "hello" {
++		t.Errorf("want Body %q, got %q", "hello", res.Body)
++	}
++}
++
++// TestExecGenerator_SpawnsSurvivingChild proves that WaitDelay prevents the
++// generate from hanging when the script backgrounds a long-lived child that
++// holds inherited pipe write-ends open.
++//
++// Without WaitDelay: cmd.Wait blocks indefinitely.
++// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
++// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
++// any infinite hang), so a regression is a test FAILURE, not an infinite hang.
++func TestExecGenerator_SpawnsSurvivingChild(t *testing.T) {
++	orig := generatorWaitDelay
++	generatorWaitDelay = 200 * time.Millisecond
++	defer func() { generatorWaitDelay = orig }()
++
++	scratch := t.TempDir()
++	scriptPath := filepath.Join(scratch, "gen.sh")
++	// Background a long-lived child, write output, then exit 0.
++	writeGenScript(t, scriptPath, `sleep 300 &
++printf 'body' > "$ETUDE_OUTPUT_FILE"`)
++
++	g := &ExecGenerator{
++		Command: []string{scriptPath},
++		Timeout: 150 * time.Millisecond,
++	}
++
++	done := make(chan error, 1)
++	go func() {
++		_, err := g.Generate(context.Background(), GenerateRequest{})
++		done <- err
++	}()
++
++	select {
++	case err := <-done:
++		if err == nil {
++			t.Error("expected an error (timeout), got nil")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("ExecGenerator.Generate did not return within 5s; WaitDelay regression: surviving child held pipes open")
++	}
++}

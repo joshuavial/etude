@@ -1,0 +1,19 @@
+# Verify — etude-shd (timeout + output-size cap on exec runner/generator/judge)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` green (incl. cmd/gen-docs after Docs regen); `make docs-check` clean; `make docs-reality` OK (13 cmds); `make lint` clean; `go vet`/`gofmt` clean.
+- New tests per path (replay/retro/eval): Test*_TimeoutExceeded, Test*_OutputExceedsCap, Test*_OutputWithinCap, Test*_SpawnsSurvivingChild — all PASS. The 6 timeout/child tests run <1s each (const→var WaitDelay override to 200ms in-test) — no suite-time regression. Existing ctx-cancel/DeadlineExceeded tests pass unchanged.
+- `-race` clean on the const→var WaitDelay override (no t.Parallel reader races it; defer-restore).
+
+## Empirical (built-binary + Opus gate-seat reproduction)
+- `--timeout duration (default 10m0s)` present on `etude replay`, `etude bench`, AND `etude retro generate --help` (verified directly; bench's --timeout applies to both runner+judge).
+- No-hang is load-bearing (Opus seat reproduced from scratch): a script doing `sleep 300 & exit 0` with stdout/stderr buffered — WITHOUT cmd.WaitDelay it hung past the 5s guard; WITH WaitDelay=200ms it returned ~340ms. So SpawnsSurvivingChild is a genuine guard, not pass-by-luck.
+- Output cap off-by-one correct: cap=10 allows exactly 10B, rejects 11B (io.ReadAll(io.LimitReader(f, cap+1)) + reject len>cap); empty file still valid; fd closed on every path (no leak); the LimitReader read (not fi.Size()) is authoritative → TOCTOU-safe against a concurrent grower.
+
+## Mechanism
+Per-type Timeout (default 10m, 0=unlimited) wraps ctx with context.WithTimeout before exec.CommandContext; ctx-taxonomy refined to "timed out after <dur>: %w(ctx.Err())" (preserves errors.Is). cmd.WaitDelay (var, default 10s) set before Run bounds cmd.Wait against an inherited-pipe hang. MaxOutputBytes (default 64 MiB) hard cap via LimitReader after the existing regular-file Lstat. Defaults applied at the 4 CLI constructors (replay resolveRunner, bench resolveRunner+resolveJudge, retro NewExecGenerator); zero-value structs stay unlimited (backward compatible).
+
+## Scope
+3 exec .go + 3 exec _test.go + 3 cli .go (replay/bench/retro) + 3 regenerated docs/cli + 3 hand docs. 1-bead=1-commit.

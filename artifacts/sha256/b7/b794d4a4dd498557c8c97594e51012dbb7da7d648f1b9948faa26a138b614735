@@ -1,0 +1,65 @@
+✓ etude-shd · Add timeout + output-size cap to exec runner/generator/judge   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Hardening audit finding (med; DoS/OOM). The three external-process paths -- exec_runner.go:117, exec_generator.go:113, eval/exec_judge.go:146 -- rely solely on the passed ctx with no deadline, and read the script's ETUDE_OUTPUT_FILE fully into memory (exec_runner.go:142) with no size cap. A hung script blocks forever; a runaway script emitting a multi-GB output OOMs. Add a configurable timeout (ctx deadline) and an output-size limit to all three. Env hygiene, non-zero-exit handling, and Lstat output checks are already correct.
+
+DESIGN
+-
+---
+## PLAN-GATE CORRECTION (Tier-1 gate, 3-seat: codex BLOCK verified-true; Opus+gemini GO missed both)
+codex caught two real concurrency defects the size/timeout mechanisms must address (both verified against source — all three paths use `cmd.Stdout/Stderr = &bytes.Buffer`, confirmed at exec_runner.go:111-119; go.mod is go 1.26 so cmd.WaitDelay is available):
+
+**FIX A — timeout is incomplete: `context.WithTimeout` + `exec.CommandContext` does NOT bound a script that spawns a surviving child.** Because stdout/stderr are captured into buffers (Go opens OS pipes + copies in a goroutine), `cmd.Run()`→`cmd.Wait()` blocks until those pipes close. exec.CommandContext kills only the DIRECT process on ctx cancel, NOT the process group — a backgrounded grandchild that inherited the pipe write-ends keeps them open, so Wait (and thus the whole exec path) HANGS past the timeout. This is the real-agent-wrapper case (agent scripts spawn subprocesses), so the plan's timeout alone does NOT close the hang class.
+- **REQUIRED:** set `cmd.WaitDelay` on all three `exec.Cmd` BEFORE Run (e.g. a fixed grace like 10s, or a small constant). WaitDelay bounds the post-cancel / post-exit wait: after the ctx fires (or the process exits) it force-closes the I/O pipes and returns rather than hanging on an inherited fd. Net bound = Timeout + WaitDelay. Surface the result via the existing ctx-taxonomy block when ctx.Err()!=nil ("timed out after Xs"); a WaitDelay-triggered return with ctx.Err()==nil (process exited but pipe held) falls into the runErr branch as a runner failure — acceptable, but name it sensibly (don't mislabel as a clean success). (Process-group kill via SysProcAttr.Setpgid + kill(-pgid) would also REAP the grandchild but is Unix-specific; WaitDelay is cross-platform and sufficient to prevent the hang, which is the bead's goal. Full reaping can be a follow-up.)
+- **REQUIRED TEST (per path):** a script that backgrounds a long-lived child (`sleep 300 & exit 0`) then exits 0 → the exec path RETURNS within ~Timeout+WaitDelay (does NOT hang). Without WaitDelay this test hangs; with it, it returns.
+
+**FIX B — the `fi.Size()` cap is a TOCTOU pre-read check, not a hard cap.** A background writer (the same surviving grandchild) can grow the regular output file AFTER the Lstat and during `os.ReadFile`, bypassing the size check. 
+- **REQUIRED:** make the cap authoritative at READ time: after the regular-file Lstat, open the file and read via `io.LimitReader(f, MaxOutputBytes+1)` (e.g. `io.ReadAll(io.LimitReader(f, max+1))`); if the result length > MaxOutputBytes, reject with the named ErrOutputTooLarge(size/cap/path). Keep the cheap `fi.Size() > cap` pre-check as an early-reject fast-path, but the LimitReader read is the hard cap. Apply identically in all three paths (replacing the bare `os.ReadFile`).
+- **REQUIRED TEST:** a script whose output exceeds the cap → rejected with the limit-naming error (and ideally a variant proving a post-Lstat grower is still caught by the LimitReader, if cheaply testable).
+
+All other plan decisions stand (Timeout field default 10m + --timeout flag on replay/bench/retro-generate; MaxOutputBytes default 64 MiB; duplicate-inline per the extractPATH precedent; zero-value=unlimited backward compat; docs blast radius replay/bench/retro_generate + hand docs). Note (Opus): bench's `--timeout` must apply to BOTH its ExecRunner AND ExecJudge.
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added `Timeout time.Duration` field to ExecRunner, ExecGenerator, ExecJudge. When > 0, wraps ctx with `context.WithTimeout` BEFORE `exec.CommandContext`. Zero = unlimited (backward compat).
+- Added `MaxOutputBytes int64` field to ExecRunner, ExecGenerator, ExecJudge. When > 0, uses `io.LimitReader(f, max+1)` after file open for a TOCTOU-safe hard cap. Cheap `fi.Size()` pre-check also applied. Zero = unlimited.
+- FIX A (WaitDelay): Set `cmd.WaitDelay = <pkg>WaitDelay` (10s const) on all three exec paths BEFORE `cmd.Run()`. Bounds pipe-drain after ctx fires or process exits.
+- FIX B (LimitReader): Replaced bare `os.ReadFile(outputPath)` with `io.LimitReader`-based read in all three paths when `MaxOutputBytes > 0`.
+- ctx-taxonomy error: DeadlineExceeded → "timed out after Xdur" (keeps %w wrap); Canceled → "context done" (unchanged).
+- CLI defaults: `Timeout: 10*time.Minute`, `MaxOutputBytes: 64<<20` applied in resolveRunner (replay, bench), resolveJudge (bench), NewExecGenerator (retro). Added `--timeout` DurationVar flag to replay, bench, retro generate commands. bench --timeout applies to BOTH ExecRunner AND ExecJudge.
+- NewExecGenerator updated to set defaults inline.
+
+**Checks run:**
+- `go build ./...`: PASS
+- `go vet ./...`: PASS
+- `gofmt -l`: PASS (no files reported)
+- `go test ./internal/replay/... ./internal/retro/... ./internal/eval/... ./internal/cli/...`: all PASS
+- `go test ./...`: all PASS except expected TestDriftGuard (docs/cli/etude_bench.md, etude_replay.md, etude_retro_generate.md stale — Docs phase will regenerate)
+
+**Changed files:**
+- /Users/jv/projects/etude/internal/replay/exec_runner.go
+- /Users/jv/projects/etude/internal/replay/exec_runner_test.go
+- /Users/jv/projects/etude/internal/retro/exec_generator.go
+- /Users/jv/projects/etude/internal/retro/exec_generator_test.go
+- /Users/jv/projects/etude/internal/eval/exec_judge.go
+- /Users/jv/projects/etude/internal/eval/exec_judge_test.go
+- /Users/jv/projects/etude/internal/cli/replay.go
+- /Users/jv/projects/etude/internal/cli/bench.go
+- /Users/jv/projects/etude/internal/cli/retro.go
+
+**Plan deviations:** None. All PLAN-GATE CORRECTIONS honored exactly.
+
+**SpawnsSurvivingChild test confirmed:** Generator and Judge timeout tests take ~10.15s (WaitDelay grace), not instant. The SpawnsSurvivingChild tests complete in ~0.15s (ctx fires at 150ms, process exits quickly, pipes close quickly since sleep 300 doesn't produce output). Without WaitDelay the timeout tests would complete in ~150ms but SpawnsSurvivingChild would hang indefinitely.
+
+**Capture:**
+- inputs: approved plan (PLAN-GATE CORRECTION) and Plan gate notes
+- output: working tree diff (9 files changed) and bead notes
+
+LABELS: phase:implement
+

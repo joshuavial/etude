@@ -1,0 +1,14 @@
+# Final Review — etude-shd (timeout + output-size cap on exec runner/generator/judge)
+
+Verdict: GO. Commit 1def3c7 "add timeout and output-size cap to exec runner generator and judge".
+
+- Coherent hardening of the three external-process exec paths (replay ExecRunner.Run, retro ExecGenerator.Generate, eval ExecJudge.Judge), addressed identically: a per-invocation Timeout (default 10m, context.WithTimeout, 0=unlimited) + a --timeout flag on replay/bench/retro-generate (bench applies to BOTH runner and judge); a 64 MiB output cap; and cmd.WaitDelay to bound the pipe-drain hang.
+- Correctness of the two codex-caught concurrency points (verified empirically at the implement gate): (1) cmd.WaitDelay makes the timeout a REAL bound — context.WithTimeout + exec.CommandContext alone leaves cmd.Wait hanging on stdout/stderr pipes held open by a backgrounded surviving child; the SpawnsSurvivingChild tests prove no infinite hang (Opus reproduced: hangs without WaitDelay, returns ~340ms with it). (2) The cap is TOCTOU-safe: io.ReadAll(io.LimitReader(f, cap+1)) + reject len>cap is the authoritative hard cap (not the fi.Size() pre-check), robust to a concurrent grower; off-by-one correct, empty-file valid, fd closed on every path.
+- Backward compatible: zero-value structs (library/test callers) get Timeout=0 + MaxOutputBytes=0 = unlimited; cmd.WaitDelay (10s) is inert unless a child holds the pipe. ctx-taxonomy preserves the %w(ctx.Err()) wrap so existing errors.Is(..., DeadlineExceeded/Canceled) tests stay green.
+- Test hygiene: the WaitDelay const was changed to a package var so the 6 timeout/child tests override it to 200ms (defer-restore, no t.Parallel → -race clean), keeping the suite fast (the +20s/pkg regression from a 10s WaitDelay was found in Verify and fixed).
+- Docs: regenerated docs/cli/etude_{replay,bench,retro_generate}.md (the --timeout flag; existing commands so root SEE ALSO unchanged) + hand notes in docs/replay.md, bench.md, retro.md (timeout + the 64 MiB cap). docs-check / docs-reality (13) / gen-docs / lint green.
+- Scope: 3 exec .go + 3 _test.go + 3 cli .go + 3 docs/cli + 3 hand docs (15 files). 1-bead=1-commit.
+
+Gate history (3-seat):
+- Plan Tier-1: codex BLOCK (verified-true, two concurrency defects Opus+gemini missed: context.WithTimeout doesn't bound a surviving-child pipe hang → cmd.WaitDelay; fi.Size() cap is a TOCTOU → io.LimitReader) → design amended; Opus+gemini GO.
+- Implement Tier-1: UNANIMOUS GO (codex, gemini, Opus). Opus reproduced the no-hang both ways + verified cap off-by-one/fd-close + -race. Verify additionally found + fixed a test-speed regression (const→var WaitDelay) before the gate.
