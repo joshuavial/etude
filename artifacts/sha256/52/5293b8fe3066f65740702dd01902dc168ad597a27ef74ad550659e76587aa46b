@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. The stated verify altitude includes real built-binary behavior, but the artifact supplies none — `make build` only proves compilation, and the report defers all binary QA ("Built-binary manual QA will follow the verify gate"). The gate would pass with zero evidence at half its required altitude. Required before advance: at least one run of `bin/etude` exercising the rerun-with-feedback path in a caller workspace, with the command and its output pasted into this artifact.
+OPTIONAL: 1. The two "required plan-gate corrections" are asserted in prose only; unlike the liverun/runmanifest claims they cite no test names — name the tests covering `validatePriorTranscriptEvidence(nil)` and the pre-checkout role-collision failure with zero runner calls. 2. No negative control reported (evidence that the new tests fail against the pre-fix tree), so the regression's discriminating power is unproven.
+CONFIDENCE: medium

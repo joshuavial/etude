@@ -517,6 +517,143 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:46:30.076297Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "9315b37be387e5285f182a2cf53c62cf97dff9e61f68cb39d9c85177b6c58fb3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "a99129286b6af75b58e49ebf76feaf0e4fa393964f026a27b8f3266ac9dc0bac",
+            "path": "artifacts/sha256/a9/a99129286b6af75b58e49ebf76feaf0e4fa393964f026a27b8f3266ac9dc0bac",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1238
+          },
+          "timestamp": "2026-08-17T09:51:47.533679Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-17T09:51:47.845156Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The stated verify altitude includes real built-binary behavior, but the artifact supplies none — `make build` only proves compilation, and the report defers all binary QA (\"Built-binary manual QA will follow the verify gate\"). The gate would pass with zero evidence at half its required altitude. Required before advance: at least one run of `bin/etude` exercising the rerun-with-feedback path in a caller workspace, with the command and its output pasted into this artifact."
+          ],
+          "optional": [
+            "1. The two \"required plan-gate corrections\" are asserted in prose only; unlike the liverun/runmanifest claims they cite no test names — name the tests covering `validatePriorTranscriptEvidence(nil)` and the pre-checkout role-collision failure with zero runner calls. 2. No negative control reported (evidence that the new tests fail against the pre-fix tree), so the regression's discriminating power is unproven."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "994e898b590e6c531691de041906e9e2a220e6b016ea354654300760e5af7a1c",
+            "path": "artifacts/sha256/99/994e898b590e6c531691de041906e9e2a220e6b016ea354654300760e5af7a1c",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1055
+          },
+          "session": {
+            "session_id": "opus-5293b8fe3066f657",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "5293b8fe3066f65740702dd01902dc168ad597a27ef74ad550659e76587aa46b",
+              "path": "artifacts/sha256/52/5293b8fe3066f65740702dd01902dc168ad597a27ef74ad550659e76587aa46b",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 951
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:52:08.97065Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The verify artifact explicitly defers built-binary manual QA until after the verify gate, so it does not yet establish real built-binary behavior at this review altitude."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "ccd4a8d9b16ba2467f525519d083cbb4bd82b7183af9d7e734b5fcc2ae9cf230",
+            "path": "artifacts/sha256/cc/ccd4a8d9b16ba2467f525519d083cbb4bd82b7183af9d7e734b5fcc2ae9cf230",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 323
+          },
+          "session": {
+            "session_id": "codex-0c660c5938ad1f02",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "0c660c5938ad1f02de55110b2285d9e439db62b3931dae497958bab74073bcb6",
+              "path": "artifacts/sha256/0c/0c660c5938ad1f02de55110b2285d9e439db62b3931dae497958bab74073bcb6",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 231
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:52:29.368784Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:52:29.370143Z"
     }
   ]
 }
