@@ -1,0 +1,7 @@
+# Final Review — etude-712 (gen-docs TestDriftGuard exhaustive)
+Verdict: GO (inline).
+1. Coherent: implements the gated design exactly — checkDrift(generatedDir, committedDir) pure dir-args, enumerate-generated source of truth, byte-compare + orphan, 3 failure-mode subtests on temp committed copies (round-1 conflation fixed), expectedCommands deleted, sibling tests repurposed, TestFilesContainSynopsisAndFlags untouched.
+2. Code quality: clean per both gate seats + live mutation test. No product/main.go/docs change.
+3. Scope: 1 file (cmd/gen-docs/main_test.go). No drift; docs/cli unchanged.
+4. Non-blocking follow-up filed: gitignore the gen-docs build artifact (make docs leaves ./gen-docs untracked).
+Commit: derive gen-docs drift guard expected pages from generated output (e57d0ee).
