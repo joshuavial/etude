@@ -1,0 +1,13 @@
+## Verify — etude-cr2 (status: pass, recommend proceed to Docs)
+
+Automated: go build ok; go test ./... -count=1 -race all 5 packages ok; go vet clean; gofmt clean.
+Golden manifest test + round-trip lock wire strings; new TestParseJSONRejectsUnknownStorageValue locks decode-time validation.
+
+Built-binary (go install ./cmd/etude, throwaway repo):
+- etude capture plan --run r1 --output output=plan-output.md -> captured; ref refs/etude/runs/r1.
+- etude run show r1 output line: storage=content (displayed as before).
+- BYTE-LEVEL wire check via git cat-file -p refs/etude/runs/r1:manifest.json: literal "storage": "content",
+  hexdump 22 73 74 6f 72 61 67 65 22 3a 20 22 63 6f 6e 74 65 6e 74 22 2c — proves typed StorageType
+  serializes byte-identically to the prior untyped string on the real on-disk wire format.
+
+QA: minimal diff (3 files); cli/run.go untouched; no raw "content"/"pointer" assignments remain outside the consts; validation switch + error wrapping preserved. No regressions. Wire format byte-identical (golden test + real ref bytes).
