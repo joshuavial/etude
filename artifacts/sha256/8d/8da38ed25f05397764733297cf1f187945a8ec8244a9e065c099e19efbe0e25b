@@ -1,0 +1,101 @@
+diff --git a/internal/cli/capture.go b/internal/cli/capture.go
+index 4312f8e..f2cc424 100644
+--- a/internal/cli/capture.go
++++ b/internal/cli/capture.go
+@@ -274,10 +274,8 @@ func validateCLIIdentifier(name, value string) error {
+ 	if value == "" {
+ 		return fmt.Errorf("%s is required", name)
+ 	}
+-	for _, r := range value {
+-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+-			return fmt.Errorf("invalid %s %q", name, value)
+-		}
++	if !runmanifest.IsValidIdentifier(value) {
++		return fmt.Errorf("invalid %s %q", name, value)
+ 	}
+ 	return nil
+ }
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 95575cc..4fa674e 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -131,13 +131,13 @@ func (r *runShowListRunner) show(ctx context.Context, id string) error {
+ 	return printRunDetail(r.stdout, manifest)
+ }
+ 
+-// validateRunIDExtra enforces the additional rules from runmanifest.validateRunID
+-// that are not covered by validateCLIIdentifier: leading/trailing dot, ".." anywhere,
+-// all-dots, and ".lock" suffix. This runs before any git call so it works outside a repo.
++// validateRunIDExtra enforces the run id rules from runmanifest that are not
++// covered by validateCLIIdentifier: leading/trailing dot, ".." anywhere,
++// all-dots, and ".lock" suffix. It delegates to runmanifest.IsValidRunID so
++// the shared spec has a single source of truth. This runs before any git call
++// so it works outside a repo.
+ func validateRunIDExtra(id string) error {
+-	if strings.HasPrefix(id, ".") || strings.HasSuffix(id, ".") ||
+-		strings.Contains(id, "..") || strings.Trim(id, ".") == "" ||
+-		strings.HasSuffix(id, ".lock") {
++	if !runmanifest.IsValidRunID(id) {
+ 		return fmt.Errorf("invalid run id %q", id)
+ 	}
+ 	return nil
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 00b4272..345803f 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -307,13 +307,39 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+ 	return paths
+ }
+ 
++// IsValidIdentifier reports whether value is a non-empty string using only
++// the [A-Za-z0-9_.-] character set.
++func IsValidIdentifier(value string) bool {
++	if value == "" {
++		return false
++	}
++	for _, r := range value {
++		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
++			return false
++		}
++	}
++	return true
++}
++
++// IsValidRunID reports whether value is a valid run identifier: it must
++// satisfy IsValidIdentifier and additionally must not have a leading dot,
++// trailing dot, contain "..", consist entirely of dots, or end with ".lock".
++func IsValidRunID(value string) bool {
++	if !IsValidIdentifier(value) {
++		return false
++	}
++	return !strings.HasPrefix(value, ".") &&
++		!strings.HasSuffix(value, ".") &&
++		!strings.Contains(value, "..") &&
++		strings.Trim(value, ".") != "" &&
++		!strings.HasSuffix(value, ".lock")
++}
++
+ func validateRunID(runID string) error {
+ 	if err := validateIdentifier("run id", runID); err != nil {
+ 		return err
+ 	}
+-	if strings.HasPrefix(runID, ".") || strings.HasSuffix(runID, ".") ||
+-		strings.Contains(runID, "..") || strings.Trim(runID, ".") == "" ||
+-		strings.HasSuffix(runID, ".lock") {
++	if !IsValidRunID(runID) {
+ 		return fmt.Errorf("%w: invalid run id %q", ErrInvalidManifest, runID)
+ 	}
+ 	return nil
+@@ -323,10 +349,8 @@ func validateIdentifier(name, value string) error {
+ 	if value == "" {
+ 		return fmt.Errorf("%w: %s required", ErrInvalidManifest, name)
+ 	}
+-	for _, r := range value {
+-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+-			return fmt.Errorf("%w: invalid %s %q", ErrInvalidManifest, name, value)
+-		}
++	if !IsValidIdentifier(value) {
++		return fmt.Errorf("%w: invalid %s %q", ErrInvalidManifest, name, value)
+ 	}
+ 	return nil
+ }

@@ -1,0 +1,74 @@
+## Plan
+
+**Approach:** Extract the rule logic (not the error formatting) into pure exported predicates in `runmanifest`, the package that already owns the canonical rules and that `cli` already imports (`runmanifest` does NOT import `cli`, so no cycle). Add two pure, IO-free functions — `IsValidIdentifier(value string) bool` (the `[A-Za-z0-9_.-]`, non-empty charset) and `IsValidRunID(value string) bool` (identifier charset PLUS the extra rules: leading/trailing dot, "..", all-dots, ".lock"). Rewrite both consumers to call these predicates while KEEPING their existing error formatting verbatim, because the two layers must produce different error text:
+- runmanifest `validateRunID`/`validateIdentifier` keep wrapping with `ErrInvalidManifest` ("invalid manifest: invalid run id %q").
+- cli `validateRunIDExtra` and capture `validateCLIIdentifier` keep the unwrapped form `invalid run id %q` / `invalid %s %q` — this exact text is contract: documented in docs/run.md ("Invalid ids produce `invalid run id \"<id>\"`") and asserted by TestRunShowInvalidRunIDBeforeGit and TestCaptureRejectsInvalidInputs.
+This kills the drift risk (rules live once) while preserving every byte of observable behavior.
+
+**Rule equivalence confirmed (behavior-preserving):** run.go:138-140 and manifest.go:314-316 are byte-identical extra-rule expressions; capture.go:278 and manifest.go:327 are byte-identical charsets. The ONLY existing divergence is error wrapping/text (above), which the plan preserves deliberately. Purity confirmed: both runmanifest funcs use only `strings`+`fmt`, no git/IO — safe to call before any git call (the BeforeGit test runs in a non-repo dir).
+
+**Scope note (asymmetry to preserve):** `run show` validates the run id EAGERLY before touching git. `capture` does NOT eagerly validate the run id charset/extra-rules in the CLI layer — it only checks non-empty, then the full rule check happens later inside `runmanifest.Writer.Write -> Manifest.Validate -> validateRunID`. Do NOT add an eager run-id gate to capture; that would change timing/behavior. capture only shares the identifier predicate (for stage/ref-key).
+
+**Files:**
+- internal/runmanifest/manifest.go - add exported pure `IsValidIdentifier` and `IsValidRunID`; refactor unexported `validateIdentifier`/`validateRunID` to call them (keeping `ErrInvalidManifest` wrapping).
+- internal/cli/run.go - rewrite `validateRunIDExtra` to call `runmanifest.IsValidRunID` (or keep the eager pre-git call but delegate the rule). Note: `validateCLIIdentifier("run id", id)` is still called first; consider collapsing both cli run-id checks into one delegating call to `runmanifest.IsValidRunID` while keeping the `invalid run id %q` message. Preserve the unwrapped error text exactly.
+- internal/cli/capture.go - rewrite `validateCLIIdentifier` body to delegate the charset to `runmanifest.IsValidIdentifier`, keeping the unwrapped `is required` / `invalid %s %q` messages and its callers (stage, ref key) unchanged.
+
+**Out of scope (noted, not touched):** internal/workflow/workflow.go `isIdentChar` is a THIRD copy of the identifier charset (self-documented as "reimplemented locally"). workflow neither imports nor is imported by runmanifest, so it could safely adopt `runmanifest.IsValidIdentifier` later, but that is outside this bead. init.go/artifactstore/role-token validators are different rule sets — leave alone.
+
+**Tests:**
+- TestRunShowInvalidRunIDBeforeGit must still pass unchanged (all 6 cases: slash, "..", ".lock", leading/trailing dot, all-dots), proving pre-git validation and the `invalid run id` text survive.
+- TestCaptureRejectsInvalidInputs (invalid stage / invalid ref key text) must still pass.
+- Add runmanifest unit table-test for `IsValidRunID`/`IsValidIdentifier` enumerating accept/reject cases (valid: "run-1", "a.b", "x_y"; reject: "", "bad/id", "..", "...", ".x", "x.", "x.lock", control/unicode chars).
+- Optional anti-drift test: assert the cli copies are gone (e.g. cli delegates to runmanifest) — simplest is that the shared predicate is the single rule owner; a focused unit test on the exported funcs plus the surviving cli/runmanifest behavior tests is sufficient.
+
+**Docs:** No doc change needed. docs/run.md (run-id rules + "validated before any git call" + `invalid run id "<id>"`) and docs/capture.md (`refs/etude/runs/<run-id>`, role charset) stay accurate because rules and error text are unchanged by design. Confirmed by re-reading both files.
+
+**Risks:** Low. Main hazard is accidentally changing CLI error text/wrapping (would break the documented contract + tests) or accidentally adding eager run-id validation to capture (behavior/timing change). Mitigated by keeping per-layer error formatting and leaving cap/run validation call sites semantically identical. No import cycle (cli->runmanifest only). No git/IO in shared helpers.
+
+**Capture:**
+- inputs: bead etude-dpz notes; internal/cli/run.go, internal/cli/capture.go, internal/runmanifest/manifest.go; internal/cli/run_test.go (TestRunShowInvalidRunIDBeforeGit), internal/cli/capture_test.go (TestCaptureRejectsInvalidInputs); docs/run.md, docs/capture.md; grep of repo for charset/extra-rule copies (incl. workflow.go isIdentChar); confirmed import direction.
+- output: bead --design field
+
+
+NOTES
+internal/cli/run.go validateRunIDExtra duplicates the extra run-id rules in runmanifest.validateRunID (leading/trailing dot, "..", all-dots, ".lock"), and validateCLIIdentifier duplicates runmanifest.validateIdentifier's charset. The CLI copy exists so it can validate before any git call (runmanifest's versions are unexported). Multiple review-gate seats (Implement + Verify) flagged the duplication as a drift risk. Extract a shared exported helper (in runmanifest or a small shared package) so the two cannot diverge. Low priority cleanup; current behavior is correct and test-guarded by TestRunShowInvalidRunIDBeforeGit.
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO; GPT-5.5 xhigh (codex): GO; pi/pilms: GO
+Tier rationale: touches runmanifest (manifest pkg) + the refs/etude run-id gatekeeper => Tier 1.
+Consensus optionals folded into Implement:
+1. Define IsValidRunID = IsValidIdentifier(value) && <extra rules> (single source for empty/charset leg).
+2. Keep run.go TWO-call structure (validateCLIIdentifier for charset + 'run id is required' empty msg, then extra-rule delegation) — do NOT collapse to one IsValidRunID call (preserves empty-id message).
+3. Add runmanifest table test locking IsValidIdentifier/IsValidRunID accept/reject spec.
+Deferred (separate follow-up): converge workflow.go isIdentChar (signature differs; out of scope here).
+## Implement
+
+**Implemented:**
+- Added exported pure predicates IsValidIdentifier and IsValidRunID to internal/runmanifest/manifest.go; each is pure (no git/IO), charset-only and extra-rules respectively, composing cleanly.
+- Refactored unexported validateIdentifier to delegate charset check to IsValidIdentifier while keeping its explicit empty check (preserves 'required' vs 'invalid' message distinction).
+- Refactored unexported validateRunID to delegate extra-rule check to IsValidRunID (charset+empty still checked via validateIdentifier first).
+- Rewrote cli/run.go validateRunIDExtra to delegate to runmanifest.IsValidRunID; kept exact 'invalid run id %q' message; preserved two-call structure in show() (validateCLIIdentifier first, then validateRunIDExtra).
+- Rewrote cli/capture.go validateCLIIdentifier to delegate charset check to runmanifest.IsValidIdentifier; kept explicit empty check for 'is required' message; all call sites unchanged.
+- Created new file internal/runmanifest/predicates_test.go with table-driven tests for both IsValidIdentifier and IsValidRunID covering empty, valid, bad charset, leading/trailing dot, '..', all-dots '.', '.lock' suffix.
+
+**Checks run:**
+- gofmt -l cmd internal: pass (no output)
+- go vet ./...: pass (no output)
+- go test ./... -count=1: pass — all packages green (cli 13.975s, runmanifest 3.837s, workflow 3.072s, artifactstore 0.868s, refstore 4.769s)
+
+**Changed files:**
+- internal/runmanifest/manifest.go
+- internal/cli/run.go
+- internal/cli/capture.go
+- internal/runmanifest/predicates_test.go (new)
+
+**Plan deviations:** None. All consensus refinements from the plan gate were implemented: IsValidRunID composes on top of IsValidIdentifier; two-call structure preserved in run.go; table test added in runmanifest package.
+
+**Capture:**
+- inputs: approved plan (bead --design field), Plan gate notes, current source of manifest.go/run.go/capture.go and their test files
+- output: working tree diff and this bead note
+## Implement gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (traced De Morgan transform exact; all 4 paths byte-identical; two-call structure intact); GPT-5.5 xhigh (codex): GO; pi/pilms: GO
+Files: runmanifest/manifest.go (IsValidIdentifier + IsValidRunID exported, pure), cli/run.go, cli/capture.go, runmanifest/predicates_test.go (new). All tests green; behavior preserved.
+No required changes. Optionals (non-blocking, declined for scope): micro-redundancy in validateRunID's double IsValidIdentifier; unicode reject test; error-string regression table.
+
