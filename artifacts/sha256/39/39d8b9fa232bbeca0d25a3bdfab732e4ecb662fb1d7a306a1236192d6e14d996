@@ -1,0 +1,21 @@
+# etude-ikj3 — retry stage runner lookup
+
+Lead: gpt-6-astra (Codex). Profile/run: dev-codex / etude-ikj3-dev-codex.
+Base: e1770dacc9c525477121deaad2ef48c6ba6415da.
+Risk: consequential, understood compatibility fix; no mandatory plan gate. Final L2 Astra/Fable gate required.
+
+## Acceptance and approach
+- Resolve exact workflow stage names first, including literal .r2 names. Only after a miss recognize a final engine-generated .rN suffix (canonical decimal N >= 2), remove it once, and resolve the exact base. Preserve clear errors for unknown names, malformed suffixes, r1, and missing bases. Test both ordinary retries and retries of literal names.
+- Keep default workflow/registry per-stage resolution and explicit --runner override. Test actual external adapters with mixed bindings, original/r2/r3 and distinct recorded inputs; do not inject forwardRunner to cover the defect.
+- Preflight all stage runner resolution before checkout or any runner invocation so a later invalid stage cannot produce partial execution. Keep original manifest order, names, producer metadata, inputs and diagnostics; no upstream re-production. Tests prove no runner side effects on failed preflight.
+- Add focused replay docs explaining exact-name priority, one suffix fallback and recorded-input semantics. Review docs/run.md and docs/replay.md against implemented behavior.
+- Use fresh built binary in disposable repositories for real gate-rerun workflow replay, success and failure effects. Do not touch lifecycle helpers or internal/replay/exec_runner.go owned by sibling lane.
+
+## Ownership and evidence
+Terra (gpt-5.6-terra, high) owns bounded implementation, tests, docs and all required suites: make test, make lint, make docs-check, make docs-reality, make shell-test (run-map change), make build. Race testing only if lifecycle/concurrency changes arise. Capture failing-before/passing-after regression evidence where practical and actual exit statuses, logs, changed-file SHA256 including new files. Lead owns mapping, captures, inspections and final packet/gate; will not duplicate full suites. Fresh independent QA reviews requirements, full code/docs and test evidence, with targeted checks if needed.
+
+## Completion
+Capture plan, diff, verify, docs-diff and identical self-contained final review packet into assigned run with accurate producer identities and base SHA. Require real GO from both configured seats, then one reviewed commit using commit-message skill. Leave bead open, branch unpushed and lane available; parent owns integration. Record lane status and concerns.
+
+## Environment
+Canonical .beads/redirect resolves and bd show succeeds. Initial bd dolt pull failed (exit 1): github.com DNS unavailable. Shared tracker remains accessible; report sync limitation to parent.
