@@ -1,0 +1,3 @@
+The implementation is cohesive and reuses existing CAS/input primitives, but session identity comparison trims whitespace while the index preserves the original opaque value. Attempts with `session-1` and ` session-1 ` are incorrectly marked resumed even though their recorded identities differ. Compare exact non-blank IDs and test the distinction.
+
+VERDICT: BLOCK

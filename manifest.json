@@ -557,6 +557,73 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:45:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "compare non-blank session ids exactly rather than trimming identity values"
+          ],
+          "raw_output": {
+            "role": "codex-implement-r1",
+            "artifact": "6f651fbb740932393ee736d3166844ca1fb6153f7137cea4dc520e127a8dfd7f",
+            "path": "artifacts/sha256/6f/6f651fbb740932393ee736d3166844ca1fb6153f7137cea4dc520e127a8dfd7f",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 366
+          },
+          "timestamp": "2026-08-16T04:10:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "add live third-attempt coverage",
+            "exercise resume reseeding with a stage log",
+            "document reserved role compatibility"
+          ],
+          "raw_output": {
+            "role": "opus-implement-r1",
+            "artifact": "788a0e1a446101b6a65fff8c87cf19f7b6b12ccc6c53fde66dc1000fba70826e",
+            "path": "artifacts/sha256/78/788a0e1a446101b6a65fff8c87cf19f7b6b12ccc6c53fde66dc1000fba70826e",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 487
+          },
+          "timestamp": "2026-08-16T04:10:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T04:10:00Z"
     }
   ]
 }

@@ -1,0 +1,5 @@
+The implementation correctly injects deterministic digest-bound prior evidence, validates reserved roles at Engine entry, accepts nil Session, and handles transcript states before rerun invocation. No concrete wrong-output defect survived review.
+
+Follow-ups: add a live third-attempt test, exercise resume reseeding with a stage log, keep zero-value SessionEvidence distinct from nil Session, and document the reserved namespace as a compatibility change.
+
+VERDICT: PASS_WITH_FOLLOWUPS
