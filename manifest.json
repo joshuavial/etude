@@ -522,6 +522,62 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:54:26Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "67e5e94fffc36e643a640baf7dd9decc9b4172f5269de08ca7174937636e5563"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Sanitize ambient GIT_* overrides for guard commands to close the variable family rather than one pathspec case.",
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r2.md sha256 869466af552a07c12a13267f8c4fa11c5190d3e6044d6fd63aa2bb57071fb804"
+          ],
+          "timestamp": "2026-08-16T02:07:22Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Declare caller runner invocation as the irreversible step and its crash residual instead of claiming none.",
+            "Include automated per-test temporary repositories in the verification blast radius, not only the three manual repositories.",
+            "Prove the committed-attribute clean-filter scenario fails closed or bind tracked attribute controls so raw tracked mutation cannot publish."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r2.md sha256 869466af552a07c12a13267f8c4fa11c5190d3e6044d6fd63aa2bb57071fb804"
+          ],
+          "timestamp": "2026-08-16T02:07:22Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:07:22Z"
     }
   ]
 }
