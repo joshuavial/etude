@@ -1,0 +1,9 @@
+# Plan: compose PR #23 with GH #14 and GH #16
+
+Rebase `issue/17-stage-attempt-evidence` onto `origin/main` at `fc86fbc`, retaining both sides of every schema, engine, replay, and documentation conflict.
+
+The critical integration invariant is that gate-seat checkout isolation and producer rerun handover remain separate: `read_checkout: true` gives each model seat its own disposable pinned checkout, while the rerun stage still receives its ordinary inputs plus the digest-bound `prior-attempts` bundle. The second-stage runner must observe the exact prior index bytes, not merely a helper construction.
+
+GH #14 made `worktree.Checkout` recursively populate and validate pinned submodules. Therefore remove GH #16's now-obsolete preflight rejection of any gitlink and prove a read-enabled seat can inspect pinned submodule content while the stage manifest records the submodule OID.
+
+Add focused integration coverage for an actual block-to-rerun-to-pass sequence with `read_checkout` enabled. Assert four seat invocations use four distinct checkouts that are cleaned afterward, both gate records retain the checkout grant, and r2 consumes the exact session ID, transcript/log/output digests, and killing verdict. Then rebuild and repeat all manual QA under fresh run IDs, run the full automated verification surface, and update the still-open PR without merging it.
