@@ -1,0 +1,12 @@
+# Verify
+
+Status: pass
+Recommendation: proceed to final review
+
+Change verified: root LICENSE file added with the standard MIT License text and copyright holder Joshua Vial.
+
+Commands run:
+- sed -n '1,120p' LICENSE: confirmed license contents.
+- git status --short: confirmed only LICENSE was staged for this change; pre-existing _ai/ remains untracked and untouched.
+
+Tests: not run. This is a repository metadata-only change with no Go code or CLI behavior changes.
