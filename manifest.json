@@ -1428,6 +1428,39 @@
         "degraded_reason": "CORRECTION RECORD. This attempt CORRECTS the reviewed_stages of an earlier passing record on this same run. It does not re-run any seat and grants no new approval; it exists so the manifest names the bytes the seats were actually handed. The verdicts are the ones already given. verify.r3 recorded artifact 4d5924bc - the ORIGINAL verify artifact - while gate-verify-r2.packet.md froze 3f7aaa40, and its own degraded_reason called 4d5924bc 'the corrected verify artifact', which it was not. Same root cause as the implement correction: author-supplied reviewed-stage in the bootstrap path. Recorded on etude-4ed."
       },
       "timestamp": "2026-08-15T20:32:01Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "96c0efd014ded9294a94b7c6634e6a7468046a0d1e495e36e010346e4655a7b9"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T20:32:26Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "CORRECTION RECORD, and it exposes something worse than a mislabel. This attempt CORRECTS the reviewed_stages of an earlier passing record on this same run. It does not re-run any seat and grants no new approval; it exists so the manifest names the bytes the seats were actually handed. plan.r2 recorded a two-seat panel against artifact 1551aa66, but the seats did not review the same bytes: codex was handed gate-plan-r2.packet.md frozen at 96c0efd0, and only THEN were its optionals folded to produce 1551aa66, which is what the opus packet froze. So the recorded panel is an assembly of two seats reading two different revisions - which is not a panel at all. Unanimous quorum over seats that saw different artifacts means nothing, and the record gave no sign of it. This attempt records the codex verdict against what codex actually read; the opus verdict on 1551aa66 stands as recorded in plan.r2. Root cause is structural to the bootstrap path: a hand-assembled panel takes its seats as arguments, so nothing forces them to share a prompt. etude gate CANNOT make this mistake - it composes one prompt and runs every seat against it, which is the whole basis of the redundancy. Written onto etude-4ed as the strongest argument for verdict injection yet found: the manual path can silently produce a panel that is not a panel."
+      },
+      "timestamp": "2026-08-15T20:32:26Z"
     }
   ]
 }
