@@ -1,0 +1,15 @@
+# etude-7ri.2 Verify
+
+## Surface classification
+CLI-facing (etude run show gains a producer session block) + manifest schema change.
+
+## Evidence
+- 10 new tests pass (runmanifest: 8 producer-session round-trip/validation/walker/DisallowUnknownFields; liverun: 2 engine-wiring agentic-vs-shell). Verified run green with -v.
+- Full `make test` (go test ./...) ALL PASS; `make lint` clean.
+- Built binary `etude run show <existing-run>` renders cleanly, producer block absent (no producer.session yet), exit 0 — no regression to existing output.
+- `make docs-check` zero-diff; `make docs-reality` OK (14 commands).
+- Existing seat session tests pass unchanged after buildSessionEvidence extraction.
+- Independent orchestrator verification: scope = exactly 7 files; both plan-gate BLOCK fixes confirmed at source (sessionEvidencePath in all 3 walkers; validateStage validates producer.session).
+
+## Scope
+7 files: internal/{cli/run.go, liverun/engine.go, liverun/engine_test.go, liverun/gate.go, replay/runner.go, runmanifest/manifest.go, runmanifest/manifest_test.go}. _ai/research/ + gitignored .etude/loop.local.md excluded.

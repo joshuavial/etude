@@ -1,0 +1,14 @@
+Goal: extend #7's shipped gate-seat session evidence to stage-runner PRODUCERS (the only gap). REUSE runmanifest.SessionEvidence + internal/sessionevidence (ScanForSecrets) + envelope pattern. No new type; never drop RedactionStatus/RetrievalStatus.
+
+Plan / Files:
+1. internal/liverun/gate.go: EXTRACT the evidence core of storeSeatSessionEvidence into shared buildSessionEvidence(as, scratch, worktree, sess{id,uri,path}, required)->(*SessionEvidence, note); seat path calls it (no behavior change; re-run seat tests). Take the inner {id,uri,path} directly (decoupled from seat/producer wrappers).
+2. internal/replay/runner.go: add optional RunResult.Session *SessionInfo{SessionID,TranscriptURI,TranscriptPath}. Runner-side: agentic stage runners must actually SET res.Session (explicit population, per codex) — the dev runner surfaces its session; deterministic/shell leave it nil.
+3. internal/runmanifest/manifest.go — SCHEMA + BLAST RADIUS (per Opus BLOCK, verified):
+   - add Producer.Session *SessionEvidence (json "session,omitempty"); producerJSON round-trip; additive optional leaf (NO manifest_version bump — matches occurred_at/env_allowlist/seat.Session; note ParseJSON DisallowUnknownFields => old binaries reject producer.session, an accepted forward-incompat on record).
+   - validateStage MUST call validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session) when non-nil (today only validateSeat validates it) — else malformed/enum-dropped producer.session isn't rejected on parse.
+   - REQUIRED: extend ALL THREE seat-only artifact walkers to also walk stage.Producer.Session.TranscriptArtifact, mirroring the seat branches: ArtifactPaths (manifest.go:335), referencedArtifactPaths (752), WriteManifestTree verify loop (392). Without this a stored producer transcript blob hits ErrUnreferencedArtifact on write (fails runAndCaptureStage) and is dropped on resume.
+4. internal/liverun/engine.go runAndCaptureStage: when producer is agentic (mirror requiresSessionEvidence on producer harness/provider; skip deterministic/shell), build Producer.Session from res.Session via the shared helper (transcript under scratch/worktree) BEFORE the Stage record + manifest write.
+5. internal/cli/run.go: render producer session per stage via a SHARED render helper reused with the seat block (run.go:399-411) so the two displays cannot drift.
+
+Verify: make test + lint; new tests — producer Session round-trip/validation (absent / present / failed-retrieval / redaction-fail / bad-enum rejected by validateStage); COPIED-BLOB producer variant end-to-end through WriteManifestTree write AND resume reseed (ArtifactPaths); engine wiring populates Producer.Session for an agentic stage + skips deterministic/shell; run show renders producer session; built-binary etude run show; cross-compile if platform file paths touched.
+Docs -> etude-7ri.6. Out of scope: seat-side (#7), historical backfill.

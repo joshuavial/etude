@@ -1,0 +1,41 @@
+○ etude-7ri.2 · Producer session evidence: add Session to Producer + wire stage runners + run show   [● P2 · OPEN]
+Owner: joshuavial · Type: feature
+Created: 2026-07-02 · Updated: 2026-07-02
+
+DESCRIPTION
+Add the optional Session reference field (per the design bead) to SeatResult and Stage.Producer in internal/runmanifest/manifest.go: session id + a log ArtifactRef (external path ref, or content-addressed when copied). JSON tags, strict decode (KnownFields/DisallowUnknownFields), validation (well-formed id/path; copied blob validated via validateArtifactRef), round-trip, golden update, manifest_version bump if the design requires it.
+
+DESIGN
+Goal: extend #7's shipped gate-seat session evidence to stage-runner PRODUCERS (the only gap). REUSE runmanifest.SessionEvidence + internal/sessionevidence (ScanForSecrets) + envelope pattern. No new type; never drop RedactionStatus/RetrievalStatus.
+
+Plan / Files:
+1. internal/liverun/gate.go: EXTRACT the evidence core of storeSeatSessionEvidence into shared buildSessionEvidence(as, scratch, worktree, sess{id,uri,path}, required)->(*SessionEvidence, note); seat path calls it (no behavior change; re-run seat tests). Take the inner {id,uri,path} directly (decoupled from seat/producer wrappers).
+2. internal/replay/runner.go: add optional RunResult.Session *SessionInfo{SessionID,TranscriptURI,TranscriptPath}. Runner-side: agentic stage runners must actually SET res.Session (explicit population, per codex) — the dev runner surfaces its session; deterministic/shell leave it nil.
+3. internal/runmanifest/manifest.go — SCHEMA + BLAST RADIUS (per Opus BLOCK, verified):
+   - add Producer.Session *SessionEvidence (json "session,omitempty"); producerJSON round-trip; additive optional leaf (NO manifest_version bump — matches occurred_at/env_allowlist/seat.Session; note ParseJSON DisallowUnknownFields => old binaries reject producer.session, an accepted forward-incompat on record).
+   - validateStage MUST call validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session) when non-nil (today only validateSeat validates it) — else malformed/enum-dropped producer.session isn't rejected on parse.
+   - REQUIRED: extend ALL THREE seat-only artifact walkers to also walk stage.Producer.Session.TranscriptArtifact, mirroring the seat branches: ArtifactPaths (manifest.go:335), referencedArtifactPaths (752), WriteManifestTree verify loop (392). Without this a stored producer transcript blob hits ErrUnreferencedArtifact on write (fails runAndCaptureStage) and is dropped on resume.
+4. internal/liverun/engine.go runAndCaptureStage: when producer is agentic (mirror requiresSessionEvidence on producer harness/provider; skip deterministic/shell), build Producer.Session from res.Session via the shared helper (transcript under scratch/worktree) BEFORE the Stage record + manifest write.
+5. internal/cli/run.go: render producer session per stage via a SHARED render helper reused with the seat block (run.go:399-411) so the two displays cannot drift.
+
+Verify: make test + lint; new tests — producer Session round-trip/validation (absent / present / failed-retrieval / redaction-fail / bad-enum rejected by validateStage); COPIED-BLOB producer variant end-to-end through WriteManifestTree write AND resume reseed (ArtifactPaths); engine wiring populates Producer.Session for an agentic stage + skips deterministic/shell; run show renders producer session; built-binary etude run show; cross-compile if platform file paths touched.
+Docs -> etude-7ri.6. Out of scope: seat-side (#7), historical backfill.
+
+
+NOTES
+Plan gate, L2 (opus+codex). r1: codex GO; Opus BLOCK (verified TRUE) — (1) Producer.Session.TranscriptArtifact not walked by ArtifactPaths/referencedArtifactPaths/WriteManifestTree verify -> ErrUnreferencedArtifact on write + dropped on resume; (2) validateStage never calls validateSessionEvidence. Adopted both. r2: Opus GO (high). Result: pass. Optionals folded: shared traversal helper for seat+producer transcript artifacts; round-trip/forward-incompat assertion.
+Final gate (implement+verify) attempt 1, Tier 1/L1: Gemini PASS(5/5), Codex PASS(High), Opus PASS(High). All ground-truthed seat-parity, 3-walker producer coverage, omitempty legacy stability (no manifest_version bump), redaction preserved, best-effort non-fatal. Non-blocking follow-ups (noted, not rework): drop the redundant session_id||transcript_uri check in the seat wrapper; add a test that an agentic producer whose transcript read fails still completes the stage. Docs -> etude-7ri.6. result: pass.
+
+ACCEPTANCE CRITERIA
+SeatResult + Producer carry an optional session reference; strict parse + round-trip + validation tests pass (external ref and copied-blob variants); golden/migration tests updated; make test + lint green.
+
+PARENT
+  ↑ ○ etude-7ri: (EPIC) [epic] Capture agentic-CLI session ids + log references in run artifacts ● P2
+
+DEPENDS ON
+  → ✓ etude-7ri.1: Design: session-reference schema, copy policy, resolver contract, capture-path wiring ● P2
+
+BLOCKS
+  ← ✓ etude-7ri.4: Capture wiring: populate session refs from live gates + stage runners (+ optional copy) ● P2
+  ← ○ etude-7ri.6: Docs: document session-log capture behavior + schema ● P3
+

@@ -1,0 +1,14 @@
+# etude-7ri.2 Final Review
+
+## Diff vs plan
+Exactly the gated (amended) plan: shared buildSessionEvidence extracted (seat path preserved); RunResult.Session added; Producer.Session *SessionEvidence + producerJSON round-trip; validateStage validates producer.session; all 3 artifact walkers cover producer.session via a shared sessionEvidencePath helper; engine populates Producer.Session for agentic stages (best-effort, non-fatal) skipping shell/deterministic; printSessionEvidence shared render for seat+producer. Reused shipped SessionEvidence; RedactionStatus/RetrievalStatus preserved; no manifest_version bump.
+
+## Gates
+- Plan (L2): r1 codex GO / Opus BLOCK (2 verified-true: walker coverage + validateStage) -> adopted; r2 Opus GO.
+- Final (L1, implement+verify): Gemini PASS(5/5), Opus PASS(High), Codex PASS(High).
+
+## Follow-ups (non-blocking, noted)
+- Drop redundant session_id||transcript_uri presence check in the seat wrapper (harmless).
+- Add a test: agentic producer whose transcript read fails still completes the stage.
+
+## Result: pass

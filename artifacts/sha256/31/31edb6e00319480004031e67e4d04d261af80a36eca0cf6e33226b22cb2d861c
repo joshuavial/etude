@@ -1,0 +1,759 @@
+commit 02b962d15cf1eb0bdf76dd00ebf20e5b54d125e1
+Author: joshuavial <git@codewithjv.com>
+Date:   Thu Jul 2 17:53:13 2026 +0800
+
+    capture stage-runner producer session evidence in run manifests
+
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 8d69d6d..02d9799 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -331,6 +331,7 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 		o := stage.Output
+ 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
+ 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
++		printSessionEvidence(out, "  ", stage.Producer.Session)
+ 	}
+ 
+ 	for _, gate := range m.Gates {
+@@ -339,6 +340,25 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 	return nil
+ }
+ 
++// printSessionEvidence renders a *SessionEvidence block with the given indent prefix.
++// It is a no-op when evidence is nil.
++func printSessionEvidence(out io.Writer, indent string, evidence *runmanifest.SessionEvidence) {
++	if evidence == nil {
++		return
++	}
++	if evidence.SessionID != "" {
++		fmt.Fprintf(out, "%ssession_id: %s\n", indent, evidence.SessionID)
++	}
++	if evidence.TranscriptURI != "" {
++		fmt.Fprintf(out, "%stranscript_uri: %s\n", indent, evidence.TranscriptURI)
++	}
++	fmt.Fprintf(out, "%sretrieval: %s\n", indent, evidence.RetrievalStatus)
++	fmt.Fprintf(out, "%sredaction: %s\n", indent, evidence.RedactionStatus)
++	if evidence.TranscriptArtifact != nil {
++		fmt.Fprintf(out, "%stranscript_artifact: %s\n", indent, evidence.TranscriptArtifact.Path)
++	}
++}
++
+ // printGate renders one review-gate attempt in the same flat, indented style as
+ // the stage block. Optional fields (reviewed roles/artifacts, skill, required/
+ // optional feedback, failure note, raw output, decision reasons) print only when
+@@ -396,18 +416,6 @@ func printGate(out io.Writer, g runmanifest.GateAttempt) {
+ 		if s.RawOutput != nil {
+ 			fmt.Fprintf(out, "    raw_output: %s\n", s.RawOutput.Path)
+ 		}
+-		if s.Session != nil {
+-			if s.Session.SessionID != "" {
+-				fmt.Fprintf(out, "    session_id: %s\n", s.Session.SessionID)
+-			}
+-			if s.Session.TranscriptURI != "" {
+-				fmt.Fprintf(out, "    transcript_uri: %s\n", s.Session.TranscriptURI)
+-			}
+-			fmt.Fprintf(out, "    retrieval: %s\n", s.Session.RetrievalStatus)
+-			fmt.Fprintf(out, "    redaction: %s\n", s.Session.RedactionStatus)
+-			if s.Session.TranscriptArtifact != nil {
+-				fmt.Fprintf(out, "    transcript_artifact: %s\n", s.Session.TranscriptArtifact.Path)
+-			}
+-		}
++		printSessionEvidence(out, "    ", s.Session)
+ 	}
+ }
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 670892c..1c221c8 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -329,6 +329,14 @@ func (e *Engine) executeStages(
+ 	return nil
+ }
+ 
++// isAgenticProducer reports whether a stage runner's result indicates an agentic
++// execution that should capture session evidence. Mirrors the harness-side check
++// from requiresSessionEvidence: non-empty and not "shell".
++func isAgenticProducer(harnessName string) bool {
++	h := strings.ToLower(strings.TrimSpace(harnessName))
++	return h != "" && h != "shell"
++}
++
+ // runAndCaptureStage executes a single stage run: resolves the runner,
+ // invokes it, stores the output artifact, appends the Stage record to
+ // completedStages, and writes an incremental CAS manifest commit.
+@@ -380,6 +388,24 @@ func (e *Engine) runAndCaptureStage(
+ 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+ 	}
+ 
++	// Build producer session evidence when the runner returned session info
++	// and the stage is agentic (not deterministic/shell).
++	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
++		sess := sessionInfoFields{
++			SessionID:      res.Session.SessionID,
++			TranscriptURI:  res.Session.TranscriptURI,
++			TranscriptPath: res.Session.TranscriptPath,
++		}
++		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, worktreeDir, sess, false)
++		if evidence != nil {
++			producer.Session = evidence
++		}
++		if note != "" {
++			// Non-fatal: log the note but do not fail the stage.
++			fmt.Fprintf(os.Stderr, "stage %s: session evidence note: %s\n", stageName, note)
++		}
++	}
++
+ 	outputMediaType := res.MediaType
+ 	if outputMediaType == "" {
+ 		outputMediaType = "application/octet-stream"
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index 9f402b7..e7e6fbb 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -446,3 +446,142 @@ func TestEngineAlreadyCompleteResumeErrors(t *testing.T) {
+ 		t.Errorf("expected 'already complete' error, got: %v", err)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// Producer Session Evidence tests (etude-7ri.2)
++// ---------------------------------------------------------------------------
++
++// sessionStubRunner is a runner that writes a transcript file and returns a
++// RunResult with a Session field populated.
++type sessionStubRunner struct {
++	output          []byte
++	transcriptName  string
++	transcriptBytes []byte
++	sessionID       string
++	harnessName     string
++}
++
++func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	path := filepath.Join(req.ScratchDir, r.transcriptName)
++	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++		return replay.RunResult{}, err
++	}
++	if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
++		return replay.RunResult{}, err
++	}
++	return replay.RunResult{
++		Output:    r.output,
++		MediaType: "text/plain; charset=utf-8",
++		Producer: runmanifest.Producer{
++			Harness: runmanifest.Harness{Name: r.harnessName},
++			Skill:   req.Producer.Skill,
++		},
++		Session: &replay.SessionInfo{
++			SessionID:      r.sessionID,
++			TranscriptPath: r.transcriptName,
++		},
++	}, nil
++}
++
++func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	wf := workflow.Workflow{
++		Name: "mywf",
++		Stages: []workflow.Stage{
++			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
++		},
++	}
++
++	stub := &sessionStubRunner{
++		output:          []byte("plan output"),
++		transcriptName:  "transcript.txt",
++		transcriptBytes: []byte("this is the transcript"),
++		sessionID:       "session-abc",
++		harnessName:     "claude-code",
++	}
++
++	runID := "mywf-20260101T000000Z-sesstest1"
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
++		Root:          repo,
++		Now:           fixedClock(),
++	}
++
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	m := readLiveManifest(t, repo, runID)
++	if len(m.Stages) != 1 {
++		t.Fatalf("stages = %d, want 1", len(m.Stages))
++	}
++	sess := m.Stages[0].Producer.Session
++	if sess == nil {
++		t.Fatal("expected non-nil producer.session for agentic stage")
++	}
++	if sess.SessionID != "session-abc" {
++		t.Errorf("session_id = %q, want session-abc", sess.SessionID)
++	}
++	if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
++		t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
++	}
++	if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
++		t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
++	}
++	if sess.TranscriptArtifact == nil {
++		t.Error("expected non-nil transcript_artifact")
++	}
++}
++
++func TestProducerSession_DeterministicStageNilSession(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++
++	wf := workflow.Workflow{
++		Name: "mywf",
++		Stages: []workflow.Stage{
++			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
++		},
++	}
++
++	// Stub with harnessName="shell" — should skip session evidence.
++	stub := &sessionStubRunner{
++		output:          []byte("plan output"),
++		transcriptName:  "transcript.txt",
++		transcriptBytes: []byte("transcript"),
++		sessionID:       "should-be-ignored",
++		harnessName:     "shell",
++	}
++
++	runID := "mywf-20260101T000000Z-sesstest2"
++	e := &Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
++		Root:          repo,
++		Now:           fixedClock(),
++	}
++
++	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    sha,
++	})
++	if err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	m := readLiveManifest(t, repo, runID)
++	if m.Stages[0].Producer.Session != nil {
++		t.Error("expected nil producer.session for shell/deterministic stage")
++	}
++}
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index 9d6ce23..af058b7 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -339,37 +339,42 @@ func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artif
+ 	return &art
+ }
+ 
+-func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, worktreeDir string, env *seatEnvelope, required bool) (*runmanifest.SessionEvidence, string) {
+-	if env == nil || env.Session == nil {
+-		if required {
+-			return nil, "agentic seat did not provide session evidence"
+-		}
+-		return nil, ""
+-	}
++// sessionInfoFields holds the minimal session identity needed by buildSessionEvidence.
++// Callers (seat envelope, runner result) fill this from their respective structs.
++type sessionInfoFields struct {
++	SessionID      string
++	TranscriptURI  string
++	TranscriptPath string
++}
+ 
+-	session := env.Session
++// buildSessionEvidence is the shared core for building SessionEvidence from a
++// session info triple. artifactRole is used as the artifact content role
++// (e.g. "seatName-transcript" or "stageName-transcript"). scratchDir and
++// worktreeDir are used by resolveTranscriptPath when the transcript path is
++// relative. required controls whether a missing transcript path is fatal.
++func buildSessionEvidence(as *artifactstore.Store, artifactRole, scratchDir, worktreeDir string, sess sessionInfoFields, required bool) (*runmanifest.SessionEvidence, string) {
+ 	evidence := &runmanifest.SessionEvidence{
+-		SessionID:       session.SessionID,
+-		TranscriptURI:   session.TranscriptURI,
++		SessionID:       sess.SessionID,
++		TranscriptURI:   sess.TranscriptURI,
+ 		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+ 		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+ 	}
+-	if strings.TrimSpace(session.SessionID) == "" && strings.TrimSpace(session.TranscriptURI) == "" {
+-		return nil, "seat session evidence requires session_id or transcript_uri"
++	if strings.TrimSpace(sess.SessionID) == "" && strings.TrimSpace(sess.TranscriptURI) == "" {
++		return nil, "session evidence requires session_id or transcript_uri"
+ 	}
+-	if strings.TrimSpace(session.TranscriptPath) == "" {
++	if strings.TrimSpace(sess.TranscriptPath) == "" {
+ 		if required {
+-			return nil, "agentic seat session evidence requires transcript_path"
++			return nil, "session evidence requires transcript_path"
+ 		}
+ 		return evidence, ""
+ 	}
+ 
+-	transcriptPath, transcriptRoot := resolveTranscriptPath(session.TranscriptPath, seatScratch, worktreeDir)
++	transcriptPath, transcriptRoot := resolveTranscriptPath(sess.TranscriptPath, scratchDir, worktreeDir)
+ 	content, err := sessionevidence.ReadRegularFileUnder(transcriptRoot, transcriptPath)
+ 	if err != nil {
+ 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+ 		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
+-		return evidence, fmt.Sprintf("read transcript %s: %v", session.TranscriptPath, err)
++		return evidence, fmt.Sprintf("read transcript %s: %v", sess.TranscriptPath, err)
+ 	}
+ 	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
+ 	if err := sessionevidence.ScanForSecrets(content); err != nil {
+@@ -378,7 +383,7 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
+ 	}
+ 	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
+ 
+-	artifact, err := as.AddContent(seatName+"-transcript", artifactmedia.Infer(transcriptPath), content)
++	artifact, err := as.AddContent(artifactRole, artifactmedia.Infer(transcriptPath), content)
+ 	if err != nil {
+ 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+ 		return evidence, fmt.Sprintf("store transcript artifact: %v", err)
+@@ -388,6 +393,24 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
+ 	return evidence, ""
+ }
+ 
++func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, worktreeDir string, env *seatEnvelope, required bool) (*runmanifest.SessionEvidence, string) {
++	if env == nil || env.Session == nil {
++		if required {
++			return nil, "agentic seat did not provide session evidence"
++		}
++		return nil, ""
++	}
++	session := env.Session
++	if strings.TrimSpace(session.SessionID) == "" && strings.TrimSpace(session.TranscriptURI) == "" {
++		return nil, "seat session evidence requires session_id or transcript_uri"
++	}
++	return buildSessionEvidence(as, seatName+"-transcript", seatScratch, worktreeDir, sessionInfoFields{
++		SessionID:      session.SessionID,
++		TranscriptURI:  session.TranscriptURI,
++		TranscriptPath: session.TranscriptPath,
++	}, required)
++}
++
+ func resolveTranscriptPath(pathValue, seatScratch, worktreeDir string) (string, string) {
+ 	if filepath.IsAbs(pathValue) {
+ 		if rel, err := filepath.Rel(seatScratch, pathValue); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+diff --git a/internal/replay/runner.go b/internal/replay/runner.go
+index 3fe2914..33a5680 100644
+--- a/internal/replay/runner.go
++++ b/internal/replay/runner.go
+@@ -46,16 +46,30 @@ type RunRequest struct {
+ 	Producer        runmanifest.Producer
+ }
+ 
++// SessionInfo carries the session identity produced by an agentic runner.
++// Deterministic and shell runners leave RunResult.Session nil.
++// When a runner (e.g. a dev runner) has a session sidecar or envelope, it
++// populates this field; engine.go wires it into Producer.Session evidence.
++type SessionInfo struct {
++	SessionID      string
++	TranscriptURI  string
++	TranscriptPath string
++}
++
+ // RunResult is the outcome of a stage execution.
+ //
+ // MediaType: if empty, Run() defaults it to req.OutputMediaType.
+ //
+ // Producer is the producer identity actually used; MAY differ from req.Producer
+ // (e.g. when the replay uses a newer skill version/model).
++//
++// Session, when non-nil, carries the session identity for agentic runners.
++// Deterministic and shell runners leave this nil.
+ type RunResult struct {
+ 	Output    []byte
+ 	MediaType string               // if empty, Run defaults it to req.OutputMediaType
+ 	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
++	Session   *SessionInfo         // non-nil when the runner has a session (agentic only)
+ }
+ 
+ // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index ec3072d..cd61576 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -191,6 +191,9 @@ type Producer struct {
+ 	Harness Harness
+ 	Model   string
+ 	Skill   Skill
++	// Session, when non-nil, carries durable transcript/session evidence for
++	// agentic stage producers. Absent for deterministic and shell stages.
++	Session *SessionEvidence
+ }
+ 
+ type ArtifactRef struct {
+@@ -319,6 +322,17 @@ func ParseJSON(content []byte) (Manifest, error) {
+ 	return manifest, nil
+ }
+ 
++// sessionEvidencePath returns the TranscriptArtifact path from e, or "" when
++// e is nil or has no artifact. Using this helper ensures all three artifact
++// walkers (ArtifactPaths, WriteManifestTree verify loop, referencedArtifactPaths)
++// share one place to collect per-carrier evidence paths.
++func sessionEvidencePath(e *SessionEvidence) string {
++	if e != nil && e.TranscriptArtifact != nil {
++		return e.TranscriptArtifact.Path
++	}
++	return ""
++}
++
+ func ArtifactPaths(manifest Manifest) []string {
+ 	seen := make(map[string]struct{})
+ 	for _, stage := range manifest.Stages {
+@@ -332,11 +346,16 @@ func ArtifactPaths(manifest Manifest) []string {
+ 			if seat.RawOutput != nil {
+ 				seen[seat.RawOutput.Path] = struct{}{}
+ 			}
+-			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+-				seen[seat.Session.TranscriptArtifact.Path] = struct{}{}
++			if p := sessionEvidencePath(seat.Session); p != "" {
++				seen[p] = struct{}{}
+ 			}
+ 		}
+ 	}
++	for _, stage := range manifest.Stages {
++		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
++			seen[p] = struct{}{}
++		}
++	}
+ 	paths := make([]string, 0, len(seen))
+ 	for path := range seen {
+ 		paths = append(paths, path)
+@@ -396,6 +415,13 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
+ 			}
+ 		}
+ 	}
++	for _, stage := range manifest.Stages {
++		if stage.Producer.Session != nil && stage.Producer.Session.TranscriptArtifact != nil {
++			if err := verifyArtifactFile(*stage.Producer.Session.TranscriptArtifact, files, hashes); err != nil {
++				return "", err
++			}
++		}
++	}
+ 
+ 	out := make(map[string][]byte, len(files)+1)
+ 	for filePath, content := range files {
+@@ -463,6 +489,11 @@ func validateStage(index int, stage Stage) error {
+ 	if err := validateArtifactRef(stage.Output); err != nil {
+ 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
+ 	}
++	if stage.Producer.Session != nil {
++		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
++			return err
++		}
++	}
+ 	return nil
+ }
+ 
+@@ -749,11 +780,16 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
+ 			if seat.RawOutput != nil {
+ 				paths[seat.RawOutput.Path] = struct{}{}
+ 			}
+-			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+-				paths[seat.Session.TranscriptArtifact.Path] = struct{}{}
++			if p := sessionEvidencePath(seat.Session); p != "" {
++				paths[p] = struct{}{}
+ 			}
+ 		}
+ 	}
++	for _, stage := range manifest.Stages {
++		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
++			paths[p] = struct{}{}
++		}
++	}
+ 	return paths
+ }
+ 
+@@ -991,6 +1027,7 @@ type producerJSON struct {
+ 	Harness *harnessJSON `json:"harness,omitempty"`
+ 	Model   string       `json:"model,omitempty"`
+ 	Skill   *skillJSON   `json:"skill,omitempty"`
++	Session *sessionJSON `json:"session,omitempty"`
+ }
+ 
+ type artifactJSON struct {
+@@ -1041,6 +1078,9 @@ func (m Manifest) toJSON() manifestJSON {
+ 				Version: skillForProducer.Version,
+ 			},
+ 		}
++		if stage.Producer.Session != nil {
++			producerBlock.Session = stage.Producer.Session.toJSON()
++		}
+ 
+ 		var replayOfBlock *replayOfJSON
+ 		if stage.ReplayOf != nil {
+@@ -1381,10 +1421,15 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 				Version: s.Producer.Harness.Version,
+ 			}
+ 		}
++		var producerSession *SessionEvidence
++		if s.Producer.Session != nil {
++			producerSession = s.Producer.Session.toSessionEvidence()
++		}
+ 		producer = Producer{
+ 			Harness: harness,
+ 			Model:   s.Producer.Model,
+ 			Skill:   skill,
++			Session: producerSession,
+ 		}
+ 	} else if s.Skill != nil {
+ 		// Legacy manifest: top-level skill block only, no producer.
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 77cbb47..49f03e0 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1999,3 +1999,237 @@ func TestOccurredAtExistingManifestNoKey(t *testing.T) {
+ 		t.Fatalf("OccurredAt should be zero for legacy manifest, got %v", parsed.OccurredAt)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// Producer Session Evidence tests (etude-7ri.2)
++// ---------------------------------------------------------------------------
++
++// makeBaseManifest returns a minimal valid manifest with one stage.
++func makeBaseManifest(t *testing.T) (Manifest, *artifactstore.Store) {
++	t.Helper()
++	as := artifactstore.New()
++	input, err := as.AddContent("task", "text/plain", []byte("task content"))
++	if err != nil {
++		t.Fatalf("AddContent task: %v", err)
++	}
++	output, err := as.AddContent("plan", "text/plain", []byte("plan content"))
++	if err != nil {
++		t.Fatalf("AddContent plan: %v", err)
++	}
++	m := Manifest{
++		RunID:           "mywf-20260101T000000Z-abcd1234",
++		Workflow:        "mywf",
++		WorkflowVersion: "mywf-v1",
++		Created:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
++		Refs:            map[string]string{},
++		Stages: []Stage{{
++			Name:       "plan",
++			ProducedBy: "original",
++			GitSHA:     "abc123",
++			Skill:      Skill{ID: "dev-workflow", Repo: "r", Version: "v1"},
++			Producer:   Producer{Skill: Skill{ID: "dev-workflow", Repo: "r", Version: "v1"}},
++			Inputs:     []ArtifactRef{ArtifactFromManifestArtifact(input)},
++			Output:     ArtifactFromManifestArtifact(output),
++			Timestamp:  time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC),
++		}},
++	}
++	return m, as
++}
++
++func TestProducerSession_Absent(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	m2, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if m2.Stages[0].Producer.Session != nil {
++		t.Error("expected nil producer.session after round-trip")
++	}
++	_ = as
++}
++
++func TestProducerSession_PresentIDOnly(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-123",
++		RetrievalStatus: SessionEvidenceNotApplicable,
++		RedactionStatus: SessionEvidenceNotApplicable,
++	}
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	m2, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	sess := m2.Stages[0].Producer.Session
++	if sess == nil {
++		t.Fatal("expected non-nil producer.session after round-trip")
++	}
++	if sess.SessionID != "sid-123" {
++		t.Errorf("session_id = %q, want sid-123", sess.SessionID)
++	}
++	if sess.TranscriptArtifact != nil {
++		t.Error("expected nil transcript_artifact")
++	}
++	_ = as
++}
++
++func TestProducerSession_WithTranscriptArtifact(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	transcript, err := as.AddContent("plan-transcript", "text/plain", []byte("transcript content"))
++	if err != nil {
++		t.Fatalf("AddContent transcript: %v", err)
++	}
++	ref := ArtifactFromManifestArtifact(transcript)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:          "sid-abc",
++		TranscriptArtifact: &ref,
++		RetrievalStatus:    SessionEvidenceRetrievalImported,
++		RedactionStatus:    SessionEvidenceRedactionPassed,
++	}
++
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	m2, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	sess := m2.Stages[0].Producer.Session
++	if sess == nil {
++		t.Fatal("expected non-nil producer.session")
++	}
++	if sess.TranscriptArtifact == nil {
++		t.Fatal("expected non-nil transcript_artifact")
++	}
++	if sess.TranscriptArtifact.Path != ref.Path {
++		t.Errorf("path = %q, want %q", sess.TranscriptArtifact.Path, ref.Path)
++	}
++	if sess.RetrievalStatus != SessionEvidenceRetrievalImported {
++		t.Errorf("retrieval = %q, want imported", sess.RetrievalStatus)
++	}
++
++	// ArtifactPaths must include the transcript path (resume reseed).
++	paths := ArtifactPaths(m)
++	found := false
++	for _, p := range paths {
++		if p == ref.Path {
++			found = true
++			break
++		}
++	}
++	if !found {
++		t.Errorf("ArtifactPaths does not include producer transcript path %q; got %v", ref.Path, paths)
++	}
++
++	// WriteManifestTree must pass (not ErrUnreferencedArtifact).
++	repo := initGitRepo(t)
++	store := refstore.New(repo)
++	files := as.Files()
++	_, err = WriteManifestTree(context.Background(), store, "refs/etude/runs/", m, files, refstore.WriteOptions{Message: "test"})
++	if err != nil {
++		t.Fatalf("WriteManifestTree: %v", err)
++	}
++}
++
++func TestProducerSession_FailedRetrieval(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-xyz",
++		RetrievalStatus: SessionEvidenceFailed,
++		RedactionStatus: SessionEvidenceNotApplicable,
++	}
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	_ = as
++}
++
++func TestProducerSession_RedactionFail(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-xyz",
++		RetrievalStatus: SessionEvidenceRetrievalImported,
++		RedactionStatus: SessionEvidenceFailed,
++	}
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	_ = as
++}
++
++func TestProducerSession_InvalidRetrievalRejected(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-xyz",
++		RetrievalStatus: "bad-status",
++		RedactionStatus: SessionEvidenceNotApplicable,
++	}
++	err := m.Validate()
++	if err == nil {
++		t.Fatal("expected validation error for bad retrieval_status")
++	}
++	if !errors.Is(err, ErrInvalidManifest) {
++		t.Errorf("expected ErrInvalidManifest, got %v", err)
++	}
++	_ = as
++}
++
++func TestProducerSession_InvalidRedactionRejected(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-xyz",
++		RetrievalStatus: SessionEvidenceNotApplicable,
++		RedactionStatus: "bad-redaction",
++	}
++	err := m.Validate()
++	if err == nil {
++		t.Fatal("expected validation error for bad redaction_status")
++	}
++	if !errors.Is(err, ErrInvalidManifest) {
++		t.Errorf("expected ErrInvalidManifest, got %v", err)
++	}
++	_ = as
++}
++
++func TestProducerSession_DisallowUnknownFields(t *testing.T) {
++	m, as := makeBaseManifest(t)
++	m.Stages[0].Producer.Session = &SessionEvidence{
++		SessionID:       "sid-123",
++		RetrievalStatus: SessionEvidenceNotApplicable,
++		RedactionStatus: SessionEvidenceNotApplicable,
++	}
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	// Inject unknown field into session object.
++	injected := strings.Replace(string(raw),
++		`"session_id": "sid-123"`,
++		`"session_id": "sid-123", "unknown_field": "bad"`,
++		1)
++	if injected == string(raw) {
++		t.Fatal("injection did not modify JSON (check field name)")
++	}
++	_, err = ParseJSON([]byte(injected))
++	if err == nil {
++		t.Fatal("expected error for unknown field in producer.session, got nil")
++	}
++	_ = as
++}
