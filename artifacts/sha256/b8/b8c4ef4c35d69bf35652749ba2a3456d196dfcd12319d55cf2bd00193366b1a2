@@ -1,0 +1,1323 @@
+commit 5d8ff55b829dc30d527da4f09989f8c129c07855
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 07:01:00 2026 +0800
+
+    add dogfood completeness audit script
+
+diff --git a/Makefile b/Makefile
+index e0fb053..732c2e0 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@ BIN_DIR := bin
+ VERSION ?= dev
+ DOCS_DIR := docs/cli
+ 
+-.PHONY: build test lint clean docs docs-check docs-reality reconcile example
++.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test
+ 
+ build:
+ 	mkdir -p $(BIN_DIR)
+@@ -41,3 +41,12 @@ reconcile:
+ 
+ example: build
+ 	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh
++
++# Dogfood completeness audit: check whether recent closed beads have run refs,
++# gate records, and pushed refs. Uses --last 9 by default.
++dogfood-audit:
++	@bash scripts/dogfood-completeness-audit.sh --last 9
++
++# Fixture-based tests for dogfood-completeness-audit.sh.
++dogfood-audit-test:
++	@bash scripts/dogfood-completeness-audit_test.sh
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index 094afa2..114716b 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -49,3 +49,13 @@ After a context clear or when starting a new ticket, boot into productive state:
+   dogfood completeness failure and the `etude-8hq` enforcement phase.
+ - [Artifacts](artifacts/) - committed dogfood capture artifacts for external
+   files or large outputs that are referenced from bead notes.
++
++## Dogfood Scripts
++
++| Script | Purpose |
++|--------|---------|
++| `scripts/dogfood-capture.sh` | Capture a closed bead's dev-workflow phases as an etude run and push the ref. |
++| `scripts/dogfood-gate-capture.sh` | Append a structured gate attempt to a bead's run and push. |
++| `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
++| `scripts/docs-reality-check.sh` | Guard against doc/CLI drift (also run via `make docs-reality`). |
++| `scripts/backfill-gate-records.sh` | One-time backfill of missing gate records. |
+diff --git a/docs/plans/dogfood/capture-protocol.md b/docs/plans/dogfood/capture-protocol.md
+index 6446331..f7166aa 100644
+--- a/docs/plans/dogfood/capture-protocol.md
++++ b/docs/plans/dogfood/capture-protocol.md
+@@ -452,6 +452,102 @@ At bead close:
+ - commit and push repository changes
+ - run `bd dolt push` for bead storage
+ 
++## Dogfood Completeness Audit
++
++`scripts/dogfood-completeness-audit.sh` mechanically checks whether closed
++beads have their dogfood artifacts. It is the reusable scripted version of the
++manual B16 completeness check from the retro ledger.
++
++### Usage
++
++```
++scripts/dogfood-completeness-audit.sh [--bead <id>]
++                                       [--last <N>] [--since <date>]
++                                       [--quiet] [--json]
++```
++
++- `--bead <id>`: Audit exactly one closed bead. This is the mode `etude-8hq.1`
++  calls at close/push time. Hard checks only for that bead; no window or
++  cadence check.
++- `--last <N>` (default 9): Audit the N most-recently-closed in-scope beads.
++- `--since <date>`: Audit beads closed on/after an ISO date (YYYY-MM-DD).
++- `--quiet`: Suppress per-check PASS lines; still print gaps and summary.
++- `--json`: Emit `{"checks":N,"gaps":[...],"exit":N}` for the gate.
++
++### What it checks
++
++For each in-scope, non-allowlisted bead:
++
++- **(a) Run ref present** (hard, both modes): `refs/etude/runs/<id>` must
++  exist in the local git repo.
++- **(b) Gated run has gate records** (hard, both modes): the run's
++  `manifest.json` must have at least one entry in `gates[]`. Read via
++  `git cat-file -p <ref>:manifest.json`.
++- **(c) Cadence retro not overdue** (WARN only, batch mode only): if 3 or
++  more in-scope beads are not covered by any cadence-retro ref, prints a
++  warning. Never affects the exit code. Not run in `--bead` mode (a cadence
++  retro is written AFTER the cohort's third bead closes, so gating an
++  individual close on its existence is a deadlock).
++- **(d) Refs pushed** (hard): in batch mode, every `refs/etude/{runs,retros}/*`
++  must be present on origin with a matching SHA. In `--bead` mode, only that
++  bead's own run ref is checked.
++- **(e) Docs drift** (WARN only, both modes): in batch mode runs
++  `make docs-check` and `make docs-reality` and warns on failure. In `--bead`
++  mode, warns only if the manifest's `git_sha` touched `docs/`.
++- **(f) Bypass report**: always prints allowlisted beads with their reasons so
++  exceptions are visible. Never affects exit.
++
++### Exit codes
++
++- `0` — all hard checks passed (warnings are allowed).
++- `1` — one or more hard gaps found.
++- `2` — usage error or environment problem (build failed, no closed beads).
++
++### Allowlist
++
++`scripts/dogfood-completeness-allow.txt` lists beads that are exempt from the
++run-ref / gates checks. Format:
++
++```
++<bead-id>  # reason
++```
++
++Blank lines and `#` comment lines are ignored. A bypassed bead is always
++reported in the output (`bypass: <id> — <reason>`) but does not cause a
++non-zero exit.
++
++**How to add a bypass:** add a line with the bead id and a written reason,
++then commit the change. Every bypass is visible in the audit output on every
++run. Use sparingly — only for legitimate exceptions such as epic/rollup beads,
++pre-dogfood-habit beads, and deferred beads. A missing reason or an
++over-broad entry obscures real gaps.
++
++Seeded exceptions (at the time this was written): epic/rollup beads
++(`etude-14r`, `etude-roadmap.1`, `etude-roadmap.2`, etc.), the
++`etude-nm6` backfill task, two deferred beads (`etude-8b7`, `etude-9ey`),
++and all pre-dogfood-habit infra/process/docs beads closed before run capture
++began.
++
++### Routine use
++
++For a routine completeness sweep:
++
++```bash
++scripts/dogfood-completeness-audit.sh --last 9
++```
++
++For a sweep of all post-habit work since a specific date:
++
++```bash
++scripts/dogfood-completeness-audit.sh --since 2026-05-18
++```
++
++For the close-gate check (called by `etude-8hq.1` wiring):
++
++```bash
++scripts/dogfood-completeness-audit.sh --bead <id>
++```
++
+ ## Open Questions
+ 
+ - The first `etude import` implementation should decide whether to preserve
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index 4ab0f10..a93623a 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -870,6 +870,13 @@ the bead's etude run:
+ > `etude run show <bead> | grep -c gate`. The 14-bead historical gap was
+ > backfilled 2026-05-27 (35 GateAttempt records, etude-nm6) from the recorded
+ > gate histories; the going-forward rule is: every gate attempt gets a record.
++>
++> **Mechanical completeness check:** `scripts/dogfood-completeness-audit.sh`
++> automates the B16 completeness check (run ref present, gates non-empty,
++> refs pushed). Run `scripts/dogfood-completeness-audit.sh --last 9` for a
++> batch sweep, or `--bead <id>` per close. See
++> [Dogfood Completeness Audit](capture-protocol.md#dogfood-completeness-audit)
++> in the capture protocol for full usage and the allowlist mechanism.
+ 
+ Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
+ COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose
+diff --git a/scripts/dogfood-completeness-allow.txt b/scripts/dogfood-completeness-allow.txt
+new file mode 100644
+index 0000000..6d68bfe
+--- /dev/null
++++ b/scripts/dogfood-completeness-allow.txt
+@@ -0,0 +1,53 @@
++# dogfood-completeness-audit allowlist: beads that are EXEMPT from the
++# run-ref-required / gates-required checks.
++# Format: <bead-id>  # reason
++# Blank lines and #-comment lines are ignored.
++# Each listed bead is REPORTED as "bypass: <bead> — <reason>" by the audit
++# (so exceptions remain visible + auditable in the output) but does NOT
++# cause a non-zero exit.
++# Keep this list minimal and justify each entry.
++#
++# How to add an exemption:
++#   1. Add a line: <bead-id>  # <reason>
++#   2. Commit the change with a short rationale in the commit message.
++#   3. The audit will report the bypass in its output on every run.
++
++# --- backfill / process beads ---
++etude-nm6  # gate-backfill task, no code run — captured the 14 missing gate records
++
++# --- deferred beads (no run because work was reserved/deferred, not shipped) ---
++etude-8b7  # deferred (reserved scaffolding — remove dead artifactstore pointer chain)
++etude-9ey  # deferred (needs sidecar data — cross-retro failure-mode index)
++
++# --- epic/rollup beads (closed when all children shipped; no direct code run) ---
++etude-14r        # epic rollup — retro capture; children q87+8t4 have runs
++etude-phase-prep # epic rollup — dev-workflow overhaul; children have runs
++etude-roadmap.1  # epic rollup — producer identity; children 1.1..1.4 have runs
++etude-roadmap.2  # epic rollup — gate reviewer visibility; children 2.1..2.6 have runs
++etude-bench-command  # epic rollup — etude bench; children bench-command.1..4 have runs
++
++# --- pre-dogfood-habit infra/process beads (closed before run capture began) ---
++etude-go-cli-scaffold     # pre-habit infra — scaffold Go CLI project
++etude-phase0              # pre-habit rollup — core schema+storage+capture
++etude-run-manifest        # pre-habit — define and write run manifests
++etude-artifact-store      # pre-habit — content-addressed artifact store
++etude-ref-store           # pre-habit — refs/etude/* git storage
++etude-workflow-schema     # pre-habit — workflow.yaml schema and validation
++etude-init-command        # pre-habit — etude init command
++etude-capture-manual      # pre-habit — manual capture command
++etude-skill-runner-adapter # pre-habit — skill-runner adapter
++etude-consolidate-test-qa  # pre-habit process — consolidate test/QA workflow
++etude-overhaul-dev-workflow-skill # pre-habit process — overhaul dev-workflow skill
++etude-agent-workflow-audit # pre-habit process — audit Claude dev agents
++etude-dogfood-capture-protocol # pre-habit process — define capture protocol
++etude-b1p               # pre-habit docs — document dogfood backlog + docs hygiene
++etude-dvy               # pre-habit docs — add dogfood session boot doc
++etude-jpf               # pre-habit docs — define retro capture in dogfood protocol
++etude-update-docs-agent  # pre-habit process — update docs agent
++etude-update-review-agent # pre-habit process — update review agent
++etude-lxg               # pre-habit infra — remove ActiveCampaign MCP configuration
++etude-phase2.1          # pre-habit — reconstruct original stage inputs for replay
++etude-phase2.2          # pre-habit — check out recorded git_sha in throwaway worktree
++etude-phase2.3          # pre-habit — define skill-runner interface and stub runner
++etude-phase2.4          # pre-habit — implement exec-command skill runner
++etude-phase2.5          # pre-habit — record replay output and link to source run
+diff --git a/scripts/dogfood-completeness-audit.sh b/scripts/dogfood-completeness-audit.sh
+new file mode 100755
+index 0000000..430c9dc
+--- /dev/null
++++ b/scripts/dogfood-completeness-audit.sh
+@@ -0,0 +1,565 @@
++#!/usr/bin/env bash
++#
++# dogfood-completeness-audit.sh — audit whether closed beads have their etude
++# dogfood artifacts (run refs, gate records, pushed refs).
++#
++# Modes:
++#   --bead <id>        Audit exactly ONE bead (the mode etude-8hq.1 gates close/push on).
++#                      Hard checks: (a) refs/etude/runs/<id> exists,
++#                                   (b) its manifest has gates (unless allowlisted),
++#                                   (d) that bead's run ref is pushed to origin.
++#                      DOES NOT run the window, cadence (c), or repo-wide ref sweep.
++#                      Exit 1 only on a hard gap for THAT bead.
++#
++#   --last <N>         Audit the N most-recently-closed in-scope beads (default: 9).
++#   --since <date>     Audit beads closed on/after the ISO date (YYYY-MM-DD).
++#                      --bead, --last, and --since are mutually exclusive (exit 2 if combined).
++#
++#   --quiet            Suppress per-check PASS lines; still print gaps + summary.
++#   --json             Emit machine-readable {"checks":N,"gaps":[...],"exit":N}.
++#
++# Exit codes:
++#   0  complete (all hard checks passed; warnings are fine)
++#   1  one or more hard gaps
++#   2  usage / environment error (bad flags, build failure, no closed beads)
++#
++# Checks (batch = --last/--since; bead = --bead):
++#   (a) run-ref present — refs/etude/runs/<id> exists.         [hard; both modes]
++#   (b) gated run has gates — manifest.gates non-empty.        [hard; both modes]
++#   (c) cadence retro not overdue — every 3 closed beads.      [WARN only; batch only]
++#   (d) refs pushed — every refs/etude/{runs,retros}/* matches origin.
++#                                                              [hard batch (repo-wide);
++#                                                               hard bead (that ref only)]
++#   (e) docs drift — make docs-check/docs-reality if docs touched.[WARN only; both modes]
++#   (f) bypass report — print allowlisted beads + reasons.     [info; never affects exit]
++#
++# Allowlist: scripts/dogfood-completeness-allow.txt
++#   Format: <bead-id>  # reason
++#   Bypassed beads are reported but do NOT cause exit 1.
++#
++# Style follows scripts/docs-reality-check.sh and scripts/dogfood-capture.sh.
++set -euo pipefail
++
++repo_root="$(git rev-parse --show-toplevel)"
++cd "$repo_root"
++
++allow="scripts/dogfood-completeness-allow.txt"
++
++# ---------------------------------------------------------------------------
++# Argument parsing
++# ---------------------------------------------------------------------------
++mode=""
++bead_arg=""
++last_n=9
++since_date=""
++quiet=false
++json_out=false
++
++usage() {
++  cat >&2 <<'USAGE'
++usage: scripts/dogfood-completeness-audit.sh [--bead <id>]
++                                              [--last <N>] [--since <date>]
++                                              [--quiet] [--json]
++USAGE
++  exit 2
++}
++
++mode_flags=0   # count of mutually-exclusive mode flags (--bead/--last/--since)
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --bead)
++      [[ $# -ge 2 ]] || { echo "error: --bead requires an argument" >&2; usage; }
++      bead_arg="$2"; mode="bead"; mode_flags=$((mode_flags+1)); shift 2 ;;
++    --last)
++      [[ $# -ge 2 ]] || { echo "error: --last requires an argument" >&2; usage; }
++      last_n="$2"; mode="last"; mode_flags=$((mode_flags+1)); shift 2 ;;
++    --since)
++      [[ $# -ge 2 ]] || { echo "error: --since requires an argument" >&2; usage; }
++      since_date="$2"; mode="since"; mode_flags=$((mode_flags+1)); shift 2 ;;
++    --quiet)  quiet=true;    shift ;;
++    --json)   json_out=true; shift ;;
++    *) echo "error: unknown argument: $1" >&2; usage ;;
++  esac
++done
++
++# --bead, --last, --since are mutually exclusive (one mode per invocation).
++if [[ "$mode_flags" -gt 1 ]]; then
++  echo "error: --bead, --last, and --since are mutually exclusive" >&2
++  exit 2
++fi
++
++# Default to --last 9 when no mode given
++[[ -z "$mode" ]] && mode="last"
++
++# Validate --last argument
++if [[ "$mode" == "last" ]]; then
++  if ! [[ "$last_n" =~ ^[0-9]+$ ]] || [[ "$last_n" -lt 1 ]]; then
++    echo "error: --last requires a positive integer, got: $last_n" >&2
++    exit 2
++  fi
++fi
++
++# ---------------------------------------------------------------------------
++# Finding accumulators
++# ---------------------------------------------------------------------------
++findings=()   # hard gaps:  "<category>|<id>|<message>"
++warnings=()   # warn-only:  "<category>|<id>|<message>"
++bypasses=()   # bypasses:   "<bead>|<reason>"
++check_count=0
++
++log_pass() {   # <message>
++  $quiet || echo "  PASS $1"
++  (( check_count++ )) || true
++}
++log_gap() {    # <category> <id> <message>
++  findings+=("$1|$2|$3")
++  echo "  GAP  [$1] $2 — $3" >&2
++  (( check_count++ )) || true
++}
++log_warn() {   # <category> <id> <message>
++  warnings+=("$1|$2|$3")
++  echo "  WARN [$1] $2 — $3"
++}
++log_bypass() { # <bead> <reason>
++  bypasses+=("$1|$2")
++  echo "  bypass: $1 — $2"
++}
++
++# ---------------------------------------------------------------------------
++# Load allowlist
++# ---------------------------------------------------------------------------
++declare -A allowlist_reason   # bead_id -> reason
++if [[ -f "$allow" ]]; then
++  while IFS= read -r line; do
++    [[ "$line" =~ ^[[:space:]]*$  ]] && continue
++    [[ "$line" =~ ^[[:space:]]*# ]] && continue
++    bead_part="${line%%#*}"
++    reason_part="${line#*#}"
++    # Trim leading/trailing whitespace from each part
++    bead_part="$(echo "$bead_part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
++    reason_part="$(echo "$reason_part" | sed 's/^[[:space:]]*//')"
++    [[ -n "$bead_part" ]] && allowlist_reason["$bead_part"]="$reason_part"
++  done < "$allow"
++fi
++
++is_allowlisted() {
++  [[ -v "allowlist_reason[$1]" ]]
++}
++
++# ---------------------------------------------------------------------------
++# Build etude fresh (like all other dogfood scripts)
++# Allow DOGFOOD_AUDIT_ETUDE_BIN override so tests can inject a pre-built binary
++# and avoid rebuilding in a throwaway repo that has no Go source.
++# ---------------------------------------------------------------------------
++bindir="$(mktemp -d)"
++trap 'rm -rf "$bindir"' EXIT
++if [[ -n "${DOGFOOD_AUDIT_ETUDE_BIN:-}" ]]; then
++  bin="$DOGFOOD_AUDIT_ETUDE_BIN"
++  echo "dogfood-completeness-audit: using pre-built etude: $bin"
++else
++  bin="$bindir/etude"
++  echo "dogfood-completeness-audit: building etude from source..."
++  if ! go build -o "$bin" ./cmd/etude 2>&1; then
++    echo "error: go build failed" >&2
++    exit 2
++  fi
++fi
++
++# ---------------------------------------------------------------------------
++# Load closed beads from bd
++# ---------------------------------------------------------------------------
++bd_json_file="$(mktemp)"
++# mktemp file is cleaned up by trap via bindir; add it separately
++trap 'rm -rf "$bindir" "$bd_json_file"' EXIT
++
++if ! bd list --status closed --json > "$bd_json_file" 2>/dev/null; then
++  echo "error: 'bd list --status closed --json' failed" >&2
++  exit 2
++fi
++
++total_closed="$(python3 -c "
++import json, sys
++data = open(sys.argv[1]).read()
++print(len(json.loads(data)))
++" "$bd_json_file")"
++
++if [[ "$total_closed" -eq 0 ]]; then
++  echo "dogfood-completeness-audit: no closed beads found" >&2
++  exit 2
++fi
++
++# ---------------------------------------------------------------------------
++# Determine in-scope bead set
++# ---------------------------------------------------------------------------
++in_scope_ids=()
++
++if [[ "$mode" == "bead" ]]; then
++  in_scope_ids=("$bead_arg")
++
++elif [[ "$mode" == "last" ]]; then
++  while IFS= read -r line; do
++    [[ -n "$line" ]] && in_scope_ids+=("$line")
++  done < <(python3 -c "
++import json, sys
++beads = json.loads(open(sys.argv[1]).read())
++sorted_beads = sorted(beads, key=lambda b: b.get('closed_at',''), reverse=True)
++for b in sorted_beads[:int(sys.argv[2])]:
++    print(b['id'])
++" "$bd_json_file" "$last_n")
++
++elif [[ "$mode" == "since" ]]; then
++  while IFS= read -r line; do
++    [[ -n "$line" ]] && in_scope_ids+=("$line")
++  done < <(python3 -c "
++import json, sys
++beads = json.loads(open(sys.argv[1]).read())
++since = sys.argv[2]
++for b in sorted(beads, key=lambda b: b.get('closed_at',''), reverse=True):
++    ca = b.get('closed_at','')[:10]
++    if ca >= since:
++        print(b['id'])
++" "$bd_json_file" "$since_date")
++fi
++
++if [[ "${#in_scope_ids[@]}" -eq 0 ]]; then
++  echo "dogfood-completeness-audit: no in-scope beads for the given window" >&2
++  exit 2
++fi
++
++echo ""
++echo "dogfood-completeness-audit: mode=$mode, in-scope=${#in_scope_ids[@]} bead(s)"
++echo ""
++
++# ---------------------------------------------------------------------------
++# (f) Bypass report — always shown first so exceptions are visible
++# ---------------------------------------------------------------------------
++echo "=== Bypass report ==="
++for bead in "${in_scope_ids[@]}"; do
++  if is_allowlisted "$bead"; then
++    log_bypass "$bead" "${allowlist_reason[$bead]}"
++  fi
++done
++[[ "${#bypasses[@]}" -eq 0 ]] && { $quiet || echo "  (none)"; }
++echo ""
++
++# ---------------------------------------------------------------------------
++# Active beads (non-allowlisted)
++# ---------------------------------------------------------------------------
++active_ids=()
++for bead in "${in_scope_ids[@]}"; do
++  is_allowlisted "$bead" || active_ids+=("$bead")
++done
++
++# ---------------------------------------------------------------------------
++# (a) run-ref present
++# ---------------------------------------------------------------------------
++echo "=== Check (a): run-ref present ==="
++for bead in "${active_ids[@]}"; do
++  ref="refs/etude/runs/$bead"
++  if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
++    log_pass "(a) run ref exists: $ref"
++  else
++    log_gap "missing-run" "$bead" "no refs/etude/runs/$bead"
++  fi
++done
++echo ""
++
++# ---------------------------------------------------------------------------
++# (b) gated runs have gate records
++# ---------------------------------------------------------------------------
++echo "=== Check (b): gated run has gate records ==="
++for bead in "${active_ids[@]}"; do
++  ref="refs/etude/runs/$bead"
++  # Skip if no run ref (already flagged by (a))
++  git rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || continue
++
++  gates_count="$(git cat-file -p "$ref:manifest.json" 2>/dev/null | python3 -c "
++import json, sys
++m = json.load(sys.stdin)
++print(len(m.get('gates', [])))
++" 2>/dev/null)" || gates_count="error"
++
++  if [[ "$gates_count" == "error" || -z "$gates_count" ]]; then
++    log_gap "gateless-run" "$bead" "could not read manifest.json from $ref"
++  elif [[ "$gates_count" -gt 0 ]]; then
++    log_pass "(b) gates present ($gates_count): $bead"
++  else
++    log_gap "gateless-run" "$bead" "manifest.gates is empty (0 gates)"
++  fi
++done
++echo ""
++
++# ---------------------------------------------------------------------------
++# (d) refs pushed
++# bead mode: check only that bead's run ref
++# batch mode: repo-wide sweep of refs/etude/{runs,retros}/*
++# ---------------------------------------------------------------------------
++echo "=== Check (d): refs pushed to origin ==="
++
++# Local ref->sha
++declare -A local_sha
++while IFS=$'\t' read -r sha refname; do
++  local_sha["$refname"]="$sha"
++done < <(git for-each-ref 'refs/etude/runs' 'refs/etude/retros' --format='%(objectname)%09%(refname)')
++
++# Origin ref->sha
++declare -A origin_sha
++while IFS=$'\t' read -r sha refname; do
++  origin_sha["$refname"]="$sha"
++done < <(git ls-remote origin 'refs/etude/*' 2>/dev/null | awk '{print $1"\t"$2}' || true)
++
++if [[ "$mode" == "bead" ]]; then
++  # Only check this bead's own run ref
++  ref="refs/etude/runs/$bead_arg"
++  if [[ -v "local_sha[$ref]" ]]; then
++    lsha="${local_sha[$ref]}"
++    if [[ -v "origin_sha[$ref]" ]]; then
++      osha="${origin_sha[$ref]}"
++      if [[ "$lsha" == "$osha" ]]; then
++        log_pass "(d) pushed: $ref ($lsha)"
++      else
++        log_gap "unpushed-ref" "$ref" "local $lsha, origin $osha (diverged)"
++      fi
++    else
++      log_gap "unpushed-ref" "$ref" "local $lsha, not found on origin"
++    fi
++  fi
++  # No run ref is already caught by (a); don't double-report here
++else
++  # Batch: sweep all local refs/etude/{runs,retros}/*
++  for refname in "${!local_sha[@]}"; do
++    lsha="${local_sha[$refname]}"
++    if [[ -v "origin_sha[$refname]" ]]; then
++      osha="${origin_sha[$refname]}"
++      if [[ "$lsha" == "$osha" ]]; then
++        log_pass "(d) pushed: $refname"
++      else
++        log_gap "unpushed-ref" "$refname" "local $lsha, origin $osha (diverged)"
++      fi
++    else
++      log_gap "unpushed-ref" "$refname" "local $lsha, not found on origin"
++    fi
++  done
++fi
++echo ""
++
++# ---------------------------------------------------------------------------
++# (c) Cadence retro check — WARN ONLY, batch mode only
++# ---------------------------------------------------------------------------
++if [[ "$mode" != "bead" ]]; then
++  echo "=== Check (c): cadence retro not overdue (WARN only) ==="
++
++  # Collect subject runs from all cadence-retro refs
++  covered_file="$(mktemp)"
++  trap 'rm -rf "$bindir" "$bd_json_file" "$covered_file"' EXIT
++  latest_cadence_retro=""
++  latest_cadence_time=""
++
++  while IFS= read -r retro_ref; do
++    manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
++    trigger="$(python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++print(m.get('refs',{}).get('trigger',''))
++" <<< "$manifest_data" 2>/dev/null || echo "")"
++
++    if [[ "$trigger" == "cadence-retro" ]]; then
++      # Collect covered run ids
++      python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++refs=m.get('refs',{})
++for k,v in refs.items():
++    if k.startswith('subject_run.'):
++        print(v)
++" <<< "$manifest_data" 2>/dev/null >> "$covered_file" || true
++
++      # Track most-recent cadence retro
++      retro_time="$(python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++print(m.get('created',''))
++" <<< "$manifest_data" 2>/dev/null || echo "")"
++      if [[ "$retro_time" > "$latest_cadence_time" ]]; then
++        latest_cadence_time="$retro_time"
++        latest_cadence_retro="$retro_ref"
++      fi
++    fi
++  done < <(git for-each-ref refs/etude/retros --format='%(refname)')
++
++  # Count in-scope active beads not covered by any cadence retro
++  uncovered_count=0
++  for bead in "${active_ids[@]}"; do
++    if ! grep -qxF "$bead" "$covered_file" 2>/dev/null; then
++      (( uncovered_count++ )) || true
++    fi
++  done
++
++  if [[ $uncovered_count -ge 3 ]]; then
++    last_retro_label="${latest_cadence_retro:-none}"
++    log_warn "cadence-overdue" "window" \
++      "$uncovered_count in-scope bead(s) not covered by any cadence retro (rule: every 3); last cadence retro: $last_retro_label"
++  else
++    $quiet || echo "  PASS (c) cadence coverage: $uncovered_count uncovered in-scope bead(s) (< 3 threshold)"
++  fi
++  echo ""
++fi
++
++# ---------------------------------------------------------------------------
++# (e) Docs drift — WARN ONLY, both modes
++# bead mode: warn only if manifest git_sha actually touched docs/
++# batch mode: run make docs-check + docs-reality, warn on failure
++# ---------------------------------------------------------------------------
++echo "=== Check (e): docs drift (WARN only) ==="
++if [[ "$mode" == "bead" ]]; then
++  ref="refs/etude/runs/$bead_arg"
++  if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
++    git_sha="$(git cat-file -p "$ref:manifest.json" 2>/dev/null | python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++for s in m.get('stages',[]):
++    sha=s.get('git_sha','')
++    if sha:
++        print(sha)
++        break
++" 2>/dev/null || echo "")"
++    if [[ -n "$git_sha" ]] && git rev-parse --verify --quiet "${git_sha}^{commit}" >/dev/null 2>&1; then
++      docs_changed="$(git diff-tree --no-commit-id -r --name-only "$git_sha" 2>/dev/null \
++        | grep -cE '^(README\.md|docs/)' || true)"
++      docs_changed="${docs_changed:-0}"
++      if [[ "$docs_changed" -gt 0 ]]; then
++        log_warn "docs-drift" "$bead_arg" \
++          "manifest git_sha $git_sha touched docs/; consider running 'make docs-check' + 'make docs-reality'"
++      else
++        $quiet || echo "  PASS (e) docs: git_sha $git_sha did not touch docs/"
++      fi
++    else
++      $quiet || echo "  PASS (e) docs: no usable git_sha in manifest; skipping"
++    fi
++  else
++    $quiet || echo "  PASS (e) docs: no run ref; skipping"
++  fi
++else
++  # Batch: try make targets
++  if make -n docs-check >/dev/null 2>&1; then
++    if ! make docs-check >/dev/null 2>&1; then
++      log_warn "docs-drift" "repo" "make docs-check failed — generated docs may be stale"
++    else
++      $quiet || echo "  PASS (e) make docs-check: OK"
++    fi
++  else
++    $quiet || echo "  PASS (e) make docs-check: target not available; skipping"
++  fi
++  if make -n docs-reality >/dev/null 2>&1; then
++    if ! make docs-reality >/dev/null 2>&1; then
++      log_warn "docs-drift" "repo" "make docs-reality failed — hand-written docs may drift from shipped CLI"
++    else
++      $quiet || echo "  PASS (e) make docs-reality: OK"
++    fi
++  else
++    $quiet || echo "  PASS (e) make docs-reality: target not available; skipping"
++  fi
++fi
++echo ""
++
++# ---------------------------------------------------------------------------
++# Summary
++# ---------------------------------------------------------------------------
++gap_count="${#findings[@]}"
++warn_count="${#warnings[@]}"
++bypass_count="${#bypasses[@]}"
++active_count="${#active_ids[@]}"
++scope_count="${#in_scope_ids[@]}"
++
++echo "=== Summary ==="
++if [[ $gap_count -gt 0 ]]; then
++  echo "audit: $gap_count hard gap(s) across $active_count active (of $scope_count in-scope) bead(s); $bypass_count bypass(es); $warn_count warning(s)."
++  echo ""
++  echo "Hard gaps:"
++  for f in "${findings[@]}"; do
++    cat="$(cut -d'|' -f1 <<< "$f")"
++    id="$(cut -d'|' -f2 <<< "$f")"
++    msg="$(cut -d'|' -f3- <<< "$f")"
++    echo "  - [$cat] $id — $msg"
++  done
++else
++  echo "audit: OK — $active_count active bead(s) complete (of $scope_count in-scope); $bypass_count bypass(es); $warn_count warning(s)."
++fi
++
++if [[ $warn_count -gt 0 ]]; then
++  echo ""
++  echo "Warnings (informational only):"
++  for w in "${warnings[@]}"; do
++    cat="$(cut -d'|' -f1 <<< "$w")"
++    id="$(cut -d'|' -f2 <<< "$w")"
++    msg="$(cut -d'|' -f3- <<< "$w")"
++    echo "  - [$cat] $id — $msg"
++  done
++fi
++
++# ---------------------------------------------------------------------------
++# JSON output
++# ---------------------------------------------------------------------------
++if $json_out; then
++  exit_code=0
++  [[ $gap_count -gt 0 ]] && exit_code=1
++
++  # Write findings/warnings/bypasses to temp files for python to read
++  findings_file="$(mktemp)"
++  warnings_file="$(mktemp)"
++  bypasses_file="$(mktemp)"
++  trap 'rm -rf "$bindir" "$bd_json_file" "${covered_file:-}" "$findings_file" "$warnings_file" "$bypasses_file"' EXIT
++
++  printf '%s\n' "${findings[@]+"${findings[@]}"}" > "$findings_file"
++  printf '%s\n' "${warnings[@]+"${warnings[@]}"}" > "$warnings_file"
++  printf '%s\n' "${bypasses[@]+"${bypasses[@]}"}" > "$bypasses_file"
++
++  python3 - "$findings_file" "$warnings_file" "$bypasses_file" \
++    "$check_count" "$scope_count" "$active_count" "$exit_code" <<'PYJSON'
++import json, sys
++
++def parse_pipe3(path):
++    out = []
++    with open(path) as f:
++        for line in f:
++            line = line.rstrip('\n')
++            if not line:
++                continue
++            parts = line.split('|', 2)
++            out.append({'category': parts[0],
++                        'id': parts[1] if len(parts) > 1 else '',
++                        'message': parts[2] if len(parts) > 2 else ''})
++    return out
++
++def parse_pipe2(path):
++    out = []
++    with open(path) as f:
++        for line in f:
++            line = line.rstrip('\n')
++            if not line:
++                continue
++            parts = line.split('|', 1)
++            out.append({'bead': parts[0],
++                        'reason': parts[1] if len(parts) > 1 else ''})
++    return out
++
++findings_file, warnings_file, bypasses_file = sys.argv[1], sys.argv[2], sys.argv[3]
++checks, in_scope, active, exit_code = int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
++
++print(json.dumps({
++    'checks':   checks,
++    'in_scope': in_scope,
++    'active':   active,
++    'gaps':     parse_pipe3(findings_file),
++    'warnings': parse_pipe3(warnings_file),
++    'bypasses': parse_pipe2(bypasses_file),
++    'exit':     exit_code,
++}, indent=2))
++PYJSON
++fi
++
++# ---------------------------------------------------------------------------
++# Exit
++# ---------------------------------------------------------------------------
++[[ $gap_count -gt 0 ]] && exit 1
++exit 0
+diff --git a/scripts/dogfood-completeness-audit_test.sh b/scripts/dogfood-completeness-audit_test.sh
+new file mode 100755
+index 0000000..56c53fe
+--- /dev/null
++++ b/scripts/dogfood-completeness-audit_test.sh
+@@ -0,0 +1,512 @@
++#!/usr/bin/env bash
++#
++# dogfood-completeness-audit_test.sh — fixture-based tests for
++# scripts/dogfood-completeness-audit.sh.
++#
++# Creates a throwaway git repo with a bare-repo origin (so the pushed-ref
++# check is real), a PATH `bd` shim emitting canned closed-bead JSON, and
++# seeded etude refs. Runs the audit script in several configurations and
++# asserts exit codes + output patterns.
++#
++# Run directly:
++#   bash scripts/dogfood-completeness-audit_test.sh
++#
++# Or via make:
++#   make dogfood-audit-test
++#
++# Requires: bash 4+ (associative arrays), git, go, python3.
++# Does NOT mutate any real repo data.
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
++AUDIT="$SCRIPT_DIR/dogfood-completeness-audit.sh"
++
++# ---------------------------------------------------------------------------
++# Pre-build etude once from the real repo root; inject via DOGFOOD_AUDIT_ETUDE_BIN
++# so the audit script does not try to run 'go build' inside the throwaway repo.
++# ---------------------------------------------------------------------------
++PREBUILT_ETUDE_DIR="$(mktemp -d)"
++trap 'rm -rf "$PREBUILT_ETUDE_DIR"' EXIT
++PREBUILT_ETUDE="$PREBUILT_ETUDE_DIR/etude"
++echo "building etude for tests..."
++(cd "$REPO_ROOT" && go build -o "$PREBUILT_ETUDE" ./cmd/etude)
++export DOGFOOD_AUDIT_ETUDE_BIN="$PREBUILT_ETUDE"
++echo "etude built: $PREBUILT_ETUDE"
++echo ""
++
++# ---------------------------------------------------------------------------
++# Test harness helpers
++# ---------------------------------------------------------------------------
++pass_count=0
++fail_count=0
++current_test=""
++
++t_start() {  # <test-name>
++  current_test="$1"
++  echo "--- TEST: $current_test"
++}
++t_pass() {
++  (( pass_count++ )) || true
++  echo "    PASS: $current_test"
++}
++t_fail() {  # <reason>
++  (( fail_count++ )) || true
++  echo "    FAIL: $current_test — $1" >&2
++}
++
++assert_exit() {  # <expected-exit> <actual-exit> [<extra-context>]
++  local expected="$1" actual="$2" ctx="${3:-}"
++  if [[ "$actual" -eq "$expected" ]]; then
++    t_pass
++  else
++    t_fail "expected exit $expected, got $actual${ctx:+ ($ctx)}"
++  fi
++}
++
++assert_output_contains() {  # <pattern> <output>
++  if grep -qE "$1" <<< "$2"; then
++    t_pass
++  else
++    t_fail "expected pattern '$1' not found in output"
++  fi
++}
++
++assert_output_not_contains() {  # <pattern> <output>
++  if ! grep -qE "$1" <<< "$2"; then
++    t_pass
++  else
++    t_fail "pattern '$1' found but should be absent"
++  fi
++}
++
++# ---------------------------------------------------------------------------
++# Fixture setup
++# ---------------------------------------------------------------------------
++tmpdir="$(mktemp -d)"
++trap 'rm -rf "$tmpdir" "$PREBUILT_ETUDE_DIR"' EXIT
++
++bare_origin="$tmpdir/origin.git"
++work_repo="$tmpdir/work"
++
++# Create bare origin + working clone
++git init --bare "$bare_origin" --quiet
++git clone "$bare_origin" "$work_repo" --quiet 2>/dev/null
++
++cd "$work_repo"
++
++# Seed an initial commit so the repo is valid
++git config user.email "test@test.com"
++git config user.name "Test"
++touch README.md
++git add README.md
++git commit -m "init" --quiet
++
++# Make a docs/ directory for docs-drift test
++mkdir -p docs
++echo "# docs" > docs/README.md
++git add docs/
++git commit -m "add docs" --quiet
++DOCS_COMMIT="$(git rev-parse HEAD)"
++
++# A commit that touches ONLY a non-docs file (not README.md, not docs/) — used to
++# assert the docs-drift check does NOT false-positive on code-only changes.
++echo "package x" > code.go
++git add code.go
++git commit -m "add non-docs file" --quiet
++NODOCS_COMMIT="$(git rev-parse HEAD)"
++
++git push origin main --quiet
++
++# ---------------------------------------------------------------------------
++# Manifest builder helper
++# ---------------------------------------------------------------------------
++# Creates a minimal manifest.json in the git object store and writes it to
++# refs/etude/runs/<id>. Accepts a list of gate IDs (empty for gateless).
++seed_run_ref() {  # <bead-id> <git-sha> <gate-id1> [<gate-id2> ...]
++  local bead="$1"; shift
++  local git_sha="$1"; shift
++  local gates_json="[]"
++  if [[ $# -gt 0 ]]; then
++    local gate_entries=""
++    for gid in "$@"; do
++      gate_entries="${gate_entries},{\"gate_id\":\"$gid\",\"phase\":\"implement\",\"round\":1,\"tier\":1,\"status\":\"pass\",\"reviewed_stages\":[],\"seats\":[],\"decision\":{},\"timestamp\":\"2026-05-25T00:00:00Z\"}"
++    done
++    gates_json="[${gate_entries#,}]"
++  fi
++
++  local manifest
++  manifest="$(python3 -c "
++import json
++m = {
++    'manifest_version': 3,
++    'run_id': '$bead',
++    'workflow': 'default',
++    'workflow_version': 'v1',
++    'created': '2026-05-25T00:00:00Z',
++    'refs': {'bead': '$bead'},
++    'stages': [{'stage': 'plan', 'produced_by': 'original', 'git_sha': '$git_sha', 'inputs': [], 'output': {}}],
++    'gates': $gates_json
++}
++print(json.dumps(m))
++")"
++
++  # Write tree with manifest.json blob
++  local blob_sha
++  blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++  local tree_sha
++  tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
++  local commit_sha
++  commit_sha="$(git commit-tree "$tree_sha" -m "run: $bead" <<< "")"
++  git update-ref "refs/etude/runs/$bead" "$commit_sha"
++}
++
++# Seed a minimal cadence-retro ref covering the given subject runs
++seed_cadence_retro() {  # <retro-id> <subject-run1> [<subject-run2> ...]
++  local retro_id="$1"; shift
++  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
++  local i=1
++  for run in "$@"; do
++    refs_json="${refs_json},\"subject_run.$i\":\"$run\""
++    (( i++ )) || true
++  done
++  refs_json="${refs_json}}"
++
++  local manifest
++  manifest="$(python3 -c "
++import json
++m = {
++    'manifest_version': 2,
++    'run_id': '$retro_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '2026-05-26T00:00:00Z',
++    'refs': json.loads('$refs_json'),
++    'stages': []
++}
++print(json.dumps(m))
++")"
++
++  local blob_sha tree_sha commit_sha
++  blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++  tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
++  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
++  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
++}
++
++# bd shim: returns canned closed-bead JSON; accepts being replaced with a
++# custom $BD_SHIM_JSON env var.
++BD_SHIM="$tmpdir/bd"
++cat > "$BD_SHIM" <<'BDSHIM'
++#!/usr/bin/env bash
++# Minimal bd shim for audit tests.
++# Outputs $BD_JSON_FILE content for "bd list --status closed --json".
++if [[ "$*" == *"list"* && "$*" == *"closed"* && "$*" == *"--json"* ]]; then
++  cat "${BD_JSON_FILE:-/dev/null}"
++elif [[ "$*" == *"show"* ]]; then
++  echo "✓ ${BD_SHOW_ID:-test-bead} · Test bead title [● P1 · CLOSED]"
++else
++  echo "[]"
++fi
++BDSHIM
++chmod +x "$BD_SHIM"
++
++# Prepend shim dir to PATH for the duration
++export PATH="$tmpdir:$PATH"
++
++# ---------------------------------------------------------------------------
++# Helper: write the bd JSON file for given beads
++# closed_beads_json <id1> [<id2> ...]
++write_bd_json() {  # <bead-id> ...
++  local entries=""
++  local now="2026-05-25T10:00:00Z"
++  for bid in "$@"; do
++    entries="${entries},{\"id\":\"$bid\",\"status\":\"closed\",\"closed_at\":\"$now\",\"title\":\"Test bead $bid\"}"
++  done
++  echo "[${entries#,}]" > "$tmpdir/bd_beads.json"
++  export BD_JSON_FILE="$tmpdir/bd_beads.json"
++}
++
++# Helper: run audit and capture exit code without set -e killing the test
++run_audit() {  # [args...]
++  local rc=0
++  # Build etude is expensive; reuse a pre-built binary if available
++  output="$(bash "$AUDIT" "$@" 2>&1)" || rc=$?
++  echo "$output"
++  return "$rc"
++}
++
++# Helper: run audit capturing exit + output separately
++run_audit_split() {  # [args...] -> sets $AUDIT_OUT and $AUDIT_RC
++  AUDIT_RC=0
++  AUDIT_OUT="$(bash "$AUDIT" "$@" 2>&1)" || AUDIT_RC=$?
++}
++
++# ---------------------------------------------------------------------------
++# Seed the initial commit SHA (used for manifest git_sha)
++# ---------------------------------------------------------------------------
++INITIAL_SHA="$(git rev-parse HEAD)"
++
++# ===========================================================================
++# TEST 1: Complete fixture — 2 beads, runs with gates, cadence retro, all pushed
++# ===========================================================================
++t_start "complete fixture exits 0"
++
++write_bd_json "test-aaa" "test-bbb"
++seed_run_ref "test-aaa" "$INITIAL_SHA" "plan.r1"
++seed_run_ref "test-bbb" "$INITIAL_SHA" "plan.r1"
++seed_cadence_retro "retro-cohort-test-bbb" "test-aaa" "test-bbb"
++
++# Push all refs to bare origin
++git push origin 'refs/etude/*:refs/etude/*' --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "complete fixture"
++
++t_start "complete fixture output says OK"
++assert_output_contains "audit: OK" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST 2: Missing run ref — bead with no run -> exit 1
++# ===========================================================================
++t_start "missing run ref causes exit 1"
++
++write_bd_json "test-aaa" "test-bbb" "test-ccc"
++# test-ccc has no run ref
++run_audit_split --last 9
++assert_exit 1 "$AUDIT_RC" "missing run"
++
++t_start "missing run output has missing-run finding"
++assert_output_contains "missing-run.*test-ccc" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST 3: Gateless run — run with empty gates -> exit 1
++# ===========================================================================
++t_start "gateless run causes exit 1"
++
++write_bd_json "test-aaa" "test-bbb" "test-ddd"
++seed_run_ref "test-ddd" "$INITIAL_SHA"   # no gate IDs -> gates=[]
++git push origin "refs/etude/runs/test-ddd" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 1 "$AUDIT_RC" "gateless run"
++
++t_start "gateless run output has gateless-run finding"
++assert_output_contains "gateless-run.*test-ddd" "$AUDIT_OUT"
++
++# Clean up test-ddd ref
++git update-ref -d "refs/etude/runs/test-ddd"
++
++# ===========================================================================
++# TEST 4: Unpushed ref — local ref not on origin -> exit 1
++# ===========================================================================
++t_start "unpushed ref causes exit 1"
++
++write_bd_json "test-aaa" "test-bbb"
++# Create a local ref not pushed to origin
++seed_run_ref "test-local-only" "$INITIAL_SHA" "plan.r1"
++# Do NOT push it
++
++run_audit_split --last 9
++assert_exit 1 "$AUDIT_RC" "unpushed ref"
++
++t_start "unpushed ref output has unpushed-ref finding"
++assert_output_contains "unpushed-ref.*test-local-only" "$AUDIT_OUT"
++
++# Clean up
++git update-ref -d "refs/etude/runs/test-local-only"
++
++# ===========================================================================
++# TEST 5: Bypassed bead — allowlisted bead with no run -> exit 0 + bypass reported
++# ===========================================================================
++t_start "bypassed bead exits 0"
++
++# Use a bead that IS in the repo allowlist (it won't have a run ref since we
++# haven't seeded it). We'll create our own tmp allowlist for isolation.
++ORIG_ALLOW="$REPO_ROOT/scripts/dogfood-completeness-allow.txt"
++
++# Write a temp allowlist into the work repo's scripts/ dir
++mkdir -p "$work_repo/scripts"
++cat > "$work_repo/scripts/dogfood-completeness-allow.txt" <<'ALLOWEOF'
++test-exempt  # test exemption reason
++ALLOWEOF
++
++write_bd_json "test-aaa" "test-bbb" "test-exempt"
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "bypassed bead"
++
++t_start "bypassed bead output shows bypass line"
++assert_output_contains "bypass:.*test-exempt" "$AUDIT_OUT"
++
++t_start "bypassed bead output does NOT show missing-run for exempt bead"
++assert_output_not_contains "missing-run.*test-exempt" "$AUDIT_OUT"
++
++# Remove the temp allowlist (reset to empty so subsequent tests use real allowlist)
++rm "$work_repo/scripts/dogfood-completeness-allow.txt"
++
++# ===========================================================================
++# TEST 6: Cadence overdue — 3+ beads not covered by any cadence retro -> WARN + exit 0
++# ===========================================================================
++t_start "cadence overdue is WARN only (exit 0)"
++
++# Delete existing cadence retro so none exist
++git update-ref -d "refs/etude/retros/retro-cohort-test-bbb" 2>/dev/null || true
++git push origin --delete "refs/etude/retros/retro-cohort-test-bbb" --quiet 2>/dev/null || true
++
++write_bd_json "test-aaa" "test-bbb" "test-eee"
++seed_run_ref "test-eee" "$INITIAL_SHA" "plan.r1"
++git push origin "refs/etude/runs/test-eee" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "cadence overdue is warn only"
++
++t_start "cadence overdue output shows WARN"
++assert_output_contains "cadence-overdue" "$AUDIT_OUT"
++
++# Restore cadence retro for subsequent tests
++seed_cadence_retro "retro-cohort-test-bbb" "test-aaa" "test-bbb" "test-eee"
++git push origin "refs/etude/retros/retro-cohort-test-bbb" --quiet 2>/dev/null
++
++# Clean up test-eee
++git update-ref -d "refs/etude/runs/test-eee"
++git push origin --delete "refs/etude/runs/test-eee" --quiet 2>/dev/null || true
++
++# ===========================================================================
++# TEST 7: --bead mode, complete bead -> exit 0
++# ===========================================================================
++t_start "--bead mode on complete bead exits 0"
++
++write_bd_json "test-aaa" "test-bbb"
++run_audit_split --bead "test-aaa"
++assert_exit 0 "$AUDIT_RC" "--bead mode complete"
++
++t_start "--bead mode on complete bead output says OK"
++assert_output_contains "audit: OK" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST 8: --bead mode, missing run -> exit 1
++# ===========================================================================
++t_start "--bead mode on missing run exits 1"
++
++# test-zzz is not in bd json AND has no run ref
++write_bd_json "test-zzz"
++run_audit_split --bead "test-zzz"
++assert_exit 1 "$AUDIT_RC" "--bead mode missing run"
++
++t_start "--bead mode missing run output has missing-run finding"
++assert_output_contains "missing-run.*test-zzz" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST 9: --bead mode does NOT run cadence check (c)
++# ===========================================================================
++t_start "--bead mode does not run cadence check"
++
++# Delete all cadence retros
++git for-each-ref refs/etude/retros --format='%(refname)' | while IFS= read -r r; do
++  git update-ref -d "$r" 2>/dev/null || true
++done
++
++write_bd_json "test-aaa"
++run_audit_split --bead "test-aaa"
++assert_exit 0 "$AUDIT_RC" "--bead mode no cadence check"
++
++t_start "--bead mode output has no cadence-overdue warning"
++assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST 10: --json flag emits parseable JSON
++# ===========================================================================
++t_start "--json flag produces valid JSON"
++
++write_bd_json "test-aaa" "test-bbb"
++seed_cadence_retro "retro-cohort-test-bbb2" "test-aaa" "test-bbb"
++git push origin "refs/etude/retros/retro-cohort-test-bbb2" --quiet 2>/dev/null
++
++run_audit_split --last 9 --json
++# The output is text+JSON; look for '"exit": 0' in the output (from the JSON block)
++if grep -q '"exit": 0' <<< "$AUDIT_OUT"; then
++  t_pass
++else
++  t_fail "expected '\"exit\": 0' in JSON output, not found. output: $AUDIT_OUT"
++fi
++
++# ===========================================================================
++# TEST 11: --since mode filters beads by date
++# ===========================================================================
++t_start "--since mode includes only beads closed on or after date"
++
++# Write beads with different close dates
++python3 -c "
++import json
++beads = [
++    {'id': 'test-new', 'status': 'closed', 'closed_at': '2026-05-25T10:00:00Z', 'title': 'new bead'},
++    {'id': 'test-old', 'status': 'closed', 'closed_at': '2026-05-10T10:00:00Z', 'title': 'old bead'},
++]
++print(json.dumps(beads))
++" > "$tmpdir/bd_beads.json"
++export BD_JSON_FILE="$tmpdir/bd_beads.json"
++
++# Ensure test-new has a run ref with gates, pushed to origin
++# (test-old is before the since cutoff so it won't be checked even if it's missing a run)
++seed_run_ref "test-new" "$INITIAL_SHA" "plan.r1"
++git push origin "refs/etude/runs/test-new" --quiet 2>/dev/null
++seed_cadence_retro "retro-cohort-test-new" "test-new"
++git push origin "refs/etude/retros/retro-cohort-test-new" --quiet 2>/dev/null
++
++run_audit_split --since "2026-05-20"
++
++# test-old is outside the window, so only test-new is checked; it has run+gates+pushed
++assert_exit 0 "$AUDIT_RC" "--since date filtering"
++
++t_start "--since mode output shows only 1 in-scope bead"
++assert_output_contains "in-scope=1" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST: docs-drift WARN — --bead whose manifest git_sha touched docs/ warns,
++# but exit stays 0 (docs is WARN-only). Guards the grep -c '0\n0' regression.
++# ===========================================================================
++t_start "docs-drift WARN on --bead does not fail (exit 0)"
++write_bd_json "test-docs"
++# git_sha = DOCS_COMMIT (the commit that added docs/README.md), with a gate, pushed.
++seed_run_ref "test-docs" "$DOCS_COMMIT" "plan.r1"
++git push origin "refs/etude/runs/test-docs" --quiet 2>/dev/null
++run_audit_split --bead test-docs
++assert_exit 0 "$AUDIT_RC" "docs-drift bead is WARN, not a hard gap"
++
++t_start "docs-drift WARN finding is reported"
++assert_output_contains "docs-drift.*test-docs" "$AUDIT_OUT"
++
++t_start "no docs-drift WARN when git_sha did not touch docs/"
++write_bd_json "test-nodocs"
++seed_run_ref "test-nodocs" "$NODOCS_COMMIT" "plan.r1"   # NODOCS_COMMIT = code-only, no README/docs
++git push origin "refs/etude/runs/test-nodocs" --quiet 2>/dev/null
++run_audit_split --bead test-nodocs
++assert_exit 0 "$AUDIT_RC" "non-docs bead clean"
++
++t_start "non-docs bead does NOT report docs-drift"
++assert_output_not_contains "docs-drift.*test-nodocs" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST: mutually-exclusive mode flags -> exit 2 (usage error)
++# ===========================================================================
++t_start "combining --last and --since exits 2"
++run_audit_split --last 9 --since 2026-05-20
++assert_exit 2 "$AUDIT_RC" "mutually exclusive mode flags"
++
++t_start "combining --bead and --last exits 2"
++run_audit_split --bead test-docs --last 9
++assert_exit 2 "$AUDIT_RC" "bead + last mutually exclusive"
++
++# ===========================================================================
++# Summary
++# ===========================================================================
++echo ""
++echo "==========================================="
++echo "Test results: $pass_count passed, $fail_count failed"
++echo "==========================================="
++
++if [[ $fail_count -gt 0 ]]; then
++  exit 1
++fi
++exit 0

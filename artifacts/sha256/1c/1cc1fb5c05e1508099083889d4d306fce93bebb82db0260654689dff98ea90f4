@@ -1,0 +1,7 @@
+# Verify — etude-8hq.4 (dogfood completeness audit script)
+Result: PASS.
+- bash -n clean on both scripts; `bash scripts/dogfood-completeness-audit_test.sh` = 28 passed, 0 failed (hermetic: throwaway git repo + bare-repo origin + bd PATH shim + injected etude bin).
+- Real-repo: `--last 9` exit 0 (7 active complete, 2 bypass, cadence WARN); `--bead etude-kig` exit 0; `--bead etude-hp7` WARN docs-drift + exit 0; `--last 9 --since 2026-05-20` exit 2 (mutual-exclusion). go build/test unaffected; docs-check/docs-reality green.
+- Test cases genuine (Opus seat ran them): complete→0, missing-run→1, gateless→1, unpushed→1, bypass→0, cadence→WARN+0, --bead complete→0/gap→1, docs-drift WARN→0 + NODOCS no-false-positive, mutual-exclusion→2.
+- A real bug was found in verify + fixed: docs-drift used `grep -cE ... || echo 0` which yields "0\n0" on no-match (grep -c prints 0 AND exits 1 → || appends a 2nd line), breaking the -gt arithmetic so check (e) always errored→PASS, never WARNed. Fixed to `|| true` + ${docs_changed:-0}; now genuinely tested (hp7 WARNs).
+- Mode/exit semantics verified: --bead strict (run+gates+that-ref-pushed; no window/cadence/repo-sweep); cadence (c) WARN-only + skipped in --bead; warnings never exit 1; exit 0/1/2.

@@ -1,0 +1,216 @@
+## Plan
+
+**Approach:** Build `scripts/dogfood-completeness-audit.sh` — a read-only bash
+audit that reports, with bead/run/ref ids, the dogfood artifacts missing from a
+bounded window of recent closed work and **exits non-zero on any gap**. It is
+designed as a reusable, scriptable MECHANISM (not a one-off report): it builds
+etude fresh, takes a `--bead <id>` single-bead mode so `etude-8hq.1` can call it
+per-close, and a windowed batch mode (`--last N` / `--since <date>`) for a
+sweep. This bead delivers ONLY the audit + its tests + docs; `etude-8hq.1`
+(separate bead, blocked-by this one) wires it into close/push. 1 bead = 1 commit.
+
+### Home decision (justify)
+A **bash script alongside the other dogfood scripts**, not an `etude` subcommand
+or a make target.
+- It spans `bd` (closed beads + labels), `git` (refs / for-each-ref / ls-remote),
+  the built `etude` binary (`run show`, manifest gates), and `make` (docs
+  checks). Etude CORE must never know about beads/`bd` (the home/style precedent
+  set by `dogfood-capture.sh`, `dogfood-gate-capture.sh`, `backfill-gate-records.sh`,
+  `docs-reality-check.sh`), so this is project tooling, not a product command —
+  no new etude command, no docs/cli blast radius (defect-class #6: blast radius
+  is NONE).
+- It builds etude fresh from source first (`go build -o "$bin" ./cmd/etude`),
+  exactly like the four existing dogfood scripts, so it never inspects via a
+  stale ambient binary.
+- Closest precedent is `scripts/docs-reality-check.sh`: collect findings into an
+  array, print a per-finding report to stderr, `exit 1` on any finding, `exit 0`
+  with an OK summary otherwise. Mirror that contract.
+
+### CLI
+```
+scripts/dogfood-completeness-audit.sh [--bead <id>] [--last <N>] [--since <date>]
+                                      [--quiet] [--json]
+```
+- `--bead <id>`: audit exactly one closed bead (the close-time mode 8hq.1 calls).
+- `--last <N>`: audit the N most-recently-closed in-scope beads (default N=9 ≈
+  three cadence cohorts).
+- `--since <date>`: audit in-scope beads closed on/after an ISO date.
+- `--last`/`--since` are mutually exclusive; `--bead` overrides both.
+- `--quiet`: suppress the per-check PASS lines; still print the final summary + all gaps.
+- `--json`: emit a machine-readable `{checks:[...], gaps:[...], exit:N}` for the
+  8hq.1 gate (text by default).
+
+### Scoping rule — THE crux (precise + auditable)
+Not every closed bead has or needs a run+gates. 24 of 50 currently-closed beads
+have NO run ref — all pre-dogfood-habit infra/process beads (go-cli-scaffold,
+phase0, roadmap.1, consolidate-test-qa, …). A naive "every closed bead needs a
+run" rule yields 24 false positives and the audit never goes green. So scope by
+a bounded window + an explicit, file-based bypass:
+
+**In-scope set** = closed beads that are BOTH:
+1. **Recent**: inside the window (`--bead` → just that bead; `--last N` →
+   N most-recent closed; `--since` → closed on/after the date). Default window
+   intentionally small so the audit only polices the dogfood-habit era, never
+   the pre-habit backlog.
+2. **Dev-workflow beads**: NOT in the bypass allowlist (below). A bead is
+   presumed dev-workflow (run+gates expected) unless explicitly bypassed —
+   "presume expected" is the safe default so silent omissions surface.
+
+**Bypass mechanism (item f — explicit + auditable):** a committed allowlist
+file `scripts/dogfood-completeness-allow.txt` (precedent:
+`scripts/docs-reality-allow.txt`), one `<bead-id>  # reason` per line (`#`
+comments + blank lines ignored). A bead listed here is REPORTED as
+`bypass: <bead> — <reason>` (so exceptions stay visible and auditable) but does
+NOT cause a non-zero exit. This is the documented path for legit exceptions:
+data-backfill / process / doc-only beads with no run (e.g. nm6 gate-backfill,
+the deferred 8b7/9ey, the pre-habit infra beads if they ever fall in-window).
+Justification for a file over a label: the bypass set is small, needs a written
+reason, must be reviewable in a diff, and `bd` labels are not a natural fit for
+"this bead is exempt from a tooling check". (Reviewer note: a `no-dogfood-run`
+bd label is the plausible alternative — see disagreements.)
+
+**"Gated run" definition (check b):** an in-scope run is "gated" iff its bead
+carries a `phase:*` dev-workflow label OR it is not flagged gate-exempt in the
+allowlist (a second optional column / a separate `# no-gate` marker). Default:
+an in-scope run is expected to have ≥1 gate. Pure doc/process beads that ran but
+were Tier-3-single-seat still produce ONE GateAttempt, so they are NOT
+gate-exempt by default.
+
+### The checks (each → PASS/FAIL + the ids it reports)
+For the in-scope set:
+
+- **(a) run-ref present** — for each in-scope bead, assert
+  `refs/etude/runs/etude-<id>` exists (`git rev-parse --verify --quiet`).
+  FAIL → `missing run: etude-<id> (no refs/etude/runs/etude-<id>)`.
+- **(b) gated run has gate records** — for each in-scope gated run, read
+  `git cat-file -p <ref>:manifest.json` and assert `len(gates) > 0` (the
+  manifest-blob read both existing scripts use; equivalent to
+  `etude run show <bead> | grep -c gate`). FAIL →
+  `gateless run: etude-<id> (manifest.gates is empty)`.
+- **(c) cadence retro present / not overdue** — count in-scope closed beads
+  since the most recent `trigger=cadence-retro` retro (read each
+  `refs/etude/retros/*` manifest's `refs.trigger` + `refs.subject_run.*`); the
+  standing rule is one cadence retro per 3 closed tickets. FAIL when
+  `closed_since_last_cadence_retro >= 3` with no covering cadence retro →
+  `cadence retro overdue: N in-scope beads closed since <last-retro-id> (rule: every 3)`.
+  Also flag an in-scope cohort bead absent from every cadence retro's
+  `subject_run` set → `uncovered by any cadence retro: etude-<id>`.
+- **(d) refs pushed (no local-only)** — for every `refs/etude/{runs,retros}/*`,
+  compare the local tip (`git for-each-ref`) to origin (`git ls-remote origin
+  'refs/etude/*'`); any local ref absent from origin, or whose origin sha differs
+  → FAIL `unpushed ref: <refname> (local <sha>, origin <missing|sha>)`. (Verified:
+  85 local == 85 origin today, so this is a real, currently-green check.)
+- **(e) docs-reality / reconcile where docs changed** — if the audited window's
+  commits or the working tree touched docs (`git diff --name-only` +
+  `git log --name-only` over the window, matching `README.md|docs/`), run
+  `make docs-check` and `make docs-reality`; non-zero → FAIL
+  `docs drift: make docs-check/docs-reality failed for doc-touching window`.
+  (In `--bead` mode this scopes to that bead's commit.)
+- **(f) bypasses reported** — always print the resolved allowlist entries as
+  `bypass: <bead> — <reason>` so exceptions are auditable; never affects exit.
+
+**In-scope for THIS bead:** a, b, c, d, e + f. All are mechanically detectable
+post-hoc from refs/manifests/git. Nothing deferred — but note (c)'s "overdue"
+heuristic is necessarily approximate (it counts closed-in-window beads vs the
+every-3 rule; it cannot know an inline-fix retro that produced no artifact), so
+it is documented as a heuristic flag, not a hard correctness claim.
+
+### Exit codes + output
+- `exit 0` = complete (every check PASS; bypasses are fine).
+- `exit 1` = one or more gaps (the standard "audit found gaps" code 8hq.1 keys on).
+- `exit 2` = usage / environment error (bad flags, build failure, no closed
+  beads) — distinct from a real gap, so the gate can tell "broken" from "gaps".
+Text output (default): a per-check section, each gap as
+`  - <category>: <bead/run/ref id> — <what's missing>`, then a summary line
+`audit: <G> gap(s) across <C> in-scope bead(s); <B> bypass(es).` (OK summary on
+0 gaps). `--json` emits the same data machine-readably for the gate.
+
+### Tests (fixture-based, per acceptance "focused tests or fixture-based checks")
+A **fixture-based bash test** `scripts/dogfood-completeness-audit_test.sh`
+(driven from a new `make` recipe or invoked directly), following the runbook B3
+rule "ref-mutating / state tests run in a throwaway repo":
+1. Create a throwaway git repo in a `mktemp -d` (trap-cleaned), give it an
+   `origin` (a bare repo in the same tmp dir) so the ls-remote push check is real.
+2. Seed a COMPLETE fixture: 2-3 fake closed beads (a stub `bd` shim on PATH, or
+   pre-seeded `bd` data) each with a `refs/etude/runs/etude-<id>` manifest
+   carrying ≥1 gate, a cadence retro ref covering them, all pushed to the bare
+   origin, no doc drift → assert the audit prints OK and `exit 0`.
+3. Mutate to seed each gap class one at a time and assert the matching finding +
+   `exit 1`: delete a run ref (a); empty a manifest's gates (b); add a 3rd closed
+   bead with no covering cadence retro (c); create a local-only ref not pushed to
+   origin (d); touch a doc to force docs-check/reality failure (e).
+4. Assert an allowlisted bead with no run is reported as `bypass:` and does NOT
+   flip the exit (f).
+Use the same `set -euo pipefail` + array-of-findings assertions as the script.
+The `bd` dependency is the only awkward part: the test stubs `bd` via a tiny
+shim script on `PATH` that returns canned `bd list --status closed --json`
+output — keeping the test hermetic and not touching the real bead store.
+(Reviewer note: if any check's logic proves too gnarly for bash to assert
+cleanly, the parsing helper could move to a small Go test instead — see
+disagreements.)
+
+### Docs
+- Add a **"Dogfood completeness audit"** section to `capture-protocol.md` (it
+  already owns the capture rules + Checklist): document the script, its CLI/modes,
+  the scoping rule, the allowlist file + how to add a bypass-with-reason, the
+  five checks, and the exit codes.
+- Add a one-line reference + invocation from `review-gate-runbook.md`'s existing
+  "dogfood-completeness check" area (currently the `grep -c gate` note near line
+  870) and the cadence-retro step, pointing at the script as the mechanical
+  version of the manual check.
+- Add the script to the `docs/plans/dogfood/README.md` script index sentence if
+  one exists for scripts (it currently indexes docs; add a brief mention).
+- No shipped user-facing docs and no `docs/cli/*` change (it is project tooling,
+  not an etude command) → `make docs-check`/`docs-reality` are unaffected by the
+  script's existence; defect-class #6 blast radius is NONE.
+
+### Files
+- `scripts/dogfood-completeness-audit.sh` — new, the audit (the reusable mechanism).
+- `scripts/dogfood-completeness-allow.txt` — new, the bypass allowlist
+  (`<bead>  # reason`), seeded with the known legit exceptions.
+- `scripts/dogfood-completeness-audit_test.sh` — new, the fixture-based test.
+- `docs/plans/dogfood/capture-protocol.md` — add the audit section.
+- `docs/plans/dogfood/review-gate-runbook.md` — reference the script from the
+  completeness-check / cadence-retro notes.
+- `docs/plans/dogfood/README.md` — index the new script.
+- `Makefile` — optional `dogfood-audit` + `dogfood-audit-test` convenience
+  targets (decide at implement time; not required by acceptance).
+
+### Relationship to etude-8hq.1
+This bead builds the audit as a reusable, scriptable mechanism (the `--bead`
+mode + stable exit codes + `--json` are the contract 8hq.1 consumes). 8hq.1
+(separate bead, BLOCKS-relationship already recorded) wires
+`scripts/dogfood-completeness-audit.sh --bead <id>` into the close/push path.
+**Do NOT implement 8hq.1 here.**
+
+**Risks:** (1) `bd list --json` schema could change (labels were `None` in
+sampled output) — read defensively. (2) The cadence-overdue check (c) is a
+heuristic, not exact — documented as such. (3) The `bd` dependency complicates a
+hermetic test — mitigated by a PATH `bd` shim in the fixture. Otherwise low —
+read-only, no ref mutation, follows the `docs-reality-check.sh` precedent.
+
+**Capture:**
+- inputs: bead etude-8hq.4 (desc + acceptance) + parent etude-8hq + blocked
+  etude-8hq.1; `docs/plans/dogfood/wide-retro-analysis.md` (P0 section);
+  `docs/plans/dogfood/retro-ledger.md` (retro cadence + B16 dogfood-completeness
+  check); `scripts/dogfood-capture.sh`, `dogfood-gate-capture.sh`,
+  `backfill-gate-records.sh`, `docs-reality-check.sh` (style/home precedent);
+  `internal/runmanifest/manifest.go` (Manifest.Gates / GateAttempt);
+  `docs/plans/dogfood/capture-protocol.md` + `review-gate-runbook.md` (docs
+  homes); live state probes (`bd list --status closed --json`,
+  `git for-each-ref`/`ls-remote` refs/etude/*, `etude run show`).
+- output: bead etude-8hq.4 --design field
+
+---
+## PLAN-GATE CORRECTION (3-seat: gemini BLOCK, codex GO-with-same-condition — consensus)
+Both seats independently require the SAME refinement to which checks GATE vs WARN, and how --bead mode is scoped. The scoping rule (window+allowlist+safe-default), the home (script), the test (fixture+bare-origin+bd-shim), and checks (a)(b)(d)(f) are all confirmed sound. Required changes:
+
+**1. Cadence check (c) is WARN-ONLY, never affects the exit code, and is EXCLUDED from --bead mode.** Decisive reason (gemini): a cadence retro is written AFTER the cohort's 3rd bead closes, so hard-gating the 3rd bead's close on "a retro ref must already exist" is a DEADLOCK. Plus it's a heuristic that false-positives on inline-fix retros (no artifact). So (c) prints an informational note in BATCH mode only and NEVER contributes to exit 1.
+
+**2. Check (e) docs-reality is a BATCH/repo-state check, WARN-level, not a per-bead hard gate.** Scoping docs-drift to a single bead's commit in --bead mode is fragile. The authoritative docs gate remains `make docs-check`/`reconcile` in the normal Docs phase. In batch mode the audit MAY run `make docs-check`/`docs-reality` and WARN on failure; in --bead mode, only flag docs if that bead's run-manifest commit SHA actually changed docs/ (use the manifest stage git_sha, NOT a generic git log) — and even then warn, don't hard-fail. Do not hand-wave (e) with `git log`.
+
+**3. --bead <id> mode (THE mode etude-8hq.1 will gate close/push on) is STRICTLY scoped to that bead:** hard checks = (a) refs/etude/runs/etude-<id> exists, (b) its manifest has gates unless the bead is gate-exempt (allowlist), and (its own ref is pushed). It MUST NOT evaluate the window, the cadence (c), or the repo-wide all-refs-pushed sweep — otherwise closing one bead fails on unrelated repo state. Exit 1 only on a hard gap for THAT bead.
+
+**4. Batch mode (--last N / --since) runs:** (a)+(b) across the in-scope window (hard, exit 1 on gaps), the repo-wide pushed-refs sweep (d, hard), (c) cadence (WARN only), (e) docs (WARN only), and the bypass report (f). First adoption: run once with --since <dogfood-habit-date> to avoid hiding older post-habit gaps (then --last 9 for routine sweeps).
+
+Exit codes unchanged: 0=complete (warnings allowed), 1=hard gap, 2=usage/env error. All other plan decisions stand (allowlist sc.../dogfood-completeness-allow.txt, fixture test, files, no-8hq.1-wiring-here).
