@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-roadmap.2.5",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,80 @@
         "size": 868
       },
       "timestamp": "2026-05-25T17:20:21.873938Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T08:00:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T08:01:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T08:02:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang",
+          "timestamp": "2026-05-26T08:03:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms outage; 3 substantive GO"
+      },
+      "timestamp": "2026-05-26T08:05:00Z"
     }
   ]
 }
