@@ -1,0 +1,250 @@
+# Verification: etude-ikj3
+
+Lead: Codex gpt-6-astra. Bounded implementation and required suites: native gpt-5.6-terra high. Status: see worker evidence and independent QA below.
+
+
+## worker-verify.md
+
+# etude-ikj3 worker verification
+
+Status: **pass**. Working revision has the five source/docs changes listed in
+`implementation-report.md`; no commit was created by this worker.
+
+All successful Go invocations used `GOCACHE=/tmp/etude-ikj3-gocache` because
+the managed sandbox denies writes to the normal macOS Go build cache. This is
+an environment restriction, not a product failure.
+
+| Requirement | Evidence | Exit |
+| --- | --- | --- |
+| Full Go suite | `make test`; `.etude/tmp/ikj3-make-test.log` records all 22 packages, including `internal/cli` and `internal/liverun` | 0 |
+| Final changed replay coverage | `go test ./internal/cli ./internal/liverun -run 'Test(ReplayForward|ForwardReplayWorkflowStageRetryLookup)' -count=1 -v`; `.etude/tmp/ikj3-focused-replay-tests.log` | 0 |
+| Formatting and vet | `make lint`; `.etude/tmp/ikj3-make-lint.log` | 0 |
+| Generated docs | `make docs-check`; final log `.etude/tmp/ikj3-make-docs-check-final.log` | 0 |
+| Docs/CLI reality | `make docs-reality`; final log `.etude/tmp/ikj3-make-docs-reality-final.log` | 0 |
+| Shell suite | `make shell-test`; `.etude/tmp/ikj3-make-shell-test.log` | 0 |
+| Fresh binary | `make build`; `.etude/tmp/ikj3-make-build.log`, producing absolute lane binary `.../etude-ikj3-dev-codex/bin/etude` | 0 |
+| Diff hygiene | `git diff --check` | 0 |
+
+The first `make docs-reality` attempt, logged at
+`.etude/tmp/ikj3-make-docs-reality.log`, exited 2 before product checks because
+the default Go cache was denied by the sandbox. The identical check with the
+writable cache exited 0. Go also emitted a non-fatal module-stat-cache warning
+on successful `docs-reality` and build commands because the module download
+cache remains outside writable roots.
+
+## Full-suite provenance
+
+The initial full `make test` completed successfully with 22 package results and
+exit 0. It began before a subsequent test-only expansion that added the
+explicit `review.r3` and lookup-table cases. A second full suite,
+`.etude/tmp/ikj3-make-test-complete.log`, was started after that expansion. Its
+foreground tool call yielded at 30 seconds, but the process completed: the log
+now records all 22 package results (including `internal/cli` at 122.332s) and
+`.etude/tmp/ikj3-make-test-complete.exit` is 0. The final focused CLI/liverun
+replay command also completed with exit 0. A separate background attempt,
+`ikj3-make-test-final.log`, did not complete and is excluded from evidence.
+
+## Real CLI exercise and failing-before/passing-after
+
+`.etude/tmp/ikj3-real-exercise.sh` created a disposable Git repository and ran
+a real `retry-demo` workflow with a shell gate seat that blocked once then
+passed. The live run produced `review.r2` and recorded its gate-feedback and
+prior-attempt artifacts.
+
+- Base `/Users/jv/projects/etude/bin/etude` forward replay failed as expected:
+  `stage "review.r2": resolve runner: stage "review.r2" not found in workflow
+  "retry-demo"`. Its preserved raw output and effects show partial pre-fix
+  execution: `plan`, then `review`.
+- Fresh lane binary
+  `/Users/jv/projects/etude/.worktrees/etude-ikj3-dev-codex/bin/etude` replayed
+  all three records successfully: effects `plan`, `review`, `review`; stdout
+  includes the recorded gate-feedback/prior-attempt material.
+- The script asserted source HEAD equality, run-ref equality, SHA-256 equality
+  of the complete manifest before and after replay, and identical `git worktree
+  list --porcelain` output before and after. It exited 0.
+
+Raw command output, effects, full manifest, and the exercise exit summary are
+in `.etude/tmp/ikj3-real-evidence.txt`; execution log and status are
+`.etude/tmp/ikj3-real-exercise-evidence.log` and `.exit`.
+
+Independent QA reviewed the code, tests, docs, and the successful exercise. It
+found no blockers; its two documentation observations were incorporated before
+the final documentation checks.
+
+## implementation-report.md
+
+# etude-ikj3 implementation report
+
+Worker assignment: `gpt-5.6-terra`, high reasoning, as supplied by the
+launcher. This report does not claim an independently observable runtime model
+identifier.
+
+## Delivered behavior
+
+- Forward replay resolves the exact recorded stage name first. If that misses,
+  it removes exactly one final engine-style retry suffix `.rN`, only for a
+  canonical decimal `N >= 2`, and resolves that exact base stage.
+- Literal names (including `plan.r2`) retain precedence; `plan.r2.r3` can
+  resolve the literal `plan.r2` stage. `.r1`, zero/leading-zero, signed,
+  non-decimal, and missing-base forms fail with the normal missing-stage error.
+- `internal/liverun.ReplayForward` resolves every runner before creating its
+  checkout or invoking a runner. It retains manifest order, stage names,
+  producer data, and recorded input artifacts.
+- The explicit `--runner` forward override retains its all-stage behavior.
+- `docs/run.md` now documents retry lookup, recorded-input semantics,
+  preflight, and the existing caller-workspace SHA exception accurately.
+
+## Tests added
+
+- Default workflow/registry tests use real shell adapters, not `forwardRunner`:
+  mixed plan/review/literal bindings; original `review`, `review.r2`, and
+  `review.r3` with distinct recorded inputs; literal `plan.r2`; and nested
+  `plan.r2.r3`.
+- Lookup-table coverage covers exact precedence, malformed suffixes, `r1`,
+  zero and leading-zero forms, signed forms, and a missing base.
+- Preflight tests establish resolution of every stage before execution and no
+  invocation after a later resolution failure. CLI tests also establish no
+  shell side effect or partial stdout for invalid default lookup.
+
+## Documentation assessment
+
+Updated `docs/run.md`, the authoritative forward-replay guide. I reviewed
+`docs/replay.md`; it describes the single-stage command and needed no forward
+replay contract change. During independent QA, I corrected adjacent stale SHA
+guidance: hermetic stages must match the original checkout SHA; caller-workspace
+stages may record their clean post-run SHA; differing hermetic SHAs are
+rejected rather than recoverable through single-stage replay.
+
+## Changed-file SHA-256
+
+| File | SHA-256 |
+| --- | --- |
+| `docs/run.md` | `d7b5b513918bdf050bfab36943e25574bf05f1a3dfd7e89a3b26d5d8be31f577` |
+| `internal/cli/replay.go` | `6a3ddbff53be23498e4a6ca811d4205e4db1e0b21bf4575f9093384fa94cc261` |
+| `internal/cli/replay_test.go` | `ae081ba2cc6dd281fcc3ec1cefddbffe8547d74057710872465af07c51cb6e48` |
+| `internal/liverun/replay_forward.go` | `2bc6acfa10926a618b8b15eb4edb31b40cc29364fd3e0eee6a2314e7af2751db` |
+| `internal/liverun/replay_forward_test.go` | `5be9f714af82778c5b9249ca7e3be1519642cd6e634f89333db86c7b969290d7` |
+| `.etude/tmp/ikj3-real-exercise.sh` (ignored evidence script) | `24a303c253234d7cc568bf573a48d4e3a151810ff4c5634e984532a647178cc9` |
+| `.etude/tmp/ikj3-real-evidence.txt` (ignored evidence artifact) | `210bcf4d7a23f0a627a1460882400e9bf0e19496d1e78b68860df425d8b8f2a1` |
+
+`git diff --check` passed. `.etude/run-map.tsv` was already lead-owned and was
+not modified by this worker.
+
+## qa.md
+
+# Independent QA — etude-ikj3
+
+Status: **pass**. No unresolved production or documentation blockers found.
+
+Actual QA identity: native Codex **gpt-6-astra**, a fresh independent worker. The lead recorded this explicit substitution after the requested gpt-5.6-sol QA worker failed at capacity. Implementation and full-suite ownership remained with gpt-5.6-terra; QA did not run duplicate full suites, edit production, or perform the final gate. The required fresh Astra/Fable final gate remains separate.
+
+Evaluated base: `e1770dacc9c525477121deaad2ef48c6ba6415da`, plus the six-file working-tree diff identified below. Independent overlay tests are ignored artifacts, not shipped edits. Environment: macOS, repository worktree `/Users/jv/projects/etude/.worktrees/etude-ikj3-dev-codex`, Go module targets Go 1.26, writable QA GOCACHE in `/tmp`.
+
+## Inspection and acceptance coverage
+
+Read AGENTS.md, docs/development.md, the assigned lane prompt and plan, full changed production files, runner resolution and request contracts, workflow name validation, manifest checkout/producer contracts, relevant gate-generated naming logic, the complete added regression tests, and replay/forward-replay documentation. Inspected final diff and real test/exercise artifacts directly rather than relying on the implementation summary.
+
+| Requirement | Evidence and assessment |
+| --- | --- |
+| Exact workflow name wins, including literal `.r2` | `forwardReplayWorkflowStage` calls exact `findStage` before parsing. Real-adapter regression chooses literal `plan.r2` with its separate L adapter despite `plan` existing. Independent `TestQAExactLiteralNamesAndSingleSuffix` additionally passes for legal literals ending `.r1`, `.r02`, `.r2tail`, and `.r`, and retries of each. |
+| Strip exactly one final canonical generated `.rN`, N >= 2 | Source uses final `.r`, decimal validation, no leading zero, checked integer parse, then one exact base lookup. Regression covers review original/r2/r3 plus nested `plan.r2.r3`. QA rejects `base.r2.r3` when only base exists, confirming no recursive removal; malformed suffixes, overflow, and missing bases also rejected. |
+| Default workflow/registry routing and mixed stage adapters | Added CLI regression builds the default Cobra command with no injected forwardRunner and real registry-backed ExecRunners. Its expected concatenated output proves P/R/R/R/L/L routing with six distinct recorded inputs. |
+| Original inputs, producer metadata, output metadata, order and diagnostics survive | CLI regression checks exact distinct input-derived output and unchanged stored manifest. Independent `TestQARecordedRequestPreserved` compares the entire original Producer, every input's bytes/role/media type, output role/media type, and execution order. Newly produced output cannot become a downstream input. Error paths retain the recorded stage name; real baseline diagnostic identifies `review.r2`. |
+| Invalid later lookup fails before checkout or runner side effects | CLI malformed/r1/leading-zero/missing-base regressions assert empty output and absent side-effect marker. Liverun tests assert all runner resolutions occur before first execution. Independent `TestQAPreflightBeforeCheckout` uses an impossible checkout root and proves the later runner-resolution error wins before checkout is attempted. |
+| Explicit `--runner` still overrides workflow lookup | Real shell override regression succeeds for recorded `unmapped.r2` without resolving a workflow stage. |
+| Genuine engine-generated rerun replays | Fresh binary exercise uses a deterministic gate seat that blocks then passes; actual manifest stages are plan, review, review.r2. Baseline binary fails on the retry after plan+review; fixed binary invokes plan+review+review and emits the recorded gate-feedback/prior-attempt inputs. |
+| Accurate technical documentation | docs/run.md describes exact precedence, one suffix fallback, override, recorded-input preservation and preflight. Its adjacent checkout paragraph was corrected to honor caller-workspace provenance and remove a misleading single-stage workaround. docs/replay.md remains accurate for the unchanged single-stage path. Generated CLI flags/reference behavior did not change. |
+
+## Independent commands and results
+
+QA ran only these targeted additional tests, via Go overlay files stored in `.etude/tmp/qa-cli-probe_test.go`, `qa-liverun-probe_test.go`, and `qa-overlay.json`:
+
+```sh
+GOCACHE=/tmp/etude-ikj3-fresh-qa-gocache go test -overlay .etude/tmp/qa-overlay.json -run '^TestQA' -count=1 -v ./internal/cli ./internal/liverun
+```
+
+Exit **0**; actual log:
+
+```text
+=== RUN   TestQAExactLiteralNamesAndSingleSuffix
+--- PASS: TestQAExactLiteralNamesAndSingleSuffix (0.00s)
+PASS
+ok  	github.com/joshuavial/etude/internal/cli	0.511s
+=== RUN   TestQAPreflightBeforeCheckout
+--- PASS: TestQAPreflightBeforeCheckout (0.55s)
+=== RUN   TestQARecordedRequestPreserved
+--- PASS: TestQARecordedRequestPreserved (1.13s)
+PASS
+ok  	github.com/joshuavial/etude/internal/liverun	2.596s
+```
+
+QA also ran `git diff --check` (exit 0), read source and artifact files, and recomputed changed-file hashes. No full test suite was duplicated by QA.
+
+## Implementer evidence independently inspected
+
+- `make test`: complete all-package pass logs in `ikj3-make-test.log` and `ikj3-make-test-complete.log`; corresponding exit records are 0. The first complete run includes CLI 144.063s and liverun 85.758s. An initially partial duplicate log was not accepted as complete evidence; completed logs were inspected later. The second complete log records CLI 122.332s. Worker reports initially described only one complete suite; QA and lead requested a wording correction to match the two actual complete logs, distinct from the interrupted `ikj3-make-test-final.log`.
+- `make lint`: exit 0, gofmt check and `go vet ./...`.
+- `make docs-check`: exit 0, generated 26 command docs with no drift; final repeat also exit 0.
+- `make docs-reality`: initial default-cache attempt exit 2 from sandbox filesystem restrictions; writable-cache retry `ikj3-make-docs-reality-sandbox.log/.exit` is exit 0, 16 commands verified. The final `ikj3-make-docs-reality-final.log/.exit` was also inspected: exit 0 with the same 16-command success.
+- `make shell-test`: exit 0; actual complete shell log inspected for the run-map process change.
+- `make build`: exit 0. A Go module-stat-cache write warning did not prevent binary generation. Fresh `bin/etude` SHA256 is `9d36bbfa469a51f3da2c3fa851f0277294fb9ede4c0f426d9e282b9e778ae549`.
+- Final focused regression log `ikj3-focused-replay-tests.log/.exit`: exit 0, including default registry routing, malformed names, override, preflight, and existing caller-checkout coverage.
+- Race tests are not required for this scoped change: no concurrency/lifecycle code changed.
+
+## Realistic exercise assessment
+
+Read the full script `.etude/tmp/ikj3-real-exercise.sh`, evidence text, successful `ikj3-real-exercise-evidence.log/.exit` (exit 0), and the actual files in `/tmp/etude-ikj3-exercise.IHB5V1`. The exercise uses baseline `/Users/jv/projects/etude/bin/etude` and fresh `/Users/jv/projects/etude/.worktrees/etude-ikj3-dev-codex/bin/etude` by absolute path. It runs `run retry-demo --task task.txt --run-id retry-demo-20260907T000000Z-real`, then baseline and fixed `replay <run-id> --allow-env`.
+
+The genuine live gate records round 1 rerun and round 2 pass. Baseline stderr is `stage "review.r2": resolve runner: stage "review.r2" not found in workflow "retry-demo"`, with plan/review side effects. Fixed stderr is empty, its effects are plan/review/review, and output includes recorded gate feedback and prior-attempt JSON. The script asserts unchanged source HEAD and run ref. QA independently compared raw before/after manifest bytes and worktree lists: both identical. Raw manifest SHA256 is `ee748bc794b1891c64c46f646351bcca1e279ca0d0b11ebf15a9e993704ab2f3`. No checkout remained after replay.
+
+Earlier exercise fixture failures are not passing evidence. QA identified missing environment passthrough and incorrect manifest-key/expected-call assertions while the fixture was being prepared; those were corrected in the script without production changes before the successful run above.
+
+Final `worker-verify.md` and `implementation-report.md` were read after completion; listed source/doc hashes match the independently computed hashes below. Full-suite report wording is corrected by the actual two completed logs described above; this does not invalidate either successful test result.
+
+## Findings
+
+No unresolved blockers. Initial coverage gap for same-stage original+r2+r3 was corrected with distinct-input real-adapter coverage. Adjacent stale checkout documentation and its invalid single-stage workaround were corrected. These findings were resolved before the final source/doc assessment. No optional production changes are requested.
+
+## Evaluated file hashes
+
+```text
+6a3ddbff53be23498e4a6ca811d4205e4db1e0b21bf4575f9093384fa94cc261  internal/cli/replay.go
+ae081ba2cc6dd281fcc3ec1cefddbffe8547d74057710872465af07c51cb6e48  internal/cli/replay_test.go
+2bc6acfa10926a618b8b15eb4edb31b40cc29364fd3e0eee6a2314e7af2751db  internal/liverun/replay_forward.go
+5be9f714af82778c5b9249ca7e3be1519642cd6e634f89333db86c7b969290d7  internal/liverun/replay_forward_test.go
+d7b5b513918bdf050bfab36943e25574bf05f1a3dfd7e89a3b26d5d8be31f577  docs/run.md
+c29e559272ac32a4bdc672fa45ef1de3ac48f0a023c15ab37a94eb36b6dd8d84  .etude/run-map.tsv
+```
+
+## Lead assessment
+
+Lead: native Codex gpt-6-astra. Reviewed actual six-file diff, full production functions, existing relevant contracts, regression tests and independent QA probes. Exact changed-file hashes are captured in changed-files.sha256 and final review packet. No lifecycle/exec_runner changes, so race suite not required by proportional policy.
+
+Production inspection: exact findStage lookup precedes canonical final-suffix parsing; fallback removes only one suffix and performs an exact base lookup. Workflow/registry resolution and explicit runner override remain intact. ReplayForward preflights all bindings before worktree.Checkout. Its execution loop still consumes manifest stages in order, loading recorded input files and forwarding the original Producer and output metadata.
+
+Independent QA evidence inspected: qa-cli-probe_test.go, qa-liverun-probe_test.go and qa-probes.log. Three targeted probes pass with exit 0, covering unusual exact literals, no recursive stripping/overflow, preflight before impossible checkout, and full request preservation.
+
+Logs inspected directly: full make test package results, make lint, make docs-check, make shell-test, make build and make docs-reality retry. Initial docs-reality failed because default Go cache was outside writable roots (exit 2); writable-cache retry passed (exit 0). Build emitted a module-cache stat warning but exited 0. Worker report identifies canonical logs and commands. Lead did not duplicate full suites.
+
+Documentation assessment: docs/run.md now explains retry lookup, exact-name precedence, recorded-input replay and preflight. Independent QA also identified and corrected adjacent stale checkout-SHA wording and a misleading single-stage workaround. CLI flags did not change; generated docs-check passed without generated changes.
+
+Scope/process: only bead etude-ikj3 run mapping added; no workflow/registry edits, code push, merge, bead closure, installed-binary replacement, lifecycle-helper edits or _ai/research changes. Canonical beads readable. Initial bd dolt pull failed with github.com DNS unavailable; parent must sync at delivery. Sol independent QA was unavailable at capacity, so fresh native Astra performed QA. Final gate remains configured fresh Astra/Fable.
+
+Lead git diff --check: exit 0.
+
+Final real-binary evidence inspected directly and in ikj3-real-evidence.txt: live workflow produced plan/review/review.r2 with an actual block-then-GO shell gate. Base binary fails retry lookup after two invocations; lane binary succeeds with three and preserves source HEAD, run ref, manifest bytes and worktree list. Script and evidence hashes match worker report.
+
+All five worker source/docs hashes independently recomputed and matched. Lead-owned run-map SHA256: c29e559272ac32a4bdc672fa45ef1de3ac48f0a023c15ab37a94eb36b6dd8d84. Current git diff bytes exactly match captured implementation.diff. Native worker assignment was explicitly gpt-5.6-terra/high with fork_turns=none; the tool exposes task identity but no independently inspectable runtime-model string. Worker retracted an unsupported GPT-6 identity inference from generic boilerplate. No implementation model substitution is established.
+
+
+## Supervisor follow-up
+
+Original six file hashes match. Reviewer-only USER allowlist repair applied identically to independently reviewed sibling commit e885b40. No production source, tests or technical docs changed. Registry/profile regression command exited 0:
+
+```text
+ok  	github.com/joshuavial/etude/internal/registry	0.635s
+ok  	github.com/joshuavial/etude/internal/cli	0.559s
+
+```
+
+This supersedes earlier statements that the final diff has no registry edit. Final review now covers all seven changed files.
