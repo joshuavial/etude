@@ -1,0 +1,3 @@
+## Docs — etude-phase2.3 (Changed: no)
+
+No shipped docs needed. internal/replay/runner.go is a pure internal Go interface + StubRunner with no CLI surface (no cmd/ imports internal/replay). Shipped docs (capture/init/run/sync/README) describe user-facing commands; unaffected. capture.md 'replay not implemented yet' note + root_test.go's rejected-command set both stay accurate (replay still not user-invokable). All replay refs are under docs/plans/. Forward obligations deferred to etude-replay-command: remove 'replay' from capture.md Current Limits, update root_test.go rejected set, add user-facing replay docs.
