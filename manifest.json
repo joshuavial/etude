@@ -199,6 +199,57 @@
         "degraded_reason": "Opus was run as the required unnamed in-harness general-purpose Task with model opus because that seat cannot be represented by the subprocess gate adapter."
       },
       "timestamp": "2026-08-15T23:24:00Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Ground fixture ordering in RunRefsSource deterministic cohort order.",
+            "Regression-test symlink-resolution errors, excluded-fixture rendering, and deterministic output ordering.",
+            "A temporary GOMODCACHE may require network downloads; preserve the scoped-cache invariant while making that prerequisite explicit.",
+            "State that unlabeled complete fixtures remain in the common denominator but not the scored denominator."
+          ],
+          "timestamp": "2026-08-15T23:29:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T23:29:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus was run as the required unnamed in-harness general-purpose Task with model opus because that seat cannot be represented by the subprocess gate adapter."
+      },
+      "timestamp": "2026-08-15T23:29:00Z"
     }
   ]
 }
