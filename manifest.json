@@ -570,6 +570,120 @@
         "degraded_reason": "Both seats GO. Three rounds, every non-passing one on a CLAIM rather than on the run itself - the run's measurements checked out at every round. r1: the required retro did not exist, and an attempt count was typed rather than read (16 and 20 against a manifest saying 16 and 22). r2: a present-tense hazard claim had gone stale because the supervisor rebased past the commit that introduced it. r3 optionals folded here: two claims in the artifact - that both plan seats preferred the inversion, and that the verify seat reproduced a regression - were stronger than any surviving record could support, since the in-harness opus outputs are preserved NOWHERE and the re-recorded codex entries carry no raw_output. They are now softened to what the record shows, and the fact that the supervisor's own prose is the sole evidence for what a seat said is stated outright rather than worked around, because it is precisely the condition this epic exists to remove. Also folded: a loose claim that the check seats record 'only provider.model' when they also carry harness and a full raw_output transcript - the load-bearing half, that nothing records WHERE they ran, is confirmed exactly. And onto etude-4ed: the re-recorded codex entries keep harness=codex, so a machine counting seats by harness sees 6 codex verdicts on a run where codex was invoked 3 times, making the double-count invisible to exactly the manifest arithmetic this artifact argues for."
       },
       "timestamp": "2026-08-15T18:30:39Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "4d5924bc4c7e1a8cd83e09756b2fff6788d70819c19a64484ae452b250d85c32"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "e9b8346d75f8c1412c470e9a9ae777180262d8fa87c9211ca5807e803a9b50ff",
+            "path": "artifacts/sha256/e9/e9b8346d75f8c1412c470e9a9ae777180262d8fa87c9211ca5807e803a9b50ff",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1251
+          },
+          "timestamp": "2026-08-15T18:32:58.99278Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T18:32:59.289363Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T18:33:00.343945Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add the exact binary/version or build command used for the `etude gate`/audit runs in the next artifact so built-binary provenance is explicit."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "6150a984a14054b511a477c614ba48c4f3edae4fef4341113302b801af0dcec0",
+            "path": "artifacts/sha256/61/6150a984a14054b511a477c614ba48c4f3edae4fef4341113302b801af0dcec0",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 293
+          },
+          "session": {
+            "session_id": "codex-105bf835b87d4f52",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "105bf835b87d4f528ff9bf1804ccb76e0a139282c415cf6e2dc70af358b9e3f5",
+              "path": "artifacts/sha256/10/105bf835b87d4f528ff9bf1804ccb76e0a139282c415cf6e2dc70af358b9e3f5",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 203
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T18:33:19.45159Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T18:33:19.451672Z"
     }
   ]
 }
