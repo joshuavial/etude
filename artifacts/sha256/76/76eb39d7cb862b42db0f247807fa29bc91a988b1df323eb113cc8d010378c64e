@@ -1,0 +1,8 @@
+## etude-l8tz: preserve ordinary Git push
+
+- Stop adding `remote.<selected>.push = refs/etude/*:refs/etude/*`. On normal init AND force init remove only exact legacy Etude-owned canonical entries (all duplicate instances), preserving all other user refspec values and order. Do not infer ownership of broad/custom refspecs and do not add a guessed branch mapping: `push.default` and upstream semantics should resume naturally when the last legacy-only entry disappears.
+- Keep existing hazardous-fetch removal and safe mirror-fetch behavior. Preview push migration truthfully in dry-run without writes; preserve existing missing-remote normal/explicit/force behavior unless it contradicts the new contract.
+- Replace warnings that treat missing Etude push refspec as broken with instructions that metadata is published by explicit `etude sync`. Audit docs/init.md, sync docs, scaffold/help and tests for the old claim that plain git push carries Etude refs.
+- Tests against local bare remote: pristine init then ordinary git push advances branch; migrate legacy-only config then branch push works; custom branch mappings survive byte-for-byte; duplicates removed; custom Etude-looking mappings preserved; force performs migration; dry-run changes neither files nor config; explicit sync still sends run refs.
+- Exact canonical string is only an ownership heuristic: a user might have intentionally installed that same value. Document its removal as the migration contract rather than claiming perfect provenance.
+
