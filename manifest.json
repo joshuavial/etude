@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-9uf.2",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -59,6 +59,57 @@
         "size": 13726
       },
       "timestamp": "2026-08-15T05:35:09.734209Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "The plan misses the acceptance criterion by allowing docs/plans/dogfood/retro-ledger.md to keep references to dogfood-capture.sh / dogfood-close.sh; the criterion says docs/plans/dogfood has no such references, with no historical-ledger exception."
+          ],
+          "timestamp": "2026-08-15T05:20:55Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "in-harness Task sub-agent seat (subagent_type general-purpose, model opus) returned no verdict; registry invoke claude -p --model opus returns Not logged in when Claude Code is the orchestrator (see etude-pqv)",
+          "timestamp": "2026-08-15T05:20:55Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat unreachable this round; the gate did NOT pass, so no degraded pass was taken"
+      },
+      "timestamp": "2026-08-15T05:20:55Z"
     }
   ]
 }
