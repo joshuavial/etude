@@ -1,0 +1,27 @@
+◐ etude-mya · Add MkDocs site   [● P2 · IN_PROGRESS]
+Owner: joshuavial · Assignee: joshuavial · Type: task
+Created: 2026-06-22 · Updated: 2026-06-30
+
+DESCRIPTION
+Configure MkDocs Material for the existing docs folder and run a local preview before publishing.
+
+DESIGN
+Goal: Add a MkDocs Material documentation site over the existing docs/ folder and verify a local preview.
+
+Plan:
+- Add mkdocs.yml: Material theme, docs_dir=docs, site_dir=site, curated nav (guides, generated CLI reference, planning), repo/site URLs.
+- Pin build deps in requirements-docs.txt (mkdocs==1.6.1, mkdocs-material==9.7.6).
+- Ignore generated site/ in .gitignore.
+- Fix doc links that break under MkDocs: links to targets OUTSIDE docs_dir (../README.md, ../examples/*) rewritten to absolute GitHub URLs; in-page anchors in replay.md (#recording---record -> #recording-record) to match Material's TOC slug generation; add the existing examples/research walkthrough link.
+- Verify: mkdocs build + mkdocs serve local preview (HTTP 200), make docs-reality, make docs-check.
+- Out of scope / deferred: pre-existing strict-mode broken links in docs/plans/product/live-execution.md and docs/plans/dogfood/README.md -> follow-up bead etude-ajs; strict mode not enabled here.
+
+
+NOTES
+Combined gate (plan+implement+verify+docs+review) attempt 1, Tier 2 (Opus + Codex), low-risk docs/build-tooling, no Tier-1 surface:
+- Claude Opus (in-harness subagent): GO, no blocking findings, ground-truthed nav/example links/replay anchor slug.
+- fresh GPT-5.5 xhigh (codex): GO, no blocking findings.
+- required changes incorporated: none.
+- optional handled: ran mkdocs serve local preview (HTTP 200); deferred strict-mode + nav cleanup to etude-ajs.
+- result: pass.
+

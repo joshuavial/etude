@@ -1,0 +1,24 @@
+# etude-mya Verify
+
+## Surface classification
+Not CLI-facing. This bead adds MkDocs site config + doc-link fixes; it does not
+add or change any `etude` command. No manual CLI command-surface coverage applies.
+
+## Evidence
+- `pip install -r requirements-docs.txt` (mkdocs==1.6.1, mkdocs-material==9.7.6) — OK.
+- `mkdocs build` (non-strict): exit 0; produced site/index.html and site/replay/index.html.
+- `mkdocs serve -a 127.0.0.1:8123` local preview (acceptance: "run a local preview"):
+  - GET /etude/            -> HTTP 200 (title: "etude")
+  - GET /etude/replay/     -> HTTP 200
+  - GET /etude/cli/etude/  -> HTTP 200
+- `make docs-reality` -> "OK — 14 commands; docs match the shipped CLI." (exit 0)
+- `make docs-check` (generated-docs drift guard) -> exit 0, zero diff.
+- Ground-truth: examples/research/ and examples/summarize/ exist (docs/README.md links valid).
+- replay.md anchor fix verified: heading `## Recording (--record)` -> Material/python-markdown
+  slug `recording-record`; the prior `#recording---record` was the broken GitHub-style anchor.
+
+## Known, deferred
+- `mkdocs build --strict` aborts on 4 PRE-EXISTING broken `../run.md` links in
+  docs/plans/product/live-execution.md and an INFO on docs/plans/dogfood/README.md
+  (`artifacts/`). Not in this bead's diff. Filed as etude-ajs. Strict mode intentionally
+  not enabled here.

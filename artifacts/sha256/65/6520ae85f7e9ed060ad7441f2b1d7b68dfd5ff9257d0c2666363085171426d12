@@ -1,0 +1,169 @@
+commit aec28991e60e7bb4cc301cf41f5b9282b66e4f91
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 14:10:22 2026 +0800
+
+    add MkDocs Material site config and fix in-site doc links
+
+diff --git a/.gitignore b/.gitignore
+index 78c01ba..2cf276a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -16,3 +16,4 @@ coverage.out
+ .design-council/
+ .etude/reviews/
+ tmp/
++site/
+diff --git a/docs/README.md b/docs/README.md
+index 3e69104..8871196 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -1,4 +1,7 @@
+-# etude docs
++# etude
++
++`etude` captures agent workflow runs as Git refs so work can be inspected,
++replayed, benchmarked, and synchronized alongside the codebase.
+ 
+ This directory holds user-facing documentation for implemented behavior.
+ 
+@@ -18,12 +21,13 @@ This directory holds user-facing documentation for implemented behavior.
+ - [Prime](cli/etude_prime.md) - print a structured agent-onboarding primer to stdout (runs anywhere, no args).
+ - [Log](log.md) - narrate runs and retros as a chronological timeline (read-only).
+ - [Import](import.md) - backfill historical GitHub PR diffs and bodies as etude run records (`etude import --from-github`).
+-- [Example](../examples/summarize/README.md) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
++- [Example: summarize](https://github.com/joshuavial/etude/tree/main/examples/summarize) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
++- [Example: research](https://github.com/joshuavial/etude/tree/main/examples/research) - non-dev workflow walkthrough (research → fact-check → draft → review → tone-police) proving the engine has no dev-specific assumptions; live gate + forward replay, no LLM.
+ - [Plans](plans/README.md) - planning and design notes (some components shipped, some not yet built).
+ - [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).
+ 
+ The current implemented state is summarized in the top-level
+-[README](../README.md).
++[README](https://github.com/joshuavial/etude#readme).
+ 
+ The storage and manifest packages that exist today are Go APIs internal to this
+ module. The top-level README mentions them as implementation status; user-facing
+diff --git a/docs/plans/README.md b/docs/plans/README.md
+index 5d241ce..af86085 100644
+--- a/docs/plans/README.md
++++ b/docs/plans/README.md
+@@ -2,7 +2,7 @@
+ 
+ This section holds planning and design notes — some describe components that now
+ ship, others sketch work that is not built yet. It is not shipped user-facing
+-documentation (that lives in the top-level [docs/](../README.md)).
++documentation (that lives in the top-level [docs](../README.md)).
+ 
+ The source of truth for the current product direction is still the full
+ [design brief](product/BRIEF.md). Use this section for smaller implementation
+@@ -54,7 +54,7 @@ behavior.
+ 
+ ## Components
+ 
+-**Shipped** (see the top-level [docs/](../README.md) for user docs):
++**Shipped** (see the top-level [docs](../README.md) for user docs):
+ 
+ - **Go CLI** - command structure, errors, and generated command docs.
+ - **Workflow schema** - `.etude/workflow.yaml` validation and versioning.
+diff --git a/docs/replay.md b/docs/replay.md
+index 0104309..10f6c0e 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -5,7 +5,7 @@ stage's recorded inputs, checks out the recorded git SHA into a throwaway
+ worktree, invokes an external runner, and emits the produced output.
+ 
+ Without `--record`, replay only emits the output and does not persist anything.
+-With `--record`, it writes a new linked run; see [Recording (--record)](#recording---record) below.
++With `--record`, it writes a new linked run; see [Recording (--record)](#recording-record) below.
+ 
+ ```bash
+ etude replay <run-id> <stage>
+@@ -27,7 +27,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+ | `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. The file is opened without following symlinks (on Unix, atomically via `O_NOFOLLOW`): a non-existent path is created, an existing regular file is overwritten, but an existing symlink (or other non-regular file) is rejected rather than followed — so `--output` cannot clobber a file the symlink points at. |
+ | `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
+-| `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
++| `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording-record). |
+ | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+ | `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
+ | `--skill-repo <repo>` | Override `producer.skill.repo` in the recorded producer. |
+diff --git a/mkdocs.yml b/mkdocs.yml
+new file mode 100644
+index 0000000..df6d7b1
+--- /dev/null
++++ b/mkdocs.yml
+@@ -0,0 +1,67 @@
++site_name: etude
++site_description: Agent workflow capture and replay tooling
++site_url: https://joshuavial.github.io/etude/
++repo_url: https://github.com/joshuavial/etude
++repo_name: joshuavial/etude
++
++docs_dir: docs
++site_dir: site
++
++theme:
++  name: material
++  features:
++    - navigation.sections
++    - navigation.indexes
++    - navigation.top
++    - search.suggest
++    - search.highlight
++    - content.code.copy
++
++markdown_extensions:
++  - admonition
++  - toc:
++      permalink: true
++  - pymdownx.details
++  - pymdownx.superfences
++
++nav:
++  - Home: README.md
++  - Guides:
++      - Init: init.md
++      - Manual Capture: capture.md
++      - Batch Capture: capture-run.md
++      - Runs: run.md
++      - Gate Reviewer Records: gates.md
++      - Sync: sync.md
++      - Replay: replay.md
++      - Bench: bench.md
++      - GC: gc.md
++      - Reindex: reindex.md
++      - Retro: retro.md
++      - Log: log.md
++      - Import: import.md
++  - CLI Reference:
++      - etude: cli/etude.md
++      - bench: cli/etude_bench.md
++      - capture: cli/etude_capture.md
++      - capture-gate: cli/etude_capture-gate.md
++      - capture-run: cli/etude_capture-run.md
++      - gc: cli/etude_gc.md
++      - import: cli/etude_import.md
++      - init: cli/etude_init.md
++      - log: cli/etude_log.md
++      - prime: cli/etude_prime.md
++      - reindex: cli/etude_reindex.md
++      - replay: cli/etude_replay.md
++      - retro: cli/etude_retro.md
++      - run: cli/etude_run.md
++      - sync: cli/etude_sync.md
++  - Planning:
++      - Overview: plans/README.md
++      - Product:
++          - Brief: plans/product/BRIEF.md
++          - V1 Scope: plans/product/V1-SCOPE.md
++      - Dogfood:
++          - Overview: plans/dogfood/README.md
++          - Checklists: plans/dogfood/checklists.md
++          - Review Gate Runbook: plans/dogfood/review-gate-runbook.md
+diff --git a/requirements-docs.txt b/requirements-docs.txt
+new file mode 100644
+index 0000000..65732f9
+--- /dev/null
++++ b/requirements-docs.txt
+@@ -0,0 +1,2 @@
++mkdocs==1.6.1
++mkdocs-material==9.7.6

@@ -1,0 +1,20 @@
+# etude-mya Final Review
+
+## Scope (1 bead = 1 commit)
+Committed: mkdocs.yml, requirements-docs.txt, .gitignore (+site/),
+docs/README.md, docs/plans/README.md, docs/replay.md.
+Excluded (unrelated baseline-dirty): untracked _ai/research/.
+
+## Diff vs plan
+Matches plan: MkDocs Material over docs/, pinned deps, ignore build output,
+link/anchor fixes required for in-site rendering. No Go code, schema, refs, or
+generated CLI docs touched.
+
+## Gate (combined plan+implement+verify+docs+review, Tier 2)
+- Claude Opus (in-harness subagent): GO — no blocking findings across all four lenses;
+  ground-truthed nav targets, example links, and the replay anchor slug.
+- Codex GPT-5.5 xhigh: GO — no blocking findings.
+- Optional (deferred to etude-ajs): enable `mkdocs --strict` after fixing pre-existing
+  link breakages; add omitted cli/*.md pages to nav or accept not-in-nav INFO.
+
+## Result: pass
