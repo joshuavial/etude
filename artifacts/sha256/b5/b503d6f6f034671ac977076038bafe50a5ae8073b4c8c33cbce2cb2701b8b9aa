@@ -1,0 +1,197 @@
+# etude-s6z.1 plan — bridge live stages to Claude producers
+
+Track: full STRICT loop. This changes live CLI behavior and passes an
+authentication credential to an external producer process.
+
+ANCESTOR: `etude-s6z` (P2) proves four derivation stages can run live through
+real LLM producers. This bead supplies the missing producer adapter measured by
+a configured plan-stage execution that produces a non-empty LLM artifact.
+
+MEASUREMENT: every stage currently resolves the registry `dev` seat to
+`claude -p --model opus` with no prompt argument, while `ExecRunner` discards
+stdout and requires `$ETUDE_OUTPUT_FILE`; therefore every configured live stage
+fails with `output missing`.
+
+BLAST RADIUS: repository config and runner behavior inside this worktree;
+authenticated Claude calls explicitly launched for verification; Claude CLI's
+normal configuration/cache state beneath allowlisted `HOME`; and unreferenced
+blob, tree, and commit objects written to the repository's shared Git object
+database for the dirty-tree live proof. The wrapper passes
+`--no-session-persistence`, suppressing resumable session transcript state for
+this bead; `etude-o9z` will deliberately revisit that mode when it captures
+session identity and logs. No refs are moved by temporary object construction.
+No host packages, system directories outside Claude's user state, containers,
+shared services, or other lane files are changed.
+
+IRREVERSIBLE SEQUENCES: sending the prompt to Claude can incur a remote request
+and charge. The wrapper performs all local validation and prompt construction
+before that send. Claude CLI offers no provider idempotency key or durable
+pre-send protocol, so the logical stage has no exactly-once guarantee.
+
+CRASH-PREFIX RESIDUALS:
+
+| Crash prefix | Durable/local residual | External effect | Retry effect | Observable evidence | Completion |
+|---|---|---|---|---|---|
+| before prompt construction completes | partial scratch prompt and possibly an empty sibling stdout temp, removed on normal exit only | none | safe; no charge | scratch files until scratch cleanup | incomplete |
+| prompt complete, before Claude accepts stdin | complete scratch prompt plus empty sibling stdout temp | none | safe; no charge | scratch files | incomplete |
+| after request send, before Claude exits | prompt plus possible partial temp stdout | request may execute and charge | can issue and charge a duplicate request | provider/CLI diagnostics; no stage artifact | incomplete |
+| Claude exits 0, before validation/rename | prompt plus complete temp stdout | completed charged request | crash retry can duplicate the request | complete temp file in scratch | incomplete |
+| after atomic rename, before engine capture | prompt plus renamed scratch output; after host power loss the rename is not fsync-durable, so output may be absent but is never treated as a captured artifact | completed charged request | engine/operator retry can duplicate the request | output may exist locally but run ref does not record it | wrapper complete; stage incomplete |
+| after engine captures output | run-ref artifact plus normal scratch residuals until cleanup | completed charged request | no retry required; an explicit rerun is a new charged request | run manifest and artifact | complete |
+
+Normal non-crash failures are not retried inside the wrapper. A trap removes
+prompt and unpublished output temporaries on normal shell exit; host/process
+crashes can leave them for the engine's scratch cleanup.
+
+GLOBAL REQUEST SEQUENCE: a complete default workflow is sequential, not one
+request total. Each of the five stage wrappers can add exactly one producer
+request; after each producer artifact the existing gate engine can invoke the
+configured reviewer seats (and a fallback only when its primary fails) before
+the next producer runs. Thus this change introduces at most five producer sends
+per uninterrupted full run, while reviewer sends are pre-existing gate effects.
+The live plan proof can incur the plan producer request followed by the two L2
+reviewer primaries and any configured failure fallbacks. A crash at any prefix
+can preserve already-captured earlier artifacts/gates on the run ref while
+losing the current scratch output; resume may skip captured work, whereas an
+explicit fresh run or rerun can repeat any prior charged request. There is no
+cross-request exactly-once guarantee. Per-request residuals are the table above;
+the durable boundary between requests is the engine's run-ref capture.
+
+TOPOLOGY: one `ExecRunner` process invokes one wrapper and one Claude CLI per
+stage. `ExecRunner.Run` resolves `WorktreeDir`, assigns it to `cmd.Dir`, and its
+existing `TestExecRunner_CWD` regression proves relative commands and agent
+lookups execute inside that pinned worktree. There is no new concurrent writer;
+the detached worktree remains disposable and the stage artifact is committed
+to the run ref only by the existing engine after the wrapper succeeds.
+
+DURABILITY CLASS: non-idempotent remote effect, at-most-once per wrapper
+process, with no exactly-once guarantee across a logical-stage retry. The
+wrapper creates the unpublished temporary as a sibling in the exact
+`$ETUDE_OUTPUT_FILE` directory, requires it to be non-empty, and renames it
+atomically on that filesystem only after Claude exits successfully; retry
+semantics remain owned by the existing live engine and gate loop.
+
+COMPLETENESS ENUMERATION: the complete configured stage set is `plan`,
+`implement`, `verify`, `docs`, and `review`; each receives an inline command
+whose sole stage-specific value is its declared skill/agent name. The complete
+wrapper boundary set is missing/invalid agent, missing ETUDE paths, missing
+agent definition, zero inputs, ordered multi-input success, Claude failure,
+empty or whitespace-only successful Claude output, and successful non-empty
+output publication. The exact stage-to-agent set is `plan`→`dev-planner`,
+`implement`→`dev-executor`, `verify`→`dev-qa`, `docs`→`dev-docs-writer`, and
+`review`→`dev-pr-reviewer`; all five matching files exist under the checked-in
+`.claude/agents/`. The workflow migration guard pins those five literal pairs,
+asserts every real agent file exists, and covers the two required allowlisted
+names.
+
+Every configured stage declares at least one input. Every checked-in agent file
+also pins its model explicitly (`opus` for plan/verify/review and `sonnet` for
+implement/docs), so replacing `--model opus` with `--agent` is deliberate: each
+stage now selects the model declared by its own producer agent rather than
+forcing one registry-wide reviewer model.
+
+TRUST BOUNDARY: `.etude/workflow.yaml`, wrapper argv, input role filenames, and
+the wrapper's prompt framing are trusted repository/engine-produced control
+data. Materialized input contents include prior Claude artifacts and are
+untrusted data; the wrapper places each inside explicit begin/end delimiters and
+states that delimited content is data, not wrapper instruction. The new Claude
+response is likewise untrusted and is published only as the stage artifact.
+The OAuth token value is secret process input and must never be printed,
+persisted in the prompt, or asserted by value. The wrapper does not opt into
+`--dangerously-skip-permissions`; Claude CLI's normal non-interactive permission
+mode and the checked-in agent definition govern any tool access.
+
+## Contract decision
+
+A registry seat's `invoke` is a REVIEWER contract: shared prompt on stdin,
+structured verdict envelope in `$ETUDE_OUTPUT_FILE`. A workflow stage runner is
+a PRODUCER contract: declared inputs plus stage skill in, arbitrary artifact in
+`$ETUDE_OUTPUT_FILE`. Reusing `runner: {name: dev}` crosses those contracts and
+is the root defect.
+
+Keep `dev` in the registry for schema/default compatibility, but stop using it
+as a stage runner. Replace every workflow stage's named runner with an inline
+command `bash .etude/dev-stage-runner.sh <stage-skill>`. `bash` is resolved from
+PATH before launch; the relative script argument is then resolved inside the
+pinned detached worktree. This also passes the skill identity explicitly
+without a new reserved environment variable or shell-side YAML parsing.
+
+## Files and implementation
+
+- Add `.etude/dev-stage-runner.sh`:
+  - validate one identifier-like agent argument, the three current ETUDE paths,
+    and `.claude/agents/<agent>.md` before invoking Claude;
+  - collect `ETUDE_INPUTS_DIR/*` in lexical order and fail closed on zero inputs;
+  - build a prompt under the engine-owned scratch directory, register cleanup
+    before writing it, generate an unpredictable per-invocation delimiter, and
+    enclose complete input contents as role-labelled untrusted data;
+  - invoke `claude -p --no-session-persistence --agent <agent>` with the prompt
+    on stdin, avoiding resumable transcript writes until `etude-o9z` adds
+    explicit session evidence;
+  - create stdout with `mktemp` in `$ETUDE_OUTPUT_FILE`'s directory, require
+    content beyond ASCII whitespace, and rename it to `$ETUDE_OUTPUT_FILE` only
+    on exit 0; never print the environment or token.
+- Update `.etude/workflow.yaml` additively and without restructuring stages:
+  - preserve `HOME` (required by review/check tooling) and add
+    `CLAUDE_CODE_OAUTH_TOKEN` to `env_allowlist`;
+  - replace all five `runner.name: dev` blocks with the corresponding inline
+    wrapper command.
+- Update `internal/cli/migration_test.go` so the checked-in workflow guard
+  asserts the new producer contract: every stage is inline, every command uses
+  the shared wrapper with the stage's exact skill, and the allowlist is exactly
+  `HOME` plus `CLAUDE_CODE_OAUTH_TOKEN`. Registry/default tests remain unchanged.
+- Add `scripts/dev-stage-runner_test.sh` with a stub `claude`, and add a
+  `dev-stage-runner-test` target to `Makefile` plus the aggregate `shell-test`.
+- Update `docs/run.md` with the repository-provided wrapper, inline-runner
+  rationale, required OAuth allowlist name, and the distinction between stage
+  producer output and reviewer verdict envelopes.
+
+## Planned regressions
+
+Planned regression: `dev-stage-runner_test.sh` proves ordered role-labelled inputs, exact agent selection, and atomic Claude stdout publication.
+
+Planned regression: `dev-stage-runner_test.sh` pins the full Claude argv, including `--no-session-persistence` and the absence of permission bypass, and proves a per-run delimiter encloses inputs.
+
+Planned regression: `dev-stage-runner_test.sh` proves missing agent, missing paths, unknown agent, zero inputs, Claude failure, and successful-but-empty-or-whitespace-only Claude output leave no output and return non-zero; the stub invocation ledger stays empty for every pre-send validation failure.
+
+Planned regression: `dev-stage-runner_test.sh` rejects a directory in the materialized input set before invoking Claude.
+
+Planned regression: `TestMigrationWorkflowParsesAndCrossResolves` proves all five stages use the inline wrapper with their exact declared skill.
+
+Planned regression: `TestMigrationWorkflowParsesAndCrossResolves` proves the workflow allowlist is exactly HOME and CLAUDE_CODE_OAUTH_TOKEN.
+
+Planned regression: `TestMigrationWorkflowParsesAndCrossResolves` proves all five stages declare at least one input and all five real agent definitions pin a non-empty model.
+
+## Verification and live proof
+
+- Run `bash -n` on both shell files and the full stub contract suite.
+- Run focused Go migration/workflow tests (including the existing
+  `TestExecRunner_CWD`), `make shell-test`, `make test`,
+  `make lint`, `make docs-check`, and `make docs-reality`.
+- Build `bin/etude` and exercise the actual configured plan stage with a real
+  Claude producer. Because `etude run` checks out a commit rather than the dirty
+  tree, create an unreferenced verification commit object from a temporary index
+  (do not move the bead branch), pass that SHA through `--git-sha`, and verify the
+  recorded plan-stage artifact is non-empty and LLM-produced. Also invoke the
+  checked-in `dev-docs-writer` adapter with a real Claude request in the same
+  pinned checkout to prove a non-plan mapping. A later gate may prevent the
+  workflow from completing; the acceptance proof is the configured plan
+  producer succeeding before that boundary.
+- Confirm `claude auth status` is logged in under the exact runner environment
+  (`PATH` plus the two workflow-allowlisted names) without printing any value.
+  In an isolated temporary HOME with a deliberately invalid token, confirm a
+  print-mode request exits non-zero rather than publishing an authentication
+  error as successful content; do not print the token or response body.
+
+## Docs impact and scope fence
+
+`docs/run.md` is the canonical shipped guide and changes because the repository
+now includes a real producer wrapper. Check generated `docs/cli/**`; no command
+or flag changes are expected. Planning notes are checked for consistency but are
+not rewritten for this product bead.
+
+Do not implement `ETUDE_SESSION_FILE` or stage-log capture here; those belong to
+`etude-o9z`, the next commit on top. Do not implement GH #17 ask 3. Do not touch
+the nad-owned capture/init/gc/reindex/refstore/index or init/sync documentation
+files. The caller-cwd implement-stage mutation problem remains out of scope per
+the parent epic.
