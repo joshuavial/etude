@@ -1,0 +1,6 @@
+# Verify — etude-7no (etude prime agent-onboarding command)
+Status: PASS. New read-only public CLI (Tier 1).
+- go test ./... green except cmd/gen-docs TestDriftGuard pre-docs (resolved by make docs in Docs phase). 4 prime tests pass. make lint clean.
+- etude prime from a NON-git /tmp dir: exit 0, 5490 bytes stdout, empty stderr -> read-only, runs anywhere, no side effects (no refstore/git). Also built-binary-verified by the gate seats across rounds (Opus mutation-proved the drift guard catches dropped commands).
+- Command reference lists the real live set (bench/capture/capture-gate/capture-run/gc/init/prime/reindex/replay/retro+subs/run+subs/sync) and marks eval(standalone)/import as planned.
+- Scope: internal/cli/prime.go + prime_test.go (new) + root.go (+1 registration).
