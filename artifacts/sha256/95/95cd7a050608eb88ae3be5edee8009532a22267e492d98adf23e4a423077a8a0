@@ -1,0 +1,1094 @@
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index 01b6b73..5fae850 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -183,9 +183,10 @@ across runs.
+ 
+ - **Immutability is structural.** An artifact blob's content hash *is* its
+   identity. A first-draft plan captured as a blob cannot be silently mutated.
+-- **Free input reconstruction.** Each stage records the `git_sha` of the repo
+-  at the time it ran. To replay, check out that sha in a throwaway worktree —
+-  the exact original repo state, no snapshotting needed.
++- **Free input reconstruction.** Each stage records the superproject `git_sha`
++  and, when present, a path-to-SHA `submodules` map. Replay checks out that
++  superproject commit and populates its pinned submodules in a throwaway
++  checkout — the exact original repo state, no snapshotting needed.
+ - **Worktree-transparent.** Refs live in the shared `.git` dir, so an artifact
+   captured in one workmux worktree is visible in all of them — matters for
+   xenota's parallel swarm.
+@@ -246,6 +247,9 @@ because objects cannot be pruned while a ref reaches them.
+       "stage": "plan",
+       "produced_by": "original",
+       "git_sha": "442755e5...",
++      "submodules": {
++        "modules/lib": "9f8e7d6c..."
++      },
+       "producer": {
+         "harness": {
+           "name": "claude-code",
+@@ -299,8 +303,9 @@ Notes:
+   in the skill repo (`~/.claude/skills`, `codewithjv-agent-skills`), not a sha
+   in this repo. This is a deliberate provenance design point.
+ - `refs` values are always strings (e.g. `"pr": "469"`, not `"pr": 469`).
+-- `repo-state` inputs are recorded as a `git_sha` on the stage, not an artifact
+-  hash — the repo is already perfectly versioned by git.
++- `repo-state` inputs are recorded as a superproject `git_sha` plus an optional
++  recursive `submodules` path-to-SHA map on the stage, not an artifact hash.
++  The map is omitted when the checkout has no submodules.
+ - Each artifact entry carries `role`, `artifact` (sha256 hex), `path`
+   (content-addressed path in the run tree), `media_type`, `storage`
+   (`"content"` or `"pointer"`), and `size`.
+@@ -337,7 +342,8 @@ Two capture paths:
+ `etude replay <run-id> <stage>` re-executes one stage end-to-end:
+ 
+ 1. Read the run manifest; find the named stage entry.
+-2. Check out the recorded `git_sha` in a throwaway git worktree.
++2. Check out the recorded `git_sha` and recursively populate its pinned
++   submodules in a throwaway checkout.
+ 3. Resolve the recorded input artifacts and feed them to the runner via the
+    **skill-runner adapter** (`--runner` or `git config etude.runner`).
+ 4. Emit the produced output to stdout or `--output <path>`.
+diff --git a/docs/run.md b/docs/run.md
+index 95ba0ac..8cf8978 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -190,6 +190,20 @@ in dependency order. All stages share a single evolving worktree checked out
+ at the run's git SHA, so mutations from earlier stages are visible to later
+ ones.
+ 
++When that commit contains submodules, Etude initializes them recursively before
++any stage or gate check runs. Submodule checkouts use private per-run Git
++metadata while borrowing already-available objects from the source repository;
++Git still contacts each configured submodule URL to establish its private clone,
++but transfers required objects from that remote only when they are unavailable
++through the local alternate. Each stage's machine-readable manifest entry records a
++`submodules` map from root-relative path to the resolved submodule SHA alongside
++`git_sha`. The pair identifies the repository state the runner could read;
++repositories without submodules omit the map.
++
++Submodule population is fail-closed and has no opt-out: invalid configuration,
++an unavailable required object, or inaccessible credentials stop the run before
++any stage or gate check executes.
++
+ After each stage completes its runner, the engine chains the stage's output
+ artifact into the next stage's inputs by role (matching `capture-run`
+ semantics), then captures the stage to `refs/etude/runs/<id>` via an
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 6f00f7d..dedc508 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -259,6 +259,9 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
+ 		if len(res.Output) == 0 {
+ 			return fmt.Errorf("replay produced no output; cannot record empty run")
+ 		}
++		// The replay checkout is authoritative even for a legacy source manifest
++		// that predates submodule recording.
++		resolved.Submodules = wt.Submodules
+ 		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
+ 			return err
+ 		}
+diff --git a/internal/cli/replay_test.go b/internal/cli/replay_test.go
+index 3a5626b..75eba58 100644
+--- a/internal/cli/replay_test.go
++++ b/internal/cli/replay_test.go
+@@ -554,6 +554,39 @@ func TestReplayRecordCreatesLinkedRun(t *testing.T) {
+ 	}
+ }
+ 
++func TestReplayRecordAddsActualSubmoduleMapToLegacySource(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	submodule := initCaptureRepo(t)
++	submoduleOID := strings.TrimSpace(gitCapture(t, submodule, "rev-parse", "HEAD"))
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
++	gitCapture(t, repo, "commit", "-am", "add submodule")
++	writeFile(t, repo, "input.txt", "input\n")
++	writeFile(t, repo, "output.txt", "output\n")
++	chdir(t, repo)
++
++	const sourceRunID = "legacy-submodule-source"
++	if _, stderr, err := execute(
++		"capture", "gen", "--run", sourceRunID,
++		"--input", "prompt=input.txt", "--output", "output=output.txt",
++	); err != nil {
++		t.Fatalf("capture source: %v\n%s", err, stderr)
++	}
++	if source := readRunManifest(t, repo, sourceRunID); len(source.Stages[0].Submodules) != 0 {
++		t.Fatalf("manual source unexpectedly recorded submodules: %+v", source.Stages[0].Submodules)
++	}
++
++	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
++	stub := &replay.StubRunner{CannedOutput: []byte("replayed")}
++	if _, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record"); err != nil {
++		t.Fatalf("replay --record: %v\n%s", err, stderr)
++	}
++	recorded := readRunManifest(t, repo, sourceRunID+"-replay-20260522T103000Z")
++	if got := recorded.Stages[0].Submodules["modules/lib"]; got != submoduleOID {
++		t.Fatalf("recorded submodule OID = %q, want %q", got, submoduleOID)
++	}
++}
++
+ // TestReplayRecordNoOutputError verifies that --record with an empty output errors.
+ func TestReplayRecordNoOutputError(t *testing.T) {
+ 	repo, runID := captureStageForReplay(t)
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 80609d8..854dc64 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -265,7 +265,7 @@ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Work
+ 		chain["task"] = roleArtifact{ref: taskRef, content: opts.TaskBytes}
+ 	}
+ 
+-	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, nil, false, wt.Dir, scratch)
++	return e.executeStages(ctx, out, wf, runID, gitSHA, wt.Submodules, e.clock(), as, chain, "", 0, nil, nil, false, wt.Dir, scratch)
+ }
+ 
+ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow, resumeID string) error {
+@@ -412,7 +412,7 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
+ 
+ 		oldArtifact := captured.Output.Artifact
+ 		allAttempts, updatedStages, newCommit, finalRef, finalContent, gateErr := e.runGate(
+-			ctx, out, manifest.RunID, gitSHA, manifest.Created, wf,
++			ctx, out, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, wf,
+ 			stage, stageIdx, inputRefs, runInputs, as, completedStages, gateAttempts, commit,
+ 			captured.Output, outputContent, captured.Name, wt.Dir, scratch,
+ 		)
+@@ -429,13 +429,13 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
+ 				fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
+ 				return nil
+ 			}
+-			return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
++			return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, as, chain,
+ 				commit, stageIdx+1, completedStages, gateAttempts, true, wt.Dir, scratch)
+ 		}
+ 	}
+ 
+ 	if frontier < len(wf.Stages) {
+-		return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
++		return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, as, chain,
+ 			commit, frontier, completedStages, gateAttempts, false, wt.Dir, scratch)
+ 	}
+ 	fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
+@@ -450,6 +450,7 @@ func (e *Engine) executeStages(
+ 	out io.Writer,
+ 	wf workflow.Workflow,
+ 	runID, gitSHA string,
++	submodules map[string]string,
+ 	created time.Time,
+ 	as *artifactstore.Store,
+ 	chain map[string]roleArtifact,
+@@ -503,7 +504,7 @@ func (e *Engine) executeStages(
+ 			executionName = fmt.Sprintf("%s.r%d", stage.Name, nextPhaseRound(stage.Name, completedStages, gateAttempts))
+ 		}
+ 		outputRef, outputContent, newStages, newCommit, err := e.runAndCaptureStage(
+-			ctx, out, runID, gitSHA, created, wf,
++			ctx, out, runID, gitSHA, submodules, created, wf,
+ 			stage, executionName, inputRefs, runInputs,
+ 			stageScratch, as, completedStages, gateAttempts, prevCommit, worktreeDir,
+ 		)
+@@ -517,7 +518,7 @@ func (e *Engine) executeStages(
+ 		// Execute the gate when configured.
+ 		if stage.Gate != nil {
+ 			allAttempts, updatedStages, newCommit2, finalOutputRef, finalOutputContent, gateErr := e.runGate(
+-				ctx, out, runID, gitSHA, created, wf,
++				ctx, out, runID, gitSHA, submodules, created, wf,
+ 				stage, stageIdx, inputRefs, runInputs,
+ 				as, completedStages, gateAttempts, prevCommit,
+ 				outputRef, outputContent, executionName, worktreeDir, scratch,
+@@ -558,6 +559,7 @@ func (e *Engine) runAndCaptureStage(
+ 	ctx context.Context,
+ 	out io.Writer,
+ 	runID, gitSHA string,
++	submodules map[string]string,
+ 	created time.Time,
+ 	wf workflow.Workflow,
+ 	stage workflow.Stage,
+@@ -627,6 +629,7 @@ func (e *Engine) runAndCaptureStage(
+ 		Name:       stageName,
+ 		ProducedBy: "original",
+ 		GitSHA:     gitSHA,
++		Submodules: cloneStringMap(submodules),
+ 		Skill:      stageSkill,
+ 		Producer:   producer,
+ 		Inputs:     inputRefs,
+@@ -660,6 +663,17 @@ func (e *Engine) runAndCaptureStage(
+ 	return outRef, res.Output, newStages, newCommit, nil
+ }
+ 
++func cloneStringMap(source map[string]string) map[string]string {
++	if len(source) == 0 {
++		return nil
++	}
++	cloned := make(map[string]string, len(source))
++	for key, value := range source {
++		cloned[key] = value
++	}
++	return cloned
++}
++
+ // filesForManifest returns only the artifact files referenced by the manifest.
+ // WriteManifestTree rejects any unreferenced files, so we must not pass extras.
+ func filesForManifest(manifest runmanifest.Manifest, as *artifactstore.Store) map[string][]byte {
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index 7857cc7..bb8954a 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -165,6 +165,95 @@ func TestEngineRunThreeStages(t *testing.T) {
+ 	}
+ }
+ 
++func TestEngineRunCheckReadsPinnedSubmoduleAndManifestRecordsSHA(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	submodule := initTestRepo(t)
++	writeTestFile(t, submodule, "payload.txt", "pinned-content\n")
++	gitRun(t, submodule, "add", "payload.txt")
++	gitRun(t, submodule, "commit", "-m", "pinned payload")
++	pinnedSubmoduleOID := headSHA(t, submodule)
++
++	repo := initTestRepo(t)
++	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
++	checkScript := "#!/bin/sh\nset -eu\nactual=$(cat modules/lib/payload.txt)\nprintf '%s\\n' \"$actual\"\ntest \"$actual\" = pinned-content\nif test ! -f .check-rerun-seen; then touch .check-rerun-seen; exit 1; fi\n"
++	writeTestFile(t, repo, "check-submodule.sh", checkScript)
++	if err := os.Chmod(filepath.Join(repo, "check-submodule.sh"), 0o755); err != nil {
++		t.Fatalf("chmod check script: %v", err)
++	}
++	gitRun(t, repo, "add", ".gitmodules", "modules/lib", "check-submodule.sh")
++	gitRun(t, repo, "commit", "-m", "pin submodule and check")
++	superprojectOID := headSHA(t, repo)
++
++	// Advance the source after the superproject pin. A correct run must still
++	// expose the older content selected by the recorded gitlink.
++	writeTestFile(t, submodule, "payload.txt", "newer-source-content\n")
++	gitRun(t, submodule, "add", "payload.txt")
++	gitRun(t, submodule, "commit", "-m", "newer payload")
++
++	wf := workflow.Workflow{
++		Name: "submodule-check",
++		Stages: []workflow.Stage{
++			{
++				Name:     "verify",
++				Skill:    "sk",
++				Produces: "plan",
++				Inputs:   []string{"task"},
++				Gate: &workflow.GateConfig{
++					Checks:    []workflow.Runner{{Command: "./check-submodule.sh"}},
++					MaxRounds: maxRoundsPtr(2),
++				},
++			},
++			{Name: "review", Skill: "sk", Produces: "review", Inputs: []string{"plan"}},
++		},
++	}
++	runID := "submodule-check-20260101T000000Z-aabbccdd"
++	store := refstore.New(repo)
++	e := Engine{
++		Store:         store,
++		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage output"), CannedMediaType: "text/plain"}),
++		ResolveCheck: func(r workflow.Runner) (CheckRunner, error) {
++			return &execCheckRunner{command: strings.Fields(r.Command), timeout: 10 * time.Second}, nil
++		},
++		Root: repo,
++		Now:  fixedClock(),
++	}
++	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
++		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: superprojectOID,
++	}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++
++	manifest := readLiveManifest(t, repo, runID)
++	if len(manifest.Stages) != 3 {
++		t.Fatalf("stages = %d, want original, gate rerun, and review", len(manifest.Stages))
++	}
++	for i, stage := range manifest.Stages {
++		if stage.GitSHA != superprojectOID {
++			t.Errorf("stage[%d].git_sha = %q, want %q", i, stage.GitSHA, superprojectOID)
++		}
++		if got := stage.Submodules["modules/lib"]; got != pinnedSubmoduleOID {
++			t.Errorf("stage[%d].submodules[modules/lib] = %q, want %q", i, got, pinnedSubmoduleOID)
++		}
++	}
++	if len(manifest.Gates) != 2 || len(manifest.Gates[1].Seats) != 1 {
++		t.Fatalf("gate check record missing: %+v", manifest.Gates)
++	}
++	if manifest.Gates[0].Status != runmanifest.GateStatusRerun || manifest.Gates[1].Status != runmanifest.GateStatusPass {
++		t.Fatalf("gate statuses = %q, %q, want rerun then pass", manifest.Gates[0].Status, manifest.Gates[1].Status)
++	}
++	rawRef := manifest.Gates[1].Seats[0].RawOutput
++	if rawRef == nil {
++		t.Fatal("check raw output was not recorded")
++	}
++	raw, err := store.ReadFile(context.Background(), "refs/etude/runs/"+runID, rawRef.Path)
++	if err != nil {
++		t.Fatalf("read check raw output: %v", err)
++	}
++	if string(raw) != "pinned-content\n" {
++		t.Fatalf("check raw output = %q, want pinned content", raw)
++	}
++}
++
+ // AC4: Stage B's input ArtifactRef equals Stage A's output ArtifactRef.
+ func TestEngineArtifactRefChaining(t *testing.T) {
+ 	repo := initTestRepo(t)
+@@ -217,7 +306,12 @@ func TestEngineArtifactRefChaining(t *testing.T) {
+ 
+ // AC3: Stop-and-capture on failure + resume completes the run.
+ func TestEngineResumeAfterFailure(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+ 	repo := initTestRepo(t)
++	submodule := initTestRepo(t)
++	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
++	gitRun(t, repo, "commit", "-am", "add submodule")
++	submoduleOID := headSHA(t, submodule)
+ 	sha := headSHA(t, repo)
+ 	store := refstore.New(repo)
+ 
+@@ -360,6 +454,11 @@ func TestEngineResumeAfterFailure(t *testing.T) {
+ 	if len(m.Stages) != 3 {
+ 		t.Fatalf("final manifest stages = %d, want 3", len(m.Stages))
+ 	}
++	for i, stage := range m.Stages {
++		if got := stage.Submodules["modules/lib"]; got != submoduleOID {
++			t.Errorf("resumed stage[%d] submodule OID = %q, want %q", i, got, submoduleOID)
++		}
++	}
+ 
+ 	// Explicit reseed byte-presence: the resumed stage-b CAS append could only
+ 	// succeed if the task input blob AND stage-a's output blob were reseeded with
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index b465439..1073bf3 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -680,6 +680,7 @@ func (e *Engine) runGate(
+ 	ctx context.Context,
+ 	out io.Writer,
+ 	runID, gitSHA string,
++	submodules map[string]string,
+ 	created time.Time,
+ 	wf workflow.Workflow,
+ 	stage workflow.Stage,
+@@ -848,7 +849,7 @@ func (e *Engine) runGate(
+ 			}
+ 
+ 			newOutputRef, newOutputContent, newStages, newCommit3, err := e.runAndCaptureStage(
+-				ctx, out, runID, gitSHA, created, wf,
++				ctx, out, runID, gitSHA, submodules, created, wf,
+ 				stage, rerunName, inputRefs, runInputs,
+ 				rerunScratch, as, completedStages, allAttempts, prevCommit, worktreeDir,
+ 			)
+diff --git a/internal/replay/record.go b/internal/replay/record.go
+index f76e603..3e63587 100644
+--- a/internal/replay/record.go
++++ b/internal/replay/record.go
+@@ -89,6 +89,7 @@ func (r RunRecorder) Record(
+ 		Name:       sourceStageName,
+ 		ProducedBy: "replay",
+ 		GitSHA:     resolved.GitSHA,
++		Submodules: resolved.Submodules,
+ 		Skill:      skill,
+ 		Producer:   res.Producer,
+ 		Inputs:     sourceInputRefs(resolved),
+diff --git a/internal/replay/record_test.go b/internal/replay/record_test.go
+index ce2159a..5d80884 100644
+--- a/internal/replay/record_test.go
++++ b/internal/replay/record_test.go
+@@ -47,6 +47,7 @@ func seedRunForRecord(t *testing.T) (store refstore.Store, sourceCommit string,
+ // - Stage.Skill mirrors Producer.Skill.
+ func TestRunRecorderHappyPath(t *testing.T) {
+ 	store, sourceCommit, resolved := seedRunForRecord(t)
++	resolved.Submodules = map[string]string{"modules/lib": strings.Repeat("d", 40)}
+ 
+ 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+ 	res := RunResult{
+@@ -104,6 +105,9 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 	if s.ProducedBy != "replay" {
+ 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
+ 	}
++	if got := s.Submodules["modules/lib"]; got != strings.Repeat("d", 40) {
++		t.Errorf("Submodules[modules/lib] = %q", got)
++	}
+ 	if s.ReplayOf == nil {
+ 		t.Fatal("ReplayOf is nil")
+ 	}
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index a0177be..e6ce716 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -154,6 +154,8 @@ type Stage struct {
+ 	Name       string
+ 	ProducedBy string
+ 	GitSHA     string
++	// Submodules maps populated, root-relative submodule paths to resolved OIDs.
++	Submodules map[string]string
+ 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+ 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+ 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+@@ -470,6 +472,14 @@ func validateStage(index int, stage Stage) error {
+ 	if strings.TrimSpace(stage.GitSHA) == "" {
+ 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+ 	}
++	for submodulePath, oid := range stage.Submodules {
++		if submodulePath == "" || submodulePath == "." || !utf8.ValidString(submodulePath) || strings.ContainsRune(submodulePath, '\x00') || path.IsAbs(submodulePath) || path.Clean(submodulePath) != submodulePath || submodulePath == ".." || strings.HasPrefix(submodulePath, "../") {
++			return fmt.Errorf("%w: %s submodule path %q must be clean and relative", ErrInvalidManifest, prefix, submodulePath)
++		}
++		if !isHexOID(oid) {
++			return fmt.Errorf("%w: %s submodule %q must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix, submodulePath)
++		}
++	}
+ 	if strings.TrimSpace(stage.Skill.ID) == "" {
+ 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
+ 	}
+@@ -983,9 +993,10 @@ type gateDecisionJSON struct {
+ }
+ 
+ type stageJSON struct {
+-	Stage      string `json:"stage"`
+-	ProducedBy string `json:"produced_by"`
+-	GitSHA     string `json:"git_sha"`
++	Stage      string            `json:"stage"`
++	ProducedBy string            `json:"produced_by"`
++	GitSHA     string            `json:"git_sha"`
++	Submodules map[string]string `json:"submodules,omitempty"`
+ 	// Skill is present only in legacy manifests (no producer block).
+ 	// New manifests omit it; the skill travels inside producer.
+ 	Skill     *skillJSON     `json:"skill,omitempty"`
+@@ -1088,6 +1099,7 @@ func (m Manifest) toJSON() manifestJSON {
+ 			Stage:      stage.Name,
+ 			ProducedBy: stage.ProducedBy,
+ 			GitSHA:     stage.GitSHA,
++			Submodules: cloneStringMap(stage.Submodules),
+ 			// Do NOT emit top-level skill — it lives inside producer only.
+ 			Producer:  producerBlock,
+ 			Inputs:    inputs,
+@@ -1450,6 +1462,7 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 		Name:       s.Stage,
+ 		ProducedBy: s.ProducedBy,
+ 		GitSHA:     s.GitSHA,
++		Submodules: cloneStringMap(s.Submodules),
+ 		Skill:      skill,
+ 		Producer:   producer,
+ 		Inputs:     inputs,
+@@ -1459,6 +1472,17 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 	}, nil
+ }
+ 
++func cloneStringMap(source map[string]string) map[string]string {
++	if len(source) == 0 {
++		return nil
++	}
++	cloned := make(map[string]string, len(source))
++	for key, value := range source {
++		cloned[key] = value
++	}
++	return cloned
++}
++
+ func (a artifactJSON) toArtifactRef() ArtifactRef {
+ 	return ArtifactRef{
+ 		Role:      a.Role,
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index f122b0b..f25ea67 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -192,6 +192,42 @@ func TestParseJSONRoundTripsManifestAndArtifactPaths(t *testing.T) {
+ 	}
+ }
+ 
++func TestSubmodulesJSONRoundTripAndLegacyOmission(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	manifest := validManifest(output)
++	manifest.Stages[0].Submodules = map[string]string{
++		"modules/lib":        strings.Repeat("a", 40),
++		"modules/lib/nested": strings.Repeat("b", 64),
++	}
++
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	if !strings.Contains(string(content), `"submodules": {`) {
++		t.Fatalf("JSON omitted populated submodules:\n%s", content)
++	}
++	parsed, err := ParseJSON(content)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if got := parsed.Stages[0].Submodules["modules/lib"]; got != strings.Repeat("a", 40) {
++		t.Fatalf("modules/lib OID = %q", got)
++	}
++	if got := parsed.Stages[0].Submodules["modules/lib/nested"]; got != strings.Repeat("b", 64) {
++		t.Fatalf("nested OID = %q", got)
++	}
++
++	manifest.Stages[0].Submodules = nil
++	legacyCompatible, err := manifest.JSON()
++	if err != nil {
++		t.Fatalf("JSON without submodules: %v", err)
++	}
++	if strings.Contains(string(legacyCompatible), `"submodules"`) {
++		t.Fatalf("empty submodules should be omitted:\n%s", legacyCompatible)
++	}
++}
++
+ func TestParseJSONRejectsMalformedUnknownAndInvalidManifest(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	manifest := validManifest(output)
+@@ -237,6 +273,15 @@ func TestValidateRejectsInvalidManifests(t *testing.T) {
+ 		{"missing stage name", func(m *Manifest) { m.Stages[0].Name = "" }},
+ 		{"missing produced by", func(m *Manifest) { m.Stages[0].ProducedBy = "" }},
+ 		{"missing git sha", func(m *Manifest) { m.Stages[0].GitSHA = "" }},
++		{"absolute submodule path", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"/module": strings.Repeat("a", 40)} }},
++		{"unclean submodule path", func(m *Manifest) {
++			m.Stages[0].Submodules = map[string]string{"module/../other": strings.Repeat("a", 40)}
++		}},
++		{"parent submodule path", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"../module": strings.Repeat("a", 40)} }},
++		{"invalid utf8 submodule path", func(m *Manifest) {
++			m.Stages[0].Submodules = map[string]string{string([]byte{0xff}): strings.Repeat("a", 40)}
++		}},
++		{"invalid submodule oid", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"module": strings.Repeat("A", 40)} }},
+ 		{"missing skill id", func(m *Manifest) { m.Stages[0].Skill.ID = "" }},
+ 		{"missing skill repo", func(m *Manifest) { m.Stages[0].Skill.Repo = "" }},
+ 		{"missing skill version", func(m *Manifest) { m.Stages[0].Skill.Version = "" }},
+diff --git a/internal/worktree/worktree.go b/internal/worktree/worktree.go
+index 4ce4981..a5c6984 100644
+--- a/internal/worktree/worktree.go
++++ b/internal/worktree/worktree.go
+@@ -1,5 +1,5 @@
+ // Package worktree provides a primitive for materializing a recorded commit OID
+-// into a throwaway git worktree. Callers must call Cleanup or Close when done.
++// into a throwaway Git checkout. Callers must call Cleanup or Close when done.
+ package worktree
+ 
+ import (
+@@ -9,7 +9,11 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"os/exec"
++	"path"
++	"path/filepath"
++	"sort"
+ 	"strings"
++	"unicode/utf8"
+ )
+ 
+ var (
+@@ -17,17 +21,29 @@ var (
+ 	ErrSHANotFound = errors.New("SHA not found")
+ )
+ 
+-// Worktree is a disposable git worktree materialized at a specific commit OID.
+-// Dir is the absolute path to the worktree directory in the system temp area,
+-// outside the repository. Callers must call Cleanup or Close when done.
++// Worktree is a disposable Git checkout materialized at a specific commit OID.
++// It is a linked worktree for ordinary repositories and an independent clone
++// when submodules require private Git metadata. Dir is always in the system
++// temp area outside the repository. Callers must call Cleanup or Close when done.
+ type Worktree struct {
+ 	// Dir is the absolute path to the worktree directory (system temp, outside the repo).
+-	Dir         string
++	Dir string
++	// Submodules maps each populated, root-relative submodule path to its
++	// resolved HEAD OID. It is empty when the commit contains no gitlinks.
++	Submodules  map[string]string
+ 	root        string // repo root, passed to git -C
+ 	resolvedOID string // the full OID used at checkout time
+-	removed     bool   // idempotency guard for Cleanup/Close
++	mode        checkoutMode
++	removed     bool // idempotency guard for Cleanup/Close
+ }
+ 
++type checkoutMode uint8
++
++const (
++	checkoutLinkedWorktree checkoutMode = iota
++	checkoutIndependentClone
++)
++
+ // Checkout materializes commit sha in a new throwaway worktree and returns it.
+ // root is the repo root (passed to git -C). sha must be a full 40- or 64-char
+ // lowercase hex commit OID; branch names, short SHAs, and mutable refs are
+@@ -54,6 +70,14 @@ func Checkout(ctx context.Context, root, sha string) (*Worktree, error) {
+ 		return nil, fmt.Errorf("%w: resolved OID %s != input %s", ErrInvalidSHA, resolvedOID, sha)
+ 	}
+ 
++	gitlinks, err := commitGitlinks(ctx, root, resolvedOID)
++	if err != nil {
++		return nil, fmt.Errorf("inspect commit gitlinks: %w", err)
++	}
++	if len(gitlinks) > 0 {
++		return checkoutWithSubmodules(ctx, root, resolvedOID, gitlinks)
++	}
++
+ 	dir, err := os.MkdirTemp("", "etude-worktree-*")
+ 	if err != nil {
+ 		return nil, fmt.Errorf("create temp dir: %w", err)
+@@ -73,9 +97,208 @@ func Checkout(ctx context.Context, root, sha string) (*Worktree, error) {
+ 		Dir:         dir,
+ 		root:        root,
+ 		resolvedOID: resolvedOID,
++		mode:        checkoutLinkedWorktree,
+ 	}, nil
+ }
+ 
++func commitGitlinks(ctx context.Context, root, oid string) (map[string]string, error) {
++	out, err := gitCmd(ctx, root, "ls-tree", "-r", "--full-tree", "-z", oid)
++	if err != nil {
++		return nil, err
++	}
++	gitlinks := make(map[string]string)
++	for _, entry := range strings.Split(out, "\x00") {
++		if !strings.HasPrefix(entry, "160000 ") {
++			continue
++		}
++		metadata, gitlinkPath, ok := strings.Cut(entry, "\t")
++		fields := strings.Fields(metadata)
++		if !ok || len(fields) != 3 || gitlinkPath == "" {
++			return nil, fmt.Errorf("unexpected gitlink tree entry")
++		}
++		gitlinks[gitlinkPath] = fields[2]
++	}
++	return gitlinks, nil
++}
++
++func checkoutWithSubmodules(ctx context.Context, root, resolvedOID string, topLevelGitlinks map[string]string) (_ *Worktree, returnErr error) {
++	if _, err := gitCmd(ctx, root, "cat-file", "-e", resolvedOID+":.gitmodules"); err != nil {
++		return nil, fmt.Errorf("commit contains gitlinks but no valid .gitmodules: %w", err)
++	}
++
++	dir, err := os.MkdirTemp("", "etude-worktree-*")
++	if err != nil {
++		return nil, fmt.Errorf("create temp dir: %w", err)
++	}
++	defer func() {
++		if returnErr != nil {
++			_ = os.RemoveAll(dir)
++		}
++	}()
++
++	if _, err := gitCmd(ctx, root, "clone", "--local", "--no-checkout", "--", root, dir); err != nil {
++		return nil, fmt.Errorf("clone submodule worktree: %w", err)
++	}
++
++	remoteURL, err := effectiveRemoteURL(ctx, root)
++	if err != nil {
++		return nil, fmt.Errorf("resolve source remote: %w", err)
++	}
++	if remoteURL != "" {
++		if _, err := gitCmd(ctx, dir, "remote", "set-url", "origin", remoteURL); err != nil {
++			return nil, fmt.Errorf("preserve source remote: %w", err)
++		}
++	}
++
++	objectsDir, err := commonObjectsDir(ctx, root)
++	if err != nil {
++		return nil, fmt.Errorf("resolve source object store: %w", err)
++	}
++	alternatesPath := filepath.Join(dir, ".git", "objects", "info", "alternates")
++	if err := os.MkdirAll(filepath.Dir(alternatesPath), 0o755); err != nil {
++		return nil, fmt.Errorf("create alternates directory: %w", err)
++	}
++	if err := os.WriteFile(alternatesPath, []byte(objectsDir+"\n"), 0o644); err != nil {
++		return nil, fmt.Errorf("record source object alternate: %w", err)
++	}
++
++	for _, setting := range [][2]string{
++		{"submodule.alternateLocation", "superproject"},
++		{"submodule.alternateErrorStrategy", "info"},
++	} {
++		if _, err := gitCmd(ctx, dir, "config", setting[0], setting[1]); err != nil {
++			return nil, fmt.Errorf("configure %s: %w", setting[0], err)
++		}
++	}
++	if _, err := gitCmd(ctx, dir, "checkout", "--detach", "--no-recurse-submodules", resolvedOID); err != nil {
++		return nil, fmt.Errorf("checkout superproject: %w", err)
++	}
++	updateArgs := []string{"submodule", "update", "--init", "--recursive", "--checkout", "--"}
++	paths := make([]string, 0, len(topLevelGitlinks))
++	for gitlinkPath := range topLevelGitlinks {
++		paths = append(paths, gitlinkPath)
++	}
++	sort.Strings(paths)
++	updateArgs = append(updateArgs, paths...)
++	if _, err := gitCmd(ctx, dir, updateArgs...); err != nil {
++		return nil, fmt.Errorf("populate submodules: %w", err)
++	}
++
++	submodules, err := populatedSubmodules(ctx, dir)
++	if err != nil {
++		return nil, fmt.Errorf("enumerate submodules: %w", err)
++	}
++	if err := validatePopulatedGitlinks(ctx, dir, topLevelGitlinks, submodules); err != nil {
++		return nil, fmt.Errorf("validate populated submodules: %w", err)
++	}
++	return &Worktree{
++		Dir:         dir,
++		Submodules:  submodules,
++		root:        root,
++		resolvedOID: resolvedOID,
++		mode:        checkoutIndependentClone,
++	}, nil
++}
++
++func validatePopulatedGitlinks(ctx context.Context, root string, rootGitlinks, populated map[string]string) error {
++	check := func(prefix string, gitlinks map[string]string) error {
++		for relativePath, wantOID := range gitlinks {
++			fullPath := relativePath
++			if prefix != "" {
++				fullPath = path.Join(prefix, relativePath)
++			}
++			if gotOID := populated[fullPath]; gotOID != wantOID {
++				return fmt.Errorf("gitlink %q resolved to %q, want %q", fullPath, gotOID, wantOID)
++			}
++		}
++		return nil
++	}
++	if err := check("", rootGitlinks); err != nil {
++		return err
++	}
++	for modulePath, moduleOID := range populated {
++		gitlinks, err := commitGitlinks(ctx, filepath.Join(root, filepath.FromSlash(modulePath)), moduleOID)
++		if err != nil {
++			return fmt.Errorf("inspect %q gitlinks: %w", modulePath, err)
++		}
++		if err := check(modulePath, gitlinks); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func effectiveRemoteURL(ctx context.Context, root string) (string, error) {
++	remote := "origin"
++	if branch, err := gitCmd(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
++		if configured, err := gitCmd(ctx, root, "config", "--get", "branch."+strings.TrimSpace(branch)+".remote"); err == nil {
++			remote = strings.TrimSpace(configured)
++		}
++	}
++	if remote == "." {
++		return filepath.Abs(root)
++	}
++	url, err := gitCmd(ctx, root, "remote", "get-url", remote)
++	if err != nil {
++		if remote == "origin" {
++			return "", nil
++		}
++		return "", err
++	}
++	url = strings.TrimSpace(url)
++	if isRelativeLocalURL(url) {
++		return filepath.Abs(filepath.Join(root, url))
++	}
++	return url, nil
++}
++
++func isRelativeLocalURL(url string) bool {
++	if url == "" || filepath.IsAbs(url) || strings.HasPrefix(url, "~") || strings.Contains(url, "://") {
++		return false
++	}
++	colon, slash := strings.IndexByte(url, ':'), strings.IndexByte(url, '/')
++	return colon < 0 || (slash >= 0 && colon > slash)
++}
++
++func commonObjectsDir(ctx context.Context, root string) (string, error) {
++	commonDir, err := gitCmd(ctx, root, "rev-parse", "--git-common-dir")
++	if err != nil {
++		return "", err
++	}
++	commonDir = strings.TrimSpace(commonDir)
++	if !filepath.IsAbs(commonDir) {
++		commonDir = filepath.Join(root, commonDir)
++	}
++	return filepath.Abs(filepath.Join(commonDir, "objects"))
++}
++
++func populatedSubmodules(ctx context.Context, root string) (map[string]string, error) {
++	out, err := gitCmd(ctx, root, "submodule", "foreach", "--quiet", "--recursive",
++		`printf '%s\000%s\000' "$displaypath" "$(git rev-parse HEAD)"`)
++	if err != nil {
++		return nil, err
++	}
++	fields := strings.Split(out, "\x00")
++	if len(fields) > 0 && fields[len(fields)-1] == "" {
++		fields = fields[:len(fields)-1]
++	}
++	if len(fields)%2 != 0 {
++		return nil, fmt.Errorf("unexpected NUL-delimited submodule output")
++	}
++	result := make(map[string]string, len(fields)/2)
++	for i := 0; i < len(fields); i += 2 {
++		path, oid := fields[i], fields[i+1]
++		if path == "" || oid == "" {
++			return nil, fmt.Errorf("empty submodule path or OID")
++		}
++		if !utf8.ValidString(path) {
++			return nil, fmt.Errorf("submodule path is not valid UTF-8")
++		}
++		result[path] = oid
++	}
++	return result, nil
++}
++
+ // Cleanup removes the worktree and de-registers it from the repository.
+ // It is idempotent: calling it multiple times returns nil after the first
+ // successful removal. On a non-idempotency remove failure, Cleanup still runs
+@@ -85,6 +308,13 @@ func (w *Worktree) Cleanup(ctx context.Context) error {
+ 	if w.removed {
+ 		return nil
+ 	}
++	if w.mode == checkoutIndependentClone {
++		if err := os.RemoveAll(w.Dir); err != nil {
++			return err
++		}
++		w.removed = true
++		return nil
++	}
+ 
+ 	_, removeErr := gitCmd(ctx, w.root, "worktree", "remove", "--force", w.Dir)
+ 	if removeErr != nil {
+diff --git a/internal/worktree/worktree_test.go b/internal/worktree/worktree_test.go
+index 42f9332..330c072 100644
+--- a/internal/worktree/worktree_test.go
++++ b/internal/worktree/worktree_test.go
+@@ -503,3 +503,243 @@ func Test40HexBranchNameRejectedSHA1(t *testing.T) {
+ 		t.Fatalf("40-hex branch name: got %v, want ErrSHANotFound", err)
+ 	}
+ }
++
++func TestCheckoutPopulatesPinnedSubmoduleWithIsolatedGitDirsAndSharedObjects(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	ctx := context.Background()
++	nested := initRepo(t)
++	writeTestFile(t, nested, "nested.txt", "nested-content\n")
++	gitTest(t, nested, "add", "nested.txt")
++	gitTest(t, nested, "commit", "-m", "nested")
++	nestedOID := gitTest(t, nested, "rev-parse", "HEAD")
++
++	submodule := initRepo(t)
++	writeTestFile(t, submodule, "payload.txt", "pinned-one\n")
++	gitTest(t, submodule, "-c", "protocol.file.allow=always", "submodule", "add", nested, "deps/nested")
++	gitTest(t, submodule, "add", "payload.txt", ".gitmodules", "deps/nested")
++	gitTest(t, submodule, "commit", "-m", "first")
++	submoduleOne := gitTest(t, submodule, "rev-parse", "HEAD")
++
++	superproject := initRepo(t)
++	gitTest(t, superproject, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
++	gitTest(t, filepath.Join(superproject, "modules", "lib"), "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
++	gitTest(t, superproject, "commit", "-am", "pin first")
++	superprojectOne := gitTest(t, superproject, "rev-parse", "HEAD")
++
++	writeTestFile(t, submodule, "payload.txt", "pinned-two\n")
++	gitTest(t, submodule, "add", "payload.txt")
++	gitTest(t, submodule, "commit", "-m", "second")
++	submoduleTwo := gitTest(t, submodule, "rev-parse", "HEAD")
++	gitTest(t, filepath.Join(superproject, "modules", "lib"), "fetch", "origin")
++	gitTest(t, filepath.Join(superproject, "modules", "lib"), "checkout", submoduleTwo)
++	gitTest(t, superproject, "add", "modules/lib")
++	gitTest(t, superproject, "commit", "-m", "pin second")
++	superprojectTwo := gitTest(t, superproject, "rev-parse", "HEAD")
++	linkedSource := filepath.Join(t.TempDir(), "linked-source")
++	gitTest(t, superproject, "worktree", "add", "--detach", linkedSource, superprojectTwo)
++	defer func() { gitTest(t, superproject, "worktree", "remove", "--force", linkedSource) }()
++
++	first, err := Checkout(ctx, linkedSource, superprojectOne)
++	if err != nil {
++		t.Fatalf("Checkout(first): %v", err)
++	}
++	defer first.Close()
++	second, err := Checkout(ctx, linkedSource, superprojectTwo)
++	if err != nil {
++		t.Fatalf("Checkout(second): %v", err)
++	}
++	defer second.Close()
++
++	assertSubmoduleCheckout(t, first, "modules/lib", submoduleOne, "pinned-one\n")
++	assertSubmoduleCheckout(t, second, "modules/lib", submoduleTwo, "pinned-two\n")
++	for i, wt := range []*Worktree{first, second} {
++		if got := wt.Submodules["modules/lib/deps/nested"]; got != nestedOID {
++			t.Errorf("checkout[%d] nested OID = %q, want %q", i, got, nestedOID)
++		}
++		content, err := os.ReadFile(filepath.Join(wt.Dir, "modules", "lib", "deps", "nested", "nested.txt"))
++		if err != nil || string(content) != "nested-content\n" {
++			t.Errorf("checkout[%d] nested content = %q, err=%v", i, content, err)
++		}
++	}
++	// Re-read the first checkout after the second exists to catch shared-HEAD
++	// cross-talk between concurrent run checkouts.
++	assertSubmoduleCheckout(t, first, "modules/lib", submoduleOne, "pinned-one\n")
++
++	sourceObjects := filepath.Join(superproject, ".git", "modules", "modules", "lib", "objects")
++	alternates, err := os.ReadFile(filepath.Join(first.Dir, ".git", "modules", "modules", "lib", "objects", "info", "alternates"))
++	if err != nil {
++		t.Fatalf("read submodule alternates: %v", err)
++	}
++	if !strings.Contains(string(alternates), sourceObjects) {
++		t.Fatalf("submodule alternates = %q, want source object store %q", alternates, sourceObjects)
++	}
++	nestedSourceObjects := filepath.Join(superproject, ".git", "modules", "modules", "lib", "modules", "deps", "nested", "objects")
++	nestedAlternates, err := os.ReadFile(filepath.Join(first.Dir, ".git", "modules", "modules", "lib", "modules", "deps", "nested", "objects", "info", "alternates"))
++	if err != nil {
++		t.Fatalf("read nested submodule alternates: %v", err)
++	}
++	if !strings.Contains(string(nestedAlternates), nestedSourceObjects) {
++		t.Fatalf("nested submodule alternates = %q, want source object store %q", nestedAlternates, nestedSourceObjects)
++	}
++
++	firstDir := first.Dir
++	if err := first.Cleanup(ctx); err != nil {
++		t.Fatalf("Cleanup(first): %v", err)
++	}
++	if _, err := os.Stat(firstDir); !os.IsNotExist(err) {
++		t.Fatalf("private clone still exists after cleanup: %v", err)
++	}
++}
++
++func TestCheckoutPreservesRemoteForRelativeSubmoduleURL(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	ctx := context.Background()
++	base := t.TempDir()
++	remotes := filepath.Join(base, "remotes")
++	if err := os.MkdirAll(remotes, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	libRemote := filepath.Join(remotes, "lib.git")
++	appRemote := filepath.Join(remotes, "app.git")
++	gitTest(t, base, "init", "--bare", libRemote)
++	gitTest(t, base, "init", "--bare", appRemote)
++
++	lib := initRepo(t)
++	writeTestFile(t, lib, "payload.txt", "from-relative-url\n")
++	gitTest(t, lib, "add", "payload.txt")
++	gitTest(t, lib, "commit", "-m", "payload")
++	gitTest(t, lib, "remote", "add", "origin", "file://"+libRemote)
++	gitTest(t, lib, "push", "origin", "HEAD:main")
++	gitTest(t, libRemote, "symbolic-ref", "HEAD", "refs/heads/main")
++
++	app := initRepo(t)
++	relativeAppRemote, err := filepath.Rel(app, appRemote)
++	if err != nil {
++		t.Fatal(err)
++	}
++	gitTest(t, app, "remote", "add", "origin", relativeAppRemote)
++	gitTest(t, app, "-c", "protocol.file.allow=always", "submodule", "add", "../lib.git", "modules/lib")
++	gitTest(t, app, "commit", "-am", "add relative submodule")
++	appOID := gitTest(t, app, "rev-parse", "HEAD")
++	gitTest(t, app, "push", "origin", "HEAD:main")
++
++	// Remove the source's populated module store so the run checkout must resolve
++	// and clone the relative URL rather than succeeding solely through alternates.
++	gitTest(t, app, "submodule", "deinit", "-f", "--", "modules/lib")
++	if err := os.RemoveAll(filepath.Join(app, ".git", "modules", "modules", "lib")); err != nil {
++		t.Fatal(err)
++	}
++
++	wt, err := Checkout(ctx, app, appOID)
++	if err != nil {
++		t.Fatalf("Checkout: %v", err)
++	}
++	defer wt.Close()
++	content, err := os.ReadFile(filepath.Join(wt.Dir, "modules", "lib", "payload.txt"))
++	if err != nil {
++		t.Fatalf("read populated relative submodule: %v", err)
++	}
++	if string(content) != "from-relative-url\n" {
++		t.Fatalf("payload = %q", content)
++	}
++	if got := gitTest(t, wt.Dir, "remote", "get-url", "origin"); got != appRemote {
++		t.Fatalf("clone origin = %q, want %q", got, appRemote)
++	}
++}
++
++func TestCheckoutGitlinkWithoutConfigurationFailsClosed(t *testing.T) {
++	isolateTempDir(t)
++	ctx := context.Background()
++	submodule := initRepo(t)
++	writeTestFile(t, submodule, "payload.txt", "payload\n")
++	gitTest(t, submodule, "add", "payload.txt")
++	gitTest(t, submodule, "commit", "-m", "payload")
++	submoduleOID := gitTest(t, submodule, "rev-parse", "HEAD")
++
++	superproject := initRepo(t)
++	gitTest(t, superproject, "update-index", "--add", "--cacheinfo", "160000,"+submoduleOID+",modules/lib")
++	gitTest(t, superproject, "commit", "-m", "malformed gitlink")
++	superprojectOID := gitTest(t, superproject, "rev-parse", "HEAD")
++	before := snapshotWorktreeTempDirs(t)
++
++	wt, err := Checkout(ctx, superproject, superprojectOID)
++	if wt != nil {
++		wt.Close()
++		t.Fatal("Checkout returned a worktree for an unconfigured gitlink")
++	}
++	if err == nil || !strings.Contains(err.Error(), "gitlinks but no valid .gitmodules") {
++		t.Fatalf("Checkout error = %v, want missing .gitmodules failure", err)
++	}
++	if leaked := newlyLeakedWorktreeTempDirs(before, snapshotWorktreeTempDirs(t)); len(leaked) > 0 {
++		t.Fatalf("Checkout leaked temp dirs: %v", leaked)
++	}
++}
++
++func TestCheckoutPartiallyConfiguredGitlinksFailClosed(t *testing.T) {
++	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
++	isolateTempDir(t)
++	ctx := context.Background()
++	submodule := initRepo(t)
++	writeTestFile(t, submodule, "payload.txt", "payload\n")
++	gitTest(t, submodule, "add", "payload.txt")
++	gitTest(t, submodule, "commit", "-m", "payload")
++	submoduleOID := gitTest(t, submodule, "rev-parse", "HEAD")
++
++	superproject := initRepo(t)
++	gitTest(t, superproject, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/configured")
++	gitTest(t, superproject, "update-index", "--add", "--cacheinfo", "160000,"+submoduleOID+",modules/unconfigured")
++	gitTest(t, superproject, "commit", "-m", "partially configured gitlinks")
++	superprojectOID := gitTest(t, superproject, "rev-parse", "HEAD")
++	before := snapshotWorktreeTempDirs(t)
++
++	wt, err := Checkout(ctx, superproject, superprojectOID)
++	if wt != nil {
++		wt.Close()
++		t.Fatal("Checkout returned a worktree for a partially configured gitlink set")
++	}
++	if err == nil || !strings.Contains(err.Error(), "modules/unconfigured") {
++		t.Fatalf("Checkout error = %v, want unpopulated gitlink failure", err)
++	}
++	if leaked := newlyLeakedWorktreeTempDirs(before, snapshotWorktreeTempDirs(t)); len(leaked) > 0 {
++		t.Fatalf("Checkout leaked temp dirs: %v", leaked)
++	}
++}
++
++func gitTest(t *testing.T, dir string, args ...string) string {
++	t.Helper()
++	cmd := exec.Command("git", args...)
++	cmd.Dir = dir
++	out, err := cmd.CombinedOutput()
++	if err != nil {
++		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
++	}
++	return strings.TrimSpace(string(out))
++}
++
++func writeTestFile(t *testing.T, dir, name, content string) {
++	t.Helper()
++	path := filepath.Join(dir, name)
++	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func assertSubmoduleCheckout(t *testing.T, wt *Worktree, path, wantOID, wantContent string) {
++	t.Helper()
++	if got := wt.Submodules[path]; got != wantOID {
++		t.Errorf("Submodules[%q] = %q, want %q", path, got, wantOID)
++	}
++	if got := gitTest(t, filepath.Join(wt.Dir, filepath.FromSlash(path)), "rev-parse", "HEAD"); got != wantOID {
++		t.Errorf("submodule HEAD = %q, want %q", got, wantOID)
++	}
++	content, err := os.ReadFile(filepath.Join(wt.Dir, filepath.FromSlash(path), "payload.txt"))
++	if err != nil {
++		t.Fatalf("read payload: %v", err)
++	}
++	if string(content) != wantContent {
++		t.Errorf("payload = %q, want %q", content, wantContent)
++	}
++}
