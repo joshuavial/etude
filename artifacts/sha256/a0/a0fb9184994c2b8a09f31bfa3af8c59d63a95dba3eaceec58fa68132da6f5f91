@@ -1,0 +1,18 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-712 negative/failure-mode test derived its expected set from the generated dir: claimed \"delete a generated file proves missing-committed\" but actually only proved ORPHAN, and omitted byte-stale entirely; two of three fault paths unproven while the test looked thorough"
+  ],
+  "root_causes": [
+    "a negative/failure-mode test must exercise the claimed failure path for the RIGHT reason; it did not inject one fault at a time on the correct side"
+  ],
+  "follow_up_beads": [
+    "etude (remove dead q87 VerifyArtifactFile/ReferencedArtifactPaths wrappers)",
+    "etude (gitignore the gen-docs build artifact)"
+  ],
+  "decisions": [],
+  "durable_changes": [
+    "review-gate-runbook.md \"Recurring Defect Classes\" item 3: a negative test must inject one fault at a time on the correct side and assert the error names that victim, via a dir-args helper"
+  ]
+}
