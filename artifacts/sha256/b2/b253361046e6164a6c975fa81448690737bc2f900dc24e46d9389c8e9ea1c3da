@@ -1,0 +1,6 @@
+# Verify — etude-ojz (provision ripgrep for the gemini reviewer seat)
+Status: PASS. Dev-tooling (script + 2 docs); no product code.
+- Ran scripts/provision-gemini-ripgrep.sh: target absent -> created symlink <bundle>/vendor/ripgrep/rg-darwin-arm64 -> /opt/homebrew/bin/rg (ripgrep 14.1.1) + verified --version. Re-run: idempotent no-op ("already provisioned (symlink runs ok)").
+- EMPIRICAL PROOF (the bead's required verification): `gemini -m gemini-3.1-pro-preview -p "search ... WriteManifestTree ..."` answered correctly (internal/runmanifest/manifest.go) AND its output contained NO "Ripgrep is not available. Falling back to GrepTool." -> gemini now registers RipGrepTool; the cross-file-bleeding fallback is gone. Root cause fixed.
+- go build/test green (no Go change); make docs-reality + docs-check green.
+- The symlink lives OUTSIDE the repo (global gemini install) — not committed; the SCRIPT is the committed, reproducible artifact (re-run after any gemini reinstall).
