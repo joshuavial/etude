@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.7",
   "workflow": "etude-loop",
   "workflow_version": "strict",
@@ -59,6 +59,57 @@
         "size": 582
       },
       "timestamp": "2026-08-17T08:17:21.103014Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "7057995a19b9a6a46eadec809334c5c7599c5196df7d9f52f7ec26b6acece2bc"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Consider resolved-path pinning for symlinked global exclude files.",
+            "Add an ancestor-specific message sentinel if the dirty error gains subtypes.",
+            "Memoize tracked ancestor checks only after measured need."
+          ],
+          "timestamp": "2026-08-17T08:19:43Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-17T08:19:43Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T08:19:43Z"
     }
   ]
 }
