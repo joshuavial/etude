@@ -414,6 +414,71 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:02:00Z"
+    },
+    {
+      "gate_id": "plan.r5",
+      "phase": "plan",
+      "round": 5,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "validate all Runner results at durable boundary"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r5",
+            "artifact": "2411aea1fb2c1c4b2fa9a0494626f4ebafd5691783fbc379d1937c2547b5c1be",
+            "path": "artifacts/sha256/24/2411aea1fb2c1c4b2fa9a0494626f4ebafd5691783fbc379d1937c2547b5c1be",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 315
+          },
+          "timestamp": "2026-08-16T01:06:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "document cap rationale and evidence asymmetries"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r5",
+            "artifact": "d44cb09e2e516ac1a061747d619b60ce8c34ad2ffc5db80a4ac146d164160870",
+            "path": "artifacts/sha256/d4/d44cb09e2e516ac1a061747d619b60ce8c34ad2ffc5db80a4ac146d164160870",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 275
+          },
+          "timestamp": "2026-08-16T01:12:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:13:00Z"
     }
   ]
 }
