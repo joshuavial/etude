@@ -1,0 +1,77 @@
+# Verification record: etude-q396 — terminate runner subprocess descendants on timeout
+
+Evaluated revision: working tree on base e1770dacc9c525477121deaad2ef48c6ba6415da (uncommitted change set;
+exact file hashes listed at the end and recorded again in the review packet).
+Environment: darwin/arm64, Go 1.26.1, /bin/sh, git 2.47.1.
+Status: **pass** (see "Known non-blocking findings").
+
+## Ownership
+
+- Implementation worker: Claude Opus 5 (claude-opus-5), fresh context, brief `.etude/tmp/implement-brief.md`. Owned the
+  full required suites and the failing-before demonstrations.
+- Independent QA: Claude Opus 5 (claude-opus-5), fresh context, did not accept the implementer's summary; re-derived
+  failing-before on a `git archive` of base with the new tests copied in; drove the fresh binary for AC7 and I5.
+- Lead (claude-fable-5-1): read the full production diff against the gated plan; independent race run; fresh build and
+  disposable-repo harness; folded QA hardening; reran affected checks on the folded bytes.
+
+## Acceptance criteria → evidence
+
+| # | Criterion | Evidence |
+|---|---|---|
+| AC1 | Timeout: grandchild writes a marker after the deadline, parent waits; call returns timeout-classified error, descendant terminated, no marker | `TestRun_TimeoutKillsWaitingGrandchild` (subproc) + `TestExecRunner_TimeoutKillsDescendants`, `TestExecCheckRunner_TimeoutKillsDescendants`, `TestExecJudge_TimeoutKillsDescendants`, `TestExecGenerator_TimeoutKillsDescendants`. Failing-before: implementer ran each with production files stashed → all FAIL "marker … exists: descendant outlived the invocation"; QA independently reproduced the four failures on a `git archive` of e1770da. Lead CLI-level failing-before on the base binary: `.etude/tmp/manual-before.log` (replay-timeout marker=PRESENT, retro-timeout marker=PRESENT). |
+| AC2 | Wrapper exits early while child holds pipes: returns within WaitDelay bound, child terminated | `TestRun_WrapperExitsEarlyChildHoldsPipes`; existing `*_SpawnsSurvivingChild` tests still pass (and no longer leak `sleep 300`). |
+| AC3 | Child redirects stdio and outlives wrapper: prompt exit 0, child terminated, no marker | `TestRun_DetachedStdioChildOutlivesWrapper`. Spike on base confirmed this case leaked (marker=true) before the change. |
+| AC4 | Success output, exit-status errors, cancel classification, stderr diagnostics preserved | `TestRun_SuccessAndOutputPreserved`, `TestRun_ContextCancelClassification`; call-site diffs are the two replaced lines plus comments (QA line-by-line); full suites green (`make test`). |
+| AC5 | Helper used at all four entrypoints | `grep -rn "\.Run()" internal | grep -v _test` → only `internal/subproc/subproc.go`; git/gh commands out of scope. |
+| AC6 | Platform semantics explicit, all targets compile | `GOOS=windows go build ./...` exit 0; `GOOS=linux go vet ./...` exit 0 (lead, after fold). `subproc_other.go` no-op fallback; docs/run.md "Subprocess lifecycle". |
+| AC7 | Ctrl-C / SIGTERM cancels the running command and its group | Lead harness on fresh `bin/etude` (`.etude/tmp/manual-after.log`, disposable repo, job control on): replay SIGINT → exit 1 "runner: context done: context canceled", descendant terminated, marker absent; retro generate SIGTERM → exit 1 "generator: context done: context canceled", marker absent. Base binary: exit 130/143 and marker PRESENT (`manual-before.log`). QA independently: `etude run` with SIGINT → exit 1, own pgid observed via `ps`, marker absent; second SIGINT during WaitDelay → immediate default death (I5). |
+
+Invariants I1–I6: QA table confirms each against code and `os/exec.watchCtx` semantics; I4 (no post-return work) holds by
+construction (no timer/goroutine in `subproc`).
+
+## Commands and results (exact evaluated bytes = after the QA fold)
+
+| Check | Owner | Exit | Result |
+|---|---|---|---|
+| `make test` | implementer, then lead after fold | 0 | lead rerun on the folded bytes: 21 packages ok, 2 without tests, exit 0 (`.etude/tmp/make-test.log`); implementer: all ok |
+| `make lint` | implementer + lead | 0 | gofmt clean, vet clean (`.etude/tmp/lint.log`) |
+| `go test -race -count=2 ./internal/subproc ./internal/replay ./internal/liverun ./internal/eval ./internal/retro -run 'TimeoutKillsDescendants|TestRun_|TestKillGroup|SpawnsSurvivingChild|TimeoutExceeded'` | lead | 0 | all ok |
+| `go test -race -count=3` same packages, lifecycle tests | QA | 0 | all ok |
+| `go test -race -count=2 ./internal/subproc` (after fold) | lead | 0 | ok (`.etude/tmp/race-subproc.log`) |
+| `-count=5` on the four entrypoint lifecycle tests + subproc | implementer | 0 | no flakes |
+| `GOOS=windows go build ./...` / `GOOS=linux go vet ./...` | implementer, QA, lead | 0 | compiles / clean |
+| `make docs-check` | implementer, QA, lead | 0 | 26 generated docs identical |
+| `make docs-reality` | implementer, QA, lead | 0 | "OK — 16 commands; docs match the shipped CLI" |
+| `make shell-test` | implementer + lead (`.etude/tmp/shell-test.log`) | 0 | 35 passed, 0 failed |
+| `make build` + `make example` | implementer | 0 | fresh-binary walkthrough end to end |
+| Fresh-binary harness `.etude/tmp/manual-harness.sh` | lead | — | before: 4/4 descendant cases leak the marker; after: 0/4 leak, success path exit 0 with correct output |
+
+## Realistic product exercises
+
+Disposable git repo, `etude init`, one captured run, then with the fresh binary by absolute path:
+`etude replay demo summarize --runner <script> --timeout 1s` (ExecRunner), `etude retro generate run --subject-run demo
+--generator <script> --timeout 1s` (ExecGenerator), the same two with a 60 s timeout interrupted by SIGINT / SIGTERM,
+and an ordinary successful replay. Scripts background `( sleep 3; echo survived > marker ) &` and `wait`. Observed
+exit statuses, error text and marker presence are in `manual-before.log` / `manual-after.log`. Not CLI-surface-changing:
+no flags added or altered; `docs/cli` unchanged (docs-check green).
+
+## Independent QA findings and disposition
+
+1. Pre-existing flaky test `TestReviewerEnvironmentDoesNotReachChecksOrStages` (`internal/liverun/resolve_test.go`): fails
+   ~22% under `make test` on BOTH base e1770da and this tree (QA measured 13/60 each). Cause: 1 s runner timeout vs.
+   first-exec latency of a freshly written script on macOS. Out of this bead's declared scope; reported to the parent as a
+   follow-on. Any red `make test` run attributable solely to this test was rerun.
+2. `killGroup` lacked a `pid > 0` guard (kill(-0) would signal etude's own group; unreachable today). FOLDED: guard +
+   `errInvalidPID` + `TestKillGroup_RejectsNonPositivePid`.
+3. Success-path group kill was documented only in run.md. FOLDED: one clause in the replay/bench/retro `--timeout` rows and
+   the gates.md check paragraph. Also added the CHANGELOG `[Unreleased] / Fixed` entry matching the A01/A15 precedent.
+4. The `USER` seat-allowlist repair rides in this commit (disclosed in the plan; adjudicated by the plan gate).
+
+## Known limitations (documented, not defects)
+
+Not a sandbox: a child calling `setsid`/`setpgid` escapes (QA reproduced with `perl setpgrp`). Zombies may linger until
+reaped. Non-Unix keeps direct-child cancellation only. The pgid-reuse window is bounded to the synchronous post-Wait kill.
+
+## File hashes (sha256 of the evaluated bytes)
+
+See `.etude/tmp/hashes.txt` (generated after the fold; regenerated if any byte changes before review).
