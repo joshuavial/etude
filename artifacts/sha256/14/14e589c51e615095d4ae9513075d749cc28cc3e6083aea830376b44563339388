@@ -1,0 +1,19 @@
+# Verify — etude-rubric-eval
+
+Result: PASS (proceed to final review).
+
+- `go test ./...` — all packages green (89 tests in internal/eval, full suite green).
+- `gofmt -l internal/eval/` — clean.
+- `go vet ./...` — clean.
+- `go build ./...` — clean.
+
+Test coverage of the new seam:
+- Judge interface + StubJudge + ExecJudge (strict env, ordered <NN>-target/-context materialization, Lstat-safe regular-file output, strict JSON decode with DisallowUnknownFields + EOF check, ctx.Err precedence).
+- validateJudgeOutput rejects unsupported methods (default arm → ErrJudgeOutputInvalid); covered by TestValidateJudgeOutput_UnsupportedMethod.
+- RubricEvaluator.Evaluate nil-Judge guard → ErrJudgeNotConfigured; covered by TestRubricEvaluator_NilJudge.
+- loadRubric path containment: rejects absolute paths, lexical ".." escapes, AND symlink-component escapes (filepath.EvalSymlinks on both root and joined, re-checked). Covered by TestLoadRubric_PathEscape (incl. real-file-outside case) and TestLoadRubric_SymlinkEscape (in-root symlink escape rejected; in-root symlink to in-root file still loads).
+- Role with path separator materializes safely via filepath.Base (TestExecJudge_RoleWithPathSeparator).
+
+Mutation checks: the path-escape test was confirmed to have teeth (removing the rel-guard fails the real-file-outside subcase); symlink-escape test fails if EvalSymlinks containment is removed.
+
+No CLI surface in this bead (library only), so no built-binary manual test applies.
