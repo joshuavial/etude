@@ -1,0 +1,31 @@
+# Resolution evidence — etude-soe and etude-4jr
+
+Close both global gate-availability blockers on observed evidence.
+
+ANCESTOR: the P1 Etude issue lanes require the authoritative configured review
+panel to return real verdicts. MEASUREMENT: Gemini repeatedly returned
+`IneligibleTierError` before review, while unnamed in-harness general-purpose
+Opus Tasks have now returned substantive verdicts across every GH16 strict
+phase gate and the dedicated blocker-resolution gate.
+
+BLAST RADIUS: none: worktree and repo only.
+
+## etude-soe
+
+The premise that L1 requires an unreachable third Gemini seat is moot, not
+waived. Commit `770584b` removed Gemini from the shipped registry and
+`registry.Default()`, removed agy as the Opus fallback, and defines the complete
+L1 panel as `[opus, codex]`. The landed diff and tests are inline.
+
+## etude-4jr
+
+The premise that no Opus seat is reachable was false. Its failed probes used
+named persistent teammates and interpreted their expected idle notifications as
+missing verdicts. The required unnamed `general-purpose` Task with model Opus
+has returned real completion reports repeatedly in this lane, including BLOCKs
+that caused fixes and subsequent GO verdicts. No waiver, weaker substitute, or
+agy invocation is involved.
+
+No new tests: this is evidence-only closure of two obsolete global blockers.
+The registry-removal commit carried tests, and the Opus transport proof is the
+real unnamed Task invocation used by this gate itself.
