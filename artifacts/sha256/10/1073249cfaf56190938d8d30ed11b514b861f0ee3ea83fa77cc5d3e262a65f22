@@ -1,0 +1,16 @@
+# GH #15 rebased implementation
+
+Rebased `gh15/caller-cwd-runner` onto `origin/main` at `fc86fbc` and resolved all overlapping original-SHA/submodule changes additively.
+
+- Manifest v4 stores immutable `original_git_sha` separately from caller stage post-run `git_sha`.
+- Live resume, direct replay, forward replay, recorded replay, bench, and gate-seat checkouts use the original SHA.
+- All relevant hermetic checkout paths preserve GH #14 submodule population and recorded-map validation.
+- Caller workspaces are rejected before checkout when tracked submodules make the caller guard unsupported.
+- Forward replay permits caller stage post-run provenance while continuing to require every hermetic stage SHA to equal the original checkout.
+- Gate read-checkout tests now prove a seat receives a populated, recorded submodule rather than retaining the obsolete pre-GH#14 rejection.
+- Caller lineage is checked before every caller stage, caller SHAs must be full OIDs, and manifest v4 globally requires every hermetic stage SHA to equal the original checkout. Hermetic consumers do not require unused caller provenance objects to remain locally reachable after normal Git pruning.
+- The fail-closed guard compares the real index to HEAD by object ID, then compares the live tree to a fresh HEAD-derived temporary index under pinned stat/mode policy. Repository-local config, worktree config, and `info/attributes` bytes must remain stable across the runner; branch-conditional effective configuration may change after a clean branch commit.
+- Regressions cover real-index-only staged blobs, same-size restored-mtime rewrites, executable-mode changes, hidden index flags, clean-filter control changes, branch-conditional config, malformed topology/OIDs, pruned caller provenance, relative roots, and every original-SHA consumer.
+- The guarded caller runner and default hermetic behavior remain otherwise unchanged.
+
+Commits: `6280950 add guarded caller-workspace runners`; `c9d4c85 preserve original checkout provenance across caller stages`.
