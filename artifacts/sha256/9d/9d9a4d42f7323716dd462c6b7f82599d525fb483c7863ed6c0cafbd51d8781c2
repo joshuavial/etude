@@ -1,0 +1,131 @@
+# Verify — etude-9uf.3
+
+## Acceptance, item by item
+
+**"The three scripts are gone."**
+`scripts/dogfood-capture.sh`, `scripts/dogfood-close.sh` and
+`scripts/dogfood-close_test.sh` are deleted (`git status` shows all three as
+`D`). 974 lines removed.
+
+**"No file in the repo references them."**
+The check is the widened sweep, not the `.sh`-anchored one that let a live wrong
+pointer through at plan round 2:
+
+```
+git ls-files -z | xargs -0 grep -nE 'dogfood[-_ ](capture|close)'
+```
+
+12 tracked hits remain, plus 1 in the new file. All 13 are accounted for by the
+passed plan:
+
+- **10 enumerated no-ops** — the bead id `etude-dogfood-capture-protocol`
+  (5 sites), historical retro-ledger records (2), protocol-name mentions in a
+  design note and a Go comment (2), and `retro-capture.md:3` which already read
+  "the retired dogfood capture protocol".
+- **3 deliberate baseline extensions** — two doc citations that keep the file
+  name AND name the removing bead so the evidence stays checkable, and the new
+  test file recording its own provenance. The plan required extending the
+  baseline for these rather than narrowing the grep until it looked clean.
+
+No tracked file describes the deleted scripts as a live mechanism.
+
+**"make test / make lint pass."** Both green.
+
+## Checks
+
+| Check | Result |
+|---|---|
+| `make test` | GREEN |
+| `make lint` | GREEN |
+| `make docs-check` | GREEN |
+| `make docs-reality` | GREEN |
+| `make pre-push-test` | GREEN — 19 passed, 0 failed |
+| `make -n dogfood-close-test` | "No rule to make target" (correct) |
+| `make -n shell-test` | resolves to four existing scripts |
+| `bash examples/summarize/walkthrough.sh` | exit 0 |
+| `bash -n` on every edited shell file | clean |
+
+## Coverage is preserved, and that is measured
+
+The deleted test file reported **29 passed**. Section A (11 cases, the close
+wrapper) died with its subject. Sections B and C (18 cases, the pre-push hook)
+were extracted to `scripts/pre-push_test.sh`.
+
+11 + 18 = 29. The parity is exact, so nothing was silently dropped — including
+C1, which an earlier draft of the plan would have deleted while every stated
+check stayed green.
+
+The extracted suite now reports **19 passed, 0 failed**: the 18 carried cases
+plus one added at the verify gate's suggestion, pinning that the hook's BLOCKED
+message names the current `etude capture` / `etude gate` flow. That assertion is
+the only thing standing between a future edit and another dangling instruction
+of exactly the kind this bead spent ten sweep sites removing. Negative control:
+reverting the message to generic wording fails it (18 passed, 1 failed);
+restoring returns 19/19.
+
+## Negative controls
+
+**Hook wiring.** The suite must fail when the hook it targets is broken.
+Removing `_has_code_ref=true` from the `refs/heads/*` classification: **5 of 18
+fail, exit 1.** Proves `$PRE_PUSH_HOOK` resolves to the real hook under change.
+
+The plan's originally specified control — breaking the `refs/etude/*` exemption —
+did NOT fail, and the diagnosis is recorded rather than the control quietly
+swapped: with that arm removed, such a ref falls to the `*)` branch, which sets
+`_all_exempt=false` but leaves `_has_code_ref` false, and the next guard exits 0
+when no code ref is present. The breakage is masked downstream, so B1's
+assertions hold either way. A control has to target a branch whose breakage is
+observable.
+
+**bd shim.** Removing the `export PATH` line left 18/18 green, because this
+machine's real `bd` behaves compatibly — so removal cannot demonstrate anything
+here. Replacing the shim with a `bd` that exits 7: **13 of 18 fail.** The suite
+genuinely depends on the shim to be insulated from whatever `bd` a machine
+carries; that is why it was on the carry list.
+
+All three mutations reverted; both files confirmed byte-identical afterwards.
+
+## The live hook
+
+`.beads/hooks/pre-push` is edited and is on the path of every push in this
+checkout, so the blast radius exceeds this bead.
+
+- The diff touches two strings: a comment and the BLOCKED message. Filtering the
+  diff for `if`/`exit`/`case`/`while`/test constructs returns nothing.
+- `bash -n` clean.
+- **Exercised by the extracted suite, NOT by any push.** `scripts/pre-push_test.sh`
+  resolves `$PRE_PUSH_HOOK` through this worktree's own `REPO_ROOT`, so all 19
+  cases run against the edited copy — including B3, which executes the reworded
+  BLOCKED branch and now asserts on the new wording.
+
+  **Correction.** An earlier version of this artifact claimed the edited hook had
+  been "exercised for real" by every push since the edit. That was false, and the
+  verify gate blocked on it. `git config --show-origin core.hooksPath` resolves
+  to the MAIN checkout's `.beads/hooks`, and there is no
+  `extensions.worktreeConfig` override, so pushes from this worktree execute
+  `/Users/jv/projects/etude/.beads/hooks/pre-push` — which `diff` confirms is
+  still the UNEDITED version. No push has run the edited hook, and none will
+  until this lands on main and that checkout's copy is updated. The claim was
+  also self-contradicting: `scripts/pre-push_test.sh` in the same diff already
+  says `core.hooksPath` points at the main checkout.
+
+  This cuts both ways, and the second half is the reassuring one: a syntax error
+  in this edit could not have broken other lanes' pushes either, because the file
+  is not the executing hook from here.
+
+## Known gaps, stated rather than papered over
+
+- **`make dogfood-audit` does not pass**, on `cadence-sidecar` retro-meta sidecar
+  debt for the `etude-9uf.2` and `etude-rep` cohorts, plus — transiently — an
+  `unpushed-ref` gap for this bead's own run ref whenever a stage or gate has
+  been captured since the last push. None of it is caused by this diff, and bead
+  `.4` replaces that script.
+
+  No exit code or gap count is quoted here on purpose. The audit scans a moving
+  `--last 9` window, so both change as the lane works; two successive versions of
+  this artifact quoted numbers that were stale by the time a seat checked them.
+  A durable claim is the one that does not depend on when it is read.
+- **Nothing runs the shell suites automatically.** There is no CI, and
+  `make test` is `go test ./...`. `shell-test` gives them one command and one
+  obvious place to be listed; it does not make them run. Closing that for real
+  needs CI or a hook, and neither is in scope here.
