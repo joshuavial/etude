@@ -1,0 +1,1644 @@
+diff --git a/docs/gates.md b/docs/gates.md
+index 50bf99a..9dd5be2 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -70,7 +70,8 @@ recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+ strictly: an unknown or misspelled field (at any nesting level) is rejected
+ rather than silently dropped, as is any trailing content after the gate object.
+ Invalid input is rejected without changing the run. A run that carries
+-any gates is written as `manifest_version` 3; gate-less runs are unchanged.
++any gates is written as `manifest_version` 3; a run containing a
++caller-workspace stage uses version 4 instead.
+ 
+ The capture input above uses `session.transcript_path` because it points at a
+ local file to import. Stored manifests replace that input-only path with:
+@@ -271,7 +272,8 @@ live-specific characteristics:
+   empty, or malfunction) — even when the gate still passes — so the audit
+   record reflects a degraded panel.
+ - `decision.escalation_reason` is required when `status="escalated"`.
+-- A run that carries any gate attempts is stored as `manifest_version` 3.
++- A run that carries any gate attempts is stored as `manifest_version` 3, or
++  version 4 when it also contains a caller-workspace stage.
+ 
+ ### Resuming an unusable-seat outage
+ 
+diff --git a/docs/run.md b/docs/run.md
+index 95ba0ac..324a41a 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -186,9 +186,9 @@ etude run dev-pipeline --task bead.md --timeout 30m
+ 
+ The engine reads `.etude/workflow.yaml` and `.etude/registry.yaml`, resolves
+ each stage's runner (from the registry or inline), and walks the stage graph
+-in dependency order. All stages share a single evolving worktree checked out
+-at the run's git SHA, so mutations from earlier stages are visible to later
+-ones.
++in dependency order. By default, stages share one evolving hermetic worktree
++checked out at the run's git SHA, so mutations there remain visible to later
++hermetic stages.
+ 
+ After each stage completes its runner, the engine chains the stage's output
+ artifact into the next stage's inputs by role (matching `capture-run`
+@@ -224,6 +224,72 @@ stage completes, before the run finishes.
+ | `--timeout <duration>` | Per-stage runner timeout (default `10m`; `0` disables). |
+ | `--resume <id>` | Resume a partial run. See [Resume](#resume). |
+ 
++### Runner workspace
++
++A stage runner uses the hermetic detached worktree by default. A producing
++stage that must edit, test, or commit in the live working tree can opt into the
++directory where `etude` was invoked:
++
++```yaml
++stages:
++  - name: implement
++    skill: dev-executor
++    produces: diff
++    runner:
++      name: codex
++      workspace: caller
++```
++
++`workspace: hermetic` is the explicit spelling of the default. The workspace
++setting can also be placed on `default_runner`. When a default runner supplies
++the command or name, a stage may contain only `runner: {workspace: caller}` as
++a workspace override; a stage-local command or name otherwise replaces the
++default binding. A CLI `--runner` command override changes the command but
++preserves each stage's effective workspace.
++
++Caller-workspace stages fail closed after the runner returns unless the entire
++repository is clean: staged changes, unstaged changes, and non-ignored
++untracked files all stop the stage before its output is captured or gated.
++Ignored files are permitted. A clean runner-created commit is permitted, and
++the stage manifest records that post-run commit together with
++`runner_workspace: caller`. Repositories containing tracked submodules are
++rejected before the runner starts, and a runner that adds one is rejected before
++capture, because nested Git state cannot be covered by the repository-level
++guard.
++
++This check happens only after a successful runner exit. If a caller-workspace
++runner fails, times out, or is rejected by the post-run guard, it may leave the
++live working tree dirty; inspect and recover that tree before resuming. The
++guard also fails closed when Git index visibility flags prevent it from
++inspecting a tracked path, or when the runner changes repository-local Git
++configuration (including locally included configuration) or the repository's
++untracked `info/attributes`, `info/exclude`, and sparse-checkout controls. Before
++the runner starts, the invocation directory must canonically resolve to the same
++repository Etude will inspect. Guard Git subprocesses remove ambient `GIT_*`
++overrides and disable replacement objects, so repository, worktree, index, or
++commit rewriting cannot redirect the provenance inspection.
++
++The guard measures the repository after the configured runner and its synchronous
++children have returned. It does not serialize unrelated processes that continue
++writing to the same working tree concurrently; callers must arrange exclusive
++working-tree access while a caller-workspace stage is running.
++
++A process crash after a runner commits cleanly but before Etude captures the
++stage leaves the commit in the caller tree with no stage record. Resume may run
++that frontier stage again, so caller-workspace runners must be repeat-safe and
++the operator must reconcile any such commit before resuming. Ignored files remain
++outside the guard by design; caller runners are responsible for their effects on
++those files. Cleanliness follows Git's configured status/index semantics;
++repository normalization, ignore, and file-mode policies are trusted inputs, not
++a promise of byte-for-byte filesystem identity outside Git's model.
++
++Gates do not inherit the producing runner's workspace. Gate checks and model
++seats continue to execute against the run's original hermetic detached
++checkout, exactly as they do for default runners. A caller runner's new commit
++is named by the stage output and recorded as stage provenance, but it is not
++checked out underneath the gate; the captured stage output remains the gate's
++entire description of that produced state.
++
+ ### Run id
+ 
+ When `--run-id` is omitted, the engine generates a sortable id of the form
+@@ -315,7 +381,8 @@ by unusable model seats is resumable; substantive reviewer decisions remain
+ terminal.
+ 
+ Each gate attempt is recorded automatically as a `GateAttempt` in the run
+-manifest (`manifest_version` 3); gate attempts appear after stages in
++manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present);
++gate attempts appear after stages in
+ `etude run show`. No separate `etude capture-gate` call is required for live
+ runs.
+ 
+diff --git a/internal/cli/prime.go b/internal/cli/prime.go
+index 929d7d9..b2ad8f1 100644
+--- a/internal/cli/prime.go
++++ b/internal/cli/prime.go
+@@ -68,7 +68,7 @@ Content-addressed artifacts live under:
+ 
+ where <aa> is the first two hex chars of the SHA-256 digest (fan-out prefix).
+ 
+-Each run ref contains a manifest.json (manifest_version 2 or 3) with:
++Each run ref contains a manifest.json (manifest_version 2, 3, or 4) with:
+   - workflow name + version (hash of workflow.yaml)
+   - stages array: name, inputs, output artifact hash, producer block
+   - producer block per stage: harness, model, skill (id/repo/version), git_sha
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 50a010a..147a7f2 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -70,6 +70,10 @@ func newRunCommand(out, errOut io.Writer) *cobra.Command {
+ // the repo default .etude/workflow.yaml. There is deliberately no fallback
+ // between the two, so a missing named workflow never reports the default path.
+ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workflowFile, taskFile, runID, gitSHA, resumeID, runnerSpec string, timeout time.Duration) error {
++	callerDir, err := os.Getwd()
++	if err != nil {
++		return fmt.Errorf("get caller directory: %w", err)
++	}
+ 	root, err := repoRoot(ctx)
+ 	if err != nil {
+ 		return err
+@@ -138,6 +142,7 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workf
+ 		},
+ 		Tiers:        liverun.ResolveTiers(reg),
+ 		Root:         root,
++		CallerDir:    callerDir,
+ 		EnvAllowlist: envAllowlist,
+ 	}
+ 
+@@ -343,6 +348,9 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 			fmt.Fprintf(out, "  replay of:   %s/%s\n", stage.ReplayOf.RunID, stage.ReplayOf.Stage)
+ 		}
+ 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
++		if stage.RunnerWorkspace != "" {
++			fmt.Fprintf(out, "  runner workspace: %s\n", stage.RunnerWorkspace)
++		}
+ 		if stage.Producer.Harness.Name != "" {
+ 			fmt.Fprintf(out, "  harness:     %s\n", formatHarness(stage.Producer.Harness))
+ 		}
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 87ef58a..094d528 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -796,6 +796,63 @@ func TestRunWorkflowThreeStages(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunWorkflowRunnerOverridePreservesCallerWorkspace(t *testing.T) {
++	repo := initCaptureRepo(t)
++	workflowYAML := `name: callerwf
++default_runner:
++  command: /bin/true
++stages:
++  - name: implement
++    skill: echo-skill
++    produces: diff
++    runner:
++      workspace: caller
++`
++	writeFile(t, repo, ".etude/workflow.yaml", workflowYAML)
++	writeFile(t, repo, "task.txt", "task data")
++	writeFile(t, repo, "nested/.keep", "")
++	gitCapture(t, repo, "add", ".etude/workflow.yaml", "task.txt", "nested/.keep")
++	gitCapture(t, repo, "commit", "-m", "add caller workflow")
++
++	runner := filepath.Join(t.TempDir(), "record-pwd.sh")
++	if err := os.WriteFile(runner, []byte("#!/bin/sh\nprintf '%s\\n' \"$PWD\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	callerDir := filepath.Join(repo, "nested")
++	chdir(t, callerDir)
++	runID := "callerwf-20260101T000000Z-aabbccdd"
++	if _, stderr, err := execute("run", "callerwf",
++		"--task", "../task.txt",
++		"--run-id", runID,
++		"--runner", runner,
++	); err != nil {
++		t.Fatalf("run returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	m := readRunManifest(t, repo, runID)
++	if got := m.Stages[0].RunnerWorkspace; got != "caller" {
++		t.Fatalf("runner_workspace = %q, want caller", got)
++	}
++	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Output.Path)
++	if err != nil {
++		t.Fatalf("read output artifact: %v", err)
++	}
++	wantDir, err := filepath.EvalSymlinks(callerDir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := strings.TrimSpace(string(content)); got != wantDir {
++		t.Fatalf("runner pwd = %q, want caller directory %q", got, wantDir)
++	}
++	stdout, _, err := execute("run", "show", runID)
++	if err != nil {
++		t.Fatalf("run show: %v", err)
++	}
++	if !strings.Contains(stdout, "runner workspace: caller") {
++		t.Fatalf("run show omitted caller workspace:\n%s", stdout)
++	}
++}
++
+ // AC4 (CLI level): stage-b's input artifact matches stage-a's output artifact.
+ func TestRunWorkflowArtifactRefChaining(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+diff --git a/internal/liverun/engine.go b/internal/liverun/engine.go
+index 80609d8..39a2cc3 100644
+--- a/internal/liverun/engine.go
++++ b/internal/liverun/engine.go
+@@ -1,12 +1,14 @@
+ package liverun
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+ 	"os/exec"
++	"path/filepath"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -21,6 +23,12 @@ import (
+ 
+ const runsPrefix = "refs/etude/runs/"
+ 
++var (
++	ErrCallerWorkspaceDirty       = errors.New("caller workspace has uncommitted changes")
++	ErrCallerWorkspaceChanged     = errors.New("caller workspace HEAD changed during provenance capture")
++	ErrCallerWorkspaceUnsupported = errors.New("caller workspace repository is unsupported")
++)
++
+ // StageError records a stage execution failure with the run id so callers can
+ // print a --resume hint.
+ type StageError struct {
+@@ -190,6 +198,23 @@ type Engine struct {
+ 	// VALUES are never stored).  The same list must drive both the runner
+ 	// closures (ResolveRunner/ResolveSeat) and this field so audit cannot lie.
+ 	EnvAllowlist []string
++	// CallerDir is the directory from which the CLI was invoked. Caller-workspace
++	// runners execute here; an empty value falls back to Root for library users.
++	CallerDir string
++	// ResolveCallerHEAD resolves HEAD during post-run provenance capture. Tests
++	// may inject different consecutive values to prove the race fails closed;
++	// production removes ambient Git overrides and replacement-object rewriting.
++	ResolveCallerHEAD func(context.Context, string) (string, error)
++}
++
++type callerControlFile struct {
++	exists bool
++	data   []byte
++}
++
++type callerGuardBaseline struct {
++	controlFiles    map[string]callerControlFile
++	effectiveConfig []byte
+ }
+ 
+ func (e *Engine) clock() time.Time {
+@@ -199,6 +224,193 @@ func (e *Engine) clock() time.Time {
+ 	return time.Now()
+ }
+ 
++func (e *Engine) callerProvenance(ctx context.Context, baseline callerGuardBaseline) (string, error) {
++	resolve := e.ResolveCallerHEAD
++	if resolve == nil {
++		resolve = resolveCallerHEAD
++	}
++	return captureCallerProvenance(ctx, e.Root, baseline, resolve)
++}
++
++func callerGitCommand(ctx context.Context, root string, args ...string) *exec.Cmd {
++	commandArgs := append([]string{"-C", root}, args...)
++	cmd := exec.CommandContext(ctx, "git", commandArgs...)
++	env := make([]string, 0, len(os.Environ())+1)
++	for _, item := range os.Environ() {
++		name, _, _ := strings.Cut(item, "=")
++		if strings.HasPrefix(name, "GIT_") {
++			continue
++		}
++		env = append(env, item)
++	}
++	cmd.Env = append(env, "GIT_NO_REPLACE_OBJECTS=1")
++	return cmd
++}
++
++func resolveCallerHEAD(ctx context.Context, root string) (string, error) {
++	out, err := callerGitCommand(ctx, root, "rev-parse", "HEAD").Output()
++	if err != nil {
++		return "", err
++	}
++	return strings.TrimSpace(string(out)), nil
++}
++
++func resolveCanonicalCallerRoot(ctx context.Context, callerDir string) (string, error) {
++	out, err := callerGitCommand(ctx, callerDir, "rev-parse", "--show-toplevel").Output()
++	if err != nil {
++		return "", fmt.Errorf("resolve caller directory repository: %w", err)
++	}
++	return filepath.EvalSymlinks(strings.TrimSpace(string(out)))
++}
++
++func ensureCallerRepository(ctx context.Context, root, callerDir string) error {
++	want, err := filepath.EvalSymlinks(root)
++	if err != nil {
++		return fmt.Errorf("resolve guarded repository root: %w", err)
++	}
++	got, err := resolveCanonicalCallerRoot(ctx, callerDir)
++	if err != nil {
++		return err
++	}
++	if got != want {
++		return fmt.Errorf("%w: caller directory repository %q does not match guarded root %q", ErrCallerWorkspaceUnsupported, got, want)
++	}
++	return nil
++}
++
++func (e *Engine) callerDir() string {
++	if e.CallerDir != "" {
++		return e.CallerDir
++	}
++	return e.Root
++}
++
++func captureCallerGuardBaseline(ctx context.Context, root string) (callerGuardBaseline, error) {
++	baseline := callerGuardBaseline{controlFiles: make(map[string]callerControlFile)}
++	for _, name := range []string{"config", "config.worktree", "info/attributes", "info/exclude", "info/sparse-checkout"} {
++		out, err := callerGitCommand(ctx, root, "rev-parse", "--git-path", name).Output()
++		if err != nil {
++			return callerGuardBaseline{}, fmt.Errorf("resolve caller workspace git control path %q: %w", name, err)
++		}
++		path := strings.TrimSpace(string(out))
++		if !filepath.IsAbs(path) {
++			path = filepath.Join(root, path)
++		}
++		content, err := os.ReadFile(path)
++		if errors.Is(err, os.ErrNotExist) {
++			baseline.controlFiles[path] = callerControlFile{}
++			continue
++		}
++		if err != nil {
++			return callerGuardBaseline{}, fmt.Errorf("read caller workspace git control path %q: %w", name, err)
++		}
++		baseline.controlFiles[path] = callerControlFile{exists: true, data: content}
++	}
++	effectiveConfig, err := callerGitCommand(ctx, root, "config", "--local", "--includes", "--null", "--list", "--show-origin").Output()
++	if err != nil {
++		return callerGuardBaseline{}, fmt.Errorf("read caller workspace effective local git config: %w", err)
++	}
++	baseline.effectiveConfig = effectiveConfig
++	return baseline, nil
++}
++
++func verifyCallerGuardBaseline(ctx context.Context, root string, want callerGuardBaseline) error {
++	got, err := captureCallerGuardBaseline(ctx, root)
++	if err != nil {
++		return err
++	}
++	if len(got.controlFiles) != len(want.controlFiles) {
++		return fmt.Errorf("%w: git control files changed during runner", ErrCallerWorkspaceDirty)
++	}
++	for path, before := range want.controlFiles {
++		after, ok := got.controlFiles[path]
++		if !ok || before.exists != after.exists || !bytes.Equal(before.data, after.data) {
++			return fmt.Errorf("%w: git control files changed during runner", ErrCallerWorkspaceDirty)
++		}
++	}
++	if !bytes.Equal(got.effectiveConfig, want.effectiveConfig) {
++		return fmt.Errorf("%w: effective local git config changed during runner", ErrCallerWorkspaceDirty)
++	}
++	return nil
++}
++
++func ensureCallerWorkspaceSupported(ctx context.Context, root string) error {
++	entries, err := callerGitCommand(ctx, root, "ls-files", "--stage", "-z").Output()
++	if err != nil {
++		return fmt.Errorf("inspect caller workspace repository shape: %w", err)
++	}
++	for _, entry := range bytes.Split(entries, []byte{0}) {
++		if bytes.HasPrefix(entry, []byte("160000 ")) {
++			return fmt.Errorf("%w: tracked submodules are not supported", ErrCallerWorkspaceUnsupported)
++		}
++	}
++	return nil
++}
++
++func inspectCallerWorkspaceClean(ctx context.Context, root string) error {
++	if err := ensureCallerWorkspaceSupported(ctx, root); err != nil {
++		return err
++	}
++	tracked, err := callerGitCommand(ctx, root, "ls-files", "-v", "-z").Output()
++	if err != nil {
++		return fmt.Errorf("inspect caller workspace index flags: %w", err)
++	}
++	for _, entry := range bytes.Split(tracked, []byte{0}) {
++		if len(entry) == 0 {
++			continue
++		}
++		tag := entry[0]
++		if tag == 'S' || (tag >= 'a' && tag <= 'z') {
++			return fmt.Errorf("%w: tracked path is hidden by assume-unchanged or skip-worktree", ErrCallerWorkspaceDirty)
++		}
++	}
++	status, err := callerGitCommand(ctx, root, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none").Output()
++	if err != nil {
++		return fmt.Errorf("inspect caller workspace: %w", err)
++	}
++	if len(status) != 0 {
++		return ErrCallerWorkspaceDirty
++	}
++	return nil
++}
++
++func captureCallerProvenance(ctx context.Context, root string, baseline callerGuardBaseline, resolve func(context.Context, string) (string, error)) (string, error) {
++	first, err := resolve(ctx, root)
++	if err != nil {
++		return "", fmt.Errorf("capture caller workspace HEAD: %w", err)
++	}
++	if err := ensureCallerWorkspaceSupported(ctx, root); err != nil {
++		return "", err
++	}
++	if err := verifyCallerGuardBaseline(ctx, root, baseline); err != nil {
++		return "", err
++	}
++	if err := inspectCallerWorkspaceClean(ctx, root); err != nil {
++		return "", err
++	}
++	second, err := resolve(ctx, root)
++	if err != nil {
++		return "", fmt.Errorf("recheck caller workspace HEAD: %w", err)
++	}
++	if first != second {
++		return "", fmt.Errorf("%w: %s -> %s", ErrCallerWorkspaceChanged, first, second)
++	}
++	if err := verifyCallerGuardBaseline(ctx, root, baseline); err != nil {
++		return "", err
++	}
++	if err := inspectCallerWorkspaceClean(ctx, root); err != nil {
++		return "", err
++	}
++	third, err := resolve(ctx, root)
++	if err != nil {
++		return "", fmt.Errorf("final caller workspace HEAD check: %w", err)
++	}
++	if first != third {
++		return "", fmt.Errorf("%w: %s -> %s", ErrCallerWorkspaceChanged, first, third)
++	}
++	return third, nil
++}
++
+ // Run executes the workflow, capturing each stage incrementally via CAS.
+ // If opts.ResumeID is non-empty, resumes an existing partial run from its frontier.
+ func (e *Engine) Run(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
+@@ -582,9 +794,28 @@ func (e *Engine) runAndCaptureStage(
+ 		Version: "manual",
+ 	}
+ 	producer := runmanifest.Producer{Skill: stageSkill}
++	runnerWorkspace := wf.EffectiveRunnerWorkspace(stage)
++	runnerDir := worktreeDir
++	stageGitSHA := gitSHA
++	manifestWorkspace := ""
++	var callerBaseline callerGuardBaseline
++	if runnerWorkspace == workflow.RunnerWorkspaceCaller {
++		runnerDir = e.callerDir()
++		manifestWorkspace = workflow.RunnerWorkspaceCaller
++		if err = ensureCallerRepository(ctx, e.Root, runnerDir); err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++		}
++		if err = ensureCallerWorkspaceSupported(ctx, e.Root); err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++		}
++		callerBaseline, err = captureCallerGuardBaseline(ctx, e.Root)
++		if err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++		}
++	}
+ 
+ 	res, err := runner.Run(ctx, replay.RunRequest{
+-		WorktreeDir:     worktreeDir,
++		WorktreeDir:     runnerDir,
+ 		ScratchDir:      scratchSubDir,
+ 		Inputs:          runInputs,
+ 		OutputRole:      stage.Produces,
+@@ -594,6 +825,12 @@ func (e *Engine) runAndCaptureStage(
+ 	if err != nil {
+ 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+ 	}
++	if runnerWorkspace == workflow.RunnerWorkspaceCaller {
++		stageGitSHA, err = e.callerProvenance(ctx, callerBaseline)
++		if err != nil {
++			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
++		}
++	}
+ 
+ 	// Build producer session evidence when the runner returned session info
+ 	// and the stage is agentic (not deterministic/shell).
+@@ -603,7 +840,7 @@ func (e *Engine) runAndCaptureStage(
+ 			TranscriptURI:  res.Session.TranscriptURI,
+ 			TranscriptPath: res.Session.TranscriptPath,
+ 		}
+-		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, worktreeDir, sess, false)
++		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, runnerDir, sess, false)
+ 		if evidence != nil {
+ 			producer.Session = evidence
+ 		}
+@@ -624,14 +861,15 @@ func (e *Engine) runAndCaptureStage(
+ 	outRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
+ 
+ 	newStages := append(append([]runmanifest.Stage(nil), completedStages...), runmanifest.Stage{
+-		Name:       stageName,
+-		ProducedBy: "original",
+-		GitSHA:     gitSHA,
+-		Skill:      stageSkill,
+-		Producer:   producer,
+-		Inputs:     inputRefs,
+-		Output:     outRef,
+-		Timestamp:  e.clock(),
++		Name:            stageName,
++		ProducedBy:      "original",
++		GitSHA:          stageGitSHA,
++		RunnerWorkspace: manifestWorkspace,
++		Skill:           stageSkill,
++		Producer:        producer,
++		Inputs:          inputRefs,
++		Output:          outRef,
++		Timestamp:       e.clock(),
+ 	})
+ 
+ 	manifest := runmanifest.Manifest{
+diff --git a/internal/liverun/engine_test.go b/internal/liverun/engine_test.go
+index 7857cc7..8961f38 100644
+--- a/internal/liverun/engine_test.go
++++ b/internal/liverun/engine_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"errors"
++	"io"
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
+@@ -81,6 +82,18 @@ func stubResolveRunner(stub replay.Runner) func(workflow.Stage) (replay.Runner,
+ 	return func(workflow.Stage) (replay.Runner, error) { return stub, nil }
+ }
+ 
++type runnerFunc func(context.Context, replay.RunRequest) (replay.RunResult, error)
++
++func (f runnerFunc) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	return f(ctx, req)
++}
++
++type checkRunnerFunc func(context.Context, replay.RunRequest) (bool, []byte, string)
++
++func (f checkRunnerFunc) RunCheck(ctx context.Context, req replay.RunRequest) (bool, []byte, string) {
++	return f(ctx, req)
++}
++
+ // threeStageWorkflow returns a 3-stage workflow where each stage chains the previous.
+ func threeStageWorkflow() workflow.Workflow {
+ 	return workflow.Workflow{
+@@ -106,6 +119,478 @@ func fixedClock() func() time.Time {
+ // Tests
+ // ---------------------------------------------------------------------------
+ 
++func TestHermeticRunnerRemainsDefault(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++		if req.WorktreeDir == repo {
++			t.Fatal("default runner executed in caller workspace")
++		}
++		return replay.RunResult{Output: []byte("output")}, nil
++	})
++	wf := workflow.Workflow{Name: "hermeticwf", Stages: []workflow.Stage{{
++		Name: "plan", Skill: "sk", Produces: "plan",
++		Runner: &workflow.Runner{Command: "unused"},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "hermeticwf-20260101T000000Z-aabbccdd"
++	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	m := readLiveManifest(t, repo, runID)
++	if m.ManifestVersion != 2 {
++		t.Fatalf("ManifestVersion = %d, want unchanged version 2", m.ManifestVersion)
++	}
++	if got := m.Stages[0].RunnerWorkspace; got != "" {
++		t.Fatalf("RunnerWorkspace = %q, want omitted hermetic default", got)
++	}
++}
++
++func TestCallerWorkspaceRunnerCommitsAndRecordsPostRunProvenance(t *testing.T) {
++	repo := initTestRepo(t)
++	callerDir := filepath.Join(repo, "nested")
++	if err := os.Mkdir(callerDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	initialSHA := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++		if req.WorktreeDir != callerDir {
++			t.Fatalf("WorktreeDir = %q, want caller directory %q", req.WorktreeDir, callerDir)
++		}
++		writeTestFile(t, repo, "README.md", "produced\n")
++		gitRun(t, repo, "add", "README.md")
++		gitRun(t, repo, "commit", "-m", "produce output")
++		return replay.RunResult{Output: []byte("review this commit"), MediaType: "text/plain"}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, CallerDir: callerDir, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-aabbccdd"
++	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: initialSHA}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	postSHA := headSHA(t, repo)
++	if postSHA == initialSHA {
++		t.Fatal("runner did not create a new commit")
++	}
++	m := readLiveManifest(t, repo, runID)
++	if m.ManifestVersion != 4 {
++		t.Fatalf("ManifestVersion = %d, want 4", m.ManifestVersion)
++	}
++	if got := m.Stages[0].GitSHA; got != postSHA {
++		t.Fatalf("stage git_sha = %q, want post-run HEAD %q", got, postSHA)
++	}
++	if got := m.Stages[0].RunnerWorkspace; got != workflow.RunnerWorkspaceCaller {
++		t.Fatalf("runner_workspace = %q, want caller", got)
++	}
++}
++
++func TestCallerWorkspaceMayCommitDeletionOfInvocationDirectory(t *testing.T) {
++	repo := initTestRepo(t)
++	writeTestFile(t, repo, "nested/work.txt", "work\n")
++	gitRun(t, repo, "add", "nested/work.txt")
++	gitRun(t, repo, "commit", "-m", "add nested work")
++	callerDir := filepath.Join(repo, "nested")
++	initialSHA := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++		if req.WorktreeDir != callerDir {
++			t.Fatalf("WorktreeDir = %q, want caller directory %q", req.WorktreeDir, callerDir)
++		}
++		gitRun(t, repo, "rm", "nested/work.txt")
++		gitRun(t, repo, "commit", "-m", "remove invocation directory")
++		return replay.RunResult{Output: []byte("review deletion")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{
++		Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner),
++		Root: repo, CallerDir: callerDir, Now: fixedClock(),
++	}
++	runID := "callerwf-20260101T000000Z-deletecwd"
++	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: initialSHA}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if _, err := os.Stat(callerDir); !errors.Is(err, os.ErrNotExist) {
++		t.Fatalf("caller directory still exists or stat failed unexpectedly: %v", err)
++	}
++	if got := readLiveManifest(t, repo, runID).Stages[0].GitSHA; got != headSHA(t, repo) {
++		t.Fatalf("stage git_sha = %q, want post-deletion HEAD", got)
++	}
++}
++
++func TestCallerWorkspaceGateRemainsPinnedToOriginalWorktree(t *testing.T) {
++	repo := initTestRepo(t)
++	initialSHA := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		writeTestFile(t, repo, "README.md", "produced\n")
++		gitRun(t, repo, "add", "README.md")
++		gitRun(t, repo, "commit", "-m", "produce output")
++		return replay.RunResult{Output: []byte("review this commit")}, nil
++	})
++	checkRan := false
++	check := checkRunnerFunc(func(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
++		checkRan = true
++		if req.WorktreeDir == repo {
++			t.Fatal("gate check executed in caller workspace")
++		}
++		if got := headSHA(t, req.WorktreeDir); got != initialSHA {
++			t.Fatalf("gate check HEAD = %q, want original run SHA %q", got, initialSHA)
++		}
++		return true, []byte("pass"), ""
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++		Gate:   &workflow.GateConfig{Checks: []workflow.Runner{{Command: "unused"}}},
++	}}}
++	e := Engine{
++		Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock(),
++		ResolveCheck: func(workflow.Runner) (CheckRunner, error) { return check, nil },
++	}
++	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-gatepin", GitSHA: initialSHA}); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	if !checkRan {
++		t.Fatal("gate check did not run")
++	}
++	m := readLiveManifest(t, repo, "callerwf-20260101T000000Z-gatepin")
++	if m.ManifestVersion != 4 || len(m.Gates) != 1 {
++		t.Fatalf("caller gated manifest version/gates = %d/%d, want 4/1", m.ManifestVersion, len(m.Gates))
++	}
++}
++
++func TestCallerWorkspaceDirtyTreeFailsBeforeCapture(t *testing.T) {
++	t.Setenv("GIT_LITERAL_PATHSPECS", "1")
++	tests := []struct {
++		name   string
++		setup  func(*testing.T, string)
++		mutate func(*testing.T, string)
++	}{
++		{"unstaged tracked", nil, func(t *testing.T, repo string) { writeTestFile(t, repo, "README.md", "dirty\n") }},
++		{"staged tracked", nil, func(t *testing.T, repo string) {
++			writeTestFile(t, repo, "README.md", "staged\n")
++			gitRun(t, repo, "add", "README.md")
++		}},
++		{"untracked", nil, func(t *testing.T, repo string) {
++			writeTestFile(t, repo, "new.go", "package new\n")
++		}},
++		{"untracked hidden by pre-run config", func(t *testing.T, repo string) {
++			gitRun(t, repo, "config", "status.showUntrackedFiles", "no")
++		}, func(t *testing.T, repo string) {
++			writeTestFile(t, repo, "new.go", "package new\n")
++		}},
++		{"assume unchanged tracked", nil, func(t *testing.T, repo string) {
++			gitRun(t, repo, "update-index", "--assume-unchanged", "README.md")
++			writeTestFile(t, repo, "README.md", "hidden dirty\n")
++		}},
++		{"skip worktree tracked", nil, func(t *testing.T, repo string) {
++			gitRun(t, repo, "update-index", "--skip-worktree", "README.md")
++			writeTestFile(t, repo, "README.md", "hidden dirty\n")
++		}},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := initTestRepo(t)
++			if tc.setup != nil {
++				tc.setup(t, repo)
++			}
++			sha := headSHA(t, repo)
++			runner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++				if req.WorktreeDir != repo {
++					t.Fatalf("WorktreeDir = %q, want caller root %q", req.WorktreeDir, repo)
++				}
++				tc.mutate(t, repo)
++				return replay.RunResult{Output: []byte("stale output")}, nil
++			})
++			wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++				Name: "implement", Skill: "sk", Produces: "diff",
++				Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++			}}}
++			e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++			runID := "callerwf-20260101T000000Z-aabbccdd"
++			err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++			if !errors.Is(err, ErrCallerWorkspaceDirty) {
++				t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
++			}
++			if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++				t.Fatalf("stage was captured despite dirty caller tree: Resolve error = %v", resolveErr)
++			}
++		})
++	}
++}
++
++func TestCallerWorkspaceIgnoresIgnoredFiles(t *testing.T) {
++	repo := initTestRepo(t)
++	writeTestFile(t, repo, ".gitignore", "ignored.log\n")
++	gitRun(t, repo, "add", ".gitignore")
++	gitRun(t, repo, "commit", "-m", "ignore runner log")
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		writeTestFile(t, repo, "ignored.log", "diagnostic\n")
++		return replay.RunResult{Output: []byte("clean output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "verify", Skill: "sk", Produces: "verify",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-aabbccdd", GitSHA: sha}); err != nil {
++		t.Fatalf("Run with ignored output: %v", err)
++	}
++}
++
++func TestCallerWorkspaceSubdirectoryDetectsIndexFlagsAcrossRepository(t *testing.T) {
++	repo := initTestRepo(t)
++	callerDir := filepath.Join(repo, "nested")
++	if err := os.Mkdir(callerDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		gitRun(t, repo, "update-index", "--assume-unchanged", "README.md")
++		writeTestFile(t, repo, "README.md", "hidden outside caller directory\n")
++		return replay.RunResult{Output: []byte("stale output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{
++		Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner),
++		Root: repo, CallerDir: callerDir, Now: fixedClock(),
++	}
++	runID := "callerwf-20260101T000000Z-subdirflag"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceDirty) {
++		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured despite hidden path outside caller directory: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceRejectsGitControlChangesDuringRunner(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		attributesPath := gitRun(t, repo, "rev-parse", "--git-path", "info/attributes")
++		if !filepath.IsAbs(attributesPath) {
++			attributesPath = filepath.Join(repo, attributesPath)
++		}
++		if err := os.WriteFile(attributesPath, []byte("README.md -diff\n"), 0o644); err != nil {
++			t.Fatal(err)
++		}
++		writeTestFile(t, repo, "README.md", "dirty with changed controls\n")
++		return replay.RunResult{Output: []byte("stale output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-control"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "git control files changed") {
++		t.Fatalf("Run error = %v, want dirty git-control failure", err)
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured despite changed git controls: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceRejectsMismatchedCallerRepositoryBeforeRunner(t *testing.T) {
++	repo := initTestRepo(t)
++	callerRepo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	runnerCalled := false
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		runnerCalled = true
++		return replay.RunResult{Output: []byte("output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, CallerDir: callerRepo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-rootmismatch"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceUnsupported) || !strings.Contains(err.Error(), "does not match guarded root") {
++		t.Fatalf("Run error = %v, want mismatched repository failure", err)
++	}
++	if runnerCalled {
++		t.Fatal("runner was invoked for a caller directory from another repository")
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured despite caller/root mismatch: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceAmbientWorktreeCannotRedirectGuard(t *testing.T) {
++	repo := initTestRepo(t)
++	cleanMirror := t.TempDir()
++	writeTestFile(t, cleanMirror, "README.md", "test\n")
++	t.Setenv("GIT_WORK_TREE", cleanMirror)
++	writeTestFile(t, repo, "README.md", "dirty\n")
++	if err := inspectCallerWorkspaceClean(context.Background(), repo); !errors.Is(err, ErrCallerWorkspaceDirty) {
++		t.Fatalf("inspectCallerWorkspaceClean = %v, want ErrCallerWorkspaceDirty", err)
++	}
++}
++
++func TestCallerWorkspaceReplacementRefCannotFalsifyProvenance(t *testing.T) {
++	repo := initTestRepo(t)
++	originalSHA := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		writeTestFile(t, repo, "README.md", "replacement state\n")
++		gitRun(t, repo, "add", "README.md")
++		gitRun(t, repo, "commit", "-m", "replacement state")
++		replacementSHA := headSHA(t, repo)
++		gitRun(t, repo, "replace", originalSHA, replacementSHA)
++		gitRun(t, repo, "reset", "--soft", originalSHA)
++		if status := gitRun(t, repo, "status", "--porcelain=v1"); status != "" {
++			t.Fatalf("test setup did not hide replacement state: %q", status)
++		}
++		return replay.RunResult{Output: []byte("stale output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-replacement"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: originalSHA})
++	if !errors.Is(err, ErrCallerWorkspaceDirty) {
++		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured through replacement ref: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceRejectsIncludedLocalConfigChanges(t *testing.T) {
++	repo := initTestRepo(t)
++	includedPath := filepath.Join(repo, ".git", "included-config")
++	if err := os.WriteFile(includedPath, []byte("[status]\n\tshowUntrackedFiles = all\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	gitRun(t, repo, "config", "include.path", includedPath)
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		if err := os.WriteFile(includedPath, []byte("[status]\n\tshowUntrackedFiles = no\n"), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		return replay.RunResult{Output: []byte("stale output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-includedconfig"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "effective local git config changed") {
++		t.Fatalf("Run error = %v, want dirty effective-config failure", err)
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured despite changed included config: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceRejectsTrackedSubmoduleBeforeRunner(t *testing.T) {
++	t.Setenv("GIT_LITERAL_PATHSPECS", "1")
++	submodule := initTestRepo(t)
++	writeTestFile(t, submodule, "tracked.txt", "original\n")
++	gitRun(t, submodule, "add", "tracked.txt")
++	gitRun(t, submodule, "commit", "-m", "add tracked file")
++
++	repo := initTestRepo(t)
++	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "deps/sub")
++	gitRun(t, repo, "commit", "-m", "add submodule")
++	sha := headSHA(t, repo)
++	runnerCalled := false
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		runnerCalled = true
++		return replay.RunResult{Output: []byte("output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-submodule"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceUnsupported) {
++		t.Fatalf("Run error = %v, want ErrCallerWorkspaceUnsupported", err)
++	}
++	if runnerCalled {
++		t.Fatal("runner was invoked for an unsupported submodule repository")
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured despite unsupported submodule: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceRejectsTrackedSubmoduleAddedByRunner(t *testing.T) {
++	submodule := initTestRepo(t)
++	writeTestFile(t, submodule, "tracked.txt", "original\n")
++	gitRun(t, submodule, "add", "tracked.txt")
++	gitRun(t, submodule, "commit", "-m", "add tracked file")
++
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "deps/sub")
++		gitRun(t, repo, "commit", "-m", "add submodule")
++		return replay.RunResult{Output: []byte("output")}, nil
++	})
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
++	runID := "callerwf-20260101T000000Z-addedsubmodule"
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceUnsupported) {
++		t.Fatalf("Run error = %v, want ErrCallerWorkspaceUnsupported", err)
++	}
++	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
++		t.Fatalf("stage was captured after runner added a submodule: Resolve error = %v", resolveErr)
++	}
++}
++
++func TestCallerWorkspaceChangingHEADFailsClosed(t *testing.T) {
++	repo := initTestRepo(t)
++	sha := headSHA(t, repo)
++	calls := 0
++	e := Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("output")}),
++		Root:          repo,
++		Now:           fixedClock(),
++		ResolveCallerHEAD: func(context.Context, string) (string, error) {
++			calls++
++			if calls == 1 {
++				return strings.Repeat("a", 40), nil
++			}
++			return strings.Repeat("b", 40), nil
++		},
++	}
++	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
++		Name: "implement", Skill: "sk", Produces: "diff",
++		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
++	}}}
++	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-aabbccdd", GitSHA: sha})
++	if !errors.Is(err, ErrCallerWorkspaceChanged) {
++		t.Fatalf("Run error = %v, want ErrCallerWorkspaceChanged", err)
++	}
++	if calls != 2 {
++		t.Fatalf("ResolveCallerHEAD calls = %d, want 2", calls)
++	}
++}
++
+ // AC1: 3-stage deterministic workflow run writes a growing manifest chain.
+ func TestEngineRunThreeStages(t *testing.T) {
+ 	repo := initTestRepo(t)
+diff --git a/internal/liverun/resolve.go b/internal/liverun/resolve.go
+index 09e8293..87a7348 100644
+--- a/internal/liverun/resolve.go
++++ b/internal/liverun/resolve.go
+@@ -34,7 +34,7 @@ func GenerateRunID(workflowName string) (string, error) {
+ // the runner; nil/empty means hermetic (default, unchanged behavior).
+ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration, envAllowlist []string) (replay.Runner, error) {
+ 	r := stage.Runner
+-	if r == nil {
++	if r == nil || (r.Name == "" && r.Command == "") {
+ 		r = wf.DefaultRunner
+ 	}
+ 	if r == nil {
+diff --git a/internal/liverun/resolve_test.go b/internal/liverun/resolve_test.go
+index 034ea14..716069c 100644
+--- a/internal/liverun/resolve_test.go
++++ b/internal/liverun/resolve_test.go
+@@ -67,6 +67,20 @@ func TestResolveStageRunnerDefaultRunner(t *testing.T) {
+ 	}
+ }
+ 
++func TestResolveStageRunnerWorkspaceOnlyUsesDefaultBinding(t *testing.T) {
++	wf := workflow.Workflow{
++		Name:          "mywf",
++		DefaultRunner: &workflow.Runner{Command: "cat"},
++		Stages: []workflow.Stage{{
++			Name: "plan", Skill: "my-skill", Produces: "plan",
++			Runner: &workflow.Runner{Workspace: workflow.RunnerWorkspaceCaller},
++		}},
++	}
++	if _, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil); err != nil {
++		t.Fatalf("ResolveStageRunner workspace override: %v", err)
++	}
++}
++
+ func TestResolveStageRunnerNoRunnerError(t *testing.T) {
+ 	wf := workflow.Workflow{
+ 		Name: "mywf",
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index a0177be..4e6325e 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -34,8 +34,8 @@ var (
+ type Manifest struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = caller-workspace stage provenance.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+ 	ManifestVersion int
+ 	RunID           string
+ 	Workflow        string
+@@ -153,7 +153,13 @@ type ReplayLink struct {
+ type Stage struct {
+ 	Name       string
+ 	ProducedBy string
+-	GitSHA     string
++	// GitSHA is the checkout SHA for a hermetic runner and the clean post-run
++	// HEAD for a caller-workspace runner.
++	GitSHA string
++	// RunnerWorkspace records an explicit non-default stage runner workspace.
++	// Empty means the historical hermetic detached worktree; "caller" means
++	// the runner executed in the CLI invocation directory.
++	RunnerWorkspace string
+ 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+ 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+ 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+@@ -470,6 +476,9 @@ func validateStage(index int, stage Stage) error {
+ 	if strings.TrimSpace(stage.GitSHA) == "" {
+ 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+ 	}
++	if stage.RunnerWorkspace != "" && stage.RunnerWorkspace != "caller" {
++		return fmt.Errorf("%w: %s runner_workspace %q is not caller", ErrInvalidManifest, prefix, stage.RunnerWorkspace)
++	}
+ 	if strings.TrimSpace(stage.Skill.ID) == "" {
+ 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
+ 	}
+@@ -911,8 +920,8 @@ func cloneBytes(in []byte) []byte {
+ type manifestJSON struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = caller-workspace stage provenance.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+ 	ManifestVersion int    `json:"manifest_version,omitempty"`
+ 	RunID           string `json:"run_id"`
+ 	Workflow        string `json:"workflow"`
+@@ -983,9 +992,10 @@ type gateDecisionJSON struct {
+ }
+ 
+ type stageJSON struct {
+-	Stage      string `json:"stage"`
+-	ProducedBy string `json:"produced_by"`
+-	GitSHA     string `json:"git_sha"`
++	Stage           string `json:"stage"`
++	ProducedBy      string `json:"produced_by"`
++	GitSHA          string `json:"git_sha"`
++	RunnerWorkspace string `json:"runner_workspace,omitempty"`
+ 	// Skill is present only in legacy manifests (no producer block).
+ 	// New manifests omit it; the skill travels inside producer.
+ 	Skill     *skillJSON     `json:"skill,omitempty"`
+@@ -1085,9 +1095,10 @@ func (m Manifest) toJSON() manifestJSON {
+ 		}
+ 
+ 		stages = append(stages, stageJSON{
+-			Stage:      stage.Name,
+-			ProducedBy: stage.ProducedBy,
+-			GitSHA:     stage.GitSHA,
++			Stage:           stage.Name,
++			ProducedBy:      stage.ProducedBy,
++			GitSHA:          stage.GitSHA,
++			RunnerWorkspace: stage.RunnerWorkspace,
+ 			// Do NOT emit top-level skill — it lives inside producer only.
+ 			Producer:  producerBlock,
+ 			Inputs:    inputs,
+@@ -1105,6 +1116,12 @@ func (m Manifest) toJSON() manifestJSON {
+ 			gatesOut = append(gatesOut, gate.toJSON())
+ 		}
+ 	}
++	for _, stage := range m.Stages {
++		if stage.RunnerWorkspace != "" {
++			version = 4
++			break
++		}
++	}
+ 
+ 	return manifestJSON{
+ 		ManifestVersion: version,
+@@ -1239,13 +1256,14 @@ func ensureEOF(dec *json.Decoder) error {
+ }
+ 
+ func (m manifestJSON) toManifest() (Manifest, error) {
+-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
++	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
++	// and 4 (caller-workspace stage provenance).
+ 	// Reject 1 (never emitted) and any future version this binary cannot model.
+ 	switch m.ManifestVersion {
+-	case 0, 2, 3:
++	case 0, 2, 3, 4:
+ 		// accepted
+ 	default:
+-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
++		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+ 	}
+ 
+ 	created, err := parseTime("created", m.Created)
+@@ -1261,6 +1279,9 @@ func (m manifestJSON) toManifest() (Manifest, error) {
+ 	}
+ 	stages := make([]Stage, 0, len(m.Stages))
+ 	for i, stage := range m.Stages {
++		if stage.RunnerWorkspace != "" && m.ManifestVersion < 4 {
++			return Manifest{}, fmt.Errorf("%w: stage[%d] runner_workspace requires manifest_version 4", ErrInvalidManifest, i)
++		}
+ 		converted, err := stage.toStage(i)
+ 		if err != nil {
+ 			return Manifest{}, err
+@@ -1447,15 +1468,16 @@ func (s stageJSON) toStage(index int) (Stage, error) {
+ 	}
+ 
+ 	return Stage{
+-		Name:       s.Stage,
+-		ProducedBy: s.ProducedBy,
+-		GitSHA:     s.GitSHA,
+-		Skill:      skill,
+-		Producer:   producer,
+-		Inputs:     inputs,
+-		Output:     s.Output.toArtifactRef(),
+-		Timestamp:  timestamp,
+-		ReplayOf:   replayOf,
++		Name:            s.Stage,
++		ProducedBy:      s.ProducedBy,
++		GitSHA:          s.GitSHA,
++		RunnerWorkspace: s.RunnerWorkspace,
++		Skill:           skill,
++		Producer:        producer,
++		Inputs:          inputs,
++		Output:          s.Output.toArtifactRef(),
++		Timestamp:       timestamp,
++		ReplayOf:        replayOf,
+ 	}, nil
+ }
+ 
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index f122b0b..3d526af 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1556,8 +1556,8 @@ func TestValidateGateRejects(t *testing.T) {
+ 	})
+ }
+ 
+-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
+-// and rejects 1 and 4 with ErrInvalidManifest.
++// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2,
++// 3, and 4 while rejecting unsupported versions.
+ func TestVersionAllowlist(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	m := validManifest(output)
+@@ -1589,8 +1589,27 @@ func TestVersionAllowlist(t *testing.T) {
+ 		}
+ 	})
+ 
++	t.Run("accept version 4", func(t *testing.T) {
++		m4 := validManifest(output)
++		m4.Stages[0].RunnerWorkspace = "caller"
++		j, err := m4.JSON()
++		if err != nil {
++			t.Fatalf("JSON: %v", err)
++		}
++		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) {
++			t.Fatalf("caller workspace manifest does not emit v4 field:\n%s", j)
++		}
++		got, err := ParseJSON(j)
++		if err != nil {
++			t.Fatalf("ParseJSON rejected version 4: %v", err)
++		}
++		if got.Stages[0].RunnerWorkspace != "caller" {
++			t.Fatalf("RunnerWorkspace = %q, want caller", got.Stages[0].RunnerWorkspace)
++		}
++	})
++
+ 	// Versions that should be rejected.
+-	for _, v := range []int{1, 4, 5, 100} {
++	for _, v := range []int{1, 5, 100} {
+ 		v := v
+ 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
+ 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
+@@ -1605,6 +1624,32 @@ func TestVersionAllowlist(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunnerWorkspaceRequiresManifestVersionFour(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	raw, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	withWorkspace := strings.Replace(string(raw), `"git_sha": "abc123",`, "\"git_sha\": \"abc123\",\n      \"runner_workspace\": \"caller\",", 1)
++	_, err = ParseJSON([]byte(withWorkspace))
++	if err == nil || !errors.Is(err, ErrInvalidManifest) {
++		t.Fatalf("ParseJSON older-version runner_workspace error = %v, want ErrInvalidManifest", err)
++	}
++	if !strings.Contains(err.Error(), "runner_workspace requires manifest_version 4") {
++		t.Fatalf("ParseJSON error = %v, want runner_workspace version requirement", err)
++	}
++}
++
++func TestRunnerWorkspaceRejectsUnknownValue(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	m.Stages[0].RunnerWorkspace = "ambient"
++	if _, err := m.JSON(); err == nil || !errors.Is(err, ErrInvalidManifest) {
++		t.Fatalf("JSON invalid runner_workspace error = %v, want ErrInvalidManifest", err)
++	}
++}
++
+ // TestArtifactPathsWalksGateRawOutput verifies that ArtifactPaths and
+ // referencedArtifactPaths include a seat's raw_output path.
+ func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index c3e604a..f66ff14 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -52,8 +52,17 @@ type Runner struct {
+ 	Name string
+ 	// Command is an inline shell command (e.g. "make test").
+ 	Command string
++	// Workspace selects where a live stage runner executes. Empty and
++	// "hermetic" preserve the detached-worktree default; "caller" opts into
++	// the directory from which etude was invoked.
++	Workspace string
+ }
+ 
++const (
++	RunnerWorkspaceHermetic = "hermetic"
++	RunnerWorkspaceCaller   = "caller"
++)
++
+ // GateConfig holds the optional gate block for a stage, defining how the
+ // stage output is reviewed.  At least one of Checks, Seats, or Tier must be
+ // set (an explicit empty checks: [] list is treated as unset).
+@@ -119,6 +128,27 @@ type Workflow struct {
+ 	EnvAllowlist []string
+ }
+ 
++// EffectiveRunnerWorkspace returns the execution workspace for stage. An
++// explicit stage workspace wins; a stage-local command/name without one is a
++// complete binding whose workspace defaults to hermetic.
++func (w Workflow) EffectiveRunnerWorkspace(stage Stage) string {
++	if stage.Runner != nil {
++		if stage.Runner.Workspace == RunnerWorkspaceCaller {
++			return RunnerWorkspaceCaller
++		}
++		if stage.Runner.Workspace == RunnerWorkspaceHermetic {
++			return RunnerWorkspaceHermetic
++		}
++		if stage.Runner.Name != "" || stage.Runner.Command != "" {
++			return RunnerWorkspaceHermetic
++		}
++	}
++	if w.DefaultRunner != nil && w.DefaultRunner.Workspace == RunnerWorkspaceCaller {
++		return RunnerWorkspaceCaller
++	}
++	return RunnerWorkspaceHermetic
++}
++
+ // RetrosConfig holds the parsed retros: configuration block.  Fields use
+ // pointer types so that an omitted field is distinguishable from an explicit
+ // false/0 when encoding and when computing effective defaults via the accessor
+@@ -387,7 +417,7 @@ func (w Workflow) Validate() error {
+ 			}
+ 		}
+ 		if s.Runner != nil {
+-			if err := validateRunner(prefix+".runner", s.Runner); err != nil {
++			if err := validateStageRunner(prefix+".runner", s.Runner, w.DefaultRunner != nil); err != nil {
+ 				return err
+ 			}
+ 		}
+@@ -400,6 +430,19 @@ func (w Workflow) Validate() error {
+ 	return nil
+ }
+ 
++func validateStageRunner(prefix string, r *Runner, hasDefault bool) error {
++	if r.Name == "" && r.Command == "" && r.Workspace != "" {
++		if !hasDefault {
++			return fmt.Errorf("%w: %s: workspace-only override requires default_runner", ErrInvalidWorkflow, prefix)
++		}
++		if r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
++			return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
++		}
++		return nil
++	}
++	return validateRunner(prefix, r)
++}
++
+ func validateEval(prefix string, e *Eval) error {
+ 	if !validEvalMethods[e.Method] {
+ 		return fmt.Errorf("%w: %s method %q is not one of rubric, pairwise, assertion", ErrInvalidWorkflow, prefix, e.Method)
+@@ -432,6 +475,9 @@ func validateRunner(prefix string, r *Runner) error {
+ 			return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
+ 		}
+ 	}
++	if r.Workspace != "" && r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
++		return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
++	}
+ 	return nil
+ }
+ 
+@@ -446,6 +492,9 @@ func validateGate(prefix string, g *GateConfig) error {
+ 		if err := validateRunner(fmt.Sprintf("%s.checks[%d]", prefix, i), &c); err != nil {
+ 			return err
+ 		}
++		if c.Workspace != "" {
++			return fmt.Errorf("%w: %s.checks[%d].workspace is not allowed; gates always use the pinned worktree", ErrInvalidWorkflow, prefix, i)
++		}
+ 	}
+ 	hasChecks := len(g.Checks) > 0
+ 	hasSeats := len(g.Seats) > 0
+@@ -722,8 +771,9 @@ type stageYAML struct {
+ 
+ // runnerYAML is the decode/encode counterpart to Runner.
+ type runnerYAML struct {
+-	Name    string `yaml:"name,omitempty"`
+-	Command string `yaml:"command,omitempty"`
++	Name      string `yaml:"name,omitempty"`
++	Command   string `yaml:"command,omitempty"`
++	Workspace string `yaml:"workspace,omitempty"`
+ }
+ 
+ // gateYAML is the decode/encode counterpart to GateConfig.
+@@ -783,7 +833,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 			sy.Eval = &evalYAML{Method: s.Eval.Method, Rubric: s.Eval.Rubric}
+ 		}
+ 		if s.Runner != nil {
+-			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
++			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command, Workspace: s.Runner.Workspace}
+ 			var n yaml.Node
+ 			if err := n.Encode(rn); err != nil {
+ 				return workflowYAML{}, fmt.Errorf("encode stage[%q].runner: %w", s.Name, err)
+@@ -799,7 +849,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 				Abstraction:   s.Gate.Abstraction,
+ 			}
+ 			for _, c := range s.Gate.Checks {
+-				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
++				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
+ 			}
+ 			var n yaml.Node
+ 			if err := n.Encode(gy); err != nil {
+@@ -811,7 +861,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
+ 	}
+ 	out := workflowYAML{Name: w.Name, Stages: stages, EnvAllowlist: w.EnvAllowlist}
+ 	if w.DefaultRunner != nil {
+-		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
++		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command, Workspace: w.DefaultRunner.Workspace}
+ 		var n yaml.Node
+ 		if err := n.Encode(dr); err != nil {
+ 			return workflowYAML{}, fmt.Errorf("encode default_runner: %w", err)
+@@ -971,7 +1021,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 			return Workflow{}, fmt.Errorf("%w: stage %q decode runner: %v", ErrInvalidWorkflow, s.Name, err)
+ 		}
+ 		if rn != nil {
+-			st.Runner = &Runner{Name: rn.Name, Command: rn.Command}
++			st.Runner = &Runner{Name: rn.Name, Command: rn.Command, Workspace: rn.Workspace}
+ 		}
+ 		gn, err := decodeGateNode(s.Gate)
+ 		if err != nil {
+@@ -986,7 +1036,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 				Abstraction:   gn.Abstraction,
+ 			}
+ 			for _, c := range gn.Checks {
+-				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command})
++				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
+ 			}
+ 			st.Gate = gate
+ 		}
+@@ -998,7 +1048,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
+ 		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)
+ 	}
+ 	if drn != nil {
+-		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command}
++		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command, Workspace: drn.Workspace}
+ 	}
+ 	ry, err := decodeRetrosNode(d.Retros)
+ 	if err != nil {
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 1aed480..3be70fd 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -1214,6 +1214,66 @@ stages:
+ 	}
+ }
+ 
++func TestRunnerWorkspaceCallerParseAndRoundTrip(t *testing.T) {
++	input := `name: w
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++    runner:
++      command: make plan
++      workspace: caller
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
++		t.Fatalf("Runner.Workspace = %q, want caller", got)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++	encoded, err := w.YAML()
++	if err != nil {
++		t.Fatalf("YAML error: %v", err)
++	}
++	if !strings.Contains(string(encoded), "workspace: caller") {
++		t.Fatalf("encoded workflow omits caller workspace:\n%s", encoded)
++	}
++	reparsed, err := ParseYAML(encoded)
++	if err != nil {
++		t.Fatalf("ParseYAML round trip: %v", err)
++	}
++	if got := reparsed.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
++		t.Fatalf("round-trip Runner.Workspace = %q, want caller", got)
++	}
++}
++
++func TestRunnerWorkspaceValidationAndHermeticDefault(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Runner = &Runner{Command: "make plan", Workspace: "somewhere"}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate workspace error = %v, want ErrInvalidWorkflow", err)
++	}
++	w.Stages[0].Runner.Workspace = ""
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
++		t.Fatalf("empty workspace effective value = %q, want hermetic", got)
++	}
++	w.Stages[0].Runner.Workspace = "hermetic"
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
++		t.Fatalf("explicit hermetic effective value = %q, want hermetic", got)
++	}
++}
++
++func TestGateCheckCannotSelectCallerWorkspace(t *testing.T) {
++	w := minimalWorkflow()
++	w.Stages[0].Gate = &GateConfig{Checks: []Runner{{Command: "make test", Workspace: RunnerWorkspaceCaller}}}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate gate check workspace error = %v, want ErrInvalidWorkflow", err)
++	}
++}
++
+ // TestRunnerBothSetErrors asserts that setting both name and command is rejected.
+ func TestRunnerBothSetErrors(t *testing.T) {
+ 	input := `name: w
+@@ -1655,6 +1715,72 @@ stages:
+ 	}
+ }
+ 
++func TestDefaultRunnerWorkspaceCallerIsInherited(t *testing.T) {
++	input := `name: w
++default_runner:
++  command: make plan
++  workspace: caller
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++}
++
++func TestStageWorkspaceOnlyOverridesDefaultRunner(t *testing.T) {
++	input := `name: w
++default_runner:
++  command: make plan
++stages:
++  - name: plan
++    produces: plan
++    skill: dev-planner
++    runner:
++      workspace: caller
++`
++	w, err := ParseYAML([]byte(input))
++	if err != nil {
++		t.Fatalf("ParseYAML error: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
++	}
++}
++
++func TestStageHermeticWorkspaceOverridesCallerDefault(t *testing.T) {
++	w := Workflow{
++		Name:          "w",
++		DefaultRunner: &Runner{Command: "make plan", Workspace: RunnerWorkspaceCaller},
++		Stages: []Stage{{
++			Name: "plan", Produces: "plan", Skill: "dev-planner",
++			Runner: &Runner{Workspace: RunnerWorkspaceHermetic},
++		}},
++	}
++	if err := w.Validate(); err != nil {
++		t.Fatalf("Validate: %v", err)
++	}
++	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
++		t.Fatalf("EffectiveRunnerWorkspace = %q, want hermetic", got)
++	}
++}
++
++func TestStageWorkspaceOnlyRequiresDefaultRunner(t *testing.T) {
++	w := Workflow{Name: "w", Stages: []Stage{{
++		Name: "plan", Produces: "plan", Skill: "dev-planner",
++		Runner: &Runner{Workspace: RunnerWorkspaceCaller},
++	}}}
++	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
++		t.Fatalf("Validate error = %v, want ErrInvalidWorkflow", err)
++	}
++}
++
+ // TestDefaultRunnerBothSetErrors asserts that setting both name and command in
+ // default_runner is rejected.
+ func TestDefaultRunnerBothSetErrors(t *testing.T) {
