@@ -1,0 +1,29 @@
+# Verify: PR #23 post-rebase integration
+
+Status: pass
+
+## Automated verification
+
+- `make test`: pass on the corrected rebased commit. Concurrent full-suite runs can still exhaust the unrelated CLI package's 10-minute timeout or starve a 500 ms timeout-tail assertion; that infrastructure flake is filed as `etude-noo9`, while isolated complete suites pass.
+- `make lint`: pass.
+- `make docs-check`: pass.
+- `make shell-test`: 49 dogfood checks, 20 pre-push checks, the seat-adapter suite, and 35 retro-index checks all passed.
+- `make docs-reality`: pass; 16 commands match shipped documentation.
+- Focused integration: `TestGateAC3_RerunWithFeedback` drives an actual block/rerun/pass gate with `read_checkout: true`, captures exact r2 runner inputs, and proves four distinct cleaned per-seat checkouts.
+- Focused submodule integration: `TestGateReadCheckoutPopulatesPinnedSubmodules` proves a read-enabled seat sees pinned submodule content and the stage record carries the submodule OID.
+- Engine-entry guard: `TestEngineRejectsPriorAttemptRoleBeforeRunnerInvocation` passes every exact/prefix collision with zero runner resolutions.
+
+## Built-binary manual QA
+
+`make build` produced `bin/etude` at commit `8ad573d`. Fresh runs from the committed fixture observed:
+
+- `qa-rebased-sidecar-004`: `Producer.Session.session_id` is `manual-session-001`; transcript digest `19121f5e...` is imported and redaction-passed; log digest `d7da3f28...` contains both the literal stdout and stderr frames.
+- `qa-rebased-no-sidecar-004`: the deterministic stage completes with `producer.session` absent/null and no error.
+- `qa-rebased-rerun-read-checkout-005`: gate r1 records `read_checkout: true`, the deterministic check blocks, and the local model seat passes only after reading a marker from its pinned checkout. Gate r2 also records the grant and passes. The actual r2 output begins `R2 CONSUMED THIS INPUT FILE: 02-prior-attempts` and contains session `rerun-session-001`, output digest `af1aa9c2...`, log digest `3faa11c6...`, transcript digest `31daeab4...`, and the exact r1 killing verdict.
+- `qa-rebased-collision-005`: workflow parsing exits 1 and `collision-runner-invoked` remains absent, proving rejection before stage execution.
+
+The manual fixture's first read-checkout run correctly failed because its local seat omitted mandatory seat session evidence. After the fixture was corrected to the real envelope contract, the fresh final run above passed; no product claim relies on the failed fixture run.
+
+## Recommendation
+
+The corrected implementation gate passed with both Opus and Codex. Proceed to docs/final review. The post-rebase behavior composes GH #17 prior-attempt handover with GH #14 submodule population and GH #16 per-seat checkout isolation.
