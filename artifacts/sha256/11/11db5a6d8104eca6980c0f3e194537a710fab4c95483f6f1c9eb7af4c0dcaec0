@@ -1,0 +1,81 @@
+# etude-aul.4 plan
+
+ANCESTOR: etude-aul (P3) — empirically compare phase-gate prompt variants against recorded artifacts and ground-truth labels; the measured prototype result was Variant B at 2/2 versus Variant A at 1/2, and the three closed siblings now provide the corpus, evaluator, and scoring machinery this CLI exposes.
+
+BLAST RADIUS: none: worktree and repo only. Gate scratch and built-binary manual-test fixtures use one bounded temporary directory each and are removed; no host packages, services, containers, credentials, or shared state are changed.
+
+TRUST BOUNDARY: prompt variant files, labels JSON, cohort selector, and recorded run artifacts are user-controlled inputs and therefore untrusted. Existing parsers, identifier validation, refstore reads, and ExecJudge isolation are the enforcement points. The configured judge command is operator-trusted executable code; arbitrary same-process code execution is outside scope.
+
+TOPOLOGY: single foreground CLI process. It evaluates cells sequentially; there are no new goroutines, shared writers, or concurrent mutation paths.
+
+DURABILITY CLASS: at-most-once per process invocation for each variant/fixture cell. Gate-bench evaluation is read-only with respect to run refs and does not persist eval results; a judge may have its own external effects under the existing trusted judge-command contract.
+
+COMPLETENESS ENUMERATION: the complete user-visible surface is (1) the unchanged replay-vs-original mode, (2) gate-mode argument and flag validation, (3) built-in run-refs cohort resolution, (4) prompt-file loading and one evaluation for every variant/fixture cell, (5) optional explicit labels with progression-proxy fallback and loud circularity warnings, (6) per-variant confusion-matrix rates, (7) per-cell verdict rendering including unlabeled cells, and (8) per-cell judge failure reporting with non-zero exit when no cell succeeds. This is a single-site CLI orchestration change; no other command registration or storage writer is changed.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Decision: extend the existing command
+
+Extend the current `etude bench` Cobra leaf with a mutually exclusive gate-benchmark mode rather than add `etude bench gate`.
+
+The decision is grounded in `internal/cli/bench.go` as landed:
+
+- `bench` is one leaf command with the shipped positional form `bench <stage>`, not an existing command group.
+- It already owns judge resolution, judge-model isolation, timeouts, the `--last` cohort limit, dependency injection for tests, and human-readable aggregate/per-cell reporting.
+- The required public syntax is `bench --gate <phase> ...`. Converting the leaf into a command group would either break `bench <stage>` or require a default-subcommand compatibility shim, adding ambiguity and regression risk without adding useful separation.
+- Gate mode does fundamentally different work (evaluate recorded artifacts directly rather than replay them), so the implementation will make the modes explicit and mutually exclusive: conditional argument validation, gate-only/replay-only flag rejection, and separate `runReplayBench`/`runGateBench` orchestration paths behind the same command.
+
+`--cohort run-refs` selects the built-in `bench.RunRefsSource`; `--last N` remains the shared size selector. The injected `bench.CorpusSource` seam remains available to tests and future adapters. Unknown cohort selectors fail clearly; this bead does not invent or import a beads/Dolt adapter.
+
+Each `--variant` value is a prompt file path and its exact flag value is the stable variant name in output. Gate mode requires at least two distinct variants, `--cohort`, and `--judge` (or existing judge config). `--labels` is optional: explicit labels take precedence, and missing explicit labels fall back to the progression proxy with the existing circularity warning surfaced in output.
+
+## Implementation
+
+Change only the allowed files:
+
+- `internal/cli/bench.go`
+  - add gate-mode flags and conditional Cobra argument validation while preserving `bench <stage>` behavior;
+  - add an injectable `bench.CorpusSource` field and production resolver for `run-refs`;
+  - load and validate distinct prompt files and optional strict labels JSON;
+  - evaluate every variant/fixture cell through `eval.GateEvaluator` using exactly one `gate-prompt` context input;
+  - convert `Score.Passed` through `bench.GateVerdictFromPassed`, resolve labels, aggregate with `bench.ScoreGatePredictions`, and render variant scores/confusion matrices, every successful cell, warnings, and failures;
+  - continue after an individual cell failure and exit non-zero only if no cell succeeds, matching existing bench partial-failure semantics.
+- `internal/cli/bench_test.go`
+  - extend the existing injected-command harness with a fake corpus source and content-aware gate judge;
+  - preserve all existing replay-mode tests unchanged in meaning.
+- `docs/bench.md`
+  - document both modes, exact syntax, selector/variant/labels contracts, proxy warning and final-plan limitation, output orientation, partial failures, and manual examples.
+
+## Planned regressions
+
+Planned regression: `TestBenchGateHappyPathReportsVariantScoresAndCells` — two variants over labeled fixtures produce distinct confusion matrices and every cell row.
+
+Planned regression: `TestBenchGateUsesProgressionProxyAndWarns` — absent labels use the proxy and print the exact circularity warning.
+
+Planned regression: `TestBenchGateExplicitLabelsOverrideProxy` — explicit labels win for a matching key.
+
+Planned regression: `TestBenchGatePartialJudgeFailureContinues` — one failed cell is reported while successful cells still score and exit zero.
+
+Planned regression: `TestBenchGateAllJudgeFailuresExitNonZero` — zero successful cells returns a clear error.
+
+Planned regression: `TestBenchGateValidation` — rejects positional args in gate mode, fewer than two/distinct variants, missing or unknown cohort, unreadable variant/labels files, invalid labels, and replay-only flags.
+
+Planned regression: `TestBenchReplayModeRejectsGateOnlyFlags` — legacy mode fails clearly instead of silently ignoring gate flags.
+
+Planned regression: `TestBenchHelpDocumentsGateMode` — help shows the required `--gate`, repeated `--variant`, `--cohort`, and optional `--labels` surface while retaining legacy flags.
+
+Planned regression: existing `TestBenchHappyPath` and the complete current bench test suite remain green, proving `bench <stage>` compatibility.
+
+## Verify
+
+- Run focused tests for `./internal/cli` and any directly affected bench packages.
+- Run `make test` and `make lint` to completion before the Verify gate.
+- Run `make build`, install the actual binary with `go install ./cmd/etude`, and exercise the installed `etude` in a `mktemp -d` git repository.
+- Manual CLI coverage: legacy `bench <stage> --help`; gate happy path with two prompt files, a run-refs cohort, explicit labels, and a judge script; proxy-label path; partial/all-failure behavior; and validation errors for missing variants/cohort and incompatible flags. Record exact commands, outputs, exits, ref effects, and cleanup.
+
+## Docs impact
+
+- `docs/bench.md`: changed; it is the canonical user guide for both shipped bench modes.
+- `docs/cli/**`: checked for generated-reference impact. No change planned because the user restricted this bead to `docs/bench.md`; if generated docs are mechanically forced, file a blocker rather than cross the lane boundary.
+- root `README.md`, `docs/README.md`, `docs/run.md`, and `docs/eval.md`: checked for cross-links and contradictory capability/limit claims; no change expected because they do not currently specify this flag surface.
+- Run the repository docs reality/drift checks that are available without modifying out-of-scope files, and cross-check capability statements against documented limits.
