@@ -859,6 +859,74 @@
         ]
       },
       "timestamp": "2026-08-16T04:55:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-verify-r1",
+            "artifact": "025a5d55833a4866a097a3f764702415aded263db7178e36039a217e7669ebd0",
+            "path": "artifacts/sha256/02/025a5d55833a4866a097a3f764702415aded263db7178e36039a217e7669ebd0",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 763
+          },
+          "timestamp": "2026-08-16T05:05:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "prove prior logs across process resume and rerun",
+            "bind prior attempt evidence to reviewed artifact digests"
+          ],
+          "raw_output": {
+            "role": "opus-verify-r1",
+            "artifact": "6f2cd92d5f300076fd6b88bbe70d4a42b8b60b4333216b3937eb2d88ea553e33",
+            "path": "artifacts/sha256/6f/6f2cd92d5f300076fd6b88bbe70d4a42b8b60b4333216b3937eb2d88ea553e33",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 493
+          },
+          "timestamp": "2026-08-16T05:05:00Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-j5vv",
+          "etude-d1fc"
+        ]
+      },
+      "timestamp": "2026-08-16T05:05:00Z"
     }
   ]
 }
