@@ -1,0 +1,31 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to the single fast-lane review gate
+
+Inputs:
+- bead: etude-a8x
+- implementation: uncommitted diff on lane/polish-a8x against a22c838ddae23348a7bf33598fa34cada96248fb6a2aa2
+- plan: bead design field
+
+Automated tests:
+- changes: internal/workflow/workflow_test.go adds exact helper diagnostics while retaining Workflow.Validate integration coverage
+- state: dirty
+- commands: go test ./internal/workflow; make test; make lint; git diff --check
+- result: all passed
+
+Manual tests:
+- required: no
+- reason: not CLI-facing; no command or interactive behavior changes
+- result: not applicable
+
+Docs:
+- changed: no
+- result: exact existing behavior is preserved; no user-facing documentation impact
+
+QA findings:
+- correctness: blank handling is owned by validateRequiredStageName and exact diagnostics are pinned
+- coverage: direct valid, empty, whitespace, and invalid cases plus Workflow.Validate integration
+- regressions: full test and lint suites passed
+- code quality: shared character policy remains in internal/ident; no parallel validator added
+- risks: no material risks remain

@@ -1,0 +1,18 @@
+✓ etude-a8x · Make stage-name blank handling self-contained   [● P3 · CLOSED]
+Owner: joshuavial · Assignee: joshuavial · Type: task
+Created: 2026-08-15 · Updated: 2026-08-15
+Close reason: landed self-contained stage-name diagnostics in f520c4a
+
+DESCRIPTION
+validateStageName currently depends on every caller rejecting blank first to preserve field-specific required errors. Make requiredness or blank-error handling explicit in the helper API so future callers cannot silently inherit a generic invalid-name error; preserve existing exact diagnostics.
+
+DESIGN
+Keep identifier character policy in internal/ident, but keep workflow-specific diagnostics in internal/workflow. Replace validateStageName with an explicitly required helper that accepts the stage prefix, emits the existing exact required error for empty or whitespace-only names, and emits the existing exact invalid-name error otherwise; call it without a separate blank guard and add direct table coverage for the helper API.
+
+
+LABELS: followup
+
+COMMENTS
+  2026-08-15 07:28 joshuavial
+    Fast-lane plan implemented: internal/ident remains the shared character policy; workflow helper now owns blank and invalid diagnostics. Verify passed: go test ./internal/workflow, make test, make lint, and git diff --check. Review gate review.r1: Opus PASS, no blockers or follow-ups, packet SHA-256 f166e60635b89da02d73f74c2b31edfc5ba27b8cb2d377f61b6a89da1d6950e1. Commit f520c4a is on origin/main.
+

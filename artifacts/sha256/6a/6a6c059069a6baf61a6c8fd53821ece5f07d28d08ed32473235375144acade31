@@ -1,0 +1,91 @@
+commit f520c4a76475f613a9385752c122ba74657b68a9
+Author: joshuavial <git@codewithjv.com>
+Date:   Sat Aug 15 15:27:52 2026 +0800
+
+    make stage name required diagnostics self-contained
+
+diff --git a/internal/workflow/workflow.go b/internal/workflow/workflow.go
+index c187584..c3e604a 100644
+--- a/internal/workflow/workflow.go
++++ b/internal/workflow/workflow.go
+@@ -326,10 +326,7 @@ func (w Workflow) Validate() error {
+ 	for i, s := range w.Stages {
+ 		prefix := fmt.Sprintf("stage[%d]", i)
+ 
+-		if strings.TrimSpace(s.Name) == "" {
+-			return fmt.Errorf("%w: %s name required", ErrInvalidWorkflow, prefix)
+-		}
+-		if err := validateStageName(prefix+".name", s.Name); err != nil {
++		if err := validateRequiredStageName(prefix, s.Name); err != nil {
+ 			return err
+ 		}
+ 		if seenStageNames[s.Name] {
+@@ -542,14 +539,17 @@ func isValidEnvNameWorkflow(name string) bool {
+ 	return true
+ }
+ 
+-// validateStageName applies the manifest identifier charset to stage names:
++// validateRequiredStageName requires a stage name and applies the manifest
++// identifier charset:
+ // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
+-// rule is shared with registry and runmanifest through internal/ident. Callers
+-// must reject blank values first so they can preserve their field-specific
+-// required-value error.
+-func validateStageName(field, value string) error {
++// character rule is shared with registry and runmanifest through internal/ident;
++// the workflow-specific required and invalid diagnostics stay here.
++func validateRequiredStageName(prefix, value string) error {
++	if strings.TrimSpace(value) == "" {
++		return fmt.Errorf("%w: %s name required", ErrInvalidWorkflow, prefix)
++	}
+ 	if !ident.IsValid(value) {
+-		return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
++		return fmt.Errorf("%w: invalid %s.name %q", ErrInvalidWorkflow, prefix, value)
+ 	}
+ 	return nil
+ }
+diff --git a/internal/workflow/workflow_test.go b/internal/workflow/workflow_test.go
+index 01b7c3e..1aed480 100644
+--- a/internal/workflow/workflow_test.go
++++ b/internal/workflow/workflow_test.go
+@@ -266,6 +266,40 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
+ 	}
+ }
+ 
++func TestValidateRequiredStageName(t *testing.T) {
++	tests := []struct {
++		name    string
++		value   string
++		wantErr string
++	}{
++		{name: "valid", value: "final-review"},
++		{name: "empty", value: "", wantErr: "invalid workflow: stage[0] name required"},
++		{name: "whitespace", value: " \t", wantErr: "invalid workflow: stage[0] name required"},
++		{name: "invalid", value: "final/review", wantErr: `invalid workflow: invalid stage[0].name "final/review"`},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			err := validateRequiredStageName("stage[0]", tc.value)
++			if tc.wantErr == "" {
++				if err != nil {
++					t.Fatalf("validateRequiredStageName returned error: %v", err)
++				}
++				return
++			}
++			if err == nil {
++				t.Fatal("validateRequiredStageName returned nil error")
++			}
++			if !errors.Is(err, ErrInvalidWorkflow) {
++				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
++			}
++			if got := err.Error(); got != tc.wantErr {
++				t.Fatalf("validateRequiredStageName error = %q, want %q", got, tc.wantErr)
++			}
++		})
++	}
++}
++
+ func TestValidateEmptyStageNameKeepsRequiredError(t *testing.T) {
+ 	w := minimalWorkflow()
+ 	w.Stages[0].Name = ""
