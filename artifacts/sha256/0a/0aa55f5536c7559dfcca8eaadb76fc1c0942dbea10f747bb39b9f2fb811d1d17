@@ -1,0 +1,13 @@
+# etude-1x7 Verify
+
+## Surface classification
+Not a CLI-surface change. Edits .etude/registry.yaml (config consumed by the live-run engine + etude-review) and one test. No new/changed command, flag, or output mode — no manual CLI command-surface coverage applies.
+
+## Evidence
+- registry.ParseYAML (strict, KnownFields(true)) accepts the edited .etude/registry.yaml; opus seat keys remain exactly {provider,harness,invoke,mode} (the in-harness note is a YAML comment, added no field). Verified via a throwaway parse test (removed) + existing TestMigrationRegistryParsesAndValidates / TestMigrationCriticalSeatFieldsPreserved.
+- codex seat invoke now carries model_reasoning_effort="xhigh".
+- TestMigrationCriticalSeatFieldsPreserved updated high->xhigh; passes.
+- `make test` (go test ./...): ALL PASS. `make lint` (gofmt -l + go vet) clean.
+
+## Scope
+2 files: .etude/registry.yaml, internal/cli/migration_test.go. _ai/research/ excluded.

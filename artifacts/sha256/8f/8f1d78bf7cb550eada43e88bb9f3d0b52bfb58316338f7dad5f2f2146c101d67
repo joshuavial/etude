@@ -1,0 +1,15 @@
+# etude-1x7 Final Review
+
+## Diff vs plan
+Exactly as planned: codex high->xhigh; opus in-harness exception added as a YAML comment (KnownFields-safe, no new field); migration test assertion realigned to xhigh. No registry.Default()/scaffold change; .etude/registry.yaml is the repo's already-customized live config. No schema change.
+
+## Gate (combined plan+implement+verify, Tier 1)
+- Gemini Pro: PASS (High).
+- Claude Opus (in-harness): PASS_WITH_FOLLOWUPS (High) — ground-truthed comment is inert YAML, opus keys unchanged, codex xhigh, test matches; round-trip test safe (YAML() drops comments both encodes).
+- fresh GPT-5.5 xhigh (codex): PASS (High).
+
+## Follow-ups (tracked: etude-pqv)
+- Mechanize the opus in-harness exception in a consumer (skill honors it; engine TBD).
+- Registry.YAML() drops comments -> regen would strip the exception + revert customizations; add guard or carry into Default().
+
+## Result: pass (with tracked follow-ups in etude-pqv)

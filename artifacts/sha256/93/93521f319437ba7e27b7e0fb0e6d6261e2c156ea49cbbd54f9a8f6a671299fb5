@@ -1,0 +1,45 @@
+commit c766e21d0ebb16874c12bcd47695c23e7096c0ea
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 16:33:10 2026 +0800
+
+    fix gate seat drift in registry.yaml: codex xhigh and opus in-harness note
+
+diff --git a/.etude/registry.yaml b/.etude/registry.yaml
+index 11ff043..838261d 100644
+--- a/.etude/registry.yaml
++++ b/.etude/registry.yaml
+@@ -22,12 +22,18 @@ seats:
+   opus:
+     provider: anthropic/claude-opus
+     harness: claude-code
++    # NOTE: `claude -p` returns 401 when the ORCHESTRATOR is itself Claude Code
++    # (the host session's credentials are not exposed to the subprocess). In that
++    # case run this seat as an in-harness Task sub-agent (subagent_type
++    # general-purpose, model opus) given only the gate prompt — functionally a
++    # fresh, authenticated opus seat. The `claude -p` invoke below is correct only
++    # when a non-Claude harness (codex/gemini) orchestrates the gate.
+     invoke: "claude -p --model opus"
+     mode: inline
+   codex:
+     provider: openai/gpt-5.5
+     harness: codex
+-    invoke: 'codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="high" -s read-only -'
++    invoke: 'codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -'
+     model_fallbacks: [gpt-5.4, gpt-5.3, gpt-5.2]
+     mode: diff-only
+   gemini:
+diff --git a/internal/cli/migration_test.go b/internal/cli/migration_test.go
+index 27c8af8..b427f46 100644
+--- a/internal/cli/migration_test.go
++++ b/internal/cli/migration_test.go
+@@ -91,8 +91,8 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
+ 	if !ok {
+ 		t.Fatal("codex seat missing")
+ 	}
+-	if !strings.Contains(codex.Invoke, `model_reasoning_effort="high"`) {
+-		t.Errorf("codex invoke missing model_reasoning_effort=\"high\": %q", codex.Invoke)
++	if !strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
++		t.Errorf("codex invoke missing model_reasoning_effort=\"xhigh\": %q", codex.Invoke)
+ 	}
+ 	if !strings.Contains(codex.Invoke, "-s read-only") {
+ 		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)

@@ -1,0 +1,27 @@
+◐ etude-1x7 [BUG] · Fix gate seat drift in .etude/registry.yaml (codex xhigh, opus in-harness note)   [● P2 · IN_PROGRESS]
+Owner: joshuavial · Type: bug
+Created: 2026-06-30 · Updated: 2026-06-30
+
+DESCRIPTION
+The live gate seat config drifted from established dogfood practice. codex seat invoke pins model_reasoning_effort=high but every dogfood gate runs xhigh; bump to xhigh. opus seat invoke is 'claude -p --model opus' which returns 401 when the orchestrator IS Claude Code — document via a YAML comment that opus runs as an in-harness Task subagent in that case (claude -p only works when codex/gemini orchestrates). KnownFields(true) on the registry parser means the note must be a comment, not a new field. Makes registry.yaml the correct single source of truth so the etude-loop skill can be driven by it. Surfaced in the project-profile-duplication retro.
+
+DESIGN
+Goal: make .etude/registry.yaml the correct single source of truth for gate seats so the etude-loop skill can be driven by it (removing the duplicated/stale seats+tiers in the skill's project.md profile).
+
+Changes:
+- codex seat invoke: model_reasoning_effort="high" -> "xhigh" (every dogfood gate runs codex at xhigh; high was stale drift).
+- opus seat: add a YAML COMMENT (not a field — registry parser uses KnownFields(true)) documenting that `claude -p` 401s when the orchestrator IS Claude Code, so the seat runs as an in-harness Task sub-agent in that case; the `claude -p` invoke is correct only when codex/gemini orchestrates.
+- internal/cli/migration_test.go: TestMigrationCriticalSeatFieldsPreserved pinned model_reasoning_effort="high"; update the assertion to "xhigh" (the test correctly caught the value change).
+
+Scope: 2 files. No registry.Default() change (the scaffold is a separate concern; .etude/registry.yaml is the repo's already-customized live config). No schema change.
+
+Verify: strict registry.ParseYAML accepts the file; TestMigrationCriticalSeatFieldsPreserved + full `make test` pass; `make lint` clean. Not a CLI-surface change (config consumed by the live run engine + etude-review).
+
+
+NOTES
+Combined gate (plan+implement+verify) attempt 1, Tier 1 (gate/operator config):
+- Gemini Pro: PASS (High). - Claude Opus (in-harness): PASS_WITH_FOLLOWUPS (High); ground-truthed comment is inert YAML, opus keys unchanged, codex xhigh, migration test matches, round-trip safe. - fresh GPT-5.5 xhigh (codex): PASS (High).
+- required changes: none.
+- follow-ups tracked in etude-pqv (mechanize opus exception; regen-safety for stripped comments).
+- result: pass.
+

@@ -1,0 +1,10 @@
+Goal: make .etude/registry.yaml the correct single source of truth for gate seats so the etude-loop skill can be driven by it (removing the duplicated/stale seats+tiers in the skill's project.md profile).
+
+Changes:
+- codex seat invoke: model_reasoning_effort="high" -> "xhigh" (every dogfood gate runs codex at xhigh; high was stale drift).
+- opus seat: add a YAML COMMENT (not a field — registry parser uses KnownFields(true)) documenting that `claude -p` 401s when the orchestrator IS Claude Code, so the seat runs as an in-harness Task sub-agent in that case; the `claude -p` invoke is correct only when codex/gemini orchestrates.
+- internal/cli/migration_test.go: TestMigrationCriticalSeatFieldsPreserved pinned model_reasoning_effort="high"; update the assertion to "xhigh" (the test correctly caught the value change).
+
+Scope: 2 files. No registry.Default() change (the scaffold is a separate concern; .etude/registry.yaml is the repo's already-customized live config). No schema change.
+
+Verify: strict registry.ParseYAML accepts the file; TestMigrationCriticalSeatFieldsPreserved + full `make test` pass; `make lint` clean. Not a CLI-surface change (config consumed by the live run engine + etude-review).
