@@ -1,0 +1,145 @@
+# Docs — etude-9uf.4
+
+Deleting checks means deleting the guarantees other documents promise. Most of
+this bead's doc work is finding places that told a reader something was enforced
+when it no longer is.
+
+## Corrected: prose asserting a guard that no longer exists
+
+**`docs/retro.md`** (9 sites, after two rounds) — the 7-key cadence retro-meta
+sidecar convention.
+It said the convention is "enforced by `scripts/dogfood-completeness-audit.sh`
+check (f)". The Enforcement section now opens with **"Enforcement: none, as of
+bead `etude-9uf.4`"**, says outright that `scripts/retro-meta-index.sh` still
+consumes those sidecars and so loses coverage silently, points at bead
+`etude-k47`, and keeps the rules as the convention still worth following:
+*"Write the sidecar; nothing will tell you if you forget."* Two further
+present-tense residues below that header were re-tensed.
+
+**The docs gate then found five more in this same file**, including two that
+directly contradicted the correction three sentences above them: line 122 still
+said "The 7-key requirement **is checked by** the dogfood audit script", and line
+81 still said `original_event_date` is "**checked by** the dogfood completeness
+audit". A file can carry a bold "Nothing enforces it now" header and go on
+asserting the opposite in body text — which is precisely the file-level
+classification error this artifact claims, two sections down, to have learned to
+avoid. I made it again in the same bead, in the same file, one round later.
+
+Also corrected there: the POST-cutoff / PRE-convention bullets, which were
+present-tense and relied entirely on one framing sentence far above them to read
+as history.
+
+**`docs/plans/dogfood/retro-ledger.md`** — the site the docs gate would have
+caught if the verify gate had not. Its §"Cadence retro-meta sidecar" is a
+PRESCRIPTIVE convention block, not a dated entry, and stated that a missing
+sidecar "is a **hard gap** (exit 1)". I had classified the whole file as
+historical no-ops. Also corrected: the file's own line-11 note, which said
+references to the audit were "still accurate as written" and DEFERRED the sweep
+to this bead — true when written, false the moment this bead landed. It now
+states the actual rule the sweep followed.
+
+**`docs/plans/dogfood/review-gate-runbook.md:1039`** — the source of this bead's
+wrong premise. It stated verbatim that the run-ref and gates-non-empty checks
+"become structurally true once a phase can only advance through `etude gate`",
+and advertised the `--bead` mode. Nothing forces gating, which is exactly why
+both checks survive; the block now says so, and no longer advertises a deleted
+flag. A second site describing check (f) as hard-requiring a sidecar is marked
+as since-removed while keeping its retro lesson intact.
+
+**`docs/plans/dogfood/retro-capture.md:32`** — described the subject-consistency
+guard as live.
+
+**`scripts/retro-meta-cadence.example.json:17`** — "schema enforced by … check (f)".
+
+**`scripts/retro-meta-index.sh`** (7 sites, after two rounds) and
+**`retro-meta-index_test.sh:97,199`** — comments citing the replaced file by LINE
+NUMBER and by helper names that no longer exist. Line citations into a rewritten
+file are dead pointers: the audit is now 223 lines, so every reference past that
+points beyond EOF, and `audit:524-554` named the removed sidecar check
+specifically — a mirroring claim about code that exists nowhere.
+
+**The first two rounds fixed two of these and the artifact claimed all of them.**
+Five survived at lines 87, 89, 90, 103 and 111, ten lines above a comment this
+bead HAD updated — the same intra-file contradiction that blocked round 1,
+in the file the artifact called clean. They now name the behavior rather than a
+line range, which is what makes them survive the next rewrite.
+
+**`.beads/hooks/pre-push`** — a comment claiming the audit honours
+`DOGFOOD_AUDIT_ETUDE_BIN` "to avoid rebuilding on every push". The new audit is
+pure git + bd and builds nothing. The first sweep missed this and the implement
+gate caught it.
+
+## Deliberate no-ops, verified rather than assumed
+
+- **`docs/plans/dogfood/README.md:67`** — "Audit whether closed beads have their
+  run refs, gate records, and pushed refs." That is precisely (a), (b) and (d),
+  so the shrink made this line MORE accurate, not less.
+- **`scripts/dogfood-completeness-allow.txt` header** — says entries are exempt
+  from the run-ref/gates checks and are REPORTED. Both still true, and the
+  second only because the plan gate stopped me dropping the bypass report while
+  keeping the file that promises it.
+- **Dated entries in `retro-ledger.md`** recording what the audit enforced at the
+  time. A ledger entry describing a past state is not a stale pointer, and
+  rewriting one to match the present is the opposite of what a ledger is for.
+
+## The rule this bead had to learn twice
+
+"This file is historical" is a judgement about a FILE, and a file is not
+uniformly one thing. `retro-ledger.md` is mostly dated history with a
+prescriptive convention block in the middle of it. Classifying by filename is
+how the block survived the first sweep.
+
+The distinction that actually holds is per-STATEMENT: does this sentence tell a
+reader what is true NOW, or record what was true THEN? The ledger's own note now
+says that explicitly, so the next person sweeping it has the rule rather than
+having to rediscover it.
+
+And the rule is not enough on its own, because I wrote it down and then broke it
+again one round later in `docs/retro.md`. What actually caught all three rounds was a
+seat reading the prose. `make docs-check` and `make docs-reality` are green
+throughout and neither reads English — there is no mechanical check in this repo
+for "this sentence promises a guarantee that no longer exists", which is the
+single most common defect this whole epic has produced.
+
+**`docs/plans/dogfood/retro-capture.md:14`** — read as a live mandate
+("Cadence retros **require** a `--meta-file` sidecar … every capture **must**
+include"). Now says it is a convention nothing verifies, and names the consumer
+that still reads the sidecars.
+
+**`docs/plans/dogfood/supervisor-runbook.md:17`** — a planning note saying "the
+audit shrinks to the two checks that caught real misses". The shipped audit keeps
+three hard checks plus a warning, because the plan gate overturned the premise
+that two of them were redundant. It under-claimed rather than over-claimed, but
+it mis-described what landed.
+
+**`docs/retro.md:180`** — the inverse error, and worth naming separately. My
+sweep past-tensed "the cadence and subject-consistency checks also skip
+superseded refs", but the cadence check SURVIVES and still does this. Blanket
+past-tensing a section swept a live behavior into history. Correcting a document
+after deleting code can be wrong in both directions, and the second direction is
+harder to notice because the sentence looks appropriately humble.
+
+**`scripts/dogfood-completeness-allow.txt` header** — previously listed as a
+verified no-op, and it was accurate about what it said. But it omitted that the
+allowlist is also the cadence check's DENOMINATOR, which is the fact that nearly
+caused this bead to block every push in the checkout. Now stated.
+
+## New documentation
+
+None. This bead removes checks; the model that replaces them was documented by
+bead `.2`. What it adds instead is a 40-line header on the audit itself
+explaining why checks (a) and (b) survive — the record of a premise the plan gate
+overturned, kept where the next person to shrink this file will read it.
+
+## Checks
+
+`make docs-check` and `make docs-reality` green.
+
+## Follow-ons
+
+`etude-k47` (sidecar convention now unenforced while `retro-meta-index.sh` still
+consumes it), `etude-3xt` (cadence check measures retro refs, not the markdown
+lanes write). Check (g) was removed WITHOUT a follow-on, deliberately: it checked
+that a retro's title id-list matched its manifest refs, with no consumer
+downstream. That asymmetry is stated in the verify artifact so it reads as a
+decision rather than an oversight.
