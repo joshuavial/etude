@@ -1,0 +1,169 @@
+✓ etude-jb7 · Add batch/manifest mode to etude capture for dogfood runs   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-26
+Close reason: added etude capture-run: batch multi-stage run capture from one YAML spec (create-only, paths confined to spec dir); Tier-1 gate passed (2 rounds); 8fca8fa
+
+DESCRIPTION
+Dogfooding a closed bead currently takes N separate 'etude capture <stage>' calls (one per phase: plan/implement/verify/review), each repeating the same --run/--harness/--git-sha/--workflow/--ref flags, plus a manual ref push. scripts/dogfood-capture.sh now wraps this, but the durable product fix is a first-class batch mode: e.g. 'etude capture --manifest run.yaml' (or 'etude capture-run') that takes one spec describing all stages (stage, skill, model, inputs, output) and writes them as a single run in one invocation, sharing the common run-level metadata. Reduces dogfood toil and makes import-from-spec coherent with the capture-protocol doc. Came out of the Phase 3 evaluator retro (eval-interface/rubric-eval/pairwise-eval); interim tool is scripts/dogfood-capture.sh.
+
+DESIGN
+## Plan
+
+**Approach:** Add a NEW top-level command `etude capture-run <spec.yaml>` (a sibling
+of `capture`/`capture-gate`, NOT a `--manifest` mode of `capture`). Rationale: batch
+capture has a fundamentally different shape than single-stage capture (a spec file, no
+stage arg, N stages, run-level defaults). Overloading `capture` with a mutually-exclusive
+`--manifest` mode that ignores its stage arg + most of its ~15 flags would be a worse
+surface than a clean separate command. The new command parses ONE YAML spec into a full
+multi-stage `runmanifest.Manifest` + a `files` map (artifacts read via
+`artifactstore.AddContent`, exactly like `addFileArtifact` in capture.go), then writes the
+whole thing in ONE `runmanifest.WriteManifestTree(ctx, store, "refs/etude/runs/", manifest,
+files, refstore.WriteOptions{})` call (create-only; ExpectedOld="") — mirroring how
+`runmanifest.Writer.Write` delegates. No reinvention: reuse the existing yaml.v3 dep
+(already in go.mod, used by internal/workflow), `artifactstore`, `WriteManifestTree`,
+`Manifest.Validate`, and capture.go's helpers (`inferMediaType`, `validateGitSHA`,
+`currentHEAD`, `parseRefs`, `validateCLIIdentifier`).
+
+Decisions resolved:
+1. Command surface: NEW `etude capture-run <spec>` (justified above). One positional arg =
+   the spec path. A single `--message` flag for the commit message; everything else lives
+   in the spec.
+2. Spec schema (YAML, KnownFields(true) like workflow.ParseYAML). Run-level: `run_id`
+   (optional — auto-allocate via replay.AllocateRunID if omitted; require valid id if given),
+   `workflow` (default \"manual\"), `workflow_version` (default \"manual-v1\"), `git_sha`
+   (default = currentHEAD), `harness`, `harness_version`, `model`, `produced_by`
+   (default \"original\"), `skill_repo`/`skill_version` defaults (default \"manual\"/\"manual\"),
+   top-level `refs` (map[string]string). Plus `stages:` list — each stage: `stage` (name),
+   `produced_by` (override), `git_sha` (override), `skill` ({id, repo, version} — id required,
+   repo/version fall back to run-level defaults), `model` (override), `harness`/
+   `harness_version` (override), `inputs:` list of {role, path}, `output:` {role, path}.
+   Every field grounds in runmanifest.Manifest/Stage/Producer/Skill so it round-trips.
+   Artifact PATHS resolve RELATIVE TO THE SPEC FILE's directory (so a self-contained spec
+   dir is portable); document this clearly. Each stage builds one runmanifest.Stage with
+   Producer{Harness,Model,Skill} + Skill mirror (matching capture.go lines 190-211).
+3. Single-run write: build whole Manifest (Created=now, all Stages with per-stage now-ish
+   timestamps) + merged files map, ONE WriteManifestTree call, create-only (ExpectedOld=\"\").
+   Run id: if spec omits run_id, allocate via replay.AllocateRunID(ctx, store, base) where
+   base is derived from spec (require an explicit `run_id` OR a `run_id_base` — decision:
+   require explicit run_id for v1 to keep it deterministic for dogfood; auto-allocate is a
+   noted future option). Reject if ref already exists (create-only error surfaced clearly).
+4. Push: write LOCALLY ONLY, consistent with `capture`/`capture-gate`. Push stays the
+   operator's job (`git push` / `etude sync`); do NOT bundle push into the product command.
+   (dogfood-capture.sh's push moves into the wrapper / follow-up, not here.)
+5. Validation + errors: spec missing/unreadable -> clear error; malformed YAML / unknown
+   fields -> rejected via KnownFields(true); missing required run-level metadata (run_id,
+   per-stage skill.id, at least one stage, exactly one output per stage) -> explicit errors;
+   artifact path that doesn't exist -> \"read <path>: ...\"; Manifest.Validate failures
+   surface through WriteManifestTree unchanged.
+
+**Files:**
+- internal/cli/capture_run.go - NEW: `newCaptureRunCommand`, captureRunSpec YAML structs
+  (mirroring workflowYAML decode pattern), parse+resolve+build Manifest, one WriteManifestTree
+  call. Reuses inferMediaType/validateGitSHA/currentHEAD/parseRefs/addFileArtifact-style logic
+  from capture.go (factor a small shared helper if a path-relative variant of addFileArtifact
+  is cleaner; keep it in capture_run.go to avoid churning capture.go).
+- internal/cli/root.go - register `cmd.AddCommand(newCaptureRunCommand(out, errOut))`.
+- internal/cli/capture_run_test.go - NEW: table + scenario tests.
+- docs/capture-run.md - GENERATED by `make docs` (gen-docs auto-walks root.Commands());
+  must run `make docs` so TestDriftGuard passes. No hand-written prose doc needed beyond
+  this generated reference + a coherence note in capture-protocol.md (see Docs).
+
+**Tests:**
+- Unit (capture_run_test.go, mirroring capture_test.go helpers initCaptureRepo/execute/
+  readRunManifest): happy path 3-stage spec -> ONE run with 3 stages, correct
+  skills/models/inputs/output, artifacts readable from the ref; run-level defaults applied
+  + per-stage overrides win; refs map recorded; git_sha default = HEAD, per-stage override
+  honored; media types inferred from path.
+- Error cases: missing spec file; malformed YAML; unknown field (KnownFields); missing
+  run_id; stage missing skill.id; stage with zero/two outputs; nonexistent artifact path;
+  duplicate stage names / Manifest.Validate failure surfaced; run ref already exists
+  (create-only collision).
+- Built-binary manual test (CLI bead, ref-mutating -> THROWAWAY temp repo per
+  capture-protocol Internal Loops rule): `go build -o $tmp/etude ./cmd/etude`; in a
+  `mktemp -d` + `git init` + seed one commit: write a sample 2-3 stage run spec + artifact
+  files, run `$tmp/etude capture-run spec.yaml`, confirm exactly ONE `refs/etude/runs/<id>`
+  ref exists with all stages + artifacts, and `$tmp/etude run show <id>` renders every
+  stage/skill/model. Never run against the working repo.
+
+**Docs:**
+- `make docs` regenerates docs/capture-run.md (generated CLI reference) — required for the
+  drift guard; this IS the user-facing command doc.
+- Add a short coherence note to docs/plans/dogfood/capture-protocol.md that batch capture is
+  now shipped via `etude capture-run <spec.yaml>` (the doc currently lists \"batch capture\"
+  as still-planned at lines ~18-19 and ~395-398 area) — keep wording as shipped-behavior.
+- NO change to scripts/dogfood-capture.sh here: rewiring the wrapper to call capture-run is a
+  SEPARATE follow-up bead (note it, do not fold in).
+
+**Risks:**
+- Low. Reuses shipped WriteManifestTree + artifactstore + yaml.v3; the only new surface is a
+  spec parser. Main care point: artifact-path resolution (relative to spec dir) must be
+  unambiguous and tested. Create-only semantics keep it from clobbering existing runs.
+
+**Capture:**
+- inputs: bead etude-jb7 description; internal/cli/capture.go (flags, stage build,
+  create/append); internal/runmanifest/manifest.go (Manifest/Stage/Producer/Skill,
+  WriteManifestTree, Writer.Write, Validate); internal/workflow/workflow.go (yaml.v3
+  ParseYAML + KnownFields pattern); internal/replay/record.go (AllocateRunID); scripts/
+  dogfood-capture.sh (real 4-stage usage); docs/plans/dogfood/capture-protocol.md; root.go;
+  run.go; cmd/gen-docs/main.go (auto doc gen + drift guard).
+- output: bead --design field
+
+**Gate tier:** Tier 1 — new product CLI command + writes to refs/etude/* + introduces a new
+input/spec format. Highest scrutiny: spec schema design, path resolution, create-only safety,
+round-trip fidelity to the manifest.
+
+NOTES
+## Implement
+
+**Implemented:**
+- NEW `internal/cli/capture_run.go`: `newCaptureRunCommand`, YAML spec structs with `KnownFields(true)`, `captureRunRunner.run` and `buildStage` methods. Parses a captureRunSpec YAML (run_id, workflow, workflow_version, git_sha, harness, harness_version, model, refs, stages), applies run-level defaults (workflow→manual, workflow_version→manual-v1, produced_by→original, git_sha→HEAD), resolves artifact paths relative to the spec file directory, accumulates ONE artifact store across all stages, writes via a single `WriteManifestTree` call with create-only semantics (ExpectedOld=""). Mirrors capture.go pattern exactly: Skill mirrored into Producer.Skill. Clear errors for: missing/invalid run_id, unknown YAML fields, missing skill.id, missing output path, nonexistent artifact, collision.
+- MODIFIED `internal/cli/root.go`: registered `newCaptureRunCommand` alphabetically after `newCaptureGateCommand`.
+- NEW `internal/cli/capture_run_test.go`: 14 test functions covering happy path (3 stages, skill/model/inputs/output/refs, run-level defaults + per-stage overrides, git_sha default + override, media type inference, produced_by default + override, refs, relative-path resolution), KnownFields unknown-field rejection, error cases (8 sub-cases: missing spec, missing run_id, invalid run_id, missing skill.id, missing output path, nonexistent artifact, zero stages, malformed YAML), create-only collision, workflow defaults, help output, invalid run_id formats.
+
+**Checks run:**
+- `go build ./...`: pass
+- `go test ./internal/cli/ -run TestCaptureRun -v`: pass (16 test cases)
+- `go test ./...`: pass except `cmd/gen-docs TestDriftGuard` — only failure is missing docs/cli/etude_capture-run.md and stale docs/cli/etude.md (Docs phase regenerates via `make docs`)
+- `make lint`: pass
+- Built-binary manual test (throwaway temp repo): exit 0, `ref refs/etude/runs/manual-test-run` printed, `etude run show` renders both stages with correct skill/model/harness/inputs/outputs, single commit on ref, collision correctly rejected with clear error
+
+**Changed files:**
+- internal/cli/capture_run.go (new)
+- internal/cli/capture_run_test.go (new)
+- internal/cli/root.go (modified — +1 line AddCommand)
+
+**Plan deviations:** None. The plan said `capture_run.go` (underscore), files created as `capture_run.go` / `capture_run_test.go` — consistent with existing naming convention (other files use underscore: `capture_test.go`, `run.go`). The `addFileArtifactFromPath` helper is kept in capture_run.go (not touching capture.go), using an absolute-path variant instead of the role=path string form that `addFileArtifact` uses. The `parseCaptureRunSpec` trailing-document check uses `dec.Decode(&extra); err == nil` (trailing-doc present = error) not `err != io.EOF` because yaml.v3 returns `nil` at end of extra documents; this matches workflow.ParseYAML's pattern.
+
+**Capture:**
+- inputs: approved plan (etude-jb7 --design), internal/cli/capture.go, internal/cli/root.go, internal/runmanifest/manifest.go, internal/workflow/workflow.go, internal/artifactstore/store.go, internal/refstore/store.go, internal/cli/capture_test.go
+- output: working tree diff (3 changed files), bead notes
+## Docs
+
+Changed: yes
+Files:
+- docs/cli/etude_capture-run.md (generated — new page for capture-run command)
+- docs/cli/etude.md (generated — root index now lists capture-run)
+- docs/capture-run.md (hand-written guide — new, matching capture-family pattern)
+- docs/README.md (hand-written — added capture-run.md entry to guide index)
+- README.md (top-level — added etude capture-run to Implemented list, CLI usage block, and See also)
+- docs/plans/dogfood/capture-protocol.md (planning doc — coherence note: batch capture is now shipped)
+
+Rationale:
+- Generated CLI reference regenerated via `make docs`: docs/cli/etude_capture-run.md created (synopsis + flags), docs/cli/etude.md updated (root index now lists capture-run).
+- Hand-written guide docs/capture-run.md added: YAML spec schema (run-level fields run_id/workflow/workflow_version/git_sha/harness/model/refs/stages; stage fields stage/skill.id/skill.repo/skill.version/produced_by/git_sha/harness/model/inputs/output), artifact path confinement (relative paths, spec-dir scoped, no escape via ..), create-only semantics (will not overwrite existing run ref), and a small example spec. Pattern matches capture.md / gates.md — each capture-family command has its own guide file.
+- docs/README.md and README.md updated to advertise the new command and guide, required by docs-reality guard.
+- docs/plans/dogfood/capture-protocol.md updated with a short coherence note: batch capture is now shipped as `etude capture-run <spec.yaml>` (create-only; artifact paths confined to spec dir); prior text said batch capture was still planned.
+
+Policy check:
+- policy applied: repo convention — generated docs/cli/* via `make docs` workflow; hand-written guides in docs/ for each command family member; planning docs under docs/plans/
+- shipped docs describe implemented behavior only
+- planning material remains under docs/plans/ (capture-protocol.md is still marked as a dogfood process note; the coherence addition describes SHIPPED behavior only)
+- generated references are separate from hand-written guides
+- generated output updated through `make docs` workflow (not hand-edited)
+
+Capture:
+- inputs: Verify artifact, docs policy, existing docs/ layout
+- output: 6 files changed (2 generated, 4 hand-written)
+
+LABELS: phase:review
+
