@@ -1,0 +1,52 @@
+# Docs — etude-9uf.1: `etude gate`
+
+## Docs impact matrix
+
+| Path | Checked | Changed | Reason |
+|---|---|---|---|
+| `docs/cli/etude_gate.md` | yes | **new (generated)** | `make docs` emits a page per command; `docs-reality` fails without one for a shipped command. |
+| `docs/cli/etude.md` | yes | regenerated | the root index lists subcommands. |
+| `README.md` | yes | edited | `docs-reality` requires a shipped command to be advertised as `etude <cmd>` usage. Added the capability bullet, the implemented-surface list entry, and a runnable example. |
+| `docs/plans/dogfood/supervisor-runbook.md` | yes | edited | the contract section moves from prescriptive to shipped, and carries the correction that the tripwire I claimed in bead .2 would not have fired. |
+| `docs/gates.md` | yes | no change | documents the `GateAttempt` schema and `capture-gate`. `etude gate` writes the SAME record through the same construction path, so the schema page is still accurate as written; the runbook links to it rather than restating it. |
+| `.etude/registry.yaml` | yes | edited | not docs, but it is where the sub-agent seat arrangement now lives as config instead of prose. The comment above it explains why the first fallback is not a shell command. |
+| `docs/run.md` | yes | no change | `etude run`'s own gate loop is unchanged; `GateStage` is a separate entry point. |
+| `docs/plans/product/*` | yes | no change | no product-plan claim is altered by this bead. |
+
+## Docs checks
+
+| check | result |
+|---|---|
+| `make docs-check` | passes — generated pages match, no diff |
+| `make docs-reality` | OK — 15 commands (was 14); README usage, docs/README index, and generated page all present for `gate` |
+
+## Cross-consistency
+
+Checked pairs of claims against each other, not only against source:
+
+1. **The runbook says the tier comes from config and no flag can lighten it; the
+   command has a `--workflow` flag.** Consistent: `--workflow` selects WHICH
+   workflow file, not which tier. There is no seat or tier flag. Worth stating
+   because a reader could mistake one for the other.
+2. **The runbook says `etude gate` requires a pre-existing run ref; the README
+   example shows `etude gate --run run-1 ...` with no capture shown.** The README
+   example sits directly beneath `etude capture` examples in the same block, so
+   the ordering is implied by position; the runbook states the requirement
+   explicitly and the command's own error message names the fix.
+3. **The registry comment says the sub-agent candidate is "a real seat, not a
+   degraded substitute"; the runbook's degraded-gate section describes recording
+   `degraded_reason`.** Consistent: a sub-agent seat verdict carries no
+   `degraded_reason`, because nothing about it is degraded. `degraded_reason`
+   remains for a genuinely disregarded or substituted seat.
+4. **`etude gate` reads `invocation_fallbacks` but does not act on them.** The
+   verify artifact discloses this and it is filed as `etude-5f6`. No doc claims
+   the fallbacks are consumed — the registry comment says a consumer "must try
+   these in order", which is a requirement ON consumers, not a claim that this
+   one does. Left as written rather than softened, since the requirement is
+   correct and the gap is tracked.
+
+## Shipped vs planning
+
+`README.md` and `docs/cli/**` are shipped docs and describe only what the binary
+does. `docs/plans/dogfood/**` is planning material by the repo's notes policy;
+the supervisor runbook says so in its own header.
