@@ -1054,6 +1054,43 @@
         "degraded_reason": "LATE RECORD, filed at the final review gate. This is the in-harness opus verdict (GO, with four optionals) on the SECOND verify artifact, sha 9d9a4d42, stage 'verify.r2'. verify.r3 reviewed that same artifact and recorded opus as 'failed' plus codex 'block'; the seat was then run in-harness and returned GO, so the round genuinely SPLIT - opus GO, codex BLOCK - and did not pass under unanimous quorum, which is why the work continued. The attempt is recorded rerun rather than pass because that is what the panel produced: a split is not a pass. Its optionals were folded at the time (the Makefile comment carrying the same retracted core.hooksPath claim; the negative-control counts being out of 18 rather than 19; and the sweep accounting saying '12 tracked plus 1' when the new file is staged and so tracked). Status quo before this record: the codex BLOCK was durable and the opus GO was not, which misrepresents a split as a one-sided round."
       },
       "timestamp": "2026-08-15T10:40:06Z"
+    },
+    {
+      "gate_id": "docs.r4",
+      "phase": "docs",
+      "round": 4,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff",
+          "artifact": "d3928647cb2f5863821fe8bc2cc2d6adb0699a72875fef98c0d3d390cef5f53a"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The rewritten .beads/hooks/pre-push exemption comment (lines 37-40) asserts 'This lets etude capture, etude gate and dogfood-gate-capture.sh push their refs/etude/runs/<bead> refs unhindered'. Neither command pushes anything: internal/cli/capture.go, internal/cli/gate.go and internal/liverun/*.go contain no push logic, and etude gate ends at runmanifest.Writer.Write into the local refstore. The only CLI pusher is etude sync (internal/cli/sync.go:263). The pre-edit text named two scripts that genuinely did push, so a stale-but-TRUE pointer was replaced with a plausible-but-FALSE one - round 1's exact defect class, one hunk above the message round 1 fixed. It is also operationally misleading in the file it lives in: the audit GAPs on unpushed-ref, so an operator who believes capture/gate push will skip the push and stay BLOCKED by this very hook.",
+            "2. The docs artifact does not disclose that hunk at all: its .beads/hooks/pre-push entry describes only the BLOCKED message, so the one edit in that file that is wrong is the one the artifact does not account for."
+          ],
+          "timestamp": "2026-08-15T10:40:11Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, filed at the final review gate, which found it missing and called it the most consequential gap. This is the in-harness opus BLOCK on the SECOND docs artifact, sha d3928647, stage 'docs.r2' - the round that produced the sharpest finding of the whole bead, that a stale-but-true pointer had been replaced with a plausible-but-false one in the repo's push gate. That finding is quoted in both the docs and review artifacts as the bead's central lesson, yet the verdict itself had no gate record: the L4 tier's single seat cannot be invoked as a subprocess, so no 'etude gate' run produced an attempt for this revision, and the in-harness verdict was acted on without being appended. A BLOCK that changed the shipped work and left no durable record is precisely the failure this epic exists to end, so it is recorded rather than merely disclosed. docs.r3 passed on a later revision (4107f079) and that pass stands."
+      },
+      "timestamp": "2026-08-15T10:40:11Z"
     }
   ]
 }
