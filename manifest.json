@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-pqv",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,47 @@
         "size": 3384
       },
       "timestamp": "2026-08-15T06:12:52.588513Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "documentation"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Document fallback mode inheritance",
+            "Confirm the exact golden after long tier use values",
+            "Record that the dev seat is a workflow runner rather than a tier seat"
+          ],
+          "timestamp": "2026-08-15T06:05:27Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-kcd"
+        ]
+      },
+      "timestamp": "2026-08-15T06:05:27Z"
     }
   ]
 }
