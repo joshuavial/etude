@@ -1,0 +1,10 @@
+# etude-ldf platform test partition review
+
+The shared doctor runtime remains cross-platform. POSIX-specific fixtures and
+literal quoting oracles now compile and run only on non-Windows platforms;
+Windows has a native test file for its parser, argument quoting, case-insensitive
+environment, forward-slash explicit paths, indeterminate `env -i`, and
+unknown-shell config remediation.
+
+This is a test-only partition. `make test` passes on the host and the Windows CLI
+test binary cross-compiles successfully.
