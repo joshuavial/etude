@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.2",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,82 @@
         "size": 1832
       },
       "timestamp": "2026-05-27T00:47:23.692628Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T07:20:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T07:20:30Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "log render set TIMESTAMP=effectiveTime, hiding capture time for backfilled retros (violates 'without losing capture time'); keep TIMESTAMP=Created, add EVENT column, sort by effectiveTime"
+          ],
+          "timestamp": "2026-05-27T07:21:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T07:21:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down (0 CPU). 1 BLOCK (codex) / 2 GO. codex BLOCK verified-true (log render hid capture time); adopted its fix per the not-a-vote-count rule. Backward-compat + sidecar overlap GO across seats."
+      },
+      "timestamp": "2026-05-27T07:22:00Z"
     }
   ]
 }
