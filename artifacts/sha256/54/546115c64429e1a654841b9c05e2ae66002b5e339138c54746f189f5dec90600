@@ -1,0 +1,217 @@
+# etude-ldf plan — `etude doctor`
+
+ANCESTOR: etude-ldf (P1) — operators need a read-only, CI-gateable diagnosis before legacy refspecs or setup drift lose run records. Measurement: an earlier configured fetch/prune deleted three gate attempts, and the first plan gate found eight concrete false-OK or false-remediation modes.
+
+BLAST RADIUS: worktree and this repository only. The command performs filesystem and Git reads, including `git ls-remote`; it writes no repository, ref, config, remote, cache, or host state. Gate packets overwrite one path under `.etude/tmp`.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: linked worktrees share one Git common directory and ref store;
+configured remotes and other lanes may change config or refs during diagnosis.
+Doctor takes conservative ordered reads and never claims a transactional snapshot.
+
+DURABILITY / DELIVERY CLASS: doctor produces terminal output and an exit code only;
+it creates no durable record, cache, ref, config edit, worktree file, or remote
+write. `ls-remote` is a read. A concurrent change may cause a conservative WARN
+or snapshot FAIL, never a false OK.
+
+AUTHORITATIVE-vs-PROXY: Git config, local refs, and the remote advertisement are
+the authoritative sources for their respective checks. Filesystem/PATH presence
+is explicitly only a `PROXY` for reviewer-seat operability and can never become
+an OK, authentication claim, or exit gate.
+
+COMPLETENESS-ENUMERATION: the complete checked set is every configured remote;
+each ref kind in `refstore.Kinds` (runs, retros, evals); every workflow stage,
+default runner, stage runner, gate check, inline gate seat, and tier reference;
+every registry seat primary and invocation fallback; every rubric path; every
+repo-relative command path; and every local etude run/retro/eval ref compared
+against every configured remote. The tests enumerate each set and include a
+counterexample for a missed member.
+
+TRUST BOUNDARY: repository YAML, Git config values, remote names/advertisements,
+ref names, and invocation strings are untrusted input. They are never evaluated
+by a shell. Git receives fixed argv for read-only subcommands; rendered remedies
+are data escaped for later operator copy/paste. Reviewer commands are parsed and
+probed but never executed.
+
+## Goal and contract
+
+Add a registered `etude doctor` command that runs from an etude Git repository,
+prints one result per health area, and exits non-zero when any result is `FAIL`.
+`WARN` does not fail. Seat executability uses a fourth deliberately un-greenable
+`PROXY` label: even a found binary does not prove authentication, quota, or tier
+eligibility, so this check can never claim `OK` or affect the exit status.
+
+Every actionable finding emits an exact, runnable, shell-quoted command only when
+that command is sufficient for the diagnosed state. When contents or operator
+intent cannot be derived (a missing rubric, malformed cross-reference, an absent
+reviewer binary, or a broad user-owned fetch mapping), output instead says exactly
+what is missing, what property the repair must satisfy, and `HUMAN AUTHORSHIP
+REQUIRED`. Never print a placeholder or a plausible command that cannot fix the
+finding.
+
+## Design
+
+### 1. Read-only runner and output model
+
+Register `newDoctorCommand` in `internal/cli/root.go` and implement the runner in
+`internal/cli/doctor.go`. Resolve the repository root once. All Git access goes
+through a doctor-local allowlisted read helper whose accepted subcommands are
+only `remote`, `config --get-all`, `ls-remote`, `for-each-ref`, `cat-file -e`, and
+`merge-base --is-ancestor`; reject any other argv at the call site. Do not use
+`fetch`, `config --unset`, `update-ref`, or a cache. Accumulate findings, render
+deterministically, and return a sentinel error only after every independent check
+has reported so one failure does not hide the rest.
+
+Remote/config topology is a concurrent snapshot, not a transaction. Enumerate a
+remote, read all of that remote's config, then read its remote refs before local
+refs. If the remote disappears or changes mid-check, report an explicit FAIL that
+the snapshot could not be completed, never a clean result. Remote-first then
+local means a concurrent local creation can only produce a conservative false
+WARN; a concurrent push can still produce a false WARN but never a false OK.
+
+### 2. Refspec parsing and safety
+
+Extend the existing `refspec` representation with strict syntax validation:
+optional leading `+`, at most one colon, non-empty legal sides where required,
+and Git's single-wildcard pairing rules. A colonless fetch has no destination and
+is harmless. Implement single-`*` pattern intersection/mapping helpers rather
+than trailing-prefix matching, so partial globs such as
+`refs/*/unpushed:refs/*/unpushed` are evaluated correctly.
+
+For every remote:
+
+- `FAIL` each valid fetch mapping whose destination is explicitly under the
+  authoritative `refs/etude/{runs,retros,evals}/` namespace. Emit one surgical
+  command per exact offending value:
+  `git config --local --unset-all <quoted-key> <quoted-^ERE$>`. Never remove all
+  values for the key.
+- `WARN` for a broader user-owned destination pattern that intersects an
+  authoritative etude kind without being an etude-owned mapping. Do not suggest
+  deleting it; require a human to narrow the mapping or adopt an operating rule
+  that ensures refs are synchronized before prune.
+- `FAIL` malformed push/fetch entries that prevent a safe conclusion. An invalid
+  exact value may have a surgical unset command, but no replacement is fabricated.
+- Evaluate push coverage per kind using concrete probe refs and the refspec as a
+  mapping. Coverage may be supplied by one namespace-wide mapping or multiple
+  name-preserving per-kind mappings. Empty-source deletes, single-ref mappings,
+  sub-namespace globs, and name-changing mappings never count as complete. If any
+  kind is uncovered, `FAIL` with `etude init --remote <quoted-remote>`; also name
+  the observed misleading shapes so the operator knows why they did not count.
+- Check safe fetch mirroring per kind. Treat the operator-specified mirrored
+  layout `refs/etude/remotes/<remote>/<kind>/*` as safe, treat the landed
+  33fd4bf sibling layout produced by current `etude init`
+  (`refs/etude-mirror/<remote>/<kind>/*`) as safe, and reject the old single
+  authoritative namespace as hazardous. Missing safe mirrors are `WARN` with
+  `etude init --remote <quoted-remote>`. This compatibility rule prevents doctor
+  from diagnosing either explicitly safe mirror layout as the legacy data-loss
+  state while remaining correct for the checked-out implementation.
+
+All interpolated values use a POSIX single-quote helper that handles embedded
+single quotes. `git config --unset-all` patterns use `regexp.QuoteMeta` plus
+`^...$` before shell quoting. No angle-bracket or Git-accepted fake placeholder
+is emitted.
+
+### 3. Config parsing, cross-resolution, and referenced paths
+
+Read `.etude/workflow.yaml` and `.etude/registry.yaml` with their strict package
+parsers. Missing both files may recommend `etude init`; malformed or partially
+missing authored config is `FAIL` with a precise `HUMAN AUTHORSHIP REQUIRED`
+statement rather than `etude init --force` (which could destroy intent).
+
+After parse, verify every workflow default/stage/check runner name and every
+inline gate seat resolves to `registry.Seats`, and every `gate.tier` resolves to
+`registry.Tiers`; registry parsing already proves each tier's seats exist. Report
+all unresolved references, not only the first.
+
+Path bases match runtime behavior and are printed explicitly:
+
+- eval rubric paths resolve beneath `.etude/`, the workflow configuration root;
+- repo-relative command paths in workflow runners/checks and registry primary or
+  fallback invocations resolve beneath the repository root;
+- absolute paths remain absolute;
+- bare executable names are seat/runner reachability concerns, not filesystem
+  path references.
+
+A missing rubric is `FAIL` and says the file must contain the evaluation criteria
+for its named stage, marked `HUMAN AUTHORSHIP REQUIRED`. A missing referenced
+script is `FAIL` and says which invocation requires an executable at which exact
+resolved path, also human-authored unless an existing exact generator command is
+known.
+
+### 4. Seat reachability proxy
+
+Do not run a review or authenticate. For every seat primary and fallback invoke,
+tokenize exactly as runtime does (`strings.Fields`), then resolve through known
+prefixes:
+
+- skip an `env` prefix, including `-u NAME`, option forms, and `NAME=value`
+  assignments, until the command token;
+- recognize `scripts/seat-adapter.sh <seat-name> <reviewer-command> ...` and
+  probe the reviewer command after the adapter's two tokens, while separately
+  checking the adapter path exists and is executable;
+- classify `in-harness:` candidates as host-provided proxies without pretending
+  they are PATH executables;
+- for repo-relative executables, resolve from repo root; for bare executables,
+  use `exec.LookPath` on the resolved reviewer token, never token zero.
+
+Present binaries print `PROXY` with their resolved path and an explicit statement
+that auth/quota/tier were not tested. Missing binaries print `WARN` and
+`HUMAN AUTHORSHIP REQUIRED: install <binary> and make it available on PATH`;
+there is no portable install command to fabricate. This proxy never controls the
+process exit code.
+
+### 5. Unpushed refs
+
+For each configured remote, run one read-only `git ls-remote <remote>
+refs/etude/*` first, then enumerate local `refs/etude/{runs,retros,evals}/*` once.
+Absent remote refs and local-ahead/diverged refs are `WARN` with the exact
+`etude sync --remote <quoted-remote>` command only when pushing/synchronizing is
+the correct next action. A local ref proven behind the remote must instead say to
+fetch/compare and must not recommend pushing. If the remote OID is unavailable
+locally and direction cannot be proven, say so and require comparison; do not
+guess. `ls-remote` failure is `FAIL` because doctor cannot safely claim refs are
+pushed, with a human-authorship statement to repair remote reachability/auth.
+
+## Files
+
+- `internal/cli/doctor.go` — command, findings, read-only Git helper, refspec,
+  config/path, seat-proxy, and unpushed-ref checks.
+- `internal/cli/doctor_test.go` — focused unit/integration and mutation-boundary
+  tests.
+- `internal/cli/root.go`, `internal/cli/root_test.go` — command registration.
+- `README.md`, `docs/README.md`, `docs/doctor.md` — implemented user guidance.
+- generated `docs/cli/etude.md` and `docs/cli/etude_doctor.md` — Cobra reference.
+
+## Planned regressions
+
+Planned regression: TestDoctorRegisteredAndExitPolicy
+Planned regression: TestDoctorDangerousFetchRefspecsAndQuotedRemediation
+Planned regression: TestDoctorBroadAndPartialGlobFetchWarnings
+Planned regression: TestDoctorPushCoverageMappings
+Planned regression: TestDoctorAcceptsSafeMirrorLayoutsAndRejectsAuthoritativeFetch
+Planned regression: TestDoctorConfigCrossResolution
+Planned regression: TestDoctorReferencedPathsUseDocumentedBases
+Planned regression: TestDoctorSeatReachabilityResolvesEnvAndAdapterPrefixes
+Planned regression: TestDoctorUnpushedRefsPerRemoteAndReadOrder
+Planned regression: TestDoctorReadOnlyWholeRepositorySnapshot
+Planned regression: TestDoctorGitAllowlistRejectsWriteCapableCommands
+Planned regression: TestDoctorRemediationCommandsAreShellSafeAndNeverPlaceholders
+
+The whole-repository read-only regression snapshots every path, contents,
+symlink target, mode, and timestamp under the worktree and the resolved Git
+common directory before and after `doctor`, excluding only unavoidable external
+Git lock implementation details if empirically observed and justified in the
+test. It also snapshots refs, packed-refs, reflogs, FETCH_HEAD, index metadata,
+and `.etude/` so a cache/write outside `.git` cannot pass. A stub remote provides
+stable `ls-remote` reads without network writes.
+
+## Verification
+
+Before Verify gate: `gofmt` only the new/changed Go files; `make build`; focused
+doctor tests; `make test`; `make lint`; `make docs`; `make docs-check`; and
+`make docs-reality`. Because this is CLI-facing, also `make install` and drive
+the installed `etude doctor` against throwaway repositories covering a healthy
+repo, dangerous legacy fetch, missing push, broken cross-reference, env/adapter
+seat command with a missing real reviewer, missing rubric, unreachable remote,
+and unpushed ref. Snapshot each throwaway repo before/after and clean it up.
