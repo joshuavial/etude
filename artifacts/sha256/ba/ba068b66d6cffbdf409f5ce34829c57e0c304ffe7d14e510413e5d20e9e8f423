@@ -1,0 +1,537 @@
+diff --git a/.etude/registry.yaml b/.etude/registry.yaml
+index 5266f39..cbbaef5 100644
+--- a/.etude/registry.yaml
++++ b/.etude/registry.yaml
+@@ -5,7 +5,7 @@ seats:
+   fable:
+     provider: anthropic/claude-fable-5-1
+     harness: claude-code
+-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
+     invoke: 'scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools='
+   astra:
+     provider: openai/gpt-6-astra
+@@ -20,7 +20,7 @@ seats:
+   sonnet:
+     provider: anthropic/claude-sonnet-5
+     harness: claude-code
+-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
+     invoke: 'scripts/seat-adapter.sh sonnet claude -p --model claude-sonnet-5 --effort high --no-session-persistence --tools='
+ tiers:
+   L2:
+diff --git a/.etude/run-map.tsv b/.etude/run-map.tsv
+index 3d910a4..e5e8540 100644
+--- a/.etude/run-map.tsv
++++ b/.etude/run-map.tsv
+@@ -1,3 +1,4 @@
+ # Bead ID followed by its active run ID; explicit mapping overrides legacy runs.
+ etude-3343 etude-3343-dev-claude
+ etude-l8tz etude-l8tz-dev-codex
++etude-ikj3 etude-ikj3-dev-codex
+diff --git a/docs/run.md b/docs/run.md
+index 7803f18..32540fc 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -631,10 +631,27 @@ a live run: it replays what was captured, in order.
+ Single-stage flags (`--record`, `--output`, producer overrides) are not valid
+ in forward-replay mode and return an error if supplied.
+ 
+-Forward replay uses one shared checkout, so every captured stage must record the
+-same `git_sha`. For a historical or manually captured run whose stages record
+-different commits, replay each stage independently with
+-`etude replay <run-id> <stage>`.
++Forward replay uses one shared checkout at the run's original checkout SHA, so
++every hermetic captured stage must record that same `git_sha`. A
++caller-workspace stage may instead record its clean post-run commit; it still
++replays against the original checkout. A historical or manually captured run
++whose hermetic stages record different commits is rejected because Etude cannot
++verify a single recorded checkout for it.
++
++Without `--runner`, each recorded stage resolves its runner from the current
++workflow and registry. Etude first looks for an exact workflow stage name, so a
++literal stage such as `review.r2` keeps its own binding. Only when that lookup
++misses does it treat one final canonical retry suffix, `.rN` for decimal `N >=
++2`, as engine-generated and retry lookup with the suffix removed. Thus a
++recorded `review.r3` uses `review`'s runner, while `review.r2.r3` can use the
++literal `review.r2` runner. Names ending in `.r1`, a leading-zero round such as
++`.r02`, or another malformed suffix do not fall back. `--runner` overrides this
++per-stage lookup for the whole forward replay.
++
++The recorded stage names, producer metadata, input artifacts, and manifest
++order remain authoritative: forward replay does not regenerate upstream inputs.
++It resolves every stage runner before it creates a checkout or invokes any
++runner, so an unresolved later stage fails without partial replay execution.
+ 
+ ## Resume
+ 
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 7db2c25..079d368 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -8,6 +8,7 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -402,18 +403,59 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
+ 			}
+ 		}
+ 		resolveRunner = func(stageName string) (replay.Runner, error) {
+-			for _, s := range wf.Stages {
+-				if s.Name == stageName {
+-					return liverun.ResolveStageRunner(wf, reg, s, timeout, r.envAllowlist)
+-				}
++			stage, ok := forwardReplayWorkflowStage(wf, stageName)
++			if !ok {
++				return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
+ 			}
+-			return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
++			return liverun.ResolveStageRunner(wf, reg, stage, timeout, r.envAllowlist)
+ 		}
+ 	}
+ 
+ 	return liverun.ReplayForward(ctx, store, root, out, runID, resolveRunner)
+ }
+ 
++// forwardReplayWorkflowStage resolves a recorded forward-replay stage to its
++// workflow definition. A literal workflow name always wins. When there is no
++// exact match, the engine's generated retry suffix (a final, canonical .rN for
++// N >= 2) is removed once and the exact base name is looked up. This preserves
++// legal literal names such as "review.r2" and allows a retry of one of those
++// names ("review.r2.r3") to resolve back to it.
++func forwardReplayWorkflowStage(wf workflow.Workflow, recordedName string) (workflow.Stage, bool) {
++	if stage, ok := findStage(wf, recordedName); ok {
++		return stage, true
++	}
++
++	base, ok := generatedRetryBase(recordedName)
++	if !ok {
++		return workflow.Stage{}, false
++	}
++	return findStage(wf, base)
++}
++
++// generatedRetryBase recognizes only the suffix emitted by the engine's
++// fmt.Sprintf("%s.r%d", stage, round): decimal digits without a leading zero
++// and a round of at least two. It removes one final suffix only.
++func generatedRetryBase(name string) (string, bool) {
++	idx := strings.LastIndex(name, ".r")
++	if idx < 0 || idx+2 == len(name) {
++		return "", false
++	}
++	roundText := name[idx+2:]
++	if roundText[0] == '0' {
++		return "", false
++	}
++	for _, c := range roundText {
++		if c < '0' || c > '9' {
++			return "", false
++		}
++	}
++	round, err := strconv.ParseUint(roundText, 10, 64)
++	if err != nil || round < 2 {
++		return "", false
++	}
++	return name[:idx], true
++}
++
+ // gitConfigGet reads a single git config value for key using any scope.
+ // Returns an empty string if the key is absent or git is unavailable.
+ func gitConfigGet(ctx context.Context, key string) string {
+diff --git a/internal/cli/replay_test.go b/internal/cli/replay_test.go
+index 9d87608..b9a6164 100644
+--- a/internal/cli/replay_test.go
++++ b/internal/cli/replay_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"reflect"
+ 	"runtime"
+ 	"strings"
+ 	"testing"
+@@ -1015,6 +1016,120 @@ func createLiveRun(t *testing.T, repo, runID string) {
+ 	}
+ }
+ 
++// sequenceReplayRunner gives each captured source stage distinct output bytes.
++// The forward-replay tests use real ExecRunners; this only builds the stored
++// run fixture whose recorded inputs are later replayed.
++type sequenceReplayRunner struct {
++	outputs [][]byte
++	calls   int
++}
++
++func (r *sequenceReplayRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
++	if r.calls >= len(r.outputs) {
++		return replay.RunResult{}, fmt.Errorf("unexpected source runner call %d", r.calls+1)
++	}
++	output := r.outputs[r.calls]
++	r.calls++
++	return replay.RunResult{Output: output, MediaType: req.OutputMediaType, Producer: req.Producer}, nil
++}
++
++// createForwardReplayFixture records six sequential stages with distinct
++// inputs. Callers may rename the recorded stages to model engine-generated
++// retry stages without changing the captured artifacts or their order.
++func createForwardReplayFixture(t *testing.T, repo, runID string) {
++	t.Helper()
++	headSHA := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	wf := workflow.Workflow{
++		Name: "replay-fixture",
++		Stages: []workflow.Stage{
++			{Name: "plan", Skill: "fixture", Produces: "plan", Inputs: []string{"task"}},
++			{Name: "review", Skill: "fixture", Produces: "review", Inputs: []string{"plan"}},
++			{Name: "draft", Skill: "fixture", Produces: "draft", Inputs: []string{"review"}},
++			{Name: "publish", Skill: "fixture", Produces: "published", Inputs: []string{"draft"}},
++			{Name: "release", Skill: "fixture", Produces: "released", Inputs: []string{"published"}},
++			{Name: "archive", Skill: "fixture", Produces: "archived", Inputs: []string{"released"}},
++		},
++	}
++	source := &sequenceReplayRunner{outputs: [][]byte{
++		[]byte("source-plan"), []byte("source-review"), []byte("source-draft"),
++		[]byte("source-publish"), []byte("source-release"), []byte("source-archive"),
++	}}
++	e := liverun.Engine{
++		Store:         refstore.New(repo),
++		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return source, nil },
++		Root:          repo,
++		Now:           func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
++	}
++	if err := e.Run(context.Background(), &bytes.Buffer{}, wf, liverun.RunOptions{
++		TaskBytes: []byte("source-task"),
++		TaskFile:  "task.txt",
++		RunID:     runID,
++		GitSHA:    headSHA,
++	}); err != nil {
++		t.Fatalf("create forward replay fixture: %v", err)
++	}
++}
++
++// writeForwardReplayConfig supplies three real shell adapters through the
++// workflow/registry path: plan, review, and literal plan.r2.
++func writeForwardReplayConfig(t *testing.T, repo string) {
++	t.Helper()
++	writeRunner := func(filename, label string) string {
++		path := filepath.Join(repo, filename)
++		body := "#!/bin/sh\nset -eu\nprintf '%s' '" + label + ":' > \"$ETUDE_OUTPUT_FILE\"\n" +
++			"for input in \"$ETUDE_INPUTS_DIR\"/*; do\n" +
++			"  [ -f \"$input\" ] && cat \"$input\" >> \"$ETUDE_OUTPUT_FILE\"\n" +
++			"done\n"
++		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
++			t.Fatalf("write runner %s: %v", filename, err)
++		}
++		return path
++	}
++	planRunner := writeRunner("forward-plan.sh", "P")
++	reviewRunner := writeRunner("forward-review.sh", "R")
++	literalRunner := writeRunner("forward-literal.sh", "L")
++
++	etudeDir := filepath.Join(repo, ".etude")
++	if err := os.MkdirAll(etudeDir, 0o755); err != nil {
++		t.Fatalf("mkdir .etude: %v", err)
++	}
++	workflowYAML := `name: replay-fixture
++stages:
++  - name: plan
++    skill: fixture
++    produces: plan
++    runner: {name: plan-runner}
++  - name: review
++    skill: fixture
++    produces: review
++    runner: {name: review-runner}
++  - name: plan.r2
++    skill: fixture
++    produces: literal
++    runner: {name: literal-runner}
++`
++	registryYAML := fmt.Sprintf(`seats:
++  plan-runner:
++    provider: deterministic/plan
++    harness: shell
++    invoke: %s
++  review-runner:
++    provider: deterministic/review
++    harness: shell
++    invoke: %s
++  literal-runner:
++    provider: deterministic/literal
++    harness: shell
++    invoke: %s
++`, planRunner, reviewRunner, literalRunner)
++	if err := os.WriteFile(filepath.Join(etudeDir, "workflow.yaml"), []byte(workflowYAML), 0o644); err != nil {
++		t.Fatalf("write workflow: %v", err)
++	}
++	if err := os.WriteFile(filepath.Join(etudeDir, "registry.yaml"), []byte(registryYAML), 0o644); err != nil {
++		t.Fatalf("write registry: %v", err)
++	}
++}
++
+ // AC2: etude replay <id> (no stage) forward re-executes all stages.
+ func TestReplayForwardAllStages(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+@@ -1036,6 +1151,136 @@ func TestReplayForwardAllStages(t *testing.T) {
+ 	}
+ }
+ 
++func TestReplayForwardDefaultWorkflowResolvesRetryStages(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX shell adapter test")
++	}
++	repo := initCaptureRepo(t)
++	runID := "replay-fixture-20260101T000000Z-retries"
++	createForwardReplayFixture(t, repo, runID)
++	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
++		m.Stages[0].Name = "plan"
++		m.Stages[1].Name = "review"
++		m.Stages[2].Name = "review.r2"
++		m.Stages[3].Name = "review.r3"
++		m.Stages[4].Name = "plan.r2"    // literal workflow name must win.
++		m.Stages[5].Name = "plan.r2.r3" // retry of that literal name.
++		for i := range m.Stages {
++			m.Stages[i].Producer.Model = fmt.Sprintf("source-model-%d", i+1)
++		}
++	})
++	before := readRunManifest(t, repo, runID)
++	writeForwardReplayConfig(t, repo)
++	chdir(t, repo)
++
++	var out, errOut bytes.Buffer
++	cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++	cmd.SetArgs([]string{runID})
++	if err := cmd.Execute(); err != nil {
++		t.Fatalf("forward replay: %v\nstderr: %s", err, errOut.String())
++	}
++	if got, want := out.String(), "P:source-taskR:source-planR:source-reviewR:source-draftL:source-publishL:source-release"; got != want {
++		t.Fatalf("forward output = %q, want %q", got, want)
++	}
++	if after := readRunManifest(t, repo, runID); !reflect.DeepEqual(after, before) {
++		t.Fatal("forward replay changed recorded stage names, metadata, inputs, or order")
++	}
++}
++
++func TestForwardReplayWorkflowStageRetryLookup(t *testing.T) {
++	wf := workflow.Workflow{Stages: []workflow.Stage{{Name: "plan"}, {Name: "plan.r2"}}}
++	tests := []struct {
++		name     string
++		recorded string
++		want     string
++		found    bool
++	}{
++		{name: "exact ordinary", recorded: "plan", want: "plan", found: true},
++		{name: "exact literal", recorded: "plan.r2", want: "plan.r2", found: true},
++		{name: "generated retry", recorded: "plan.r3", want: "plan", found: true},
++		{name: "nested literal retry", recorded: "plan.r2.r3", want: "plan.r2", found: true},
++		{name: "r1 is not generated", recorded: "plan.r1"},
++		{name: "zero is not generated", recorded: "plan.r0"},
++		{name: "leading zero is not canonical", recorded: "plan.r02"},
++		{name: "signed round is malformed", recorded: "plan.r+2"},
++		{name: "suffix text is malformed", recorded: "plan.r2extra"},
++		{name: "generated retry missing base", recorded: "missing.r2"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got, found := forwardReplayWorkflowStage(wf, tt.recorded)
++			if found != tt.found {
++				t.Fatalf("found = %v, want %v", found, tt.found)
++			}
++			if found && got.Name != tt.want {
++				t.Fatalf("stage = %q, want %q", got.Name, tt.want)
++			}
++		})
++	}
++}
++
++func TestReplayForwardDefaultWorkflowRejectsInvalidRetryNamesBeforeExecution(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX shell adapter test")
++	}
++	for _, recordedName := range []string{"plan.r1", "plan.r02", "plan.r2extra", "missing.r2"} {
++		t.Run(recordedName, func(t *testing.T) {
++			repo := initCaptureRepo(t)
++			runID := "replay-fixture-20260101T000000Z-invalid"
++			createForwardReplayFixture(t, repo, runID)
++			rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
++				m.Stages[1].Name = recordedName
++			})
++			writeForwardReplayConfig(t, repo)
++			marker := filepath.Join(repo, "runner-was-called")
++			planScript := filepath.Join(repo, "forward-plan.sh")
++			if err := os.WriteFile(planScript, []byte("#!/bin/sh\ntouch '"+marker+"'\nprintf P > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
++				t.Fatalf("write side-effect runner: %v", err)
++			}
++			chdir(t, repo)
++
++			var out, errOut bytes.Buffer
++			cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++			cmd.SetArgs([]string{runID})
++			err := cmd.Execute()
++			if err == nil || !strings.Contains(err.Error(), "stage \""+recordedName+"\" not found") {
++				t.Fatalf("forward replay error = %v, want missing stage %q", err, recordedName)
++			}
++			if out.Len() != 0 {
++				t.Fatalf("forward replay produced partial output %q", out.String())
++			}
++			if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
++				t.Fatalf("runner side effect exists after failed preflight: %v", statErr)
++			}
++		})
++	}
++}
++
++func TestReplayForwardRunnerOverrideBypassesWorkflowLookup(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX shell adapter test")
++	}
++	repo, runID := captureStageForReplay(t)
++	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
++		m.Stages[0].Name = "unmapped.r2"
++	})
++	override := filepath.Join(repo, "forward-override.sh")
++	if err := os.WriteFile(override, []byte("#!/bin/sh\nprintf override > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
++		t.Fatalf("write override runner: %v", err)
++	}
++	chdir(t, repo)
++
++	var out, errOut bytes.Buffer
++	cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
++	cmd.SetArgs([]string{runID, "--runner", override})
++	if err := cmd.Execute(); err != nil {
++		t.Fatalf("forward replay with --runner: %v\nstderr: %s", err, errOut.String())
++	}
++	if got, want := out.String(), "override"; got != want {
++		t.Fatalf("override output = %q, want %q", got, want)
++	}
++}
++
+ func TestReplayForwardSubmoduleMismatchDoesNotInvokeRunner(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	runID := "mywf-20260101T000000Z-forward-mismatch"
+diff --git a/internal/liverun/replay_forward.go b/internal/liverun/replay_forward.go
+index 9e60797..a4f1ebd 100644
+--- a/internal/liverun/replay_forward.go
++++ b/internal/liverun/replay_forward.go
+@@ -50,6 +50,17 @@ func ReplayForward(
+ 		return fmt.Errorf("run %q has no stages to replay", runID)
+ 	}
+ 
++	// Resolve every runner before creating a checkout or executing a stage. A
++	// malformed later stage must not leave a forward replay partially executed.
++	runners := make([]replay.Runner, len(manifest.Stages))
++	for i, stage := range manifest.Stages {
++		runner, err := resolveRunner(stage.Name)
++		if err != nil {
++			return fmt.Errorf("stage %q: resolve runner: %w", stage.Name, err)
++		}
++		runners[i] = runner
++	}
++
+ 	gitSHA := manifest.OriginalCheckout()
+ 	wt, err := worktree.Checkout(ctx, root, gitSHA)
+ 	if err != nil {
+@@ -79,11 +90,6 @@ func ReplayForward(
+ 	defer os.RemoveAll(scratch)
+ 
+ 	for i, stage := range manifest.Stages {
+-		runner, err := resolveRunner(stage.Name)
+-		if err != nil {
+-			return fmt.Errorf("stage %q: resolve runner: %w", stage.Name, err)
+-		}
+-
+ 		// Materialize recorded inputs from the manifest commit.
+ 		inputs := make([]replay.RunInput, 0, len(stage.Inputs))
+ 		for _, inp := range stage.Inputs {
+@@ -103,7 +109,7 @@ func ReplayForward(
+ 			return fmt.Errorf("stage %q: mkdir scratch: %w", stage.Name, err)
+ 		}
+ 
+-		res, err := runner.Run(ctx, replay.RunRequest{
++		res, err := runners[i].Run(ctx, replay.RunRequest{
+ 			WorktreeDir:     wt.Dir,
+ 			ScratchDir:      stageScratch,
+ 			Inputs:          inputs,
+diff --git a/internal/liverun/replay_forward_test.go b/internal/liverun/replay_forward_test.go
+index 4db1e03..44266dd 100644
+--- a/internal/liverun/replay_forward_test.go
++++ b/internal/liverun/replay_forward_test.go
+@@ -3,6 +3,7 @@ package liverun
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -13,6 +14,15 @@ import (
+ 	"github.com/joshuavial/etude/internal/workflow"
+ )
+ 
++type countingForwardRunner struct {
++	calls int
++}
++
++func (r *countingForwardRunner) Run(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++	r.calls++
++	return replay.RunResult{Output: []byte("unexpected")}, nil
++}
++
+ // createRunForReplay creates a run with 3 stages using a stub runner
+ // and returns the run id and the repo.
+ func createRunForReplay(t *testing.T) (repo, runID string) {
+@@ -75,6 +85,51 @@ func TestReplayForwardThreeStages(t *testing.T) {
+ 	}
+ }
+ 
++func TestReplayForwardPreflightsAllRunnersBeforeExecution(t *testing.T) {
++	repo, runID := createRunForReplay(t)
++	var resolved []string
++	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
++		if got, want := len(resolved), 3; got != want {
++			t.Errorf("runners resolved before execution = %d, want %d", got, want)
++		}
++		return replay.RunResult{Output: []byte("replayed")}, nil
++	})
++
++	if err := ReplayForward(context.Background(), refstore.New(repo), repo, &bytes.Buffer{}, runID,
++		func(stageName string) (replay.Runner, error) {
++			resolved = append(resolved, stageName)
++			return runner, nil
++		}); err != nil {
++		t.Fatalf("ReplayForward: %v", err)
++	}
++	if got, want := strings.Join(resolved, ","), "stage-a,stage-b,stage-c"; got != want {
++		t.Fatalf("runner resolution order = %q, want %q", got, want)
++	}
++}
++
++func TestReplayForwardPreflightFailureDoesNotExecuteAnyRunner(t *testing.T) {
++	repo, runID := createRunForReplay(t)
++	runner := &countingForwardRunner{}
++	var resolved []string
++	err := ReplayForward(context.Background(), refstore.New(repo), repo, &bytes.Buffer{}, runID,
++		func(stageName string) (replay.Runner, error) {
++			resolved = append(resolved, stageName)
++			if stageName == "stage-c" {
++				return nil, errors.New("missing runner")
++			}
++			return runner, nil
++		})
++	if err == nil || !strings.Contains(err.Error(), "stage-c") || !strings.Contains(err.Error(), "missing runner") {
++		t.Fatalf("ReplayForward error = %v, want stage-c runner-resolution failure", err)
++	}
++	if runner.calls != 0 {
++		t.Fatalf("runner calls = %d, want 0 after failed preflight", runner.calls)
++	}
++	if got, want := strings.Join(resolved, ","), "stage-a,stage-b,stage-c"; got != want {
++		t.Fatalf("runner resolution order = %q, want %q", got, want)
++	}
++}
++
+ func TestReplayForwardCallerStageUsesOriginalCheckout(t *testing.T) {
+ 	repo := initTestRepo(t)
+ 	originalSHA := headSHA(t, repo)
