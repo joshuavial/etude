@@ -1,0 +1,38 @@
+# Verify — etude-8hq.2 (optional original event time for retro artifacts)
+
+## Automated tests
+- `go test ./internal/runmanifest/... ./internal/cli/...` → PASS. New tests:
+  TestOccurredAt{RoundTrip, ZeroOmitted, MalformedRejected, ExistingManifestNoKey};
+  TestLog{HeaderIncludesEventColumn, EventColumnDashForNoOccurredAt,
+  EventTimeSortBackfilledRetro}; TestRetroCaptureOccurredAt{SetsField,
+  MalformedRejected}; TestRetroCaptureWithoutOccurredAtNoLine;
+  TestRetroGenerateOccurredAtSetsField.
+- `make docs` regenerated docs/cli/etude_retro_capture.md + _generate.md only;
+  `make docs-reality` → OK. `make dogfood-audit` → exit 0.
+
+## Backward-compat (the crux) — verified empirically
+- `formatTimeOmitZero` (manifest.go:1039) returns "" for zero time; used for
+  `occurred_at` ONLY (manifest.go:948); `created` keeps `formatTime` (947).
+- Round-trip of a REAL existing manifest (no occurred_at): re-marshal contains NO
+  `occurred_at` key, re-parses, Validate() OK. A zero OccurredAt never emits
+  `occurred_at:""` nor `0001-01-01...`. No manifest_version bump (DisallowUnknownFields
+  accepts old docs lacking the key).
+
+## Built-binary manual test (CLI bead)
+```
+TIMESTAMP             KIND   ID            EVENT                 SUMMARY
+2026-05-27T..Z        retro  ...-2         2025-01-01T08:00:00Z  scope=workflow ...
+2026-05-27T..Z        run    run-aaa       -                     demo (1 stages)
+2026-05-27T..Z        retro  ...           -                     scope=workflow ...
+```
+- Backfilled retro (occurred 2025-01-01) sorts FIRST by event time; TIMESTAMP shows
+  CAPTURE time (not occurred); runs + un-backfilled retros show EVENT=-, ordered as
+  before. EVENT + TIMESTAMP same RFC3339 precision (aligned).
+- `retro capture --occurred-at not-a-date` → exit 1, clear error, NO ref written.
+- `retro show` prints `occurred:` only when set.
+- Throwaway refs cleaned up; no leak to origin.
+
+## Result: PASS
+No defects. codex implement NIT (no explicit malformed `generate --occurred-at` test)
+is covered by the shared `assembleAndWriteRetro` validation path (capture-malformed
+test exercises identical code).

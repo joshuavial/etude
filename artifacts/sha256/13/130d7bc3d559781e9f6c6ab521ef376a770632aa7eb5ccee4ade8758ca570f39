@@ -1,0 +1,31 @@
+# Final Review — etude-8hq.2
+
+## Gate summary
+PLAN gate — tier 1 (degraded 3-seat; pilms down):
+- r1: **codex BLOCK** / gemini GO / opus GO. codex caught a real defect the other
+  two read past: the draft log render set `TIMESTAMP=effectiveTime()`, which HIDES
+  capture time for backfilled retros (violating "without losing capture time";
+  today TIMESTAMP=created per log.go + docs/log.md). Per the not-a-vote-count rule
+  (runbook P3), adopted codex's fix: TIMESTAMP stays = capture, ADD an EVENT column,
+  sort by effectiveTime. (Backward-compat + sidecar overlap were GO across seats.)
+- r2: **codex GO** — fix confirmed.
+
+IMPLEMENT gate — tier 1, **unanimous GO** (codex/gemini/opus). All three verified:
+the `formatTimeOmitZero` backward-compat (zero → omitted; existing manifests
+byte-stable; no version bump; Validate doesn't require it), the AMENDED log render
+(TIMESTAMP=capture, EVENT=occurred-or-`-`, same precision, sort by effectiveTime),
+validated `--occurred-at` on capture+generate, conditional `occurred:` in show, runs
+unaffected, docs correct (sidecar independence documented; generated docs
+regenerated). Opus ran the built binary + a real-manifest byte-stability probe.
+codex NIT (no explicit malformed `generate --occurred-at` test) is covered by the
+shared `assembleAndWriteRetro` path.
+
+## Scope
+10 files, 1 commit (9e70870): manifest.go(+test), retro.go(+test), log.go(+test),
+docs/retro.md, docs/log.md, 2 regenerated docs/cli. OPTIONAL additive manifest field
+(backward-compatible). Premise-check: core `occurred_at` (canonical instant) and the
+8hq.3 dogfood sidecar `original_event_date` (date-only, audit-enforced) are
+INDEPENDENT — core never parses the sidecar (etude-2ku posture preserved); 8hq.5
+backfill sets both. No backfill here (that's 8hq.5).
+
+## Verdict: GO — ready to close.

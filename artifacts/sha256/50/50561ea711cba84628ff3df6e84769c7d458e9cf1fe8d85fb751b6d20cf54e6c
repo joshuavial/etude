@@ -1,0 +1,296 @@
+✓ etude-8hq.2 · Add original event time to retro artifacts   [● P1 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+Backfilled retros currently cluster in etude log at migration time, not when the retros happened. Add an explicit original/occurred-at timestamp field or manifest ref for retro capture/generate, surface it in show/log where useful, and document migration-time vs event-time semantics.
+
+DESIGN
+## Plan
+
+**Approach:** Add an OPTIONAL `OccurredAt time.Time` (json `occurred_at`,
+omitempty) to the run manifest — manifest-wide so the round-trip stays in one
+place, but EXPOSED only through `retro capture`/`generate` via a new
+`--occurred-at <RFC3339>` flag. It is the canonical machine-readable event-time
+for retros (when the retro's events actually happened), distinct from the
+existing REQUIRED `Created` (capture/migration time). It stays optional and
+backward-compatible: a manifest with no `occurred_at` (every existing retro and
+run) remains valid and `OccurredAt.IsZero()` is true, so `show`/`log` fall back
+to `created`. Runs keep using real capture time (no flag plumbed into the run
+path). This bead adds the CAPABILITY + DISPLAY only; it does NOT backfill
+existing retros (that is etude-8hq.5).
+
+**Manifest field decision (optional + backward-compat proof):**
+- Add `OccurredAt time.Time` to `Manifest` struct (internal/runmanifest/manifest.go:42,
+  next to `Created`). Add `OccurredAt string \`json:"occurred_at,omitempty"\`` to
+  `manifestJSON` (manifest.go:765, next to `Created`).
+- Marshal (`toJSON`, manifest.go:933-942): set `OccurredAt: formatTimeOmitZero(m.OccurredAt)`
+  — a small helper that returns `""` for a zero time (so omitempty drops the key)
+  and `formatTime(t)` otherwise. Do NOT reuse `formatTime` directly: `formatTime`
+  on a zero time emits `"0001-01-01T00:00:00Z"`, which would defeat omitempty and
+  pollute every existing-shaped retro. The helper is the load-bearing detail.
+- Unmarshal (`toManifest`, manifest.go:1045): when `m.OccurredAt == ""` leave
+  `OccurredAt` as the zero `time.Time`; otherwise `parseTime("occurred_at", m.OccurredAt)`
+  and surface a parse error. (parseTime already returns UTC, RFC3339Nano —
+  manifest.go:1234.)
+- `Validate` (manifest.go:200): add NO new required check. `Created` stays
+  required (:210-211); `OccurredAt` is never validated as required. Optionally add
+  a defensive non-required sanity check only if non-zero (not needed — parseTime
+  already guarantees a valid instant; skip to keep the diff minimal).
+- BACKWARD-COMPAT PROOF: existing manifests have no `occurred_at` key. `ParseJSON`
+  uses `DisallowUnknownFields` (manifest.go:274) — adding `occurred_at` to the
+  KNOWN `manifestJSON` struct means old docs (which simply lack the key) still
+  decode; an unknown field would only break if we encountered a key NOT in the
+  struct, which is not the case. Absent key ⇒ `m.OccurredAt == ""` ⇒ zero
+  `time.Time` ⇒ omitted on re-marshal ⇒ byte-identical round-trip for every
+  existing retro/run. No manifest_version bump needed (the change is purely
+  additive-optional; v2/v3 manifests stay v2/v3). Round-trip test will assert a
+  v2 retro with no occurred_at re-serializes unchanged.
+
+**Capture surface decision:**
+- Add `occurredAt string` to `retroCaptureConfig` (retro.go:37) and
+  `retroGenerateConfig` (retro.go:59), and `occurredAt string` to `retroWriteParams`
+  (retro.go:83).
+- Flag name: `--occurred-at` (RFC3339 timestamp string). Register on BOTH
+  `retro capture` (retro.go:425, near `--meta-file`) and `retro generate`
+  (retro.go:807) — generate produces the same retro artifact shape and the same
+  backfill/cadence use case applies, so it needs the flag for symmetry. Help text:
+  "original event time the retro covers, as RFC3339 (optional; defaults to capture
+  time in displays when absent)".
+- Validation: in `assembleAndWriteRetro` (retro.go:608), when `p.occurredAt != ""`,
+  parse with `time.Parse(time.RFC3339, strings.TrimSpace(p.occurredAt))` and on
+  error return `--occurred-at "<v>" is not a valid RFC3339 timestamp: <err>`
+  BEFORE allocating the retro id / writing any ref. Set
+  `manifest.OccurredAt = parsed.UTC()` (retro.go:734-741). When empty, leave
+  `OccurredAt` zero. Wire `occurredAt: cfg.occurredAt` into both the capture
+  `retroWriteParams` (retro.go:545) and the generate `retroWriteParams`
+  (retro.go:935). (Parse uses RFC3339 not RFC3339Nano for the user-facing input so
+  a plain `2026-05-20T00:00:00Z` is accepted; RFC3339Nano-format input also parses
+  under RFC3339's grammar.)
+
+**show decision (retro.go:290 printRetroDetail):**
+- After the `created:` line (retro.go:302), add — only when
+  `!m.OccurredAt.IsZero()`:
+  `fmt.Fprintf(out, "occurred:  %s\n", m.OccurredAt.UTC().Format(time.RFC3339))`.
+  Label `occurred:` sits alongside `created:`; both are shown so capture time is
+  never lost. Absent ⇒ line omitted ⇒ existing retros render exactly as before.
+- `retro list` (retro.go:179): leave the table columns unchanged for this bead
+  (adding a column churns every list test/doc and the acceptance targets `show`
+  + `log`, not `list`). Note this as a deliberate scope boundary.
+
+**log decision (the load-bearing acceptance — internal/cli/log.go):**
+- `etude log` must "distinguish or sort/display event time without losing capture
+  time." Chosen behavior: introduce an EVENT-TIME column and sort by event-time,
+  with capture time still shown.
+  - `logEvent` (log.go:16): add `Occurred time.Time` field. In `buildEvents`,
+    for retros set `Occurred: manifest.OccurredAt` (log.go:193); for runs leave it
+    zero (runs have no occurred_at). The existing `Timestamp` field keeps holding
+    `manifest.Created` (capture time) — capture time is NEVER dropped.
+  - Add an `effectiveTime()` helper on `logEvent`: returns `Occurred` when
+    `!Occurred.IsZero()`, else `Timestamp`. Sort (log.go:203-212) by
+    `effectiveTime()` first, then break ties by `(Kind, ID)` exactly as today, so
+    a backfilled retro with an `occurred_at` lands chronologically among the runs
+    it retrospects instead of clustering at migration time.
+  - Render (log.go:128-137) — **AMENDED per plan-gate-r1 codex BLOCK:** the
+    `TIMESTAMP` column MUST keep showing `Timestamp` (= `manifest.Created`, the
+    capture time) for EVERY row — NOT `effectiveTime()`. The original draft set
+    `TIMESTAMP = effectiveTime()`, which for a backfilled retro displays
+    `occurred_at` and HIDES `created`, violating the acceptance's "without losing
+    capture time" (today `TIMESTAMP` is `created`, log.go:128/193, and docs/log.md:24
+    promises it). Correct render: keep `TIMESTAMP` = capture time, ADD an `EVENT`
+    column = `Occurred` when present else `-`, and SORT rows by `effectiveTime()`
+    (occurred_at when present, else created). New header
+    `TIMESTAMP\tKIND\tID\tEVENT\tSUMMARY`. Result: capture time is ALWAYS visible
+    (`TIMESTAMP`), event time is visible when known (`EVENT`), and a backfilled
+    retro lands chronologically (sorted by `effectiveTime`) among the runs it
+    retrospects. The sort key (`effectiveTime`) is not itself a single displayed
+    monotonic column — that is acceptable and standard (cf. git log sorting by
+    commit date while showing author date); the EVENT column makes the ordering
+    legible. Existing retros + all runs (no occurred_at) show `EVENT=-`, keep
+    `TIMESTAMP=created`, and sort by created — byte-identical to today's output
+    except for the added `EVENT=-` column (lock this with a golden-output test,
+    per the Opus seat NIT).
+  - Formatting NIT (Opus seat): the `EVENT` column must format with the SAME
+    precision as the `TIMESTAMP` column (log.go:132 currently renders `Timestamp`
+    at `RFC3339` second-precision) so the table is not ragged — render `Occurred`
+    via the same formatter as `Timestamp`, not raw RFC3339Nano.
+  - Rationale for column choice: the acceptance allows "distinguish OR sort/display";
+    this does BOTH — distinguishes via the EVENT column and sorts via effective
+    time — and is the most faithful to the bead's complaint that backfilled retros
+    "cluster at migration time."
+
+**PREMISE-CHECK — overlap with etude-8hq.3's sidecar `original_event_date`:**
+8hq.3 (shipped, CLOSED) added a DOGFOOD-LAYER cadence retro-meta sidecar whose
+7-key schema includes `original_event_date` ("YYYY-MM-DD" string), enforced ONLY
+by `scripts/dogfood-completeness-audit.sh` check (f) — NOT by etude core
+(docs/retro.md:61-110 explicitly states etude only checks `json.Valid` and stores
+bytes verbatim). This bead (8hq.2) adds a CORE machine-readable
+`occurred_at` timestamp on the manifest, surfaced by `show`/`log`.
+RECONCILIATION (decision, no code/sidecar change here):
+- The core `occurred_at` is the CANONICAL event time for etude-native tooling
+  (manifest field, `retro show occurred:`, `etude log` EVENT column + sort).
+- The sidecar `original_event_date` remains a HUMAN/DOGFOOD convenience (date-only,
+  "YYYY-MM-DD") that downstream cross-retro analysis (etude-9ey) reads from the
+  meta JSON. It is NOT removed or re-pointed by this bead.
+- Relationship: `original_event_date` SHOULD mirror the date portion of
+  `occurred_at` when both are set. They do not auto-sync (core does not parse the
+  sidecar — that would violate 8hq.3/etude-2ku's verbatim posture). Precision
+  differs by design: core = full RFC3339 instant; sidecar = calendar date.
+- Forward note for etude-8hq.5 (backfill, the NEXT bead): 8hq.5 SHOULD set BOTH —
+  `--occurred-at <RFC3339>` (core) AND the sidecar `original_event_date` via
+  `--meta-file` — for each backfilled cadence retro, keeping the two coherent.
+  This bead documents that expectation in docs/retro.md so the two do not silently
+  diverge; it does not modify the audit or the sidecar convention (8hq.3 scope,
+  shipped). The plan does NOT add core parsing/validation of the sidecar.
+
+**Backward-compat + existing data:** All current retros/runs have no
+`occurred_at` and stay valid (proof above). `retro show` omits the `occurred:`
+line; `etude log` shows `EVENT=-` and sorts by capture time — identical to today
+for un-backfilled data. No migration. No backfill (etude-8hq.5).
+
+**Tests:**
+- internal/runmanifest (manifest_test.go): (1) round-trip a retro-shaped manifest
+  with `OccurredAt` set → `occurred_at` present, parses back equal; (2) round-trip
+  with `OccurredAt` zero → key ABSENT in JSON, parses back zero (byte-identical to
+  a no-field doc — the omitempty/zero proof); (3) ParseJSON of a doc with a
+  malformed `occurred_at` → error from parseTime; (4) existing fixture manifests
+  with no key still parse and Validate (no new required failure).
+- internal/cli (retro_test.go): (5) `retro capture --occurred-at <valid>` → `retro
+  show` prints `occurred:` line and the manifest carries occurred_at; (6) capture
+  WITHOUT the flag → no `occurred:` line, manifest occurred_at absent (regression
+  guard); (7) `--occurred-at <malformed>` → error, no ref written; (8) `retro
+  generate --occurred-at` sets it too.
+- internal/cli (log_test.go): (9) two runs + a retro whose occurred_at is BEFORE
+  both runs → retro sorts FIRST (proves event-time sort, not capture-time
+  clustering); EVENT column shows the occurred time; (10) a retro with no
+  occurred_at → EVENT `-`, sorts by created exactly as the existing fixture
+  (degrade guard); (11) header now includes EVENT column. Edge: equal effective
+  times still tie-break by (kind,id).
+
+**Docs (generated vs hand-written):**
+- `docs/cli/etude_retro_capture.md`, `docs/cli/etude_retro_generate.md`,
+  `docs/cli/etude_log.md` — GENERATED (carry the `gen-docs; DO NOT EDIT` banner,
+  verified). Adding the `--occurred-at` flag regenerates these via `make docs`
+  during IMPLEMENT — do NOT hand-edit; run `make docs` and commit the regen so
+  `make docs-check` stays green.
+- `docs/retro.md` — HAND-WRITTEN (no banner). Add an "Original event time"
+  subsection under capture: document `--occurred-at`, RFC3339 input, optional +
+  defaults-to-capture-time-in-displays semantics, the `occurred:` line in `show`,
+  and the premise-check relationship to the sidecar `original_event_date`
+  (core canonical instant vs sidecar date-only convenience; 8hq.5 sets both).
+- `docs/log.md` — HAND-WRITTEN. Update the columns table (add `EVENT` row),
+  update the sort description ("ascending by **effective time** = occurred_at when
+  present else created"), and the sample table to include the EVENT column. Note
+  the migration-time-vs-event-time behavior explicitly (the bead's core ask).
+- `make docs-reality` must stay OK after the flag add.
+
+**Scope/files (1 bead = 1 commit):**
+- internal/runmanifest/manifest.go — add OccurredAt to Manifest + manifestJSON;
+  formatTimeOmitZero helper; marshal/unmarshal wiring; NO new required validation.
+- internal/runmanifest/manifest_test.go — round-trip + omitempty + parse-error tests.
+- internal/cli/retro.go — --occurred-at flag on capture + generate; config +
+  retroWriteParams field; RFC3339 parse/validate in assembleAndWriteRetro;
+  set manifest.OccurredAt; `occurred:` line in printRetroDetail.
+- internal/cli/retro_test.go — capture/generate/show flag tests.
+- internal/cli/log.go — logEvent.Occurred; effectiveTime() sort; EVENT column.
+- internal/cli/log_test.go — event-time sort + EVENT column + degrade tests.
+- docs/retro.md — hand-written: --occurred-at + show + sidecar reconciliation.
+- docs/log.md — hand-written: EVENT column + effective-time sort semantics.
+- docs/cli/etude_retro_capture.md, docs/cli/etude_retro_generate.md,
+  docs/cli/etude_log.md — REGENERATED by `make docs` (not hand-edited).
+- Out of scope: backfilling existing retros (etude-8hq.5); the sidecar convention
+  or audit check (etude-8hq.3, shipped); adding occurred_at to the run capture
+  path or to `retro list`'s columns; other 8hq beads.
+
+**Risks:**
+- formatTimeOmitZero is the make-or-break for backward compat: if a zero
+  OccurredAt ever serializes a real timestamp, every existing retro's round-trip
+  changes. Test (2) guards this directly.
+- log EVENT-column header change will break any test asserting the exact header
+  string — log_test.go must be updated in the same commit (listed above).
+- `make docs` regen of the 3 generated CLI files must be committed or docs-check
+  fails CI; flagged for IMPLEMENT. Low risk, mechanical.
+- Premise risk (mitigated): must NOT make core parse/validate the sidecar
+  `original_event_date` (would violate 8hq.3/etude-2ku verbatim posture). The plan
+  keeps occurred_at and the sidecar fully independent; only docs note the
+  should-mirror relationship.
+
+**Capture:**
+- inputs: bd show etude-8hq.2 (acceptance), bd show etude-8hq.3 (shipped sidecar
+  design + 7-key schema incl. original_event_date), bd show etude-8hq.5 (backfill
+  scope); internal/runmanifest/manifest.go (Manifest:33-46, Validate:200-255,
+  manifestJSON:756-769, toJSON:862-943, formatTime:1021-1023, toManifest:1035-1079,
+  parseTime:1234-1240); internal/cli/log.go (logEvent:16-23, buildEvents/sort:144-215,
+  render:128-137); internal/cli/retro.go (configs:37-111, capture flags:401-447,
+  assembleAndWriteRetro:608-753, printRetroDetail:290-399, generate flags:785-830,
+  generate run:935-957); docs/retro.md (sidecar+cadence convention:44-110, list:217-247,
+  show:249-307); docs/log.md (columns/sort:24-37, limits:65-77); docs/cli/*.md gen-docs
+  banner; Makefile docs/docs-check/docs-reality targets:22-40.
+- output: bead etude-8hq.2 --design field.
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added `OccurredAt time.Time` to `Manifest` struct and `occurred_at string `json:"occurred_at,omitempty"`` to `manifestJSON` in manifest.go
+- Added `formatTimeOmitZero(t time.Time) string` helper: returns "" for zero time (omitempty drops the key), `formatTime(t)` otherwise — the backward-compat guard
+- Marshal wires `OccurredAt: formatTimeOmitZero(m.OccurredAt)`; `created` keeps using `formatTime` (always serialized)
+- Unmarshal: when `m.OccurredAt == ""` leaves zero; otherwise `parseTime("occurred_at", ...)` and surfaces error
+- Added `occurredAt string` to `retroCaptureConfig`, `retroGenerateConfig`, `retroWriteParams`
+- Added `--occurred-at <RFC3339>` flag to both `retro capture` and `retro generate`
+- `assembleAndWriteRetro`: RFC3339 parse/validate before any ref is written; sets `manifest.OccurredAt`
+- `printRetroDetail`: renders `occurred:` line after `created:` only when `OccurredAt` is non-zero
+- log.go: added `Occurred time.Time` to `logEvent`; `effectiveTime()` helper; sort by `effectiveTime()`; new header `TIMESTAMP\tKIND\tID\tEVENT\tSUMMARY`; EVENT column shows RFC3339 occurred time or `-`
+- Tests: 4 manifest tests, 4 retro tests, 3 log tests (all pass)
+- `make docs` regenerated `docs/cli/etude_retro_capture.md` and `docs/cli/etude_retro_generate.md`
+- Hand-written docs: `docs/retro.md` (Original event time section + sidecar relationship) and `docs/log.md` (EVENT column + effective-time sort)
+
+**Omit-zero backward-compat:** `formatTimeOmitZero` returns "" for zero `time.Time`; omitempty drops the key from JSON. Byte-stability confirmed by `TestOccurredAtZeroOmitted` (round-trip produces identical bytes).
+
+**Checks run:**
+- `go build ./...`: pass
+- `go test ./...`: all pass (14 packages)
+- `make docs`: regenerated 2 expected files (etude_retro_capture.md, etude_retro_generate.md)
+- `make docs-reality`: OK
+- `make dogfood-audit`: exit 0
+
+**Built-binary manual test observed output:**
+
+```
+TIMESTAMP             KIND   ID                                          EVENT                 SUMMARY
+2026-05-27T00:36:14Z  retro  retro-run-manual-test-run-20260527T003614Z  2026-03-15T10:30:00Z  scope=run trigger=manual subjects=manual-test-run
+2026-05-27T00:36:11Z  run    manual-test-run                             -                     manual (1 stages)
+```
+
+Backfilled retro (occurred 2026-03-15) sorts BEFORE run (captured 2026-05-27).
+TIMESTAMP shows capture time; EVENT shows event time; run shows EVENT=-.
+retro show output: created + occurred lines both present.
+
+**Changed files:**
+- internal/runmanifest/manifest.go
+- internal/runmanifest/manifest_test.go
+- internal/cli/retro.go
+- internal/cli/retro_test.go
+- internal/cli/log.go
+- internal/cli/log_test.go
+- docs/retro.md
+- docs/log.md
+- docs/cli/etude_retro_capture.md (regenerated)
+- docs/cli/etude_retro_generate.md (regenerated)
+
+**Plan deviations:** None. etude_log.md was not regenerated (no new CLI flags on log command — render-only change). The plan said 3 generated docs; only 2 have flag changes.
+
+**Capture:**
+- inputs: approved plan (etude-8hq.2 --design field) and Plan gate notes
+- output: working tree diff (all files above)
+
+ACCEPTANCE CRITERIA
+Retro capture can record an occurred-at/source-event timestamp; retro show displays it; etude log can distinguish or sort/display event time without losing capture time; existing retros remain valid; docs explain the behavior.
+
+LABELS: dogfood, log, phase, phase:implement, retro
+
+PARENT
+  ↑ ○ etude-8hq: (EPIC) Phase: enforce dogfood completeness ● P0
+

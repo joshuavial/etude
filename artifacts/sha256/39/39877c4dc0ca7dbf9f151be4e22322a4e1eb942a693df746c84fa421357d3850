@@ -1,0 +1,885 @@
+commit 9e708703920ede6cf0eda56f75d94058d6127b84
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 08:45:50 2026 +0800
+
+    add optional original event time to retro artifacts
+
+diff --git a/docs/cli/etude_retro_capture.md b/docs/cli/etude_retro_capture.md
+index de724cf..3bc8ff3 100644
+--- a/docs/cli/etude_retro_capture.md
++++ b/docs/cli/etude_retro_capture.md
+@@ -24,6 +24,7 @@ etude retro capture <scope> [flags]
+       --message string            retro ref commit message
+       --meta-file string          path to retro-meta JSON sidecar, or - for stdin (optional; must be well-formed JSON)
+       --model string              LLM model used (if any)
++      --occurred-at string        original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)
+       --ref stringArray           additional ref as key=value (repeatable)
+       --skill-id string           skill id (default "retro")
+       --skill-repo string         skill repo (default "manual")
+diff --git a/docs/cli/etude_retro_generate.md b/docs/cli/etude_retro_generate.md
+index 5741963..4d83a34 100644
+--- a/docs/cli/etude_retro_generate.md
++++ b/docs/cli/etude_retro_generate.md
+@@ -23,6 +23,7 @@ etude retro generate <scope> [flags]
+   -h, --help                      help for generate
+       --message string            retro ref commit message
+       --model string              LLM model used (if any)
++      --occurred-at string        original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)
+       --ref stringArray           additional ref as key=value (repeatable)
+       --skill-id string           skill id (default "retro")
+       --skill-repo string         skill repo (default "manual")
+diff --git a/docs/log.md b/docs/log.md
+index 783d181..6cbecb7 100644
+--- a/docs/log.md
++++ b/docs/log.md
+@@ -12,26 +12,38 @@ etude log
+ ```
+ 
+ Prints a tab-aligned table of run and retro events, ordered **ascending by
+-creation time** (oldest first, so the narration reads forward):
++effective time** (oldest first, so the narration reads forward):
+ 
+ ```
+-TIMESTAMP             KIND   ID                               SUMMARY
+-2026-05-23T10:00:00Z  run    run-1                            manual (2 stages)
+-2026-05-23T11:30:00Z  run    run-2                            manual (1 stages); 3 gates
+-2026-05-23T12:00:00Z  retro  retro-run-run-1-20260523T120000  scope=run trigger=manual subjects=run-1
++TIMESTAMP             KIND   ID                               EVENT                 SUMMARY
++2026-05-23T10:00:00Z  run    run-1                            -                     manual (2 stages)
++2026-05-23T11:30:00Z  run    run-2                            -                     manual (1 stages); 3 gates
++2026-05-23T12:00:00Z  retro  retro-run-run-1-20260523T120000  -                     scope=run trigger=manual subjects=run-1
++2026-06-01T09:00:00Z  retro  retro-run-run-1-20260601T090000  2026-05-23T10:00:00Z  scope=run trigger=manual subjects=run-1
+ ```
+ 
+ Columns:
+ 
+ | Column | Content |
+ |--------|---------|
+-| `TIMESTAMP` | Manifest `created` time in RFC3339 UTC |
++| `TIMESTAMP` | Manifest `created` time (capture time) in RFC3339 UTC — always shown, never replaced |
+ | `KIND` | `run` or `retro` |
+ | `ID` | The run id or retro id |
++| `EVENT` | The `occurred_at` event time in RFC3339 UTC when set (backfilled retros), or `-` when absent (all runs, un-backfilled retros) |
+ | `SUMMARY` | For a run: `<workflow> (<n> stages)`, plus `; <n> gates` when the run carries review-gate attempts. For a retro: `scope=<scope> trigger=<trigger> subjects=<comma-joined subjects>`, with any empty field omitted. |
+ 
+-Events are sorted by `created` ascending; ties (equal timestamps) are broken
+-deterministically by `(kind, id)` so the output is stable.
++Events are sorted by **effective time** ascending: `occurred_at` when present,
++otherwise `created` (capture time). This places a backfilled retro
++chronologically among the runs it retrospects rather than clustering at
++migration time. Ties (equal effective times) are broken deterministically by
++`(kind, id)` so the output is stable.
++
++The `TIMESTAMP` column always shows capture time (`created`). The `EVENT`
++column reveals when the events being retrospected actually occurred — distinct
++from when the retro was written. For runs and retros without `occurred_at`,
++`EVENT` is `-` and the effective sort time equals the capture time, so the
++output is identical to the pre-`occurred_at` behavior (except for the added
++`EVENT=-` column).
+ 
+ When there are no events (after any filters), the command prints
+ `no events found` and exits 0.
+diff --git a/docs/retro.md b/docs/retro.md
+index 366000d..aa86fb5 100644
+--- a/docs/retro.md
++++ b/docs/retro.md
+@@ -35,12 +35,57 @@ Useful flags:
+ --model <model-id>
+ --skill-id <id>               # default: retro
+ --message <text>              # git commit message override
++--occurred-at <RFC3339>        # original event time (optional; see below)
+ --meta-file <path>|-          # optional retro-meta JSON sidecar
+ ```
+ 
+ The retro id is auto-assigned from the scope, primary subject, and timestamp.
+ Prints `captured <commit-sha>` and `ref refs/etude/retros/<id>` on success.
+ 
++### Original event time
++
++`--occurred-at <RFC3339>` records the time the retro's events actually happened,
++distinct from the capture timestamp (`created`). It is optional: if omitted,
++`retro show` and `etude log` fall back to showing capture time.
++
++```bash
++etude retro capture run \
++  --file retro.md \
++  --subject-run run-abc \
++  --occurred-at 2026-03-15T10:30:00Z
++```
++
++When set:
++- `retro show` prints an `occurred:` line immediately after `created:`.
++- `etude log` shows the event time in the `EVENT` column and sorts the retro
++  chronologically by event time (so a backfilled retro lands among the runs it
++  retrospects, not at migration time). The `TIMESTAMP` column always shows the
++  capture time.
++
++The value must be a valid RFC3339 timestamp (e.g. `2026-03-15T10:30:00Z` or
++`2026-03-15T10:30:00+09:00`). A malformed value is rejected with a clear error
++before any ref is written.
++
++Both `retro capture` and `retro generate` accept `--occurred-at`.
++
++#### Relationship to the sidecar `original_event_date`
++
++The cadence retro-meta sidecar (see below) has an `original_event_date`
++(`YYYY-MM-DD`) field that serves a similar purpose as a human-readable date
++for downstream analysis. The two fields are independent:
++
++- `occurred_at` (manifest field): canonical RFC3339 instant, used by
++  `retro show`, `etude log` EVENT column, and effective-time sort. This is the
++  machine-readable source of truth for etude-native tooling.
++- `original_event_date` (sidecar): calendar date string, used by downstream
++  cross-retro analysis tools and checked by the dogfood completeness audit.
++  Etude core never parses the sidecar — it stores it verbatim.
++
++When both are set they SHOULD agree on the date (i.e. `occurred_at`'s date
++portion should match `original_event_date`). They do not auto-sync; the
++backfill bead (etude-8hq.5) should set both — `--occurred-at` for the core
++field and `--meta-file` for the sidecar — so they stay coherent.
++
+ ### Retro-meta sidecar
+ 
+ `--meta-file <path>|-` attaches an optional JSON sidecar (read from a file or
+diff --git a/internal/cli/log.go b/internal/cli/log.go
+index c4692fb..c7bb160 100644
+--- a/internal/cli/log.go
++++ b/internal/cli/log.go
+@@ -16,12 +16,24 @@ import (
+ // logEvent is one timeline entry, built from a single run or retro manifest.
+ type logEvent struct {
+ 	Timestamp  time.Time
++	// Occurred is the original event time for retros that carry occurred_at.
++	// It is zero for runs and retros without occurred_at.
++	Occurred   time.Time
+ 	Kind       string // "run" or "retro"
+ 	ID         string
+ 	Summary    string
+ 	subjectIDs string // comma-joined subjects (retro only); used for --subject filtering
+ }
+ 
++// effectiveTime returns the event's canonical sort time: Occurred when set
++// (non-zero), otherwise Timestamp (= manifest.Created, the capture time).
++func (e logEvent) effectiveTime() time.Time {
++	if !e.Occurred.IsZero() {
++		return e.Occurred
++	}
++	return e.Timestamp
++}
++
+ // logRunner holds the read-only dependencies for the log command.
+ type logRunner struct {
+ 	store  refstore.Store
+@@ -126,12 +138,17 @@ func (r *logRunner) run(ctx context.Context, kinds, subjects []string, limit int
+ 	}
+ 
+ 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
+-	fmt.Fprintln(w, "TIMESTAMP\tKIND\tID\tSUMMARY")
++	fmt.Fprintln(w, "TIMESTAMP\tKIND\tID\tEVENT\tSUMMARY")
+ 	for _, e := range events {
+-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
++		eventCol := "-"
++		if !e.Occurred.IsZero() {
++			eventCol = e.Occurred.UTC().Format(time.RFC3339)
++		}
++		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+ 			e.Timestamp.UTC().Format(time.RFC3339),
+ 			e.Kind,
+ 			e.ID,
++			eventCol,
+ 			e.Summary,
+ 		)
+ 	}
+@@ -192,6 +209,7 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
+ 		summary := strings.Join(summaryParts, " ")
+ 		events = append(events, logEvent{
+ 			Timestamp:  manifest.Created,
++			Occurred:   manifest.OccurredAt,
+ 			Kind:       "retro",
+ 			ID:         id,
+ 			Summary:    summary,
+@@ -199,9 +217,12 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
+ 		})
+ 	}
+ 
+-	// Sort ascending by (Timestamp, Kind, ID) for a stable, readable narration.
++	// Sort ascending by (effectiveTime, Kind, ID) for a stable, readable narration.
++	// effectiveTime = occurred_at when present, else created (capture time).
++	// This places backfilled retros chronologically among the runs they retrospect
++	// rather than clustering at migration/capture time.
+ 	sort.Slice(events, func(i, j int) bool {
+-		ti, tj := events[i].Timestamp, events[j].Timestamp
++		ti, tj := events[i].effectiveTime(), events[j].effectiveTime()
+ 		if !ti.Equal(tj) {
+ 			return ti.Before(tj)
+ 		}
+diff --git a/internal/cli/log_test.go b/internal/cli/log_test.go
+index 9e3ee50..974472e 100644
+--- a/internal/cli/log_test.go
++++ b/internal/cli/log_test.go
+@@ -640,3 +640,166 @@ func TestLogRunSummaryIncludesStageCount(t *testing.T) {
+ 		t.Fatalf("expected '(1 stages)' in run summary:\n%s", stdout)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// OccurredAt / EVENT column tests (etude-8hq.2)
++// ---------------------------------------------------------------------------
++
++// seedRetroWithOccurredAt writes a retro manifest with both Created and OccurredAt set.
++func seedRetroWithOccurredAt(t *testing.T, repo, retroID, subjectRunID string, created, occurred time.Time) {
++	t.Helper()
++	store := refstore.New(repo)
++	ctx := context.Background()
++
++	aStore := artifactstore.New()
++	artifact, err := aStore.AddContent("retro", "text/markdown; charset=utf-8", []byte("# retro "+retroID))
++	if err != nil {
++		t.Fatalf("AddContent retro %q: %v", retroID, err)
++	}
++	outputRef := runmanifest.ArtifactFromManifestArtifact(artifact)
++	files := aStore.Files()
++
++	m := runmanifest.Manifest{
++		RunID:           retroID,
++		Workflow:        "retro",
++		WorkflowVersion: "retro-v1",
++		Created:         created,
++		OccurredAt:      occurred,
++		Refs: map[string]string{
++			"scope":         "run",
++			"trigger":       "manual",
++			"subject_run.1": subjectRunID,
++		},
++		Stages: []runmanifest.Stage{
++			{
++				Name:       "retro",
++				ProducedBy: "retro",
++				GitSHA:     "0000000000000000000000000000000000000000",
++				Skill: runmanifest.Skill{
++					ID:      "retro",
++					Repo:    "manual",
++					Version: "manual",
++				},
++				Inputs:    []runmanifest.ArtifactRef{},
++				Output:    outputRef,
++				Timestamp: created,
++			},
++		},
++	}
++	if _, err := runmanifest.WriteManifestTree(ctx, store, retrosPrefix, m, files, refstore.WriteOptions{}); err != nil {
++		t.Fatalf("WriteManifestTree retro %q: %v", retroID, err)
++	}
++}
++
++// TestLogHeaderIncludesEventColumn verifies the new EVENT column is in the header.
++func TestLogHeaderIncludesEventColumn(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	captureRunForLog(t, repo, "hdr-run")
++
++	stdout, stderr, err := execute("log")
++	if err != nil {
++		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
++	}
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++	if !strings.Contains(stdout, "EVENT") {
++		t.Fatalf("header missing EVENT column:\n%s", stdout)
++	}
++}
++
++// TestLogEventColumnDashForNoOccurredAt verifies that rows without occurred_at
++// show EVENT="-" and sorts by capture time (degrade guard / golden column test).
++func TestLogEventColumnDashForNoOccurredAt(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	ts := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
++	seedRunWithTimestamp(t, repo, "ev-run-a", ts)
++	seedRetroWithTimestamp(t, repo, "ev-retro-b", "ev-run-a", ts.Add(time.Hour))
++
++	stdout, stderr, err := execute("log")
++	if err != nil {
++		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
++	}
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++
++	// Every data row (non-header) must have EVENT="-" since nothing has occurred_at.
++	for _, line := range strings.Split(stdout, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" || strings.HasPrefix(line, "TIMESTAMP") {
++			continue
++		}
++		fields := strings.Fields(line)
++		// Header order: TIMESTAMP KIND ID EVENT SUMMARY
++		// EVENT is index 3 (0-based).
++		if len(fields) < 4 {
++			continue
++		}
++		if fields[3] != "-" {
++			t.Fatalf("expected EVENT='-' for row without occurred_at, got %q in line: %s", fields[3], line)
++		}
++	}
++}
++
++// TestLogEventTimeSortBackfilledRetro verifies that a retro with occurred_at
++// set to a time BEFORE two runs sorts BEFORE those runs even though its capture
++// time (Created) is AFTER them. The TIMESTAMP column must still show capture
++// time and the EVENT column must show occurred time.
++func TestLogEventTimeSortBackfilledRetro(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	// Two runs captured at t1 and t2.
++	t1 := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
++	t2 := time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)
++	seedRunWithTimestamp(t, repo, "bk-run-a", t1)
++	seedRunWithTimestamp(t, repo, "bk-run-b", t2)
++
++	// Retro captured AFTER both runs (t3) but with occurred_at BEFORE t1.
++	t3 := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
++	occurred := time.Date(2026, 3, 25, 9, 0, 0, 0, time.UTC) // before both runs
++	seedRetroWithOccurredAt(t, repo, "bk-retro-z", "bk-run-a", t3, occurred)
++
++	stdout, stderr, err := execute("log")
++	if err != nil {
++		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
++	}
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++
++	// The retro should appear BEFORE both runs (sorted by effective time = occurred).
++	idxRetro := strings.Index(stdout, "bk-retro-z")
++	idxRunA := strings.Index(stdout, "bk-run-a")
++	idxRunB := strings.Index(stdout, "bk-run-b")
++	if idxRetro < 0 || idxRunA < 0 || idxRunB < 0 {
++		t.Fatalf("missing ids in output:\n%s", stdout)
++	}
++	if !(idxRetro < idxRunA && idxRetro < idxRunB) {
++		t.Fatalf("backfilled retro should sort before both runs by event time:\n%s", stdout)
++	}
++
++	// Find the retro row and verify TIMESTAMP shows capture time (t3) and EVENT shows occurred.
++	captureStr := t3.UTC().Format(time.RFC3339)
++	occurredStr := occurred.UTC().Format(time.RFC3339)
++	var retroRow string
++	for _, line := range strings.Split(stdout, "\n") {
++		if strings.Contains(line, "bk-retro-z") {
++			retroRow = line
++			break
++		}
++	}
++	if retroRow == "" {
++		t.Fatalf("could not find retro row in output:\n%s", stdout)
++	}
++	if !strings.Contains(retroRow, captureStr) {
++		t.Fatalf("TIMESTAMP column must show capture time %q:\n%s", captureStr, retroRow)
++	}
++	if !strings.Contains(retroRow, occurredStr) {
++		t.Fatalf("EVENT column must show occurred time %q:\n%s", occurredStr, retroRow)
++	}
++}
+diff --git a/internal/cli/retro.go b/internal/cli/retro.go
+index 5522937..12dd300 100644
+--- a/internal/cli/retro.go
++++ b/internal/cli/retro.go
+@@ -37,6 +37,7 @@ var validRetroScopes = map[string]bool{
+ type retroCaptureConfig struct {
+ 	file           string
+ 	metaFile       string
++	occurredAt     string
+ 	subjectRuns    []string
+ 	beads          []string
+ 	trigger        string
+@@ -57,6 +58,7 @@ type retroCaptureConfig struct {
+ }
+ 
+ type retroGenerateConfig struct {
++	occurredAt     string
+ 	subjectRuns    []string
+ 	beads          []string
+ 	trigger        string
+@@ -81,6 +83,7 @@ type retroGenerateConfig struct {
+ // retroWriteParams carries the parameters shared between capture and generate
+ // for the assembleAndWriteRetro call.
+ type retroWriteParams struct {
++	occurredAt     string // RFC3339 string; empty = not set
+ 	subjectRuns    []string
+ 	beads          []string
+ 	trigger        string
+@@ -300,6 +303,9 @@ func printRetroDetail(store refstore.Store, ctx context.Context, ref string, m r
+ 		fmt.Fprintf(out, "supersedes: %s\n", v)
+ 	}
+ 	fmt.Fprintf(out, "created:   %s\n", m.Created.UTC().Format(time.RFC3339))
++	if !m.OccurredAt.IsZero() {
++		fmt.Fprintf(out, "occurred:  %s\n", m.OccurredAt.UTC().Format(time.RFC3339))
++	}
+ 
+ 	// Subjects: collect subject_run.N and bead.N sorted by prefix then index.
+ 	for _, v := range sortedRetroSubjects(m.Refs) {
+@@ -425,6 +431,7 @@ func newRetroCaptureCommand(out, errOut io.Writer) *cobra.Command {
+ 	flags := cmd.Flags()
+ 	flags.StringVar(&cfg.file, "file", "", "path to retro markdown body, or - for stdin (required)")
+ 	flags.StringVar(&cfg.metaFile, "meta-file", "", "path to retro-meta JSON sidecar, or - for stdin (optional; must be well-formed JSON)")
++	flags.StringVar(&cfg.occurredAt, "occurred-at", "", "original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)")
+ 	flags.StringArrayVar(&cfg.subjectRuns, "subject-run", nil, "run id of a subject run (repeatable; >=1 required unless scope=workflow)")
+ 	flags.StringArrayVar(&cfg.beads, "bead", nil, "bead id of a subject bead (repeatable)")
+ 	flags.StringVar(&cfg.trigger, "trigger", "manual", "trigger that prompted this retro (e.g. manual, scheduled)")
+@@ -543,6 +550,7 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
+ 	}
+ 
+ 	p := retroWriteParams{
++		occurredAt:     cfg.occurredAt,
+ 		subjectRuns:    cfg.subjectRuns,
+ 		beads:          cfg.beads,
+ 		trigger:        cfg.trigger,
+@@ -731,11 +739,23 @@ func assembleAndWriteRetro(
+ 		})
+ 	}
+ 
++	// Parse --occurred-at when provided. Validation happens here (before any ref
++	// is written) so a malformed value fails fast with a clear error message.
++	var occurredAtTime time.Time
++	if strings.TrimSpace(p.occurredAt) != "" {
++		parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.occurredAt))
++		if parseErr != nil {
++			return "", "", fmt.Errorf("--occurred-at %q is not a valid RFC3339 timestamp: %w", p.occurredAt, parseErr)
++		}
++		occurredAtTime = parsed.UTC()
++	}
++
+ 	manifest := runmanifest.Manifest{
+ 		RunID:           retroID,
+ 		Workflow:        "retro",
+ 		WorkflowVersion: "retro-v1",
+ 		Created:         now,
++		OccurredAt:      occurredAtTime,
+ 		Refs:            refsMap,
+ 		Stages:          stages,
+ 	}
+@@ -807,6 +827,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
+ 	flags := cmd.Flags()
+ 	flags.StringArrayVar(&cfg.subjectRuns, "subject-run", nil, "run id of a subject run (repeatable; >=1 required unless scope=workflow)")
+ 	flags.StringArrayVar(&cfg.beads, "bead", nil, "bead id of a subject bead (repeatable)")
++	flags.StringVar(&cfg.occurredAt, "occurred-at", "", "original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)")
+ 	flags.StringVar(&cfg.trigger, "trigger", "manual", "trigger that prompted this retro (e.g. manual, post-bench)")
+ 	flags.StringVar(&cfg.decision, "decision", "", "retro decision: accepted, deferred, superseded, or informational")
+ 	flags.StringVar(&cfg.supersedes, "supersedes", "", "retro id this retro supersedes")
+@@ -933,6 +954,7 @@ func (r *retroGenerateRunner) run(ctx context.Context, scope string, cfg retroGe
+ 	}
+ 
+ 	p := retroWriteParams{
++		occurredAt:     cfg.occurredAt,
+ 		subjectRuns:    cfg.subjectRuns,
+ 		beads:          cfg.beads,
+ 		trigger:        cfg.trigger,
+diff --git a/internal/cli/retro_test.go b/internal/cli/retro_test.go
+index 3f02b94..2acdd9f 100644
+--- a/internal/cli/retro_test.go
++++ b/internal/cli/retro_test.go
+@@ -1753,3 +1753,192 @@ func TestRetroListMetaColumn(t *testing.T) {
+ 		t.Fatalf("stderr not empty: %q", stderr)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// OccurredAt tests (etude-8hq.2)
++// ---------------------------------------------------------------------------
++
++// TestRetroCaptureOccurredAtSetsField verifies that --occurred-at sets
++// manifest.OccurredAt and that retro show prints an "occurred:" line.
++func TestRetroCaptureOccurredAtSetsField(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "retro.md", "# Retro\nContent.\n")
++	chdir(t, repo)
++
++	eventTime := "2026-01-15T09:30:00Z"
++
++	stdout, stderr, err := execute("retro", "capture", "run",
++		"--file", "retro.md",
++		"--subject-run", "run-occurred-a",
++		"--occurred-at", eventTime,
++	)
++	if err != nil {
++		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++
++	var retroID string
++	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
++		if strings.HasPrefix(line, "ref refs/etude/retros/") {
++			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
++			break
++		}
++	}
++	if retroID == "" {
++		t.Fatalf("could not extract retro id from stdout: %q", stdout)
++	}
++
++	// Verify manifest has OccurredAt set correctly.
++	manifest := readRetroManifest(t, repo, retroID)
++	want, _ := time.Parse(time.RFC3339, eventTime)
++	if !manifest.OccurredAt.Equal(want.UTC()) {
++		t.Fatalf("manifest.OccurredAt = %v, want %v", manifest.OccurredAt, want)
++	}
++
++	// Verify retro show prints occurred: line.
++	showOut, showErr, showErrResult := execute("retro", "show", retroID)
++	if showErrResult != nil {
++		t.Fatalf("retro show returned error: %v\nstderr: %s", showErrResult, showErr)
++	}
++	if !strings.Contains(showOut, "occurred:") {
++		t.Fatalf("retro show missing 'occurred:' line:\n%s", showOut)
++	}
++	if !strings.Contains(showOut, "2026-01-15T09:30:00Z") {
++		t.Fatalf("retro show missing event time value:\n%s", showOut)
++	}
++}
++
++// TestRetroCaptureWithoutOccurredAtNoLine verifies that omitting --occurred-at
++// leaves manifest.OccurredAt zero and retro show omits the "occurred:" line.
++func TestRetroCaptureWithoutOccurredAtNoLine(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "retro.md", "# Retro\nNo event time.\n")
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("retro", "capture", "run",
++		"--file", "retro.md",
++		"--subject-run", "run-no-occurred",
++	)
++	if err != nil {
++		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++
++	var retroID string
++	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
++		if strings.HasPrefix(line, "ref refs/etude/retros/") {
++			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
++			break
++		}
++	}
++	if retroID == "" {
++		t.Fatalf("could not extract retro id from stdout: %q", stdout)
++	}
++
++	// Manifest must have zero OccurredAt.
++	manifest := readRetroManifest(t, repo, retroID)
++	if !manifest.OccurredAt.IsZero() {
++		t.Fatalf("manifest.OccurredAt should be zero, got %v", manifest.OccurredAt)
++	}
++
++	// retro show must NOT print occurred: line.
++	showOut, _, showErr := execute("retro", "show", retroID)
++	if showErr != nil {
++		t.Fatalf("retro show returned error: %v", showErr)
++	}
++	if strings.Contains(showOut, "occurred:") {
++		t.Fatalf("retro show must not print 'occurred:' when OccurredAt is zero:\n%s", showOut)
++	}
++}
++
++// TestRetroCaptureOccurredAtMalformedRejected verifies that a malformed
++// --occurred-at value returns an error before writing any ref.
++func TestRetroCaptureOccurredAtMalformedRejected(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "retro.md", "# Retro\nContent.\n")
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("retro", "capture", "run",
++		"--file", "retro.md",
++		"--subject-run", "run-bad-ts",
++		"--occurred-at", "not-a-timestamp",
++	)
++	if err == nil {
++		t.Fatal("retro capture with malformed --occurred-at returned nil error")
++	}
++	combined := err.Error() + " " + stderr
++	if !strings.Contains(combined, "occurred-at") && !strings.Contains(combined, "RFC3339") {
++		t.Fatalf("error message should mention occurred-at or RFC3339: %q", combined)
++	}
++	if stdout != "" {
++		t.Fatalf("expected empty stdout on malformed --occurred-at, got: %q", stdout)
++	}
++
++	// No ref must have been written.
++	store := refstore.New(repo)
++	refs, listErr := store.List(context.Background(), "refs/etude/retros")
++	if listErr != nil {
++		t.Fatalf("List retros: %v", listErr)
++	}
++	if len(refs) != 0 {
++		t.Fatalf("a retro ref was written despite --occurred-at error: %v", refs)
++	}
++}
++
++// TestRetroGenerateOccurredAtSetsField verifies that --occurred-at on
++// retro generate also sets manifest.OccurredAt.
++func TestRetroGenerateOccurredAtSetsField(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	// Capture a run to use as subject.
++	writeFile(t, repo, "gen-out.md", "# plan output\n")
++	_, stderr, err := execute("capture", "plan", "--run", "gen-subject-run", "--output", "output=gen-out.md")
++	if err != nil {
++		t.Fatalf("capture: %v\nstderr: %s", err, stderr)
++	}
++
++	eventTime := "2026-02-20T08:00:00Z"
++
++	var buf bytes.Buffer
++	runner := &retroGenerateRunner{
++		generator: &retro.StubGenerator{CannedBody: []byte("# generated retro\n")},
++		now:       time.Now,
++		store:     refstore.New(repo),
++		stdout:    &buf,
++		timeout:   5 * time.Second,
++	}
++	cfg := retroGenerateConfig{
++		subjectRuns:  []string{"gen-subject-run"},
++		trigger:      "manual",
++		skillID:      "retro",
++		skillRepo:    defaultSkillRepo,
++		skillVersion: defaultSkillVersion,
++		occurredAt:   eventTime,
++	}
++	if err = runner.run(context.Background(), "run", cfg); err != nil {
++		t.Fatalf("retroGenerateRunner.run returned error: %v", err)
++	}
++
++	// Extract the retro id from output.
++	var retroID string
++	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
++		if strings.HasPrefix(line, "ref refs/etude/retros/") {
++			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
++			break
++		}
++	}
++	if retroID == "" {
++		t.Fatalf("could not extract retro id from output: %q", buf.String())
++	}
++
++	manifest := readRetroManifest(t, repo, retroID)
++	want, _ := time.Parse(time.RFC3339, eventTime)
++	if !manifest.OccurredAt.Equal(want.UTC()) {
++		t.Fatalf("manifest.OccurredAt = %v, want %v", manifest.OccurredAt, want)
++	}
++}
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 69af445..08fcc25 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -40,9 +40,14 @@ type Manifest struct {
+ 	Workflow        string
+ 	WorkflowVersion string
+ 	Created         time.Time
+-	Refs            map[string]string
+-	Stages          []Stage
+-	Gates           []GateAttempt
++	// OccurredAt is the optional original event time for retros (when the
++	// retro's events actually happened), distinct from Created (capture time).
++	// It is zero for runs and for retros that pre-date this field.
++	// When zero it is omitted from JSON serialization.
++	OccurredAt time.Time
++	Refs       map[string]string
++	Stages     []Stage
++	Gates      []GateAttempt
+ }
+ 
+ // GateAttempt records one full panel re-examination of one phase gate.
+@@ -763,9 +768,13 @@ type manifestJSON struct {
+ 	Workflow        string            `json:"workflow"`
+ 	WorkflowVersion string            `json:"workflow_version"`
+ 	Created         string            `json:"created"`
+-	Refs            map[string]string `json:"refs"`
+-	Stages          []stageJSON       `json:"stages"`
+-	Gates           []gateJSON        `json:"gates,omitempty"`
++	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
++	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
++	// which would defeat omitempty and pollute all existing manifests.
++	OccurredAt string            `json:"occurred_at,omitempty"`
++	Refs       map[string]string `json:"refs"`
++	Stages     []stageJSON       `json:"stages"`
++	Gates      []gateJSON        `json:"gates,omitempty"`
+ }
+ 
+ type gateJSON struct {
+@@ -936,6 +945,7 @@ func (m Manifest) toJSON() manifestJSON {
+ 		Workflow:        m.Workflow,
+ 		WorkflowVersion: m.WorkflowVersion,
+ 		Created:         formatTime(m.Created),
++		OccurredAt:      formatTimeOmitZero(m.OccurredAt),
+ 		Refs:            refs,
+ 		Stages:          stages,
+ 		Gates:           gatesOut,
+@@ -1022,6 +1032,17 @@ func formatTime(t time.Time) string {
+ 	return t.UTC().Format(time.RFC3339Nano)
+ }
+ 
++// formatTimeOmitZero returns "" when t is the zero time (so that omitempty
++// drops the JSON key) and formatTime(t) otherwise. Use this for OPTIONAL time
++// fields. Do NOT use it for required fields like Created — those must always
++// serialize so decoding failures surface correctly.
++func formatTimeOmitZero(t time.Time) string {
++	if t.IsZero() {
++		return ""
++	}
++	return formatTime(t)
++}
++
+ func ensureEOF(dec *json.Decoder) error {
+ 	var extra any
+ 	if err := dec.Decode(&extra); err == io.EOF {
+@@ -1046,6 +1067,13 @@ func (m manifestJSON) toManifest() (Manifest, error) {
+ 	if err != nil {
+ 		return Manifest{}, err
+ 	}
++	var occurredAt time.Time
++	if m.OccurredAt != "" {
++		occurredAt, err = parseTime("occurred_at", m.OccurredAt)
++		if err != nil {
++			return Manifest{}, err
++		}
++	}
+ 	stages := make([]Stage, 0, len(m.Stages))
+ 	for i, stage := range m.Stages {
+ 		converted, err := stage.toStage(i)
+@@ -1072,6 +1100,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
+ 		Workflow:        m.Workflow,
+ 		WorkflowVersion: m.WorkflowVersion,
+ 		Created:         created,
++		OccurredAt:      occurredAt,
+ 		Refs:            refs,
+ 		Stages:          stages,
+ 		Gates:           gates,
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index f674300..3446a05 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1775,3 +1775,116 @@ func gateManifest(t *testing.T) Manifest {
+ 	}
+ 	return base
+ }
++
++// ---------------------------------------------------------------------------
++// OccurredAt tests (etude-8hq.2)
++// ---------------------------------------------------------------------------
++
++// TestOccurredAtRoundTrip verifies that a manifest with OccurredAt set
++// serializes to JSON with "occurred_at" present and parses back equal.
++func TestOccurredAtRoundTrip(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	eventTime := time.Date(2026, 1, 15, 9, 30, 0, 0, time.UTC)
++	m.OccurredAt = eventTime
++
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON returned error: %v", err)
++	}
++	text := string(b)
++	if !strings.Contains(text, `"occurred_at"`) {
++		t.Fatalf("JSON missing occurred_at key:\n%s", text)
++	}
++	if !strings.Contains(text, "2026-01-15T09:30:00Z") {
++		t.Fatalf("JSON missing expected occurred_at value:\n%s", text)
++	}
++
++	parsed, err := ParseJSON(b)
++	if err != nil {
++		t.Fatalf("ParseJSON returned error: %v", err)
++	}
++	if !parsed.OccurredAt.Equal(eventTime) {
++		t.Fatalf("parsed OccurredAt = %v, want %v", parsed.OccurredAt, eventTime)
++	}
++}
++
++// TestOccurredAtZeroOmitted verifies that a zero OccurredAt produces NO
++// "occurred_at" key in the JSON and that round-tripping such a manifest leaves
++// OccurredAt zero (byte-stability: the key must never appear for zero time).
++func TestOccurredAtZeroOmitted(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	// OccurredAt is zero by default.
++
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON returned error: %v", err)
++	}
++	text := string(b)
++	if strings.Contains(text, "occurred_at") {
++		t.Fatalf("JSON must NOT contain occurred_at when OccurredAt is zero:\n%s", text)
++	}
++
++	// Round-trip: parse and re-serialize; bytes must be identical.
++	parsed, err := ParseJSON(b)
++	if err != nil {
++		t.Fatalf("ParseJSON returned error: %v", err)
++	}
++	if !parsed.OccurredAt.IsZero() {
++		t.Fatalf("parsed OccurredAt should be zero, got %v", parsed.OccurredAt)
++	}
++	b2, err := parsed.JSON()
++	if err != nil {
++		t.Fatalf("second JSON returned error: %v", err)
++	}
++	if string(b) != string(b2) {
++		t.Fatalf("round-trip changed bytes:\nbefore:\n%s\nafter:\n%s", b, b2)
++	}
++}
++
++// TestOccurredAtMalformedRejected verifies that a JSON document with a
++// malformed occurred_at value is rejected by ParseJSON.
++func TestOccurredAtMalformedRejected(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON returned error: %v", err)
++	}
++	// Inject a malformed occurred_at after "created".
++	bad := strings.Replace(string(b),
++		`"created":`,
++		`"occurred_at": "not-a-timestamp", "created":`,
++		1,
++	)
++	if _, err := ParseJSON([]byte(bad)); err == nil {
++		t.Fatal("ParseJSON accepted malformed occurred_at; want error")
++	}
++}
++
++// TestOccurredAtExistingManifestNoKey verifies that a manifest document that
++// predates the occurred_at field (no key present) still decodes and validates
++// successfully, with OccurredAt left as the zero time.
++func TestOccurredAtExistingManifestNoKey(t *testing.T) {
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	m := validManifest(output)
++	b, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON returned error: %v", err)
++	}
++	// The zero-OccurredAt manifest must not contain occurred_at.
++	if strings.Contains(string(b), "occurred_at") {
++		t.Fatalf("pre-condition: base manifest already contains occurred_at:\n%s", b)
++	}
++	parsed, err := ParseJSON(b)
++	if err != nil {
++		t.Fatalf("ParseJSON returned error: %v", err)
++	}
++	if err := parsed.Validate(); err != nil {
++		t.Fatalf("Validate returned error: %v", err)
++	}
++	if !parsed.OccurredAt.IsZero() {
++		t.Fatalf("OccurredAt should be zero for legacy manifest, got %v", parsed.OccurredAt)
++	}
++}
