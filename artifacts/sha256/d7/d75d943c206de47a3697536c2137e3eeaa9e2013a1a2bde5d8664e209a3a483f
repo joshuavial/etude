@@ -1,0 +1,24 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-21z PLAN verification method broken three ways (diffed a non-existent `etude run show --json` flag; left refs.bead un-normalized; `run show` TEXT omits artifact hashes + media_type)",
+    "a proof that can't run or is field-blind proves nothing",
+    "etude-9ey premise failed: zero retros carry a sidecar (empty source), sidecar is schema-free by design, de-facto convention contradicted itself (`root_cause` vs `root_causes`)"
+  ],
+  "root_causes": [
+    "gate did not vet the proof method (flags, normalization of volatile fields, comparing the load-bearing surface)",
+    "planner designed speculative infra before a BUILD-vs-DEFER premise check"
+  ],
+  "follow_up_beads": [
+    "etude-sb4"
+  ],
+  "decisions": [
+    "etude-9ey DEFERRED (needs real sidecar data)",
+    "etude-sb4 shipped docs-only: pin the plural-array convention, NO enforcement, preserving etude-2ku verbatim storage"
+  ],
+  "durable_changes": [
+    "review-gate-runbook.md new \"Plan-Phase Discipline\" section item P1 Verify the verification (confirm flags exist, normalize id-derived refs, diff the raw manifest.json blob not human text)",
+    "review-gate-runbook.md Plan-Phase Discipline item P2 Premise-check before designing (planner's first output for a feature bead is a BUILD-vs-DEFER call; DEFER + name prerequisite + `bd defer`)"
+  ]
+}
