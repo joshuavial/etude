@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aul.2",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,83 @@
         "size": 2910
       },
       "timestamp": "2026-06-07T09:45:48.799638Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Update the comment on Score.Passed in internal/eval/eval.go to state it is used by both assertion and gate.",
+            "Explicitly reject non-nil Rubric/Assertion configs for the gate method in validateMethodConfig inside internal/eval/result.go."
+          ],
+          "timestamp": "2026-06-07T09:12:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Specify that passed is method-incoherent for non-gate judge outputs: validateJudgeOutput(\"rubric\", ...) and validateJudgeOutput(\"pairwise\", ...) must reject passed, and RubricEvaluator / PairwiseEvaluator defensive response validation must also reject JudgeResponse.Passed.",
+            "Add tests proving rubric and pairwise judge outputs/responses with passed are rejected, preserving the pre-existing unknown-field behavior after passed becomes a known wire field."
+          ],
+          "optional": [
+            "Clarify how the persisted EvalResult.Context provenance will identify the gate prompt variant later, since ArtifactSource does not preserve EvalInput.Role.",
+            "Name a gate-specific response coherence helper, parallel to pairwise/rubric validation, so future methods do not accidentally share incomplete checks."
+          ],
+          "timestamp": "2026-06-07T09:12:12Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a one-line godoc on ScoreGate and on JudgeResponse.Passed noting that gate and assertion both use the Passed boolean but are distinguished by Method/Kind.",
+            "In the GateEvaluator doc comment, make explicit that the gate-prompt role is a convention for later CLI wiring.",
+            "Extend the GateEvaluator test matrix with one case for multiple gate-prompt context entries."
+          ],
+          "timestamp": "2026-06-07T09:12:12Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
+      },
+      "timestamp": "2026-06-07T09:12:12Z"
     }
   ]
 }
