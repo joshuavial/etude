@@ -424,6 +424,60 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:43:19Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "c6adfb16294ec535f3d2dbf8121fcb6b6b61528d0dd32975425a545c5ba76e57"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "A future preflight could reject already-dirty or sparse-checkout workspaces before invoking the runner.",
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r1.md sha256 776bd6da5f5409ac4e640cbb5f97aa79561a091f3055ccbf6541b7f769918319"
+          ],
+          "timestamp": "2026-08-16T01:54:26Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Remove or neutralize the :/ magic pathspec so inherited GIT_LITERAL_PATHSPECS cannot empty index-flag and submodule scans, and prove both rejection paths with the environment override set."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/verify-gate-r1.md sha256 776bd6da5f5409ac4e640cbb5f97aa79561a091f3055ccbf6541b7f769918319"
+          ],
+          "timestamp": "2026-08-16T01:54:26Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:54:26Z"
     }
   ]
 }
