@@ -1,0 +1,16 @@
+# GH #15 rebased implementation
+
+Rebased `gh15/caller-cwd-runner` onto `origin/main` at `fc86fbc` and resolved all overlapping original-SHA/submodule changes additively.
+
+- Manifest v4 stores immutable `original_git_sha` separately from caller stage post-run `git_sha`.
+- Live resume, direct replay, forward replay, recorded replay, bench, and gate-seat checkouts use the original SHA.
+- All relevant hermetic checkout paths preserve GH #14 submodule population and recorded-map validation.
+- Caller workspaces are rejected before checkout when tracked submodules make the caller guard unsupported.
+- Forward replay permits caller stage post-run provenance while continuing to require every hermetic stage SHA to equal the original checkout.
+- Gate read-checkout tests now prove a seat receives a populated, recorded submodule rather than retaining the obsolete pre-GH#14 rejection.
+- Caller lineage is checked before every caller stage, all recorded caller SHAs must resolve to commits before resume/replay, and manifest v4 globally requires every hermetic stage SHA to equal the original checkout.
+- The fail-closed guard compares the real index to HEAD by object ID, then compares the live tree to a fresh HEAD-derived temporary index under pinned stat/mode policy. Effective Git configuration must also remain stable across the runner.
+- Regressions cover real-index-only staged blobs, same-size restored-mtime rewrites, executable-mode changes, hidden index flags, malformed topology/OIDs, missing commits, relative roots, and every original-SHA consumer.
+- The guarded caller runner and default hermetic behavior remain otherwise unchanged.
+
+Commits: `6280950 add guarded caller-workspace runners`; `d483280 preserve original checkout provenance across caller stages`.
