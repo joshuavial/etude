@@ -1,0 +1,90 @@
+✓ etude-ojz · Fix gemini reviewer GrepTool cross-file bleed (provision ripgrep)   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-26
+Close reason: root-caused gemini-cli bundled-rg lookup; scripts/provision-gemini-ripgrep.sh symlinks system rg -> <bundle>/vendor/ripgrep/rg-<plat>-<arch>; empirically verified gemini no longer falls back to GrepTool; Tier-2 gate passed, ff47c76
+
+DESCRIPTION
+The gemini reviewer seat (gemini -m gemini-3.1-pro-preview -p) runs without ripgrep available, so it falls back to an internal GrepTool that BLEEDS matches across files. During the etude-roadmap.1.4 gate it reproducibly (3x, even when explicitly forewarned in the prompt) misattributed a string literal from the planning doc docs/plans/product/manifest-schema-v2.md to internal/cli/run_test.go, producing a confident BLOCK on a phantom assertion (`skill: dev-planner @docs/plans/product/manifest-schema-v2.md (...)`) that grep proves does not exist — while the real assertion `dev-planner@v2 (codewithjv-agent-skills)` passes. This will recur on any repo containing a file whose path resembles a test string literal (e.g. a `vN`-named doc).
+
+Goal: make the gemini seat trustworthy again. Options to evaluate:
+1. Provision ripgrep in the gemini seat's execution environment so it stops using the bleeding fallback GrepTool (preferred — addresses root cause).
+2. If (1) isn't feasible, codify a mandatory ground-truth verification step for any gemini BLOCK that cites a specific string in a source/test file (grep the real file + run the cited test) before the verdict counts.
+
+Interim workaround already in place: review-gate-runbook.md documents the gemini GrepTool bleed and requires ground-truth-checking gemini BLOCKs that cite test-file string literals.
+
+Surfaced by the 3-ticket retro after the producer epic (etude-roadmap.1).
+
+DESIGN
+## Plan
+
+**Root cause (verified against live bundle 0.43.0):** gemini-cli's `getRipgrepPath()` (in `bundle/chunk-QH43L44B.js`) builds `binName = rg-${os.platform()}-${os.arch()}${win32?'.exe':''}` (here: `rg-darwin-arm64`) and looks ONLY at two BUNDLED candidate paths relative to the chunk's `__dirname` (= the `bundle/` dir): (1) `<bundle>/vendor/ripgrep/<binName>`, (2) `<bundle>/../../vendor/ripgrep/<binName>`. It never consults system `rg` on PATH. Neither candidate exists in this install (`vendor/ripgrep/` is absent at both paths), so `ensureRgPath()` throws 'Cannot find bundled ripgrep binary' and gemini registers the bleeding GrepTool, logging 'Ripgrep is not available. Falling back to GrepTool.' System rg IS installed (`/opt/homebrew/bin/rg`, ripgrep 14.1.1). `fileExists()` uses `fsPromises.access(F_OK)` which follows symlinks, so a symlink at candidate-1 is honored. No discrepancies vs the prior investigation.
+
+**Approach:** The fix lives in the user's GLOBAL gemini-cli install, not the etude repo, so the committed/reproducible artifact is a provisioning script. Add `scripts/provision-gemini-ripgrep.sh` that creates `<bundle>/vendor/ripgrep/<binName>` as a symlink to the system `rg` (candidate path 1), so gemini finds it and registers RipGrepTool instead of the bleeding GrepTool. Symlink (not copy): lighter, auto-tracks rg upgrades; the trade-off (breaks if rg is uninstalled) is acceptable and the script is idempotent + re-runnable to repair. CRITICAL CONSTRAINT: the script only ever creates/replaces SYMLINKS it manages; it MUST NOT overwrite a regular file at the target path, because a future gemini-cli could ship its own real bundled `rg-<platform>-<arch>` binary there — clobbering that would break gemini's own install. The created symlink lives OUTSIDE the repo (in the global node_modules); the SCRIPT is the artifact, the symlink is its effect. Follows existing `scripts/*.sh` conventions (bash, `set -euo pipefail`, header comment block, clear errors, non-zero exit on failure).
+
+**Files:**
+- scripts/provision-gemini-ripgrep.sh - NEW. Steps: (1) resolve gemini: `command -v gemini` -> follow symlink to real path -> derive `bundle/` dir (its containing dir); clear error + non-zero if gemini not installed. (2) compute `binName = rg-$(node -e 'process.stdout.write(require("os").platform()+"-"+require("os").arch())')` + `.exe` when platform is win32 (derive from node so it matches gemini-cli's own check exactly; never hardcode darwin-arm64). (3) find system rg via `command -v rg` (in the normal dogfood Bash env this resolves to `/opt/homebrew/bin/rg` — confirmed); clear error 'install with: brew install ripgrep' + non-zero if missing; then VERIFY the chosen rg is runnable (`rg --version` succeeds) BEFORE using it as the symlink target — abort with a clear error if it is not runnable. Keep this simple: do not over-engineer multi-path preference; the key requirement is that whatever rg gets linked actually runs and is arch-compatible. (4) `target=<bundle>/vendor/ripgrep/<binName>`; mkdir -p its dir; then decide based on what is AT the target path, only ever touching symlinks the script manages:
+    - **target does NOT exist** -> create the symlink -> system rg.
+    - **target exists and IS a symlink** -> if it already points at a runnable rg (the desired/our symlink), no-op + report 'already provisioned'; if it is a BROKEN or stale symlink (points nowhere / not runnable), `rm` it and create a fresh symlink -> system rg.
+    - **target exists and is NOT a symlink (a real file — gemini-cli shipped its own bundled binary)** -> DO NOT touch it. Leave it in place, verify it runs (`"$target" --version`), and report 'gemini already ships a bundled ripgrep; nothing to do.' (success-by-gemini's-own-means). NEVER overwrite a regular file at this path.
+  (5) VERIFY (for the symlink-managed cases): confirm candidate-1 path now resolves (`[ -e $target ]`) and `"$target" --version` runs; non-zero on failure. (6) print what it did.
+
+**Tests:** No Go test (no product code). Manual verification IS the test (see Docs/Verify). Re-running the script must be a clean no-op ('already provisioned').
+
+**Docs:**
+- docs/plans/dogfood/review-gate-runbook.md (the gemini bullet ~L146-160): document the root cause (gemini-cli looks for a bundled `rg-<platform>-<arch>` under `bundle/vendor/ripgrep/`, NOT system rg) and that `scripts/provision-gemini-ripgrep.sh` provisions it (run once per machine, and again after any gemini-cli reinstall/upgrade since that wipes the symlink). KEEP the existing ground-truth-check-gemini-BLOCKs rule as defense-in-depth backstop in case the symlink is missing on some machine.
+- docs/plans/dogfood/retro-ledger.md (B2, ~L94-95): flip the etude-ojz follow-up from open/[PLANNED] to [IMPLEMENTED] -> etude-ojz, closing the ledger loop.
+
+**Verify (CRITICAL — empirical proof + env-mutating):** This is the proof the root-cause fix works, beyond 'the symlink exists'. (a) Run `scripts/provision-gemini-ripgrep.sh` — this performs a ONE-TIME change to the GLOBAL gemini install (creates the symlink in node_modules); it is an env mutation NOT committed to the repo. (b) Re-run it to confirm idempotent no-op. (c) From the repo, invoke a gemini content search that previously triggered the fallback, e.g. `gemini -m gemini-3.1-pro-preview -p "search this repo for the string 'WriteManifestTree' and tell me which file defines it"` capturing stdout+stderr, and confirm the output does NOT contain 'Ripgrep is not available. Falling back to GrepTool.' (absence = fixed; presence = not fixed). Also build nothing — no Go code changed.
+
+**Risks:** Low. (1) gemini-cli reinstall/upgrade wipes the symlink — mitigated by idempotent re-run + documented in runbook + ground-truth backstop retained. (2) Bundle layout could change in a future gemini-cli version (path 1 is the SEA/flattened layout); script targets candidate-1 which matches the current 0.43.0 install. (3) Symlink breaks if rg is uninstalled — acceptable, re-run repairs. (4) Future gemini-cli ships its own real bundled rg at candidate-1 — handled: the script detects a regular file there and leaves it untouched (never clobbers gemini's own binary), so the two fixes coexist.
+
+**Gate tier:** Tier 2 (Opus + codex). Justification: dev-tooling only — a provisioning shell script plus 2 dogfood docs, no product Go code (cmd/internal untouched), no shipped CLI/schema change. Not Tier 3 because the script has real path-resolution + platform/arch logic (symlink resolution, node-derived binName, idempotency, verification, regular-file-vs-symlink guarding) worth a second strong reviewer, not just a trivial doc edit.
+
+**Capture:**
+- inputs: bead etude-ojz description+notes; gemini-cli bundle chunk-QH43L44B.js (getRipgrepPath/candidatePaths/fileExists/fallback msg); node os.platform/arch; system rg path+version; scripts/docs-reality-check.sh (script conventions); docs/plans/dogfood/review-gate-runbook.md (gemini bullet); docs/plans/dogfood/retro-ledger.md (B2); Tier-2 plan-gate defect (codex: regular-file clobber risk) + rg-runnable note
+- output: bead --design field
+
+
+NOTES
+Retro backlink (etude-phase-prep.4): this bead is the open follow-up for the gemini GrepTool cross-file-bleed caveat documented in the gate-spiral hardening retro (commit bf3d755), inventoried as record B2 in docs/plans/dogfood/retro-ledger.md. Fixing it (provision ripgrep) closes that [PLANNED] ledger item.
+## Implement
+
+**Implemented:**
+- NEW scripts/provision-gemini-ripgrep.sh: provisioning script that creates
+  <bundle>/vendor/ripgrep/<binName> as a symlink to the system rg. Handles all
+  four target states: absent (create symlink), existing symlink + healthy
+  (no-op), existing symlink + broken/stale (rm + recreate), regular file
+  (leave untouched, verify it runs). binName derived via node to match
+  gemini-cli's exact computation. Post-provision VERIFY step before exit.
+  chmod +x. set -euo pipefail, clear error messages, non-zero on failure.
+- docs/plans/dogfood/review-gate-runbook.md (gemini bullet ~L146): added ROOT
+  CAUSE paragraph (gemini-cli getRipgrepPath() looks only at two bundled candidate
+  paths, never system rg; missing vendor path -> GrepTool fallback), added DURABLE
+  FIX paragraph (run scripts/provision-gemini-ripgrep.sh once per machine, re-run
+  after gemini-cli reinstall/upgrade). Existing ground-truth-check rule retained
+  as defense-in-depth backstop.
+- docs/plans/dogfood/retro-ledger.md (B2 ~L94-95): flipped etude-ojz follow-up
+  from open/[PLANNED] to [IMPLEMENTED] -> etude-ojz.
+
+**Checks run:**
+- bash -n scripts/provision-gemini-ripgrep.sh: OK
+- shellcheck: not available on this machine
+- go build ./...: OK (no Go change)
+- go test ./...: OK (all cached, no Go change)
+- make docs-reality: OK (10 commands, no CLI change)
+- make docs-check: OK (no generated-docs drift)
+
+**Changed files:**
+- scripts/provision-gemini-ripgrep.sh (NEW, chmod +x)
+- docs/plans/dogfood/review-gate-runbook.md
+- docs/plans/dogfood/retro-ledger.md
+
+**Plan deviations:** none. Script NOT executed; symlink NOT created.
+
+**Capture:**
+- inputs: approved plan (etude-ojz --design), review-gate-runbook.md gemini
+  bullet, retro-ledger.md B2, scripts/dogfood-capture.sh (header conventions)
+- output: working tree diff + these bead notes
+
+LABELS: dogfood
+
