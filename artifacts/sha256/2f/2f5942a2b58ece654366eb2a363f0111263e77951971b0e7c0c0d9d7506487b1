@@ -1,0 +1,5 @@
+# etude-5dr.6 verification
+
+Final commit `39a7559` passed `make test`, `make lint`, `make docs-check`, `make docs-reality`, and `make build`; the built binary SHA-256 is `aafc3cec7f8e49bf264d57eee11798d94a98baf52cdfefd95e8205dee55a8071`.
+
+Fresh built-binary QA in `/tmp/etude-gh15-rebased-qa.TtBgE5` observed: caller execution from the nested invocation directory with its ignored-only sentinel and a passing gate; default execution from an `etude-worktree-*` directory without that sentinel; tracked and staged-index-only mutations exiting 1 with no run ref; an untouched caller stage exiting 0; manifest v4 recording `runner_workspace=caller`; resume and replay executing original A `9df4186ab58b7f5e727679f5c5025ed856c11b68` while live caller provenance remained B `37f933d190fb8f8beb65dbf5ec642a3cb5ff88c2`; and run/replay both populating submodule gitlink `1578456d6afeb6ea53d7f53a6d810a335e26a2b8` at original superproject SHA `8b92dfb64c70a13445a69c5ecd189df7e3dbb3b7`.
