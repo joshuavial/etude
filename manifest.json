@@ -684,6 +684,57 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T18:33:19.451672Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "4d5924bc4c7e1a8cd83e09756b2fff6788d70819c19a64484ae452b250d85c32"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T18:49:06Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The Checks table asserts 'make dogfood-audit clean, exit 0' - it is red right now: exits 1 with GAP [unpushed-ref] refs/etude/runs/etude-9uf.5 AHEAD of origin. Same stale-present-tense-GREEN failure the implement gate already blocked on, and self-referential (this bead's own run ref).",
+            "2. '21 optionals exist only as prose' disagrees with the manifest: refs/etude/runs/etude-3xt records 3 optionals machine-readably in seats[].optional on the escalated r1 attempts (codex, one each on plan.r1/implement.r1/verify.r1); the correct figure is 18.",
+            "3. An unmentioned limitation the record proves: two of the five gated stage artifacts were edited AFTER their gate passed and never re-gated - plan gated 6019869 vs the lane's current a0cc911, verify gated e0f8f463 vs d3098187. 'Zero ungated stage artifacts' still holds because the ref preserves the reviewed bytes, but the model has no detection for post-gate artifact drift and it occurred twice in the one run being offered as the proof."
+          ],
+          "timestamp": "2026-08-15T18:49:06Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Seats split - codex GO, opus BLOCK - so no pass, and all three opus findings were confirmed by recomputation before folding. The third is a genuinely new hole in the model and the best thing this gate produced: TWO OF FIVE gated stage artifacts on the proof run were edited after their gate passed and never re-gated. Both are benign in origin - the worker was folding the optionals the supervisor relayed back, which is what it was asked to do - and 'zero ungated stage artifacts' still holds because the run ref preserves the reviewed bytes content-addressed. But a reader opening the lane sees a document no seat reviewed, with no signal it diverged, and it happened twice in the very run offered as proof of the model. Filed etude-pq7. The first finding is the same stale-green failure the implement gate blocked on twice: I asserted make dogfood-audit was clean while it was red on this bead's OWN unpushed run ref. The second corrects 21 to 18 and matters for a reason beyond arithmetic - the three optionals that ARE machine-readable come from the attempts etude gate produced natively, so the native path already does the right thing and only the bootstrap path loses them. Four optionals also folded, including that the record shows I invoked two of the five gates from the supervisor's worktree rather than the lane, which is why etude-4qi is a live hazard rather than a theoretical one."
+      },
+      "timestamp": "2026-08-15T18:49:06Z"
     }
   ]
 }
