@@ -1,0 +1,23 @@
+### B15. Cadence retro (2026-05-27) — review-finding beads cont. (x0r/5ft/0ew + 8b7 defer)
+- **Trigger/scope:** 3-ticket cadence: etude-x0r (plans-README refresh: shipped-vs-planned),
+  etude-5ft (extract the manifest-load helper, dup'd 4×), etude-0ew (strict gate-JSON parse
+  via DisallowUnknownFields), plus the etude-8b7 DEFER.
+- **Findings/changes:** STRENGTHENED Plan-Phase Discipline **P2** with a corollary: **an
+  audit/review-derived bead is a HYPOTHESIS, not a validated fact — re-verify its premise
+  against current code before building.** The premise-check repeatedly caught over-stated
+  findings from my own review audit:
+  - etude-8b7 ("remove dead pointer chain") — `deadcode` "zero callers" was true but the
+    pointer chain is the WRITE half of a documented, schema-validated (`StoragePointer` at
+    manifest.go:592/628), well-tested, planned storage variant → RESERVED scaffolding, DEFERRED
+    not removed. "zero callers ≠ removable" when it's a documented/reserved variant.
+  - etude-0ew ("reject negative round/tier + unknown fields") — the round/tier half was ALREADY
+    enforced by Validate/validateGate (manifest.go:430-433) on the write path → scoped down to
+    just the real gap (DisallowUnknownFields). "missing validation" may already be enforced.
+- **What worked well (preserve):** the plan-phase premise-check is now a proven safety net — it
+  deferred 9ey + 8b7 and scoped-down 0ew BEFORE any wasted implementation. Audit findings should
+  be filed as beads (capture the hypothesis) but always re-verified at plan time. etude-5ft was
+  a clean pure-refactor win (Tier-2 unanimous, behavior-identical, full suite green).
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` (P2 corollary). Counter reset.
+- **Remaining:** 2 review-finding P3 beads (etude-6j8 inferMediaType move + cleanups, etude-kig
+  retro capture/generate preamble). etude-8b7 + etude-9ey deferred; Phase 1 USER-BLOCKED.
+

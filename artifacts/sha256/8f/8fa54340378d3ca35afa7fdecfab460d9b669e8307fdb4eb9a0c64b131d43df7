@@ -1,0 +1,23 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-8b7 (\"remove dead pointer chain\"): deadcode \"zero callers\" was true but the pointer chain is the WRITE half of a documented, schema-validated, well-tested, planned storage variant — RESERVED scaffolding",
+    "etude-0ew (\"reject negative round/tier + unknown fields\"): the round/tier half was ALREADY enforced by Validate/validateGate on the write path",
+    "over-stated findings from the review audit"
+  ],
+  "root_causes": [
+    "an audit/review-derived bead is a HYPOTHESIS, not a validated fact; its premise was not re-verified against current code before building"
+  ],
+  "follow_up_beads": [
+    "etude-6j8 inferMediaType move + cleanups",
+    "etude-kig retro capture/generate preamble"
+  ],
+  "decisions": [
+    "etude-8b7 DEFERRED not removed (\"zero callers != removable\" when it's a documented/reserved variant)",
+    "etude-0ew scoped down to just the real gap (DisallowUnknownFields)"
+  ],
+  "durable_changes": [
+    "review-gate-runbook.md Plan-Phase Discipline P2 corollary: an audit/review-derived bead is a hypothesis; re-verify its premise against current code before building (file findings as beads but always re-verify at plan time)"
+  ]
+}
