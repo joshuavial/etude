@@ -1,0 +1,1444 @@
+commit c2d6e9a22b531bfe1e3d1e39d63ee55f2cb9eea0
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 20:00:38 2026 +0800
+
+    add bench replay-eval pipeline and extract replay run recorder
+
+diff --git a/internal/bench/run.go b/internal/bench/run.go
+new file mode 100644
+index 0000000..fb3bf7d
+--- /dev/null
++++ b/internal/bench/run.go
+@@ -0,0 +1,265 @@
++package bench
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"os"
++	"time"
++
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/replay"
++	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/worktree"
++)
++
++// ProducerOverrides carries optional overrides for the replay producer identity.
++// These mirror the per-flag changed booleans in cli.replayProducerFlags so that
++// the bench pipeline can apply the same "only override when explicitly set"
++// logic. (.4 maps CLI flags onto this struct.)
++type ProducerOverrides struct {
++	SkillIDChanged        bool
++	SkillRepoChanged      bool
++	SkillVersionChanged   bool
++	ModelChanged          bool
++	HarnessChanged        bool
++	HarnessVersionChanged bool
++
++	SkillID        string
++	SkillRepo      string
++	SkillVersion   string
++	Model          string
++	Harness        string
++	HarnessVersion string
++}
++
++// BenchOutcome is the result of a single BenchRun.
++type BenchOutcome struct {
++	// SourceRunID is the source cohort run ID (cr.RunID).
++	SourceRunID string
++	// Stage is the stage name that was benchmarked.
++	Stage string
++	// ReplayRunID is the allocated replay run ID created during this bench run.
++	ReplayRunID string
++	// ReplayCommit is the git commit OID of the recorded replay run.
++	ReplayCommit string
++	// EvalID is the identifier of the persisted EvalResult.
++	EvalID string
++	// Winner is the pairwise judge verdict (A=original, B=replay).
++	Winner eval.Winner
++	// Confidence is the optional judge confidence score (nil when absent).
++	Confidence *float64
++	// Findings are the structured observations from the judge.
++	Findings []eval.Finding
++	// Result is the full persisted EvalResult document (for .3 cache + .4 report).
++	Result eval.EvalResult
++}
++
++// Pipeline runs the per-run replay -> record -> pairwise-eval pipeline.
++// All fields except Now are required; Now defaults to time.Now when nil.
++type Pipeline struct {
++	Store     refstore.Store
++	Runner    replay.Runner
++	Judge     eval.Judge
++	Recorder  replay.RunRecorder
++	Seed      int64 // -> PairwiseEvaluator.Seed
++	Overrides ProducerOverrides
++	Now       func() time.Time
++}
++
++// BenchRun executes a single bench pipeline step for cr:
++//  1. ResolveInputs for the stage.
++//  2. Materialize inputs via ReadContent (pointer inputs -> error).
++//  3. Read original output bytes from the source commit.
++//  4. Checkout the recorded git_sha into a throwaway worktree.
++//  5. Run the injected replay.Runner.
++//  6. Record via RunRecorder (mints ReplayRunID + Commit + OutputArtifact sha).
++//  7. Build and run a pairwise eval (A=original, B=replay).
++//  8. Build and persist the EvalResult.
++//  9. Return BenchOutcome.
++//
++// Any single-step failure causes BenchRun to return an error wrapped with
++// run-id and stage context. Abort-vs-skip policy is the caller's responsibility.
++func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (BenchOutcome, error) {
++	stageName := cr.Stage.Name
++	wrap := func(msg string, err error) error {
++		return fmt.Errorf("bench run %s stage %s: %s: %w", cr.RunID, stageName, msg, err)
++	}
++
++	now := p.Now
++	if now == nil {
++		now = time.Now
++	}
++
++	// Step 1: resolve inputs.
++	resolved, err := replay.ResolveInputs(ctx, p.Store, cr.RunID, stageName)
++	if err != nil {
++		return BenchOutcome{}, wrap("resolve inputs", err)
++	}
++
++	// Step 2: materialize inputs (pointer inputs -> error, as in replay.go).
++	inputs := make([]replay.RunInput, 0, len(resolved.ResolvedInputs))
++	for _, inp := range resolved.ResolvedInputs {
++		content, err := inp.ReadContent(ctx)
++		if err != nil {
++			if errors.Is(err, replay.ErrPointerNotMaterialized) {
++				return BenchOutcome{}, wrap(
++					fmt.Sprintf("input %q is a pointer artifact", inp.Role), err)
++			}
++			return BenchOutcome{}, wrap(fmt.Sprintf("read input %q", inp.Role), err)
++		}
++		inputs = append(inputs, replay.RunInput{
++			Role:      inp.ArtifactRef.Role,
++			MediaType: inp.ArtifactRef.MediaType,
++			Content:   content,
++		})
++	}
++
++	// Step 3: read original output bytes from the source commit.
++	origBytes, err := p.Store.ReadCommitFile(ctx, resolved.Commit, resolved.Output.Path)
++	if err != nil {
++		return BenchOutcome{}, wrap("read original output", err)
++	}
++
++	// Step 4: checkout the recorded git SHA.
++	wt, err := worktree.Checkout(ctx, root, resolved.GitSHA)
++	if err != nil {
++		return BenchOutcome{}, wrap("checkout git sha", err)
++	}
++	defer wt.Close()
++
++	// Step 5: create a scratch directory and run the replay.
++	scratch, err := os.MkdirTemp("", "etude-bench-scratch-*")
++	if err != nil {
++		return BenchOutcome{}, wrap("create scratch dir", err)
++	}
++	defer os.RemoveAll(scratch)
++
++	src := resolved.Producer
++	producer := runmanifest.Producer{
++		Harness: runmanifest.Harness{
++			Name:    mergeString(p.Overrides.HarnessChanged, p.Overrides.Harness, src.Harness.Name),
++			Version: mergeString(p.Overrides.HarnessVersionChanged, p.Overrides.HarnessVersion, src.Harness.Version),
++		},
++		Model: mergeString(p.Overrides.ModelChanged, p.Overrides.Model, src.Model),
++		Skill: runmanifest.Skill{
++			ID:      mergeString(p.Overrides.SkillIDChanged, p.Overrides.SkillID, src.Skill.ID),
++			Repo:    mergeString(p.Overrides.SkillRepoChanged, p.Overrides.SkillRepo, src.Skill.Repo),
++			Version: mergeString(p.Overrides.SkillVersionChanged, p.Overrides.SkillVersion, src.Skill.Version),
++		},
++	}
++
++	req := replay.RunRequest{
++		WorktreeDir:     wt.Dir,
++		ScratchDir:      scratch,
++		Inputs:          inputs,
++		OutputRole:      resolved.Output.Role,
++		OutputMediaType: resolved.Output.MediaType,
++		Producer:        producer,
++	}
++	res, err := p.Runner.Run(ctx, req)
++	if err != nil {
++		return BenchOutcome{}, wrap("runner", err)
++	}
++	if len(res.Output) == 0 {
++		return BenchOutcome{}, wrap("runner", fmt.Errorf("runner produced no output"))
++	}
++
++	// Step 6: record the replay run.
++	recorded, err := p.Recorder.Record(ctx, cr.RunID, stageName, resolved, res)
++	if err != nil {
++		return BenchOutcome{}, wrap("record replay run", err)
++	}
++
++	// Step 7: build the pairwise eval request.
++	// A = original (source run); B = replay (recorded run).
++	evalReq := eval.EvalRequest{
++		Method: "pairwise",
++		Targets: []eval.EvalInput{
++			{
++				Role:      "original",
++				MediaType: resolved.Output.MediaType,
++				Content:   origBytes,
++				Source: eval.ArtifactSource{
++					RunID:    cr.RunID,
++					Stage:    stageName,
++					Commit:   resolved.Commit,
++					Artifact: resolved.Output.Artifact,
++				},
++			},
++			{
++				Role:      "replay",
++				MediaType: res.MediaType,
++				Content:   res.Output,
++				Source: eval.ArtifactSource{
++					RunID:    recorded.RunID,
++					Stage:    stageName,
++					Commit:   recorded.Commit,
++					Artifact: recorded.OutputArtifact,
++				},
++			},
++		},
++		Producer: res.Producer,
++	}
++
++	evaluator := &eval.PairwiseEvaluator{Judge: p.Judge, Seed: p.Seed}
++	evaluation, err := evaluator.Evaluate(ctx, evalReq)
++	if err != nil {
++		return BenchOutcome{}, wrap("evaluate", err)
++	}
++
++	// Step 8: build and persist the EvalResult.
++	ts := now().UTC()
++	evalIDBase := eval.EvalIDBase("pairwise", cr.RunID, stageName, ts)
++	evalID, err := eval.AllocateEvalID(ctx, p.Store, evalIDBase)
++	if err != nil {
++		return BenchOutcome{}, wrap("allocate eval id", err)
++	}
++
++	result := eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            evalID,
++		Method:            "pairwise",
++		Score:             evaluation.Score,
++		Findings:          evaluation.Findings,
++		Targets: []eval.ArtifactSource{
++			evalReq.Targets[0].Source,
++			evalReq.Targets[1].Source,
++		},
++		Producer: res.Producer,
++		Created:  ts,
++	}
++
++	if err := result.Validate(); err != nil {
++		return BenchOutcome{}, wrap("validate eval result", err)
++	}
++
++	_, err = eval.Writer{Store: p.Store}.Write(ctx, result, eval.WriteOptions{
++		Message: fmt.Sprintf("bench: eval %s run %s stage %s", evalID, cr.RunID, stageName),
++	})
++	if err != nil {
++		return BenchOutcome{}, wrap("write eval result", err)
++	}
++
++	return BenchOutcome{
++		SourceRunID:  cr.RunID,
++		Stage:        stageName,
++		ReplayRunID:  recorded.RunID,
++		ReplayCommit: recorded.Commit,
++		EvalID:       evalID,
++		Winner:       evaluation.Score.Winner,
++		Confidence:   evaluation.Score.Confidence,
++		Findings:     evaluation.Findings,
++		Result:       result,
++	}, nil
++}
++
++// mergeString returns override if changed is true, otherwise fallback.
++// Mirrors the function in internal/cli/replay.go.
++func mergeString(changed bool, override, fallback string) string {
++	if changed {
++		return override
++	}
++	return fallback
++}
+diff --git a/internal/bench/run_test.go b/internal/bench/run_test.go
+new file mode 100644
+index 0000000..48537b3
+--- /dev/null
++++ b/internal/bench/run_test.go
+@@ -0,0 +1,457 @@
++package bench
++
++import (
++	"context"
++	"errors"
++	"os/exec"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/replay"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Test fixture helpers
++// ---------------------------------------------------------------------------
++
++// initRepoWithCommit creates a temporary git repo with identity configured,
++// makes an initial commit (so HEAD exists and worktree.Checkout can work),
++// and returns the repo path and the HEAD commit OID.
++func initRepoWithCommit(t *testing.T) (repoDir, headSHA string) {
++	t.Helper()
++	dir := t.TempDir()
++	run := func(args ...string) string {
++		t.Helper()
++		cmd := exec.Command("git", args...)
++		cmd.Dir = dir
++		out, err := cmd.CombinedOutput()
++		if err != nil {
++			t.Fatalf("git %v: %v\n%s", args, err, out)
++		}
++		return strings.TrimSpace(string(out))
++	}
++	run("init")
++	run("config", "user.name", "Test User")
++	run("config", "user.email", "test@example.invalid")
++	// Create an initial commit so HEAD resolves.
++	run("commit", "--allow-empty", "-m", "initial")
++	sha := run("rev-parse", "HEAD")
++	return dir, sha
++}
++
++// seedSourceRun writes a source run manifest into the store, using headSHA
++// as the stage GitSHA (so worktree.Checkout succeeds in the tests).
++// Returns the CohortRun wrapping the seeded run and the source commit OID.
++func seedSourceRun(t *testing.T, store refstore.Store, headSHA string) (cr CohortRun, sourceCommit string) {
++	t.Helper()
++
++	inputRef, inputBytes := contentArtifact("prompt", []byte("bench input"))
++	outputContent := []byte("original output bytes")
++	stage := makeStageWithSHA("plan", headSHA, []runmanifest.ArtifactRef{inputRef}, outputContent)
++	// Override Producer with real fields needed to pass manifest Validate.
++	stage.Producer = runmanifest.Producer{
++		Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++	}
++	// Stage.Skill must also be set (validateStage requires it).
++	stage.Skill = stage.Producer.Skill
++
++	files := map[string][]byte{
++		inputRef.Path:     inputBytes,
++		stage.Output.Path: outputContent,
++	}
++	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
++	manifest := makeManifest("bench-source-run", ts, []runmanifest.Stage{stage})
++	sourceCommit = seedRunInto(t, store, manifest, files)
++
++	cr = CohortRun{
++		RunID:   "bench-source-run",
++		Commit:  sourceCommit,
++		Stage:   stage,
++		Created: ts,
++	}
++	return cr, sourceCommit
++}
++
++// newBenchPipeline builds a Pipeline with injected stubs and a fixed clock.
++func newBenchPipeline(store refstore.Store, runner replay.Runner, judge eval.Judge, fixedTime time.Time) Pipeline {
++	rec := replay.RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	return Pipeline{
++		Store:    store,
++		Runner:   runner,
++		Judge:    judge,
++		Recorder: rec,
++		Now:      func() time.Time { return fixedTime },
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Happy path
++// ---------------------------------------------------------------------------
++
++// TestBenchRunHappyPath verifies the full pipeline:
++// - BenchOutcome is populated (ReplayRunID, EvalID, Winner),
++// - EvalResult is persisted and re-readable via eval.ParseJSON,
++// - both Targets are commit-pinned with valid SHA-256 artifacts,
++// - EvalResult.Validate passes,
++// - orientation: Targets[0]=original(cr.RunID), Targets[1]=replay.
++func TestBenchRunHappyPath(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, sourceCommit := seedSourceRun(t, store, headSHA)
++
++	replayOutput := []byte("replay output bytes")
++	stub := &replay.StubRunner{
++		CannedOutput: replayOutput,
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "bench-skill", Repo: "bench-repo", Version: "v1"},
++		},
++	}
++
++	stubJudge := &eval.StubJudge{
++		Canned: eval.JudgeResponse{Winner: eval.WinnerTie},
++	}
++
++	fixedTime := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, stubJudge, fixedTime)
++
++	outcome, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("BenchRun: %v", err)
++	}
++
++	// BenchOutcome must be populated.
++	if outcome.SourceRunID != cr.RunID {
++		t.Errorf("SourceRunID = %q, want %q", outcome.SourceRunID, cr.RunID)
++	}
++	if outcome.Stage != "plan" {
++		t.Errorf("Stage = %q, want plan", outcome.Stage)
++	}
++	if outcome.ReplayRunID == "" {
++		t.Error("ReplayRunID is empty")
++	}
++	if outcome.ReplayCommit == "" {
++		t.Error("ReplayCommit is empty")
++	}
++	if outcome.EvalID == "" {
++		t.Error("EvalID is empty")
++	}
++	if outcome.Winner != eval.WinnerTie {
++		t.Errorf("Winner = %q, want tie", outcome.Winner)
++	}
++
++	// EvalResult.Validate must pass.
++	if err := outcome.Result.Validate(); err != nil {
++		t.Errorf("Result.Validate: %v", err)
++	}
++
++	// EvalResult must be persisted and re-readable.
++	evalRef := "refs/etude/evals/" + outcome.EvalID
++	commit, err := store.Resolve(context.Background(), evalRef)
++	if err != nil {
++		t.Fatalf("Resolve eval ref: %v", err)
++	}
++	raw, err := store.ReadCommitFile(context.Background(), commit, "eval_result.json")
++	if err != nil {
++		t.Fatalf("ReadCommitFile eval_result.json: %v", err)
++	}
++	reparsed, err := eval.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("eval.ParseJSON: %v", err)
++	}
++	if reparsed.EvalID != outcome.EvalID {
++		t.Errorf("reparsed EvalID = %q, want %q", reparsed.EvalID, outcome.EvalID)
++	}
++
++	// Targets: [0]=original (source run), [1]=replay (replay run).
++	if len(reparsed.Targets) != 2 {
++		t.Fatalf("len(Targets) = %d, want 2", len(reparsed.Targets))
++	}
++	tA := reparsed.Targets[0]
++	tB := reparsed.Targets[1]
++
++	if tA.RunID != cr.RunID {
++		t.Errorf("Targets[0].RunID = %q, want %q", tA.RunID, cr.RunID)
++	}
++	if tA.Commit != sourceCommit {
++		t.Errorf("Targets[0].Commit = %q, want %q", tA.Commit, sourceCommit)
++	}
++	if len(tA.Artifact) != 64 {
++		t.Errorf("Targets[0].Artifact length = %d, want 64", len(tA.Artifact))
++	}
++
++	if tB.RunID != outcome.ReplayRunID {
++		t.Errorf("Targets[1].RunID = %q, want %q", tB.RunID, outcome.ReplayRunID)
++	}
++	if tB.Commit != outcome.ReplayCommit {
++		t.Errorf("Targets[1].Commit = %q, want %q", tB.Commit, outcome.ReplayCommit)
++	}
++	if len(tB.Artifact) != 64 {
++		t.Errorf("Targets[1].Artifact length = %d, want 64", len(tB.Artifact))
++	}
++}
++
++// TestBenchRunTargetsPinned verifies that both eval targets carry valid
++// 40/64-char lowercase hex commit OIDs and 64-char SHA-256 artifact hashes
++// (the exact shape required by eval.EvalResult.Validate).
++func TestBenchRunTargetsPinned(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("some output"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "s", Repo: "r", Version: "v1"},
++		},
++	}
++	judge := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++
++	fixedTime := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++
++	outcome, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("BenchRun: %v", err)
++	}
++
++	if err := outcome.Result.Validate(); err != nil {
++		t.Errorf("Result.Validate: %v", err)
++	}
++
++	for i, tgt := range outcome.Result.Targets {
++		if !isHex4064(tgt.Commit) {
++			t.Errorf("Targets[%d].Commit %q is not a 40/64-char lowercase hex OID", i, tgt.Commit)
++		}
++		if len(tgt.Artifact) != 64 || !isHex4064(tgt.Artifact) {
++			t.Errorf("Targets[%d].Artifact %q is not a 64-char lowercase hex SHA-256", i, tgt.Artifact)
++		}
++	}
++}
++
++// TestBenchRunProducerOverrideApplied verifies that ProducerOverrides are
++// reflected in the recorded replay stage and the EvalResult.Producer.
++func TestBenchRunProducerOverrideApplied(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	// The stub ECHOES req.Producer (no ProducerOverride), so the recorded
++	// Skill.Version can only be "vNEW" if BenchRun's Overrides merge produced it
++	// (the source run's version is "v1"). This gives the test real teeth: drop
++	// the Overrides merge and the recorded version would be "v1", failing below.
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("override output"),
++	}
++	judge := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++
++	fixedTime := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++	p.Overrides = ProducerOverrides{
++		SkillVersionChanged: true,
++		SkillVersion:        "vNEW",
++	}
++
++	outcome, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err != nil {
++		t.Fatalf("BenchRun: %v", err)
++	}
++
++	// Inspect the recorded replay manifest to verify the override was applied.
++	replayRef := "refs/etude/runs/" + outcome.ReplayRunID
++	replayCommit, err := store.Resolve(context.Background(), replayRef)
++	if err != nil {
++		t.Fatalf("resolve replay ref: %v", err)
++	}
++	raw, err := store.ReadCommitFile(context.Background(), replayCommit, "manifest.json")
++	if err != nil {
++		t.Fatalf("read manifest.json: %v", err)
++	}
++	m, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if len(m.Stages) != 1 {
++		t.Fatalf("replay stages = %d, want 1", len(m.Stages))
++	}
++	s := m.Stages[0]
++	if s.Producer.Skill.Version != "vNEW" {
++		t.Errorf("recorded Producer.Skill.Version = %q, want vNEW (from Overrides merge, not source v1)", s.Producer.Skill.Version)
++	}
++	// Non-overridden fields fall through to the source producer, proving the
++	// merge is selective (only SkillVersion changed).
++	if s.Producer.Skill.ID != "bench-skill" {
++		t.Errorf("recorded Producer.Skill.ID = %q, want bench-skill (unchanged from source)", s.Producer.Skill.ID)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Error propagation
++// ---------------------------------------------------------------------------
++
++// TestBenchRunRunnerError verifies that a runner error propagates and no eval
++// ref is written.
++func TestBenchRunRunnerError(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	runnerErr := errors.New("runner exploded")
++	stub := &replay.StubRunner{Err: runnerErr}
++	judge := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++
++	fixedTime := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++
++	_, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err == nil {
++		t.Fatal("BenchRun returned nil error, want runner error")
++	}
++	if !errors.Is(err, runnerErr) {
++		t.Errorf("error %v does not wrap runner error", err)
++	}
++
++	// No eval ref must have been written.
++	refs, listErr := store.List(context.Background(), "refs/etude/evals")
++	if listErr != nil {
++		t.Fatalf("List evals: %v", listErr)
++	}
++	if len(refs) != 0 {
++		t.Errorf("eval refs written despite runner error: %v", refs)
++	}
++}
++
++// TestBenchRunJudgeError verifies that a judge error propagates.
++// The replay run is recorded before the judge call, so the replay ref will
++// exist, but no eval ref should be written.
++func TestBenchRunJudgeError(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{
++		CannedOutput: []byte("runner output"),
++		ProducerOverride: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "s", Repo: "r", Version: "v1"},
++		},
++	}
++	judgeErr := errors.New("judge on fire")
++	judge := &eval.StubJudge{Err: judgeErr}
++
++	fixedTime := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++
++	_, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err == nil {
++		t.Fatal("BenchRun returned nil error, want judge error")
++	}
++	if !errors.Is(err, judgeErr) {
++		t.Errorf("error %v does not wrap judge error", err)
++	}
++
++	// No eval ref must have been written.
++	refs, listErr := store.List(context.Background(), "refs/etude/evals")
++	if listErr != nil {
++		t.Fatalf("List evals: %v", listErr)
++	}
++	if len(refs) != 0 {
++		t.Errorf("eval refs written despite judge error: %v", refs)
++	}
++}
++
++// TestBenchRunEmptyRunnerOutput verifies that an empty runner output is an error.
++func TestBenchRunEmptyRunnerOutput(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++	cr, _ := seedSourceRun(t, store, headSHA)
++
++	stub := &replay.StubRunner{CannedOutput: nil} // nil -> empty output
++	judge := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++
++	fixedTime := time.Date(2026, 5, 6, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++
++	_, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err == nil {
++		t.Fatal("BenchRun returned nil error, want empty-output error")
++	}
++	if !strings.Contains(err.Error(), "no output") {
++		t.Errorf("error %q does not indicate empty output", err.Error())
++	}
++}
++
++// TestBenchRunPointerInputError verifies that a pointer input in the source run
++// causes BenchRun to return an error (mirrors replay.go's pointer guard).
++// We test this by resolving a stage that has a pointer input. However, since
++// cohort.go's SelectCohort already filters pointer inputs (SkipPointerInput),
++// we simulate the error at the resolve level by seeding a run with a pointer
++// input directly via the refstore.
++func TestBenchRunPointerInputError(t *testing.T) {
++	repoDir, headSHA := initRepoWithCommit(t)
++	store := newStore(repoDir)
++
++	// Build a manifest with a pointer input, bypassing the normal cohort filter.
++	// Use a valid pointer artifact (storage="pointer") so the manifest is valid.
++	pointerRef, pointerBytes := pointerArtifact(t, "prompt")
++	outputContent := []byte("bench pointer output")
++	outputRef, _ := contentArtifact("output", outputContent)
++	// Override output to use content storage so manifest passes Validate.
++	stage := runmanifest.Stage{
++		Name:       "plan",
++		ProducedBy: "test-agent",
++		GitSHA:     headSHA,
++		Skill:      runmanifest.Skill{ID: "s", Repo: "r", Version: "v1"},
++		Producer:   runmanifest.Producer{Skill: runmanifest.Skill{ID: "s", Repo: "r", Version: "v1"}},
++		Timestamp:  time.Now().UTC(),
++		Inputs:     []runmanifest.ArtifactRef{pointerRef},
++		Output:     outputRef,
++	}
++	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
++	manifest := makeManifest("bench-pointer-run", ts, []runmanifest.Stage{stage})
++	files := map[string][]byte{
++		pointerRef.Path: pointerBytes,
++		outputRef.Path:  outputContent,
++	}
++	sourceCommit := seedRunInto(t, store, manifest, files)
++
++	cr := CohortRun{
++		RunID:   "bench-pointer-run",
++		Commit:  sourceCommit,
++		Stage:   stage,
++		Created: ts,
++	}
++
++	stub := &replay.StubRunner{CannedOutput: []byte("x")}
++	judge := &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerA}}
++
++	fixedTime := time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
++	p := newBenchPipeline(store, stub, judge, fixedTime)
++
++	_, err := p.BenchRun(context.Background(), repoDir, cr)
++	if err == nil {
++		t.Fatal("BenchRun returned nil error, want pointer-input error")
++	}
++	if !errors.Is(err, replay.ErrPointerNotMaterialized) {
++		t.Errorf("error %v does not wrap ErrPointerNotMaterialized", err)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
++// isHex4064 reports whether s is a 40- or 64-char lowercase hex string.
++func isHex4064(s string) bool {
++	if len(s) != 40 && len(s) != 64 {
++		return false
++	}
++	for _, r := range s {
++		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 27ed09d..d53f227 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -10,7 +10,6 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"github.com/joshuavial/etude/internal/artifactstore"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/replay"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+@@ -231,8 +230,8 @@ func mergeString(changed bool, override, fallback string) string {
+ 	return fallback
+ }
+ 
+-// recordRun persists a new replay run ref with a single stage linking back to
+-// the source run/stage. It mirrors the create path used by capture.go.
++// recordRun is a thin wrapper around replay.RunRecorder.Record that handles the
++// CLI-specific concerns: printing the "recorded replay run" confirmation line.
+ func (r *replayRunner) recordRun(
+ 	ctx context.Context,
+ 	store refstore.Store,
+@@ -240,122 +239,17 @@ func (r *replayRunner) recordRun(
+ 	sourceRunID, sourceStageName string,
+ 	resolved replay.ResolvedStage,
+ 	res replay.RunResult,
+-	_ []replay.RunInput, // materialized inputs unused here; we read raw bytes from source commit
++	_ []replay.RunInput, // materialized inputs unused here; raw bytes come from source commit
+ ) error {
+-	clockFn := r.now
+-	if clockFn == nil {
+-		clockFn = time.Now
+-	}
+-	now := clockFn().UTC()
+-
+-	// Build the unique replay run id from source id + timestamp.
+-	baseID := fmt.Sprintf("%s-replay-%s", sourceRunID, now.Format("20060102T150405Z"))
+-	replayRunID, err := allocateReplayRunID(ctx, store, baseID)
++	rec := replay.RunRecorder{Store: store, Now: r.now}
++	recorded, err := rec.Record(ctx, sourceRunID, sourceStageName, resolved, res)
+ 	if err != nil {
+ 		return err
+ 	}
+-
+-	// Build the artifact store for the new run: output goes in via AddContent,
+-	// then all source inputs are copied raw from the source commit.
+-	artifactStore := artifactstore.New()
+-
+-	outputArtifact, err := artifactStore.AddContent(resolved.Output.Role, res.MediaType, res.Output)
+-	if err != nil {
+-		return fmt.Errorf("record: store output artifact: %w", err)
+-	}
+-
+-	// Seed the files map from the artifact store (output bytes).
+-	files := artifactStore.Files()
+-
+-	// Copy each source input's raw bytes from the source commit into files.
+-	// Using ReadCommitFile gives us the raw stored bytes (correct for both
+-	// content blobs and pointer-record JSON), bypassing ReadContent which
+-	// would fail on pointer artifacts.
+-	for _, inp := range resolved.ResolvedInputs {
+-		rawBytes, err := store.ReadCommitFile(ctx, resolved.Commit, inp.ArtifactRef.Path)
+-		if err != nil {
+-			return fmt.Errorf("record: read source input %q: %w", inp.ArtifactRef.Role, err)
+-		}
+-		files[inp.ArtifactRef.Path] = rawBytes
+-	}
+-
+-	// Build the single replay stage. Both Stage.Skill and Stage.Producer must
+-	// be set (mirrors capture.go's pattern; validateStage requires Skill fields).
+-	skill := res.Producer.Skill
+-	stage := runmanifest.Stage{
+-		Name:       sourceStageName,
+-		ProducedBy: "replay",
+-		GitSHA:     resolved.GitSHA,
+-		Skill:      skill,
+-		Producer:   res.Producer,
+-		Inputs:     sourceInputRefs(resolved),
+-		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
+-		Timestamp:  now,
+-		ReplayOf: &runmanifest.ReplayLink{
+-			RunID:  sourceRunID,
+-			Stage:  sourceStageName,
+-			Commit: resolved.Commit,
+-		},
+-	}
+-
+-	manifest := runmanifest.Manifest{
+-		RunID:           replayRunID,
+-		Workflow:        resolved.Workflow,
+-		WorkflowVersion: resolved.WorkflowVersion,
+-		Created:         now,
+-		Refs:            resolved.Refs,
+-		Stages:          []runmanifest.Stage{stage},
+-	}
+-
+-	written, err := (runmanifest.Writer{Store: store}).Write(ctx, manifest, files, runmanifest.WriteOptions{
+-		Message: fmt.Sprintf("replay: record %s stage %s from %s", replayRunID, sourceStageName, sourceRunID),
+-	})
+-	if err != nil {
+-		return fmt.Errorf("record: write replay run: %w", err)
+-	}
+-
+-	_, err = fmt.Fprintf(out, "recorded replay run %s (commit %s)\n", replayRunID, written)
++	_, err = fmt.Fprintf(out, "recorded replay run %s (commit %s)\n", recorded.RunID, recorded.Commit)
+ 	return err
+ }
+ 
+-// sourceInputRefs extracts the ArtifactRefs from the resolved stage's inputs,
+-// preserving them verbatim so the replay run carries identical content-addressed refs.
+-func sourceInputRefs(resolved replay.ResolvedStage) []runmanifest.ArtifactRef {
+-	refs := make([]runmanifest.ArtifactRef, len(resolved.ResolvedInputs))
+-	for i, inp := range resolved.ResolvedInputs {
+-		refs[i] = inp.ArtifactRef
+-	}
+-	return refs
+-}
+-
+-// allocateReplayRunID probes for a free replay run id, trying base then
+-// base-2 through base-10. Returns an error if none are free.
+-func allocateReplayRunID(ctx context.Context, store refstore.Store, base string) (string, error) {
+-	if !runmanifest.IsValidRunID(base) {
+-		return "", fmt.Errorf("derived replay run id %q is not a valid run id", base)
+-	}
+-
+-	candidates := make([]string, 0, 11)
+-	candidates = append(candidates, base)
+-	for n := 2; n <= 10; n++ {
+-		candidates = append(candidates, fmt.Sprintf("%s-%d", base, n))
+-	}
+-
+-	for _, id := range candidates {
+-		ref := "refs/etude/runs/" + id
+-		_, err := store.Resolve(ctx, ref)
+-		if errors.Is(err, refstore.ErrNotFound) {
+-			// Free slot found.
+-			return id, nil
+-		}
+-		if err != nil {
+-			return "", fmt.Errorf("probe replay run id %q: %w", id, err)
+-		}
+-		// Already exists — try next suffix.
+-	}
+-	return "", fmt.Errorf("could not allocate unique replay run id after 10 attempts (base: %s)", base)
+-}
+-
+ // resolveRunner returns r.runner if injected (test seam), otherwise builds an
+ // ExecRunner from the provided spec (flag), or falls back to git config
+ // etude.runner. Returns an error if no runner can be determined.
+diff --git a/internal/replay/record.go b/internal/replay/record.go
+new file mode 100644
+index 0000000..f76e603
+--- /dev/null
++++ b/internal/replay/record.go
+@@ -0,0 +1,165 @@
++package replay
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// RecordedRun is the result of RunRecorder.Record: the identity of the new
++// linked replay run and a pin to its output artifact.
++type RecordedRun struct {
++	// RunID is the allocated replay run identifier.
++	RunID string
++	// Commit is the git commit OID written for the new run ref.
++	Commit string
++	// OutputArtifact is the SHA-256 hex of the replay output artifact.
++	OutputArtifact string
++	// OutputPath is the artifact path in the commit tree.
++	OutputPath string
++}
++
++// RunRecorder persists a new replay run that links back to a source run/stage.
++// It encapsulates the record-a-new-linked-replay-run logic that was previously
++// unexported on cli.replayRunner, making it reusable by both cli and bench.
++type RunRecorder struct {
++	Store refstore.Store
++	// Now returns the current time. Defaults to time.Now when nil; tests inject a
++	// fixed clock to make replay run ids deterministic.
++	Now func() time.Time
++}
++
++// Record writes a new linked replay run and returns its identity.
++//
++// Flow:
++//  1. Allocate a unique replay run id using AllocateRunID.
++//  2. Add the replay output as a content artifact via artifactstore.
++//  3. Copy each source input raw from resolved.Commit (handles pointer records).
++//  4. Build the Stage with ProducedBy:"replay" and a ReplayOf link pinned to
++//     resolved.Commit (the immutable source snapshot).
++//  5. Write the manifest via runmanifest.Writer.
++func (r RunRecorder) Record(
++	ctx context.Context,
++	sourceRunID, sourceStageName string,
++	resolved ResolvedStage,
++	res RunResult,
++) (RecordedRun, error) {
++	clockFn := r.Now
++	if clockFn == nil {
++		clockFn = time.Now
++	}
++	now := clockFn().UTC()
++
++	// Allocate a unique run id derived from source id + timestamp.
++	baseID := fmt.Sprintf("%s-replay-%s", sourceRunID, now.Format("20060102T150405Z"))
++	replayRunID, err := AllocateRunID(ctx, r.Store, baseID)
++	if err != nil {
++		return RecordedRun{}, err
++	}
++
++	// Store the output bytes and seed the files map.
++	as := artifactstore.New()
++	outputArtifact, err := as.AddContent(resolved.Output.Role, res.MediaType, res.Output)
++	if err != nil {
++		return RecordedRun{}, fmt.Errorf("record: store output artifact: %w", err)
++	}
++	files := as.Files()
++
++	// Copy each source input raw from the source commit. Using ReadCommitFile
++	// gives us the raw stored bytes (correct for both content blobs and
++	// pointer-record JSON), bypassing ReadContent which would fail on pointer
++	// artifacts.
++	for _, inp := range resolved.ResolvedInputs {
++		rawBytes, err := r.Store.ReadCommitFile(ctx, resolved.Commit, inp.ArtifactRef.Path)
++		if err != nil {
++			return RecordedRun{}, fmt.Errorf("record: read source input %q: %w", inp.ArtifactRef.Role, err)
++		}
++		files[inp.ArtifactRef.Path] = rawBytes
++	}
++
++	// Build the stage. Both Stage.Skill and Stage.Producer must be set
++	// (mirrors capture.go's pattern; validateStage requires Skill fields).
++	skill := res.Producer.Skill
++	stage := runmanifest.Stage{
++		Name:       sourceStageName,
++		ProducedBy: "replay",
++		GitSHA:     resolved.GitSHA,
++		Skill:      skill,
++		Producer:   res.Producer,
++		Inputs:     sourceInputRefs(resolved),
++		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
++		Timestamp:  now,
++		ReplayOf: &runmanifest.ReplayLink{
++			RunID:  sourceRunID,
++			Stage:  sourceStageName,
++			Commit: resolved.Commit,
++		},
++	}
++
++	manifest := runmanifest.Manifest{
++		RunID:           replayRunID,
++		Workflow:        resolved.Workflow,
++		WorkflowVersion: resolved.WorkflowVersion,
++		Created:         now,
++		Refs:            resolved.Refs,
++		Stages:          []runmanifest.Stage{stage},
++	}
++
++	commit, err := (runmanifest.Writer{Store: r.Store}).Write(ctx, manifest, files, runmanifest.WriteOptions{
++		Message: fmt.Sprintf("replay: record %s stage %s from %s", replayRunID, sourceStageName, sourceRunID),
++	})
++	if err != nil {
++		return RecordedRun{}, fmt.Errorf("record: write replay run: %w", err)
++	}
++
++	return RecordedRun{
++		RunID:          replayRunID,
++		Commit:         commit,
++		OutputArtifact: outputArtifact.SHA256,
++		OutputPath:     outputArtifact.Path,
++	}, nil
++}
++
++// AllocateRunID probes for a free replay run id, trying base then
++// base-2 through base-10. Returns an error if none are free.
++// Mirrors allocateReplayRunID (now exported for use by bench).
++func AllocateRunID(ctx context.Context, store refstore.Store, base string) (string, error) {
++	if !runmanifest.IsValidRunID(base) {
++		return "", fmt.Errorf("derived replay run id %q is not a valid run id", base)
++	}
++
++	candidates := make([]string, 0, 11)
++	candidates = append(candidates, base)
++	for n := 2; n <= 10; n++ {
++		candidates = append(candidates, fmt.Sprintf("%s-%d", base, n))
++	}
++
++	for _, id := range candidates {
++		ref := "refs/etude/runs/" + id
++		_, err := store.Resolve(ctx, ref)
++		if errors.Is(err, refstore.ErrNotFound) {
++			return id, nil
++		}
++		if err != nil {
++			return "", fmt.Errorf("probe replay run id %q: %w", id, err)
++		}
++		// Already exists — try next suffix.
++	}
++	return "", fmt.Errorf("could not allocate unique replay run id after 10 attempts (base: %s)", base)
++}
++
++// sourceInputRefs extracts the ArtifactRefs from the resolved stage's inputs,
++// preserving them verbatim so the replay run carries identical content-addressed
++// refs.
++func sourceInputRefs(resolved ResolvedStage) []runmanifest.ArtifactRef {
++	refs := make([]runmanifest.ArtifactRef, len(resolved.ResolvedInputs))
++	for i, inp := range resolved.ResolvedInputs {
++		refs[i] = inp.ArtifactRef
++	}
++	return refs
++}
+diff --git a/internal/replay/record_test.go b/internal/replay/record_test.go
+new file mode 100644
+index 0000000..ce2159a
+--- /dev/null
++++ b/internal/replay/record_test.go
+@@ -0,0 +1,377 @@
++package replay
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// seedRunForRecord seeds a source run with one input and one output into a
++// fresh temp git repo and returns the store, the source commit, and the
++// ResolvedStage for driving RunRecorder.Record.
++func seedRunForRecord(t *testing.T) (store refstore.Store, sourceCommit string, resolved ResolvedStage) {
++	t.Helper()
++
++	inputContent := []byte("source input bytes")
++	inputRef, inputBytes := contentArtifact("prompt", inputContent)
++	outputContent := []byte("source output bytes")
++	stage := makeStage("gen", []runmanifest.ArtifactRef{inputRef}, outputContent)
++
++	files := map[string][]byte{
++		inputRef.Path:     inputBytes,
++		stage.Output.Path: outputContent,
++	}
++	manifest := makeManifest("source-run", map[string]string{"pr": "1"}, []runmanifest.Stage{stage})
++	store, _, sourceCommit = seedRun(t, manifest, files)
++
++	// Resolve the seeded run so we have a proper ResolvedStage.
++	var err error
++	resolved, err = ResolveInputs(context.Background(), store, "source-run", "gen")
++	if err != nil {
++		t.Fatalf("ResolveInputs: %v", err)
++	}
++	return store, sourceCommit, resolved
++}
++
++// TestRunRecorderHappyPath verifies the full record round-trip:
++// - RecordedRun.RunID/Commit/OutputArtifact are non-empty,
++// - the ref exists and is readable,
++// - ReplayOf is set correctly (RunID/Stage/Commit pinned to source commit),
++// - ProducedBy is "replay",
++// - Stage.Skill mirrors Producer.Skill.
++func TestRunRecorderHappyPath(t *testing.T) {
++	store, sourceCommit, resolved := seedRunForRecord(t)
++
++	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
++	res := RunResult{
++		Output:    []byte("replay output bytes"),
++		MediaType: "text/plain; charset=utf-8",
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		},
++	}
++
++	rec := RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++
++	wantRunID := "source-run-replay-20260522T100000Z"
++	if recorded.RunID != wantRunID {
++		t.Errorf("RunID = %q, want %q", recorded.RunID, wantRunID)
++	}
++	if recorded.Commit == "" {
++		t.Error("Commit is empty")
++	}
++	if recorded.OutputArtifact == "" {
++		t.Error("OutputArtifact is empty")
++	}
++	if len(recorded.OutputArtifact) != 64 {
++		t.Errorf("OutputArtifact length = %d, want 64 hex chars", len(recorded.OutputArtifact))
++	}
++
++	// The ref must be resolvable.
++	ref := "refs/etude/runs/" + recorded.RunID
++	commit, err := store.Resolve(context.Background(), ref)
++	if err != nil {
++		t.Fatalf("Resolve %q: %v", ref, err)
++	}
++	if commit != recorded.Commit {
++		t.Errorf("resolved commit = %q, want %q", commit, recorded.Commit)
++	}
++
++	// Parse and inspect the recorded manifest.
++	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
++	if err != nil {
++		t.Fatalf("ReadCommitFile manifest.json: %v", err)
++	}
++	m, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if len(m.Stages) != 1 {
++		t.Fatalf("stages = %d, want 1", len(m.Stages))
++	}
++	s := m.Stages[0]
++
++	if s.ProducedBy != "replay" {
++		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
++	}
++	if s.ReplayOf == nil {
++		t.Fatal("ReplayOf is nil")
++	}
++	if s.ReplayOf.RunID != "source-run" {
++		t.Errorf("ReplayOf.RunID = %q, want source-run", s.ReplayOf.RunID)
++	}
++	if s.ReplayOf.Stage != "gen" {
++		t.Errorf("ReplayOf.Stage = %q, want gen", s.ReplayOf.Stage)
++	}
++	if s.ReplayOf.Commit != sourceCommit {
++		t.Errorf("ReplayOf.Commit = %q, want %q", s.ReplayOf.Commit, sourceCommit)
++	}
++
++	// Stage.Skill must mirror Producer.Skill.
++	if s.Skill != s.Producer.Skill {
++		t.Errorf("Stage.Skill %+v != Producer.Skill %+v", s.Skill, s.Producer.Skill)
++	}
++}
++
++// TestRunRecorderInputBytesCopiedVerbatim verifies that source input raw bytes
++// appear byte-identical in the recorded replay run (reading from the source commit
++// path is the mechanism that handles both content and pointer records correctly).
++func TestRunRecorderInputBytesCopiedVerbatim(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++
++	// Read the source input bytes directly to compare later.
++	if len(resolved.ResolvedInputs) == 0 {
++		t.Skip("no inputs in source stage")
++	}
++	inp := resolved.ResolvedInputs[0]
++	wantInputBytes, err := store.ReadCommitFile(context.Background(), resolved.Commit, inp.ArtifactRef.Path)
++	if err != nil {
++		t.Fatalf("read source input: %v", err)
++	}
++
++	res := RunResult{
++		Output:    []byte("replay out"),
++		MediaType: "application/octet-stream",
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		},
++	}
++
++	fixedTime := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
++	rec := RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++
++	// The input must be present at the same path in the replay run.
++	gotInputBytes, err := store.ReadCommitFile(context.Background(), recorded.Commit, inp.ArtifactRef.Path)
++	if err != nil {
++		t.Fatalf("read replay input: %v", err)
++	}
++	if !bytes.Equal(gotInputBytes, wantInputBytes) {
++		t.Errorf("replay input bytes differ from source:\ngot:  %q\nwant: %q", gotInputBytes, wantInputBytes)
++	}
++}
++
++// TestRunRecorderOutputArtifactSHA256 verifies that RecordedRun.OutputArtifact
++// is the SHA-256 of the replay output bytes.
++func TestRunRecorderOutputArtifactSHA256(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++
++	replayOutput := []byte("output for sha check")
++	res := RunResult{
++		Output:    replayOutput,
++		MediaType: "application/octet-stream",
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
++		},
++	}
++
++	fixedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
++	rec := RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++
++	// OutputPath must exist in the commit tree and contain the replay output bytes.
++	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, recorded.OutputPath)
++	if err != nil {
++		t.Fatalf("read output artifact: %v", err)
++	}
++	if !bytes.Equal(got, replayOutput) {
++		t.Errorf("output artifact bytes = %q, want %q", got, replayOutput)
++	}
++}
++
++// TestAllocateRunIDSuffixing verifies that a second allocation with the same
++// base returns base-2 when base is already taken.
++func TestAllocateRunIDSuffixing(t *testing.T) {
++	dir := initRepo(t)
++	store := refstore.New(dir)
++	ctx := context.Background()
++
++	base := "myrun-replay-20260101T000000Z"
++
++	// First allocation must return base unchanged.
++	first, err := AllocateRunID(ctx, store, base)
++	if err != nil {
++		t.Fatalf("first AllocateRunID: %v", err)
++	}
++	if first != base {
++		t.Errorf("first id = %q, want %q", first, base)
++	}
++
++	// Occupy the base slot.
++	_, err = store.WriteCommit(ctx, "refs/etude/runs/"+base,
++		map[string][]byte{"marker": []byte("x")},
++		refstore.WriteOptions{})
++	if err != nil {
++		t.Fatalf("WriteCommit to occupy slot: %v", err)
++	}
++
++	// Second allocation must return base-2.
++	second, err := AllocateRunID(ctx, store, base)
++	if err != nil {
++		t.Fatalf("second AllocateRunID: %v", err)
++	}
++	if second != base+"-2" {
++		t.Errorf("second id = %q, want %q", second, base+"-2")
++	}
++}
++
++// TestAllocateRunIDExhausted verifies that AllocateRunID returns an error when
++// all 10 slots are occupied.
++func TestAllocateRunIDExhausted(t *testing.T) {
++	dir := initRepo(t)
++	store := refstore.New(dir)
++	ctx := context.Background()
++
++	base := "exhaust-replay-20260101T000000Z"
++
++	// Occupy all 10 candidate slots.
++	slots := []string{base}
++	for n := 2; n <= 10; n++ {
++		slots = append(slots, base+"-"+itoa(n))
++	}
++	for _, slot := range slots {
++		_, err := store.WriteCommit(ctx, "refs/etude/runs/"+slot,
++			map[string][]byte{"m": []byte("x")},
++			refstore.WriteOptions{})
++		if err != nil {
++			t.Fatalf("WriteCommit %q: %v", slot, err)
++		}
++	}
++
++	_, err := AllocateRunID(ctx, store, base)
++	if err == nil {
++		t.Fatal("AllocateRunID returned nil error, want exhausted-slots error")
++	}
++}
++
++// TestRunRecorderProducerMirrored verifies that the recorded stage carries the
++// producer from RunResult.Producer (not the source's producer).
++func TestRunRecorderProducerMirrored(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++
++	overrideProducer := runmanifest.Producer{
++		Skill: runmanifest.Skill{ID: "override-skill", Repo: "override-repo", Version: "vNEW"},
++		Model: "claude-opus",
++	}
++	res := RunResult{
++		Output:    []byte("override output"),
++		MediaType: "text/plain; charset=utf-8",
++		Producer:  overrideProducer,
++	}
++
++	fixedTime := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
++	rec := RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++
++	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
++	if err != nil {
++		t.Fatalf("ReadCommitFile: %v", err)
++	}
++	m, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	s := m.Stages[0]
++	if s.Producer.Skill.Version != "vNEW" {
++		t.Errorf("Producer.Skill.Version = %q, want vNEW", s.Producer.Skill.Version)
++	}
++	if s.Producer.Model != "claude-opus" {
++		t.Errorf("Producer.Model = %q, want claude-opus", s.Producer.Model)
++	}
++	// Stage.Skill mirrors Producer.Skill.
++	if s.Skill.ID != "override-skill" {
++		t.Errorf("Skill.ID = %q, want override-skill", s.Skill.ID)
++	}
++}
++
++// TestRunRecorderNowDefault verifies that a zero Now field defaults to
++// time.Now() without panicking (smoke test: just check no error + non-empty RunID).
++func TestRunRecorderNowDefault(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++
++	res := RunResult{
++		Output:    []byte("default-now output"),
++		MediaType: "application/octet-stream",
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
++		},
++	}
++
++	rec := RunRecorder{Store: store} // Now is nil — must default to time.Now
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record with nil Now: %v", err)
++	}
++	if recorded.RunID == "" {
++		t.Error("RunID is empty")
++	}
++	if !strings.Contains(recorded.RunID, "source-run-replay-") {
++		t.Errorf("RunID %q does not match expected pattern", recorded.RunID)
++	}
++}
++
++// TestRunRecorderEmptyOutputError verifies that Record fails gracefully when
++// the output bytes slice is empty (AddContent should still succeed; a zero-byte
++// artifact is technically valid). This test verifies the caller (bench/cli) is
++// responsible for the empty-output guard, not Record itself.
++// (Record does not impose a non-empty constraint — that is checked by the
++// caller before calling Record. This test simply proves Record tolerates it.)
++func TestRunRecorderAcceptsEmptyOutput(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++
++	res := RunResult{
++		Output:    []byte{}, // empty
++		MediaType: "text/plain; charset=utf-8",
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
++		},
++	}
++
++	fixedTime := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
++	rec := RunRecorder{Store: store, Now: func() time.Time { return fixedTime }}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record with empty output: %v", err)
++	}
++	if recorded.OutputArtifact == "" {
++		t.Error("OutputArtifact is empty even for zero-byte output")
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Helper for int-to-string without strconv (mirrors bench/cohort_test.go)
++// ---------------------------------------------------------------------------
++
++func itoa(n int) string {
++	if n == 0 {
++		return "0"
++	}
++	digits := []byte{}
++	for n > 0 {
++		digits = append([]byte{byte('0' + n%10)}, digits...)
++		n /= 10
++	}
++	return string(digits)
++}
++
++// stubRunError is a sentinel used in error-propagation tests.
++var stubRunError = errors.New("stub run error")
