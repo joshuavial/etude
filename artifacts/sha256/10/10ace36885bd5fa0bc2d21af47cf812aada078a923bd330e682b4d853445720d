@@ -1,0 +1,134 @@
+## Plan
+
+**Approach:** Build the §3 gate schema as Go types in `internal/runmanifest` (additive: one
+new `Gates []GateAttempt` field on `Manifest`, plus `SeatResult`/`Provider`/`ReviewedRef`/
+`GateDecision` and the `GateStatus`/`SeatVerdict` string types), with parallel `*JSON` wire
+structs, a `validateGate` mirroring `validateStage`, and the §2.3/§7 version handling
+(`toJSON` emits `manifest_version: 3` iff `len(Gates)>0` else byte-identical `2`; `toManifest`
+adds a `{0,2,3}` allowlist). For the CLI I add a **new top-level `capture-gate` command** that
+ingests a single JSON `GateAttempt` document (`--gate-file <path|->`) and appends it to an
+existing run, reusing the existing read-existing-run + optimistic-concurrency append path.
+JSON-file input is chosen over flags because a GateAttempt is deeply nested (N seats × ~10 fields
+each, optional raw_output blobs) and a flag CLI would be unusable; the dogfood workflow (.4)
+already emits JSON from agent transcripts, so a JSON contract is the natural seam. Raw transcripts
+referenced by a seat are given as file paths in the JSON and hashed into the existing
+`artifactstore`, exactly like stage outputs.
+
+**CLI surface decision (resolved per plan-gate BLOCK from codex + gemini): commit to a separate
+top-level `etude capture-gate` command and leave `etude capture <stage>` BYTE-FOR-BYTE UNCHANGED.**
+The earlier idea of turning `capture` into a cobra parent with a default-subcommand shim (so bare
+`capture <stage>` still routed) is REJECTED: cobra does not natively dispatch an unknown positional
+to a default subcommand, and the manual arg-routing needed would risk regressing `capture <stage>`
+help text, completions, and error handling that `scripts/dogfood-capture.sh` depends on. A
+separate top-level command has zero regression surface (the existing command's wiring is not
+touched at all) and is the lowest-risk way to satisfy "legacy stage producer capture still works
+unchanged". `capture-gate` (vs a `gate` parent) keeps it in the capture verb family and avoids a
+parent-with-one-child; a future gate-listing command can introduce a `gate` noun namespace then.
+
+**Files:**
+- `internal/runmanifest/manifest.go` — add Go types `GateAttempt`, `SeatResult`, `Provider`,
+  `ReviewedRef`, `GateDecision`, `GateStatus`, `SeatVerdict`; add `Gates []GateAttempt` to
+  `Manifest`. Add wire structs `gateJSON`, `seatResultJSON`, `providerJSON`, `reviewedRefJSON`,
+  `gateDecisionJSON` (reusing existing `harnessJSON`, `skillJSON`, `artifactJSON` for
+  harness/skill/raw_output per §4). Extend `Manifest.toJSON` to build `gates` (omitempty) and to
+  set `ManifestVersion` to 3 iff `len(m.Gates)>0` else 2. Extend `manifestJSON` with
+  `Gates []gateJSON json:"gates,omitempty"` and `toManifest` to (a) reconstruct gates and (b)
+  enforce the version allowlist `{0,2,3}` (reject others with `ErrInvalidManifest`). Add
+  `validateGate(index, gate, stageIndex map[string]Stage)` called from `Manifest.Validate()`
+  after the stage loop, plus gate-level `gate_id` uniqueness and `(phase,round)` uniqueness sets
+  in `Validate()` (mirrors the existing duplicate-role check style). Extend BOTH
+  `referencedArtifactPaths` AND `ArtifactPaths` to walk `m.Gates` seats' `RawOutput` (§6 — this
+  is load-bearing for `Writer.Write` acceptance and append carry-forward). Helpers:
+  `isGateStatus`, `isSeatVerdict`, failure_note required/forbidden rule.
+- `internal/cli/capture.go` — LEAVE `newCaptureCommand` and `captureRunner.run` (the existing
+  `capture <stage>` path) UNCHANGED. Add `newCaptureGateCommand` (a standalone top-level command)
+  + `captureRunner.runGate` (or a small dedicated runner): parse `--run`, read `--gate-file` (or
+  stdin on `-`), unmarshal a `gateInputJSON`, resolve any per-seat `raw_output.path` files into the
+  artifactstore (`AddContent`, inferMediaType), build a `runmanifest.GateAttempt`, `readExistingRun`,
+  append to `manifest.Gates`, carry forward prior files (now including prior gate blobs via the
+  extended `ArtifactPaths`), and `Writer.Write` with `ExpectedOld`. Reject creating a brand-new run
+  (a gate must attach to an existing run — when `Resolve` returns `ErrNotFound`, fail with an
+  explicit message e.g. `run %q not found; a gate must attach to an existing run`, mirroring
+  run.go's not-found wording). Share the
+  existing helpers (`readExistingRun`, `addFileArtifact`/store wiring, `parseRefs`, media-type
+  inference) rather than duplicating them; refactor a shared helper out only if it can be done
+  WITHOUT altering the existing `capture` command's behavior. Add a small input DTO (seat
+  provider/model/harness/skill, verdict, required/optional, failure_note, raw_output file path,
+  timestamps; gate_id/phase/round/tier/status/reviewed_stages/decision).
+- `internal/cli/root.go` — register the new `capture-gate` command on the root (alongside
+  `capture`); the existing `capture` registration is untouched.
+- `internal/runmanifest/manifest_test.go` — new validation + round-trip tests (see Tests).
+- `internal/cli/capture_test.go` — new CLI tests for `capture-gate` (see Tests).
+- `docs/cli/etude_capture-gate.md` (new) — regenerated via `make docs` (NOT hand-edited; gen-docs
+  walks the cobra tree). `docs/cli/etude_capture.md` is UNCHANGED (the `capture` command is not
+  modified), so `make docs-check` shows only the added page.
+
+**Tests:**
+runmanifest (unit):
+- `TestGateRoundTrip` — manifest with the §5 two-round four-seat example round-trips
+  JSON()->ParseJSON intact, and `ManifestVersion==3`.
+- `TestGatelessManifestStaysV2ByteIdentical` — a stage-only manifest with `len(Gates)==0`
+  serializes byte-for-byte as today (`manifest_version: 2`, no `gates` key). This is the
+  "legacy stage producer capture still works unchanged" acceptance proof; the existing golden
+  `TestManifestJSONIsDeterministicAndExact`, `TestProducerRoundTrip`, `TestReplayOfJSONRoundTrip`,
+  `TestLegacyBackCompatFrozenBytes` must all stay green untouched.
+- `TestValidateGateRejects` (table) covering: all six verdicts accepted; `failure_note` required
+  for {failed,empty,malfunction,disregarded} and forbidden for {go,block}; missing/empty
+  `provider.name` and `provider.model` rejected; provider with control char rejected; duplicate
+  `gate_id` rejected; duplicate `(phase,round)` tuple rejected; `tier` outside {0,1,2,3} rejected;
+  `status` not in {pass,rerun,escalated} rejected; `escalation_reason` required iff
+  status==escalated; empty `seats` rejected; empty `reviewed_stages` rejected; reviewed_stage
+  `stage` not matching any `Stage.Name` rejected (referential integrity); reviewed_stage
+  `artifact` set but not equal to that stage's Output/Inputs artifact rejected (dangling-artifact);
+  reviewed_stage with `artifact:""` accepted (name-only); bad seat raw_output ref rejected via
+  validateArtifactRef.
+- `TestVersionAllowlist` — ParseJSON accepts manifest_version 0,2,3; rejects 1 and 4 with
+  ErrInvalidManifest.
+- `TestArtifactPathsWalksGateRawOutput` — `ArtifactPaths`/`referencedArtifactPaths` include a
+  seat's raw_output path so a prior gate's blob is carried forward on append and `Writer.Write`
+  accepts it (and an extra unreferenced gate blob still trips `ErrUnreferencedArtifact`).
+CLI (capture_test.go):
+- `TestCaptureGateAppendsToExistingRun` — create a run via `capture plan`, then `capture-gate`
+  with a JSON file; assert manifest gains one GateAttempt, stages untouched, manifest_version 3,
+  and the prior stage artifact + new raw_output blob both readable from the ref.
+- `TestCaptureGateMultipleAttemptsSamePhase` — two `capture-gate` calls for phase=plan round 1
+  then round 2 both land (multiple-attempts acceptance).
+- `TestCaptureGatePilmsProvider` — a seat with provider lmstudio / model qwen/qwen3.6-35b-a3b is
+  recorded verbatim (acceptance bullet).
+- `TestCaptureGateRejectsNewRun` — `capture-gate` against a non-existent run errors (must attach
+  to existing run).
+- `TestCaptureGateRejectsDanglingArtifact` — reviewed_stages artifact not present on the run is
+  rejected end-to-end.
+- Existing `capture <stage>` tests stay green UNCHANGED — the `capture` command is not modified,
+  so there is no shim/positional regression surface to worry about.
+
+**Docs:** This bead implements a schema, not user-facing prose, so no narrative doc rewrite.
+But it adds CLI surface, so the generated CLI reference must be regenerated: run `make docs`,
+committing the new `docs/cli/etude_capture-gate.md`. `docs/cli/etude_capture.md` is UNCHANGED
+(the `capture` command is not touched). `make docs-check` must pass. The hand-written
+`docs/plans/product/gate-reviewer-record-schema.md` is authoritative and unchanged; `etude run
+show` rendering of gates is explicitly .3, not here.
+
+**Risks:**
+- **CLI surface — RESOLVED (no risk).** Per the plan-gate BLOCK, the cobra default-subcommand
+  shim is abandoned in favour of a standalone top-level `capture-gate` command. The existing
+  `capture <stage>` wiring is not touched at all, so dogfood-capture.sh and every existing capture
+  test keep passing by construction — zero regression surface.
+- **gc size under-report (known, deferred per §6).** Gate raw_output bytes are retained
+  (Writer+ArtifactPaths) but `gc.runSummaryFromManifest` only sums Stages, so storage reports
+  under-count gate blobs until .3/a gc follow-up. Documented as deliberate, out of scope here.
+- **Forward-compat break (inherent, per §7).** Old binaries reading a v3 manifest fail on
+  DisallowUnknownFields; this is the accepted, version-flagged contract for gate-carrying runs.
+
+**Scope check:** Recommend KEEPING as one bead. The schema types and the capture path are
+tightly coupled (the CLI can't be tested without the types, and the types' ArtifactPaths/version
+behavior is only exercised end-to-end by the capture append). It is one cohesive commit of
+moderate size; splitting would create a types-only commit with no caller and duplicate test
+scaffolding.
+
+**Capture:**
+- inputs: bead etude-roadmap.2.2 (description + acceptance), spec
+  docs/plans/product/gate-reviewer-record-schema.md, internal/runmanifest/manifest.go +
+  manifest_test.go, internal/cli/capture.go + capture_test.go, internal/artifactstore/store.go,
+  scripts/dogfood-capture.sh, cmd/gen-docs/main.go, Makefile, internal/cli/root.go + run.go
+- output: bead --design field
