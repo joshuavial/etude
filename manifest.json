@@ -414,6 +414,120 @@
         "degraded_reason": "Both seats GO. Three implement rounds, and every non-passing one found a fail-open on a script that gates every lane's push: r1 a run ref with no readable manifest passing CLEAN via a pipefail interaction, plus git ls-remote failure swallowed into unpushed-ref gaps; r2 a prescriptive docs block still asserting a deleted check enforces the sidecar convention, plus four more members of the same fail-open family. r3 optionals folded, two of them substantive. The script now cd's to its own repo root - it had resolved the allowlist from this repo while querying refs from the ambient cwd, so running it inside another checkout would have audited that repo against these exemptions. And the behind-vs-ahead distinction was mostly inert, because deciding it needs origin's commit present locally, which a repo that is behind is exactly the one not to have; there are now three outcomes rather than two, and the undecidable case says 'fetch to compare' instead of 'push it', which would have been the wrong instruction half the time. A regression using a separate clone pins that, so the remote tip genuinely never enters the local object store. Final shape: 902 -> 223 and 1579 -> 349, 34 audit tests, make dogfood-audit exits 0 where it failed before this bead, pre-push suite unchanged at 20/20."
       },
       "timestamp": "2026-08-15T12:09:42Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "ce317bc0dc1e1b52d1c12d584e317d1ff356bc7c1d5eb73fa6df73446e06e427"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "39d343026e96c076a27ad7632537dcfb6f5659ad29658b7a478f1e1778ff8202",
+            "path": "artifacts/sha256/39/39d343026e96c076a27ad7632537dcfb6f5659ad29658b7a478f1e1778ff8202",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1252
+          },
+          "timestamp": "2026-08-15T12:12:06.750704Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T12:12:06.974532Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T12:12:08.02927Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Consider adding the exact build/run command for any compiled `etude` binary path if this bead touched Go behavior, but the reported shell-script and make-target verification is adequate for the stated acceptance."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "3af9f321e43236e9f9018d9bd020c97787d83d513ec71084d8b23e4fc4234544",
+            "path": "artifacts/sha256/3a/3af9f321e43236e9f9018d9bd020c97787d83d513ec71084d8b23e4fc4234544",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 362
+          },
+          "session": {
+            "session_id": "codex-0267a495cae90179",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "0267a495cae90179f958c163741d9cb8ff553f9dde7cb39d7ffb07479199fecd",
+              "path": "artifacts/sha256/02/0267a495cae90179f958c163741d9cb8ff553f9dde7cb39d7ffb07479199fecd",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 272
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T12:12:28.235369Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T12:12:28.235499Z"
     }
   ]
 }
