@@ -1,0 +1,25 @@
+### B10. Cadence retro (2026-05-26) — post misc-backlog sweep cont. (ojz/jb7/7no)
+- **Trigger/scope:** 3-ticket cadence after the back half of the misc sweep
+  (etude-ojz provision-gemini-ripgrep [Tier 2], etude-jb7 capture-run batch capture
+  [Tier 1], etude-7no etude prime [Tier 1]).
+- **Findings/changes:** added a FOURTH "Recurring Defect Classes" item: **an
+  "X appears in rendered output" assertion must match X at its exact rendered slot
+  (whole token + indent/position), never substring/`Contains`** — names that prefix
+  (`capture`/`capture-gate`) or nest (`run`/`run list`) silently satisfy a loose
+  check. From etude-7no's `etude prime` drift guard, which took FOUR implement
+  rounds as codex surfaced one collision class per round; only indent-anchored
+  whole-token matching closed them. Generalizes B9-item-3 to output-membership
+  guards (same theme as etude-712's gen-docs guard).
+- **Reinforced (not new):** item-2 (the in-harness Opus seat must do adversarial +
+  spec-completeness review) — across ojz/jb7/7no, codex repeatedly caught real
+  defects Opus + gemini GO'd (ojz symlink-clobber; jb7 path-containment +
+  trailing-doc parse; 7no hallucinated flags + 3 drift-guard precision gaps). The
+  multi-seat gate keeps being load-bearing; the lone repo-aware seat is not enough.
+- **Process note:** 7no's 4-round implement spiral was costly for a P3 — the
+  output-membership matcher should have been written robustly in round one (item 4
+  is the fix so future such guards are).
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect Classes"
+  item 4). Counter reset.
+- **Follow-up beads:** etude-jb7 noted a symlink-path-traversal residual (operator
+  authors the spec) + the dogfood-capture.sh rewire onto capture-run — both deferred.
+
