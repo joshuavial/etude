@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-mya",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,65 @@
         "size": 897
       },
       "timestamp": "2026-06-30T06:10:31.273214Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness Task subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "add omitted cli/*.md pages to nav or accept not-in-nav INFO; enable --strict after etude-ajs"
+          ],
+          "timestamp": "2026-06-30T02:10:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "record an explicit mkdocs serve preview run; follow through on etude-ajs strict-mode cleanup"
+          ],
+          "timestamp": "2026-06-30T02:10:00Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-ajs"
+        ]
+      },
+      "timestamp": "2026-06-30T02:10:00Z"
     }
   ]
 }
