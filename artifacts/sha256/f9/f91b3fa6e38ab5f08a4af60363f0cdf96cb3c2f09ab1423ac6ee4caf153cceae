@@ -1,0 +1,6 @@
+# Verify — etude-jb7 (etude capture-run batch capture)
+Status: PASS. New product CLI (Tier 1).
+- go test ./... green except cmd/gen-docs TestDriftGuard pre-docs (resolved by make docs in Docs phase); make lint clean.
+- Built-binary smoke (throwaway repo): etude capture-run run.yaml -> captured <commit> + ref refs/etude/runs/jb7-verify-01; etude run show renders workflow + both stages (plan, implement).
+- Round-2 gate Opus seat built-binary-verified the error paths: absolute path -> "must be relative" exit1 NO ref; ../escape -> "escapes" exit1 NO ref; malformed trailing YAML -> parse error exit1 NO ref; create-only collision -> ErrRefExists no clobber.
+- Scope: internal/cli/capture_run.go + capture_run_test.go (new) + root.go (+1 registration).
