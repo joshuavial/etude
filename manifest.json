@@ -1617,6 +1617,42 @@
         "degraded_reason": "BLOCK, correct, and the third consecutive round on the same theme in the artifact whose subject IS that theme: the gate-record counts were one round stale while claiming to be computed from the manifest. Not the unavoidable regress of an artifact unable to count its own in-flight round - the PREVIOUS round's BLOCK had been appended and pushed nine minutes before the freeze. Fixed by recomputing and PINNING to a named ref state (f7b6c614), with the reason stated in the artifact: an unpinned count of an append-only log describes a moment and says which moment only by accident. Three optionals folded. The sharpest is a correction to a correction of a correction: etude-a1i's proposed discriminator - a hole is a real missing verdict if a later attempt reviews an OLD stage - MISFIRES on this bead's own manifest, because appending plan.r4 as a correction record created a hole at plan.r3 and plan.r4 reviews the older plan.r2, matching the rule exactly. So the check has three cases to separate, not two, and the third is indistinguishable by round numbers alone - which argues for a manifest MARKER distinguishing an adjudicating attempt from a correcting one, rather than smarter arithmetic. Written onto etude-a1i. Also folded: the 2-of-3 drift denominator, restated as a measure that needs no denominator; and the run-provenance limit, filed as etude-7yb, since this epic's practice is that a disclosed limit with no owner decays into a fact nobody acts on. The seat also judged the epic's amended acceptance honest - it preserves the original wording, names what the run did not meet, cites the measured 0-of-5, and points at OPEN etude-4ed."
       },
       "timestamp": "2026-08-15T20:54:28Z"
+    },
+    {
+      "gate_id": "review.r4",
+      "phase": "review",
+      "round": 4,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review.r2",
+          "role": "review",
+          "artifact": "b717b7346cf3b85970f8652d5853c26d42c2f490945d9c761f4d7b0f8e549cc3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The artifact contradicts its own retraction on the one number it retracts. 'Two further corrections to my own account' states that 'six unrecorded verdicts across .3 and .4' is not reproducible and the defensible figure is three holes, but 'What the proof run actually established' still ends 'that manual step is measurably where records go missing - six across .3 and .4'. Recomputed directly: .3 verify r2, .3 docs r2, .4 verify r2 = three holes, worth five seat slots. Three is also what the landed runbook and etude-a1i say. Six is wrong under both possible metrics and it survives in the artifact's conclusion - the exact class of stale typed figure this bead's gates blocked on eight times."
+          ],
+          "timestamp": "2026-08-15T21:04:05Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, and the epic's own target defect committed on the way out the door. This is the review gate's ROUND 2 verdict, on stage review.r2 (b717b734). It was produced, read, and acted on - its finding is why 'six' was corrected to three throughout, and its optionals are why the EPIC's acceptance was amended in bd - and then never appended. Round 4's seat found it by checking which review stages carry attempts, and noted it is strictly worse than the docs.r8 case the artifact does disclose: docs.r8 was never read by a seat, whereas review.r2 was read and BLOCKED. Recorded now, with the originals and the round numbering left as they fell: this phase's recorded round numbers do not track its actual rounds (review.r2 holds round 1, review.r3 holds round 3, this holds round 2), which is itself a second concrete instance of why etude-a1i needs a manifest marker rather than round arithmetic. Six beads into an epic about records that do not match reality, on the bead offered as proof of the model, having written the runbook section instructing supervisors to append before acting - I did not. That is the finding, and it belongs in the record rather than in a retro alone."
+      },
+      "timestamp": "2026-08-15T21:04:05Z"
     }
   ]
 }
