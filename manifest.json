@@ -106,6 +106,66 @@
         "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus returns Not logged in under a Claude Code orchestrator; in-harness sub-agent seat returned no verdict across five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Both PASS_WITH_FOLLOWUPS, no blocking. All five follow-ups FOLDED into the plan, not deferred: explicit exit-code contract table; session-evidence step naming storeSeatSessionEvidence plus a parity test asserting evidence fields; reconciliation of a real contradiction opus caught (the prompt told the MODEL to write the envelope while the adapter section had the ADAPTER building it — resolved so the model emits a prose RETURN block and the adapter owns the envelope); a fail-closed adapter contract with four ordered cases; and the --timeout default and expiry behavior."
       },
       "timestamp": "2026-08-15T05:50:32Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "df91741ec0e36a5177c5d117b1596644c3eee3452ee9a5076b6264cdf0de7d68"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T05:58:16.428887Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "malfunction",
+          "optional": [
+            "1. Clarify in the plan that `--stage <name>` is resolved against the workflow before using `stage.Produces`; the tests imply this, but the step list skips the lookup."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "4d76974f22eaf562c47e9918e83c1aeb23023c22d38a287e96b03d8db0dcf9e8",
+            "path": "artifacts/sha256/4d/4d76974f22eaf562c47e9918e83c1aeb23023c22d38a287e96b03d8db0dcf9e8",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 217
+          },
+          "failure_note": "agentic seat did not provide session evidence",
+          "timestamp": "2026-08-15T05:58:42.391351Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T05:58:42.391358Z"
     }
   ]
 }
