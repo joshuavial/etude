@@ -1,0 +1,5 @@
+# Final review
+
+The diff addresses the three agreed correctness findings without adding the deferred operator override. Session reuse is detected from all prior stage records while the rerun bundle still contains killed attempts only. Recorded replay transcripts now pass through the same containment and secret-scan policy as live evidence. Stage-log writes self-identify as schema v4, with explicit read compatibility for development refs already persisted as v2/v3. User-facing docs name the raw-log cross-attempt trust boundary and point policy work to the tracked follow-up.
+
+Full tests, lint, built-binary replay QA, and phase gates are required before commit and push. PR #23 remains open and must not be merged by this work.
