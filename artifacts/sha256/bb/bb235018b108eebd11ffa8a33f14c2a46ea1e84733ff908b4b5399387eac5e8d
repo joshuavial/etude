@@ -1,0 +1,7 @@
+# etude-5dr.6 plan
+
+Close three reachable caller-guard edge cases discovered at the parent implementation gate cap: require post-run HEAD to peel to a commit, snapshot `info/exclude` so a runner cannot hide new untracked files, and require every caller commit to descend from the original or preceding caller commit so original checkout A remains reachable through the producing branch. Add seam-specific regressions proving each failure occurs before a run ref is published. Re-run full automated checks and the complete built-binary QA matrix before updating PR #22.
+
+Round-one corrections extend the same mechanism: snapshot `info/grafts` so ancestry overlays cannot falsify `merge-base`, and compare the raw untracked path set before and after the runner without applying ignore rules so an external `core.excludesFile` target cannot hide a new path. Existing ignored paths remain allowed and content changes to them remain the caller's responsibility.
+
+Round-two closes the complete ancestry invariant: inherited `callerGitCommand` strips every ambient `GIT_*` variable and sets `GIT_NO_REPLACE_OBJECTS=1`, so `refs/replace` cannot affect `merge-base`; a regression creates `git replace --graft` metadata and proves the rewrite is still rejected. Every post-run caller commit is checked against immutable original A, and serial stages are additionally checked against the preceding caller commit, so tampered completed-stage provenance cannot create an unrelated lineage.
