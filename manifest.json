@@ -1164,6 +1164,55 @@
         ]
       },
       "timestamp": "2026-08-16T05:25:00Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "define compatibility and recovery policy for inconsistent transcript tuples",
+            "revisit multi-reviewed-stage handling with digest binding",
+            "measure prior-attempt handover growth"
+          ],
+          "raw_output": {
+            "role": "opus-review-r1",
+            "artifact": "0c9a0b6f74cdb68a25e7cf6f8086db4fdcefe849f19480c7f5941506e942c7ff",
+            "path": "artifacts/sha256/0c/0c9a0b6f74cdb68a25e7cf6f8086db4fdcefe849f19480c7f5941506e942c7ff",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 576
+          },
+          "timestamp": "2026-08-16T05:20:00Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-l1m",
+          "etude-d1fc",
+          "etude-2scd"
+        ]
+      },
+      "timestamp": "2026-08-16T05:20:00Z"
     }
   ]
 }
