@@ -862,6 +862,41 @@
         "degraded_reason": "Both seats GO on the corrected verify artifact (sha 4d5924bc, stage 'verify'); the deterministic checks ran live at verify.r1 and this records the completed panel. Three optionals returned and are folded into the NEXT revision rather than into the reviewed one, because folding after a verdict is what makes a pass describe something else - a defect this epic blocked on four times. The third optional is the sharpest thing said about this proof run: the worker, the in-harness opus seat and the supervisor are ALL THE SAME MODEL FAMILY, so every opus verdict here is same-model review of same-model work. codex is the only genuinely independent judgement in the panel, and on the three natively-produced attempts it was the only seat that returned a usable verdict at all. Seat diversity is supposed to be the basis of the redundancy; on this run it was half-present, which bounds the n=1 claim considerably further than 'one bead, selected for tractability'. Also folded: nothing in the run records that a separate lane existed - the only machine evidence is an incidental seat-adapter path inside three failure notes; and the bootstrap path DUPLICATES as well as omits, leaving 6 codex verdicts recorded for 3 actual invocations. Separately noted against myself: two earlier folds on this artifact were python replaces without asserts and silently did nothing, so a claim of 'folded' was carried in a gate record while the text was unchanged. Every fold in the next revision is asserted."
       },
       "timestamp": "2026-08-15T19:00:28Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "66048a67dd529638cbcfa24a9abaab3366104336b5f83215b8d6065c2f943df4"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T19:01:40.389688Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 1",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T19:01:40.389693Z"
     }
   ]
 }
