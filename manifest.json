@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-oz1z",
   "workflow": "default",
   "workflow_version": "review-followup-v1",
@@ -88,6 +88,80 @@
         "size": 23436
       },
       "timestamp": "2026-08-16T07:44:25.351824Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "06cae185f0ec3dbbfe135b51598039b201622770137b50df55f7398cf011e1bb"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/lane-s6z/scripts/seat-adapter.sh opus claude -p --model opus verdict=failed; IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task subagent_type=general-purpose model=opus; runner failed: runner failed: /Users/jv/projects/etude/.worktrees/lane-s6z/scripts/seat-adapter.sh: exit status 1: stderr: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-16T07:44:38.526401Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `internal/replay/record.go`: `buildSessionEvidence` imports and secret-scans the transcript, but on `ScanForSecrets` failure it only records failed redaction evidence and still records the replay run; per the documented contract in `docs/run.md`, an imported transcript that fails the scan must stop before recording/continuing, so this can persist an unsafe run artifact as-is."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "42012dd2317b5159faae7b2907cb8caf8fa575f3e40e7c8bd8cbfeb83f746088",
+            "path": "artifacts/sha256/42/42012dd2317b5159faae7b2907cb8caf8fa575f3e40e7c8bd8cbfeb83f746088",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 531
+          },
+          "session": {
+            "session_id": "codex-cf073025e737c534",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "cf073025e737c534118358a545a74285b7018151296be5e04d3e99bbecba938c",
+              "path": "artifacts/sha256/cf/cf073025e737c534118358a545a74285b7018151296be5e04d3e99bbecba938c",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 441
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T07:45:00.266448Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-16T07:45:00.266594Z"
     }
   ]
 }
