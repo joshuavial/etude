@@ -197,6 +197,56 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:21:39Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan",
+          "artifact": "bb235018b108eebd11ffa8a33f14c2a46ea1e84733ff908b4b5399387eac5e8d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Document raw-untracked strictness for newly-created ignored artifacts.",
+            "Consider a companion test pinning the run-level original trust root.",
+            "Keep the documented untracked-content carve-out.",
+            "Wrap the remaining long docs line."
+          ],
+          "timestamp": "2026-08-17T07:25:34Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-17T07:25:34Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:25:34Z"
     }
   ]
 }
