@@ -1015,6 +1015,47 @@
         ]
       },
       "timestamp": "2026-08-16T00:47:00Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Harden zero-denominator rendering and the Provenance.Stage/Round assumptions.",
+            "Expand mode-rejection and read-only contract tests and review timeout wording.",
+            "Coordinate root Use/Short wording with generated CLI docs."
+          ],
+          "timestamp": "2026-08-16T00:55:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness general-purpose Task. Final Review passed; non-blocking test/output work is tracked on etude-aul.6 and root help wording on etude-qcr.",
+        "deferred_beads": [
+          "etude-aul.6",
+          "etude-qcr"
+        ]
+      },
+      "timestamp": "2026-08-16T00:55:00Z"
     }
   ]
 }
