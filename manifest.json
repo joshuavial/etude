@@ -112,6 +112,52 @@
         "degraded_reason": "Seats split - codex GO, opus BLOCK - so the gate does not pass under unanimous quorum. Both seats independently upheld the plan's premise challenge: the bead's claim that check (a) becomes structurally true is false, because nothing forces etude gate to be used and (a) is the only detector of a bead closed with no run ref. opus then found three defects in the plan's own reasoning, all verified before folding. The third is the sharpest and was quantified: the allowlist is not merely an (a)/(b) exemption, it is check (c)'s denominator, and emptying it moves the uncovered count from 1 to exactly the threshold - confirmed by running it with the allowlist emptied and restoring it. Deleting it while making (c) hard would have blocked every push in this checkout, which is the plan's own top-listed risk triggered by the plan's own change. The opus seat ran as an in-harness sub-agent per the documented registry exception; bead etude-8li covers its dead subprocess path."
       },
       "timestamp": "2026-08-15T11:17:42Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "db75a938a2137e6cc4f47c520060a405b113f5a2786417b2d11a3ccfc472206e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T11:26:34Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T11:26:34Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. The plan's premise challenge stands: the bead's stated reason for dropping checks (a) and (b) is false, nothing forces etude gate to be used, and those two checks are the only detectors of a bead closed with no run ref or a run captured but never gated. The bead text will be updated in this bead with a note, as etude-1od was. Five optionals folded, two of them substantive. First, an earlier draft dropped the bypass REPORT while keeping the allowlist FILE, but the allowlist header promises each entry is reported so exceptions stay visible and auditable - dropping it would make 3 of 9 in-scope beads exempt and invisible, and turn the header into a claim about behavior that no longer exists. The report stays as one line. Second, docs/plans/dogfood/review-gate-runbook.md:1039-1043 is a live block that both advertises the --bead mode being deleted and states verbatim the premise this plan overturns - it is where the bead's wrong premise came from - so it is now enumerated as a rewrite rather than left to the sweep. Also folded: five more cross-references from retro-meta-index and its test into the deleted file, including one citing it by line number; an explicit statement that --bead, --since, --json and --quiet are dropped with no non-test callers; and a stale sentence conceding the (b) tautology the revision had already fixed."
+      },
+      "timestamp": "2026-08-15T11:26:34Z"
     }
   ]
 }
