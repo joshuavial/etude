@@ -555,6 +555,120 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T12:12:28.235499Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "bd2d9d94d442d7cd977c8c54ad0bf5fcccb614bbf1d93397341f5ca8db1b5c68"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "1e4b55a944aa30aefe6af0cae45b75ef389f199d7b937d1d5f89281323d961a6",
+            "path": "artifacts/sha256/1e/1e4b55a944aa30aefe6af0cae45b75ef389f199d7b937d1d5f89281323d961a6",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1252
+          },
+          "timestamp": "2026-08-15T12:43:25.938289Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T12:43:26.155651Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T12:43:27.185472Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Consider a later offline-safe mode or cached-origin strategy for `make dogfood-audit`, since network reachability remains an operational dependency."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "4ab757e449a9f707ae2c7594ebaf865436348a296ca3ec14d9712a77dd84db11",
+            "path": "artifacts/sha256/4a/4ab757e449a9f707ae2c7594ebaf865436348a296ca3ec14d9712a77dd84db11",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 298
+          },
+          "session": {
+            "session_id": "codex-d23affba74a0f394",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "d23affba74a0f394a16e2e4058b4856f1aa0181e2a5e2a4b6d4c53bfc9f02701",
+              "path": "artifacts/sha256/d2/d23affba74a0f394a16e2e4058b4856f1aa0181e2a5e2a4b6d4c53bfc9f02701",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 206
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T12:43:45.920065Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T12:43:45.920197Z"
     }
   ]
 }
