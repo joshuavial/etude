@@ -265,6 +265,54 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T05:59:55.118583Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "scripts/seat-adapter.sh mapped VERDICT: PASS and VERDICT: PASS_WITH_FOLLOWUPS to a go envelope, contradicting the stated contract that only a literal VERDICT: GO may produce GO, and letting a non-accepted verdict token pass."
+          ],
+          "timestamp": "2026-08-15T06:10:02Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T06:10:02Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus cannot authenticate as a subprocess under a Claude Code orchestrator — demonstrated live on this same run as gate plan.r4). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Seats split: codex BLOCK on a real contract contradiction, opus PASS_WITH_FOLLOWUPS. The BLOCK stands, so the gate did NOT pass. Both opus follow-ups also folded: a trailing-whitespace strip on the verdict token (a padded VERDICT: GO would have escalated a gate for a formatting artifact) and confirmation that the gemini seat still runs headless without -p (verified empirically; documented in the registry so it is not re-added, since strings.Fields would shred a multi-word -p value anyway)."
+      },
+      "timestamp": "2026-08-15T06:10:02Z"
     }
   ]
 }
