@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aqh",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,59 @@
         "size": 578
       },
       "timestamp": "2026-08-15T05:25:39.628418Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirmed walkthrough.sh uses set -euo pipefail, so cmp mismatches fail closed.",
+            "The explicit toned suffix check is retained as an acceptance-specific assertion.",
+            "Improve mismatch diagnostics and reduce human run-show format coupling in etude-64z."
+          ],
+          "raw_output": {
+            "role": "review-output",
+            "artifact": "02c9a5078fb40515f3db78e104024fd30aa071b6b7351f79d50a9497c6505cc0",
+            "path": "artifacts/sha256/02/02c9a5078fb40515f3db78e104024fd30aa071b6b7351f79d50a9497c6505cc0",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 1557
+          },
+          "timestamp": "2026-08-15T05:23:27Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-64z"
+        ]
+      },
+      "timestamp": "2026-08-15T05:23:27Z"
     }
   ]
 }

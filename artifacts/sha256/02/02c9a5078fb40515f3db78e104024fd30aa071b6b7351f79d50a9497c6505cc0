@@ -1,0 +1,23 @@
+RETURN — etude-aqh independent Claude reviewer seat
+
+Proportionality: the P3 ancestor and measured assertion gaps justify the localized change; no existing primitive is reimplemented and no threat defense is involved.
+
+Bundle cohesion: tighten the research example's replay/round-1 proofs from existence checks to byte-exact checks. The stage-runner ls-parsing fix is separable but has the same example-only risk class.
+
+Blast radius: matches the declaration. Four test/example files only; no installs, shared state, privilege, production code, or schema changes.
+
+Correctness:
+- AC1 met: the Go test and walkthrough compare replay output with the original content-addressed artifacts, including the final toned artifact.
+- AC2 met: the built-binary smoke test fails if review.r2 appears.
+- AC3 met: quoted glob iteration handles spaces/newlines and the empty-directory non-expansion case while preserving the prior ordering behavior.
+- AC4 met: no production Go, CLI contract, or schema touched.
+- The brief explicitly accounts for strengthening existing test bodies rather than adding a new test function.
+
+No failing-input to wrong-output scenario found.
+
+FOLLOW-UPS (non-blocking):
+- Confirm the walkthrough uses set -e so cmp controls failure (confirmed after review: set -euo pipefail).
+- The explicit toned suffix check is logically redundant after full equality but supplies the acceptance-specific assertion.
+- Improve future mismatch diagnostics and reduce coupling to human run-show output (tracked as etude-64z).
+
+VERDICT: PASS_WITH_FOLLOWUPS
