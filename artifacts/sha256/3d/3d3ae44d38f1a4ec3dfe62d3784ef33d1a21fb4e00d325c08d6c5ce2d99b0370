@@ -1,0 +1,20 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "a dogfood project silently drifted away from using its own tool",
+    "retros were not captured: every cadence retro went only to the ledger and `retro list` was empty",
+    "gate records captured for early beads then silently dropped from etude-2ku onward (14 beads gate-less)"
+  ],
+  "root_causes": [
+    "no standing check that every artifact produced is captured in etude; the run-capture habit held but the retro/gate-capture habits lapsed without any signal"
+  ],
+  "follow_up_beads": [],
+  "decisions": [],
+  "durable_changes": [
+    "backfilled all 18 retros + 35 gate records into refs/etude/retros/* and the run manifests (transcription, not fabrication)",
+    "runbook now mandates per-gate capture + a post-close `grep -c gate` sanity-check",
+    "retro cadence now mandates dual-output (ledger + `etude retro`)",
+    "new dogfood-completeness check makes verifying run+gate+retro capture a standing step of every cadence retro"
+  ]
+}
