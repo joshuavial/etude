@@ -1715,6 +1715,95 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T07:26:42.479162Z"
+    },
+    {
+      "gate_id": "implement.r20",
+      "phase": "implement",
+      "round": 20,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r19",
+          "role": "diff",
+          "artifact": "3fbaa66db44588f677d9d0a466dace36a33c54c694db7235f4e3092a176ba8a8"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. If the underlying test command's sleep duration is close to 3s, consider making the deadline relative to that sleep (or asserting elapsed < sleep) so the timeout path can never be silently skipped by a future edit. 2. Track `etude-noo9` closure before the suite-wide contention masks another real failure."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "1b675c0862c4adca7a4aa93e3bc055dedce8103af19b39bd0ac05f4f29f6f395",
+            "path": "artifacts/sha256/1b/1b675c0862c4adca7a4aa93e3bc055dedce8103af19b39bd0ac05f4f29f6f395",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 453
+          },
+          "session": {
+            "session_id": "opus-4ee4374d06e87fbb",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "4ee4374d06e87fbb4aa66874945019bf58c4ddfcaad14c210cb5edadffac4e95",
+              "path": "artifacts/sha256/4e/4ee4374d06e87fbb4aa66874945019bf58c4ddfcaad14c210cb5edadffac4e95",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 363
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:28:33.5716Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex",
+            "artifact": "831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "path": "artifacts/sha256/83/831f57ae262d3537ca2c16d1f3a64c9e34b7ce650fb0d4c9733f46030fe02faf",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "codex-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:28:53.741324Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:28:53.744945Z"
     }
   ]
 }

@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. If the underlying test command's sleep duration is close to 3s, consider making the deadline relative to that sleep (or asserting elapsed < sleep) so the timeout path can never be silently skipped by a future edit. 2. Track `etude-noo9` closure before the suite-wide contention masks another real failure.
+CONFIDENCE: high
