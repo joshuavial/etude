@@ -214,6 +214,57 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T04:21:18Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "block",
+          "required": [
+            "refspec-guard action cannot emit+tally two refspec lines through apply single print site without breaking blocker 1 or 3 — needs multi-line action result",
+            "confirm 14 existing tests use substring assertions not full-stdout equality so summary line is safe"
+          ],
+          "timestamp": "2026-06-07T04:25:36Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "action model cannot represent two refspec outcomes via single (actionStatus,detail,err); use multi result",
+            "define whether missing-default-remote note counts as skipped or uncounted; summary must match printed statuses"
+          ],
+          "timestamp": "2026-06-07T04:25:36Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T04:25:36Z"
     }
   ]
 }
