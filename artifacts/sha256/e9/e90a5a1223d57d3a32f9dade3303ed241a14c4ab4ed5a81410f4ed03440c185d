@@ -1,0 +1,304 @@
+ddc33978679bc017ece101fca51cf24d96a20cee
+make etude capture distinguish create from append instead of silently starting a fresh run
+
+
+ docs/capture.md              |  30 ++++++++++
+ docs/cli/etude_capture.md    |   1 +
+ internal/cli/capture.go      |  35 ++++++++++--
+ internal/cli/capture_test.go | 130 +++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 191 insertions(+), 5 deletions(-)
+commit ddc33978679bc017ece101fca51cf24d96a20cee
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Aug 16 07:02:22 2026 +0800
+
+    make etude capture distinguish create from append instead of silently starting a fresh run
+
+diff --git a/docs/capture.md b/docs/capture.md
+index 3241093..1cc1b37 100644
+--- a/docs/capture.md
++++ b/docs/capture.md
+@@ -47,6 +47,7 @@ Useful flags:
+ --harness <name>
+ --harness-version <version>
+ --model <model-id>
++--expect create|append
+ ```
+ 
+ If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
+@@ -73,6 +74,35 @@ the run refs; if a key already exists, the new value replaces it.
+ explicitly provided during append and conflicts with the existing run, capture
+ fails.
+ 
++## Create versus append
++
++Capture creates the run when `refs/etude/runs/<run-id>` does not exist and
++appends when it does. Every successful capture reports which one it did:
++
++```
++captured <commit>
++ref refs/etude/runs/run-1
++action create
++```
++
++`--expect` makes that choice a requirement rather than an observation:
++
++| flag | requires | on violation |
++|---|---|---|
++| `--expect create` | the run must NOT already exist | fails, naming the existing ref and its tip; the ref is not modified |
++| `--expect append` | the run MUST already exist | fails, naming the missing ref; no run is created |
++| omitted | either | creates or appends, and says which |
++
++Pass `--expect append` from anything that believes it is extending a run — a
++multi-stage workflow, a script capturing successive phases. A missing run ref at
++that point is a **data-loss signal, not a fresh start**: without the flag the
++capture would silently begin a new manifest and the run's recorded stages and
++gate attempts would be gone while capture still printed `captured <commit>`.
++Investigate why the ref disappeared before re-capturing.
++
++`etude capture-run` (create-only) and `etude capture-gate` (append-only) already
++fail rather than choose.
++
+ ## Capturing review gates
+ 
+ `etude capture` records stage *producers*. To record the review *gate* a stage
+diff --git a/docs/cli/etude_capture.md b/docs/cli/etude_capture.md
+index 8e3373f..62ab66e 100644
+--- a/docs/cli/etude_capture.md
++++ b/docs/cli/etude_capture.md
+@@ -11,6 +11,7 @@ etude capture <stage> [flags]
+ ### Options
+ 
+ ```
++      --expect string             require this capture to create a new run or append to an existing one: create|append (default: either)
+       --git-sha string            repo git sha for this stage
+       --harness string            agent runtime that executed the stage (e.g. claude-code)
+       --harness-version string    version of the agent runtime
+diff --git a/internal/cli/capture.go b/internal/cli/capture.go
+index 6436fa5..8a764ff 100644
+--- a/internal/cli/capture.go
++++ b/internal/cli/capture.go
+@@ -26,6 +26,14 @@ const (
+ 	defaultProducedBy      = "original"
+ 	defaultSkillRepo       = "manual"
+ 	defaultSkillVersion    = "manual"
++
++	// expectCreate / expectAppend are the accepted --expect values. --expect
++	// declares which of the two things capture is allowed to do, so a caller
++	// that BELIEVES a run exists can say so and fail loudly when it does not,
++	// rather than silently starting a fresh manifest over the top of a run
++	// whose history has gone missing (etude-nad).
++	expectCreate = "create"
++	expectAppend = "append"
+ )
+ 
+ type captureConfig struct {
+@@ -44,6 +52,7 @@ type captureConfig struct {
+ 	harness         string
+ 	harnessVersion  string
+ 	model           string
++	expect          string
+ }
+ 
+ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
+@@ -90,6 +99,7 @@ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
+ 	flags.StringVar(&cfg.harness, "harness", "", "agent runtime that executed the stage (e.g. claude-code)")
+ 	flags.StringVar(&cfg.harnessVersion, "harness-version", "", "version of the agent runtime")
+ 	flags.StringVar(&cfg.model, "model", "", "LLM model used by this stage (e.g. claude-opus-4-7)")
++	flags.StringVar(&cfg.expect, "expect", "", "require this capture to create a new run or append to an existing one: create|append (default: either)")
+ 	return cmd
+ }
+ 
+@@ -114,6 +124,10 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
+ 	if len(cfg.output) != 1 {
+ 		return fmt.Errorf("exactly one --output is required")
+ 	}
++	expect := strings.TrimSpace(cfg.expect)
++	if expect != "" && expect != expectCreate && expect != expectAppend {
++		return fmt.Errorf("invalid --expect %q: want %q or %q", cfg.expect, expectCreate, expectAppend)
++	}
+ 	refs, err := parseRefs(cfg.refs)
+ 	if err != nil {
+ 		return err
+@@ -148,6 +162,15 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
+ 
+ 	ref := "refs/etude/runs/" + cfg.runID
+ 	commit, resolveErr := r.store.Resolve(ctx, ref)
++	// A missing ref means CREATE, so an unqualified capture cannot tell a fresh
++	// run from a run whose history has vanished underneath it. --expect lets the
++	// caller state which one it meant; enforce it before writing anything.
++	switch {
++	case expect == expectAppend && errors.Is(resolveErr, refstore.ErrNotFound):
++		return fmt.Errorf("run %q not found (%s); --expect append refuses to create a new run — the run's recorded history may have been lost, so investigate before re-capturing", cfg.runID, ref)
++	case expect == expectCreate && resolveErr == nil:
++		return fmt.Errorf("run %q already exists (%s at %s); --expect create refuses to append to it", cfg.runID, ref, commit)
++	}
+ 	now := r.now().UTC()
+ 	manifest := runmanifest.Manifest{
+ 		RunID:           cfg.runID,
+@@ -211,18 +234,20 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
+ 		Output:    output,
+ 		Timestamp: now,
+ 	})
++	action := expectCreate
++	if appending {
++		action = expectAppend
++	}
+ 	if opts.Message == "" {
+-		action := "create"
+-		if appending {
+-			action = "append"
+-		}
+ 		opts.Message = fmt.Sprintf("capture: %s run %s stage %s", action, cfg.runID, stageName)
+ 	}
+ 	written, err := (runmanifest.Writer{Store: r.store}).Write(ctx, manifest, files, opts)
+ 	if err != nil {
+ 		return err
+ 	}
+-	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\n", written, ref)
++	// Report which of the two happened: a caller that passed no --expect can
++	// still SEE a create where it expected an append.
++	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\naction %s\n", written, ref, action)
+ 	return err
+ }
+ 
+diff --git a/internal/cli/capture_test.go b/internal/cli/capture_test.go
+index b5eac67..cafdb66 100644
+--- a/internal/cli/capture_test.go
++++ b/internal/cli/capture_test.go
+@@ -111,6 +111,136 @@ func TestCaptureAppendPreservesPriorArtifactsAndMergesRefs(t *testing.T) {
+ 	}
+ }
+ 
++// The etude-nad guard: capture treats a missing run ref as CREATE, so a run ref
++// that vanishes mid-session (a stray `git fetch --prune` over the etude
++// namespace) made the next capture silently start a fresh manifest and discard
++// the recorded gate attempts. --expect lets the caller state which of the two it
++// meant, and every capture now reports which one it did.
++
++func TestCaptureExpectAppendFailsWhenRunMissing(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "plan")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "append")
++	if err == nil {
++		t.Fatal("capture --expect append on a missing run returned nil error")
++	}
++	for _, want := range []string{"run-1", "not found", "refs/etude/runs/run-1"} {
++		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
++			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
++		}
++	}
++	// The whole point of the guard: nothing was written.
++	if refs := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude")); refs != "" {
++		t.Fatalf("refused capture created refs:\n%s", refs)
++	}
++}
++
++func TestCaptureExpectCreateFailsWhenRunExists(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "plan")
++	writeFile(t, repo, "review.txt", "review")
++	chdir(t, repo)
++
++	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
++		t.Fatalf("first capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	before := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "refs/etude/runs/run-1"))
++
++	_, stderr, err := execute("capture", "review", "--run", "run-1", "--output", "review=review.txt", "--expect", "create")
++	if err == nil {
++		t.Fatal("capture --expect create on an existing run returned nil error")
++	}
++	for _, want := range []string{"run-1", "already exists", before} {
++		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
++			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
++		}
++	}
++	if after := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "refs/etude/runs/run-1")); after != before {
++		t.Fatalf("refused capture moved the ref to %q, want %q", after, before)
++	}
++}
++
++func TestCaptureExpectAppendPreservesPriorStages(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "plan")
++	writeFile(t, repo, "review.txt", "review")
++	chdir(t, repo)
++
++	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "create"); err != nil {
++		t.Fatalf("create capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	if _, stderr, err := execute("capture", "review", "--run", "run-1", "--output", "review=review.txt", "--expect", "append"); err != nil {
++		t.Fatalf("append capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	manifest := readRunManifest(t, repo, "run-1")
++	if len(manifest.Stages) != 2 {
++		t.Fatalf("stages = %#v", manifest.Stages)
++	}
++	if manifest.Stages[0].Name != "plan" || manifest.Stages[1].Name != "review" {
++		t.Fatalf("stage names = %q, %q", manifest.Stages[0].Name, manifest.Stages[1].Name)
++	}
++	for _, stage := range manifest.Stages {
++		if _, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/run-1", stage.Output.Path); err != nil {
++			t.Fatalf("missing artifact %s: %v", stage.Output.Path, err)
++		}
++	}
++}
++
++func TestCaptureReportsCreateAndAppendAction(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "plan")
++	writeFile(t, repo, "review.txt", "review")
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md")
++	if err != nil {
++		t.Fatalf("first capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "\naction create\n") {
++		t.Fatalf("create stdout = %q, want an 'action create' line", stdout)
++	}
++	// Pin the first two lines on the CREATE path too, not just on append: a
++	// consumer parsing positionally sees this shape first.
++	createLines := strings.Split(strings.TrimSpace(stdout), "\n")
++	if len(createLines) != 3 || !strings.HasPrefix(createLines[0], "captured ") || createLines[1] != "ref refs/etude/runs/run-1" {
++		t.Fatalf("create stdout lines = %#v", createLines)
++	}
++	stdout, stderr, err = execute("capture", "review", "--run", "run-1", "--output", "review=review.txt")
++	if err != nil {
++		t.Fatalf("second capture returned error: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "\naction append\n") {
++		t.Fatalf("append stdout = %q, want an 'action append' line", stdout)
++	}
++	// The first two lines keep their existing format and position.
++	lines := strings.Split(strings.TrimSpace(stdout), "\n")
++	if len(lines) != 3 || !strings.HasPrefix(lines[0], "captured ") || lines[1] != "ref refs/etude/runs/run-1" {
++		t.Fatalf("stdout lines = %#v", lines)
++	}
++}
++
++func TestCaptureRejectsUnknownExpectValue(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "plan.md", "plan")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "maybe")
++	if err == nil {
++		t.Fatal("capture --expect maybe returned nil error")
++	}
++	for _, want := range []string{"invalid --expect", "create", "append"} {
++		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
++			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
++		}
++	}
++	if refs := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude")); refs != "" {
++		t.Fatalf("rejected capture created refs:\n%s", refs)
++	}
++}
++
+ func TestCaptureRejectsInvalidInputs(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	writeFile(t, repo, "out.md", "out")
