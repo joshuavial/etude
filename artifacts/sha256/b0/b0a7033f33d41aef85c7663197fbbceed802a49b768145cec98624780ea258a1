@@ -1,0 +1,9 @@
+# Repository state
+
+- Base: `origin/main` at `644e717cc062dfeeeb914866c2f8d8b338ef10e4`
+- Branch: `issue/17-stage-attempt-evidence`
+- Rebased commits: `c2a6c96`, `4565ff2`, `34715f2`, `5a5693b`
+- Integration change: one uncommitted caller-workspace rerun regression test
+- Focused checks already passing:
+  - `go test ./internal/liverun -run 'TestGateRerunCallerWorkspaceDeliversEvidenceWithReadCheckout|TestGateAC3_RerunWithFeedback' -count=1`
+  - `go test ./internal/runmanifest -run 'TestVersionAllowlist|TestManifestOriginalCheckoutVersionRules' -count=1`

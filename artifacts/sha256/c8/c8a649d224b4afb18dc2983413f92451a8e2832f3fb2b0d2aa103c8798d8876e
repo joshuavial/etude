@@ -1,0 +1,54 @@
+# Rebased implementation
+
+## Result
+
+The four GH #17 commits now apply cleanly on main's guarded caller-workspace and
+original-checkout work. Conflict resolution retained both sides at each seam:
+
+- `engine.go` preserves caller pre/post identity, control-file, clean-tree, and
+  descendant checks, then validates/captures the bounded runner log. The stage
+  record carries both `RunnerWorkspace`/post-run `GitSHA` and the session/log
+  evidence references. Session transcript resolution uses the selected
+  `runnerDir`, so caller stages import from the caller workspace.
+- `gate.go` retains per-seat isolated checkout creation at the original run SHA
+  while the rerun branch appends digest-bound prior-attempt inputs to the actual
+  producer `RunRequest`.
+- replay, forward replay, resume, and bench retain `ResolvedStage.RunGitSHA` and
+  therefore check out `Manifest.OriginalCheckout()`, not a caller stage's later
+  commit.
+- the manifest writer emits version 4 once when a stage has either a log or
+  caller workspace provenance. A combined caller+log record stays v4 and keeps
+  both `original_git_sha` and `stage.log`. Decoder rules require
+  `original_git_sha` for caller stages, allow log-only v4, reject featureless v4,
+  and preserve readability of development log refs written at v2/v3. This is a
+  scoped compatibility policy; issue #24 owns the broader versioning model.
+
+## New integration regression
+
+`TestGateRerunCallerWorkspaceDeliversEvidenceWithReadCheckout` exercises the
+combined runtime, not helper construction:
+
+1. It creates a clean repository and records its original SHA.
+2. Attempt one runs with `workspace: caller`, writes a transcript, returns a
+   stage log/session/output, and commits a clean descendant mutation.
+3. Two gate seats block while each reads an isolated checkout. Each seat asserts
+   its HEAD is the original SHA and that the caller mutation is absent.
+4. Attempt two is invoked in the caller repository, captures its actual
+   `req.Inputs`, commits a second clean descendant, and returns new evidence.
+5. The test compares the delivered `prior-attempts` JSON byte-for-byte with the
+   expected session ID, output/log/transcript digests and killing verdict, and
+   checks all three referenced artifact inputs' exact bytes.
+6. The durable manifest is asserted to be v4 with the original SHA, two caller
+   stages, and an imported transcript plus stage-log reference.
+
+The existing tests continue to prove that nil `Producer.Session` is a valid
+no-transcript state and that reserved prior-attempt roles fail at `Engine.Run`
+entry before runner resolution.
+
+## Focused observed checks
+
+```text
+ok github.com/joshuavial/etude/internal/liverun
+ok github.com/joshuavial/etude/internal/runmanifest
+ok github.com/joshuavial/etude/internal/replay
+```
