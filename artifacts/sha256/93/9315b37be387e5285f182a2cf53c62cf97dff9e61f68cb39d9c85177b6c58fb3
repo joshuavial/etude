@@ -1,0 +1,49 @@
+# Verification report
+
+## Automated results on rebased tree
+
+All requested targets passed:
+
+```text
+make test         PASS (all Go packages, including liverun, replay, runmanifest)
+make lint         PASS (gofmt clean; go vet ./...)
+make docs-check   PASS (26 generated command docs match)
+make docs-reality PASS (16 commands; docs match shipped CLI)
+make build        PASS (bin/etude built from rebased branch)
+```
+
+Focused integration commands also passed:
+
+```text
+go test ./internal/liverun -run 'TestGateRerunCallerWorkspaceDeliversEvidenceWithReadCheckout|TestGateAC3_RerunWithFeedback' -count=1
+ok github.com/joshuavial/etude/internal/liverun
+
+go test ./internal/runmanifest -run 'TestVersionAllowlist|TestManifestOriginalCheckoutVersionRules' -count=1
+ok github.com/joshuavial/etude/internal/runmanifest
+```
+
+## What the combined regression proves
+
+- Both caller attempts execute in the caller repo and leave clean descendant
+  commits, satisfying the mutation guard.
+- Attempt one's session transcript and log are imported and referenced.
+- Attempt two's actual `RunRequest.Inputs` contains the exact prior-attempt index
+  plus output, log, and transcript bytes from the killed attempt.
+- The index byte comparison covers stage name, round, session ID, all three
+  digests, roles, evidence statuses, gate ID/status, both blocking seats, their
+  required feedback, and `resumed_session: false`.
+- Four real seat runner invocations across two gate rounds each receive distinct
+  disposable checkouts at the original SHA and cannot see caller mutations.
+- The resulting manifest remains version 4 and retains `OriginalGitSHA`, two
+  caller workspace stage records, both post-run SHAs, session evidence, and logs.
+
+## Required plan-gate corrections retained
+
+- `validatePriorTranscriptEvidence(nil)` returns nil, so a missing producer
+  session is the normal no-transcript state and deterministic runners continue.
+- `Engine.Run` calls `validatePriorAttemptRoleCollisions` before start/resume,
+  checkout, or runner resolution; programmatic colliding workflows fail at
+  engine entry with zero runner calls.
+
+Built-binary manual QA will follow the verify gate and be included in the final
+review artifact and PR body.
