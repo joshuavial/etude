@@ -1,0 +1,48 @@
+# etude-o9z plan — stage session sidecar and log artifact
+
+Track: full STRICT loop. This changes the run-manifest schema and durable live-run evidence.
+
+ANCESTOR: GitHub issue #17 asks 1-2 require a stage runner to report session identity independently of its arbitrary output artifact, and require stdout/stderr to survive as stage evidence. This bead supplies the generic runner/engine contract; the blocked `s6z.1` producer wrapper is deliberately not part of this issue branch.
+
+MEASUREMENT: `RunResult.Session` and `runAndCaptureStage` session import already exist, but `ExecRunner` exports no session path and never populates the field. Its stdout/stderr buffers are discarded on success. Consequently real external stage runners cannot record session identity and successful diagnostics are unrecoverable.
+
+BLAST RADIUS: Go runner, live engine, manifest schema/JSON/traversal/show/replay tests, generated CLI docs if output changes, and `docs/run.md`. Each successful stage can add one bounded log artifact of at most 2 MiB plus fixed framing/truncation metadata. Test/build commands may write standard Go caches. No external model calls, credentials, installs, host configuration, or shared services.
+
+IRREVERSIBLE SEQUENCES: none newly introduced. The existing manifest CAS/ref update remains the durable commit point. Session, transcript, log, and output artifacts are all added to the same artifact store before one manifest write; failure before that write leaves no referenced partial record.
+
+TOPOLOGY: one runner process writes optional sidecar/output files while ExecRunner owns stdout/stderr pipes. After process exit, ExecRunner is the only reader. The engine is the only artifact-store/manifest writer. No concurrent writer or retry policy changes.
+
+DURABILITY CLASS: atomic with the existing stage manifest record. Optional evidence is referenced by the same Stage record or not committed. An absent session sidecar and empty stdout+stderr preserve today's behavior.
+
+COMPLETENESS ENUMERATION: session sidecar states are absent; regular valid JSON; malformed/unknown-field JSON; symlink/non-regular; oversized; missing session_id; optional opaque transcript URI; transcript path relative/absolute inside scratch; escape/absolute outside scratch; transcript symlink/non-regular; transcript below/at/above 16 MiB. Log states are neither stream present; stdout only; stderr only; both in deterministic order; arbitrary binary bytes; each stream below, at, and above its 1 MiB cap; successful runner; failed runner. Manifest sites are Stage schema, validation, JSON encode/decode, artifact traversal/file verification, writer carry-forward, run show, and replay/live engine construction.
+
+TRUST BOUNDARY: sidecar JSON and runner streams are untrusted child output. Sidecar parsing is fail-closed, symlink-safe, size-capped, and requires a non-empty session ID. A stage transcript path must resolve beneath the attempt scratch tree, contain no symlink components, name a regular file, and be at most 16 MiB; transcript URIs are opaque recorded strings and are never fetched. Logs are stored byte-for-byte with length-bearing fixed framing; they receive the same trust classification as existing gate raw-output artifacts and are not interpreted as control data. Transcript import keeps the existing secret scan; for this bead a rejected transcript remains non-fatal decoration. `etude-ps9` must change that policy before any retry depends on transcript content.
+
+## Contract and implementation
+
+- Add reserved `ETUDE_SESSION_FILE=<scratch>/session.json` to ExecRunner. Remove stale sidecar at attempt start; any removal error other than not-exist fails before child launch. After a successful child exit, absent means nil; present must be a regular file no larger than 1 MiB and strict JSON containing `session_id` plus optional `transcript_uri`/`transcript_path`. Invalid present sidecars fail the stage. Validate transcript paths under scratch with the 16 MiB cap before returning SessionInfo; URI is never dereferenced.
+- Add `Log []byte` to `RunResult`. Replace unbounded pipe buffers with bounded writers that retain at most 1 MiB from each stream and count discarded bytes. Each present stream is encoded as `[stdout bytes=<captured> dropped=<n>]\n<exact bytes>` or the stderr equivalent; when both exist, stdout segment comes first and exactly one newline separates segments. Neither stream produces nil. Preserve failure behavior: non-zero runners still fail and do not create a Stage record.
+- Add optional `Log *ArtifactRef` to `runmanifest.Stage`. Thread it through validation, JSON, artifact path traversal and verification, manifest round trips, run-show output, and replay/live stage creation.
+- In `runAndCaptureStage`, treat an explicit non-nil session sidecar as sufficient agentic evidence even when an inline runner has no harness metadata; deterministic runners remain unchanged because they report no sidecar. Import transcript evidence through the existing scanner and store a non-empty log as `<stage>-log`, `application/octet-stream`, before the same manifest write as output.
+- Extend ExecRunner tests for every sidecar/log boundary, manifest tests for optional-log compatibility and referenced-file integrity, and engine/run CLI tests for session+transcript+log display and persistence.
+- Update `docs/run.md` with the fourth reserved env var, strict sidecar schema, log framing, absent-file compatibility, and current non-fatal transcript-rejection policy. Regenerate CLI docs only if `run show` generated text changes.
+
+Planned regression: ExecRunner session tests cover absent, valid, malformed, unknown-field, symlink, oversized, missing-ID, URI-only, and path-bearing sidecars.
+
+Planned regression: stage transcript tests cover scratch-relative and scratch-absolute files, outside-scratch escape, symlink/non-regular input, the 16 MiB boundary, opaque URI non-fetching, and stale-sidecar unlink failure before child invocation.
+
+Planned regression: ExecRunner log tests assert independent literal bytes for empty, stdout-only, stderr-only, both-stream ordering, arbitrary invalid UTF-8, exact-cap, and over-cap truncation without unbounded retention.
+
+Planned regression: manifest and engine tests prove an optional stage log round-trips, participates in artifact verification/carry-forward, displays from `run show`, and remains absent for legacy/no-log runners.
+
+## Required decisions for the next bead
+
+`etude-ps9` will append prior-attempt evidence as declared inputs. A rerun that reports the same session ID as an earlier attempt is a resumed conversation and is therefore not replayable from inputs alone; this is detectable from existing ordered Stage records without a schema change. Before transcript content becomes a retry input, `buildSessionEvidence` secret-scan failure must stop that handoff rather than merely log and continue. Those policy changes belong to `ps9`, not this first commit.
+
+## Verification
+
+- Focused: `go test ./internal/replay ./internal/runmanifest ./internal/liverun ./internal/cli`.
+- Full: `make test`, `make lint`, `make shell-test`, `make docs-check`, `make docs-reality`.
+- Built-binary proof: run a temporary inline stage fixture that writes output, a valid sidecar and both streams; inspect `etude run show` and the manifest for session ID, imported transcript digest, log digest/content and output digest. Repeat with no sidecar/no streams to prove backward compatibility.
+
+Delivery: first commit on `issue/17-stage-attempt-evidence`, followed by one `etude-ps9` commit. Rebase on `origin/main`, open one unmerged PR with `Closes #17`, and do not push either commit to `origin/main`.
