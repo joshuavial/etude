@@ -1,0 +1,1737 @@
+commit 95543901df9ff9d2ae36e0b0f1df7b93e2664ddb
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 17:08:44 2026 +0800
+
+    add rubric evaluator and judge runner
+
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+new file mode 100644
+index 0000000..b63ce63
+--- /dev/null
++++ b/internal/eval/exec_judge.go
+@@ -0,0 +1,277 @@
++package eval
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++)
++
++// ExecJudge satisfies Judge by invoking a configured external command headlessly.
++//
++// # Judge I/O contract
++//
++// The command is launched with a strict environment (no parent env leaks):
++//
++//	PATH              — extracted from the parent environment (exact-key match)
++//	ETUDE_INPUTS_DIR  — directory containing materialised inputs:
++//	                      <NN>-target-<role>  for each Targets entry (ordered, %02d)
++//	                      <NN>-context-<role> for each Context entry (ordered, %02d)
++//	ETUDE_OUTPUT_FILE — path the judge MUST write its JSON verdict to
++//	ETUDE_RUBRIC_FILE — path to the materialised Rubric bytes (only set when Rubric is non-nil)
++//	ETUDE_MODEL       — req.Producer.Model (always set, even when empty)
++//
++// The working directory is the scratch temp dir created for this invocation.
++//
++// # Output JSON shape
++//
++// The judge writes a JSON object to ETUDE_OUTPUT_FILE. Go field → JSON tag:
++//
++//	Value      → "value"      (*float64, omitempty) — required for rubric method
++//	Max        → "max"        (*float64, omitempty) — required for rubric method
++//	Winner     → "winner"     (string,   omitempty) — required for pairwise method (future)
++//	Confidence → "confidence" (*float64, omitempty) — optional, pairwise only
++//	Findings   → "findings"   ([]object, omitempty) — optional structured observations
++//	  severity → "severity"   (string) — "info" | "warning" | "error"
++//	  message  → "message"    (string) — required, non-empty
++//	  pointer  → "pointer"    (string, omitempty) — optional artifact locator
++//
++// Unknown fields and trailing data are rejected (ErrJudgeOutputInvalid).
++// Per-method validation is applied in ExecJudge before returning.
++type ExecJudge struct {
++	// Command is the executable and arguments. Command[0] is the binary.
++	// Must be non-empty to invoke the judge.
++	Command []string
++	// Model is passed as ETUDE_MODEL to the judge command. May be empty.
++	Model string
++}
++
++// compile-time interface satisfaction assertion.
++var _ Judge = (*ExecJudge)(nil)
++
++// judgeOutputJSON is the wire type for the judge's output file.
++// It uses explicit JSON tags and pointer fields so absent != zero under
++// DisallowUnknownFields decoding.
++//
++// Go field → JSON tag mapping:
++//
++//	Value      → "value"
++//	Max        → "max"
++//	Winner     → "winner"
++//	Confidence → "confidence"
++//	Findings   → "findings"
++type judgeOutputJSON struct {
++	Value      *float64      `json:"value,omitempty"`
++	Max        *float64      `json:"max,omitempty"`
++	Winner     string        `json:"winner,omitempty"`
++	Confidence *float64      `json:"confidence,omitempty"`
++	Findings   []findingWire `json:"findings,omitempty"`
++}
++
++// findingWire is the JSON wire type for a single finding in judge output.
++type findingWire struct {
++	Severity string `json:"severity"`
++	Message  string `json:"message"`
++	Pointer  string `json:"pointer,omitempty"`
++}
++
++// Judge implements Judge for ExecJudge. It materialises inputs, runs the
++// command, reads the output file, and validates the result per method.
++func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
++	if len(e.Command) == 0 {
++		return JudgeResponse{}, ErrJudgeNotConfigured
++	}
++
++	// Create a fresh temp dir for this invocation; clean it up on return.
++	scratch, err := os.MkdirTemp("", "etude-judge-*")
++	if err != nil {
++		return JudgeResponse{}, fmt.Errorf("%w: create scratch dir: %v", ErrJudgeFailed, err)
++	}
++	defer os.RemoveAll(scratch)
++
++	inputsDir := filepath.Join(scratch, "inputs")
++	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
++		return JudgeResponse{}, fmt.Errorf("%w: create inputs dir: %v", ErrJudgeFailed, err)
++	}
++
++	// Materialise targets as <NN>-target-<role>.
++	// filepath.Base(inp.Role) prevents a role like "a/b" from creating a subdir.
++	for i, inp := range req.Targets {
++		name := fmt.Sprintf("%02d-target-%s", i, filepath.Base(inp.Role))
++		path := filepath.Join(inputsDir, name)
++		if err := os.WriteFile(path, inp.Content, 0o644); err != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: write target %s: %v", ErrJudgeFailed, name, err)
++		}
++	}
++
++	// Materialise context inputs as <NN>-context-<role>.
++	// filepath.Base(inp.Role) prevents a role like "a/b" from creating a subdir.
++	for i, inp := range req.Context {
++		name := fmt.Sprintf("%02d-context-%s", i, filepath.Base(inp.Role))
++		path := filepath.Join(inputsDir, name)
++		if err := os.WriteFile(path, inp.Content, 0o644); err != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: write context %s: %v", ErrJudgeFailed, name, err)
++		}
++	}
++
++	outputPath := filepath.Join(scratch, "output")
++
++	// Materialise rubric bytes when present.
++	rubricPath := filepath.Join(scratch, "rubric")
++	if req.Rubric != nil {
++		if err := os.WriteFile(rubricPath, req.Rubric, 0o644); err != nil {
++			return JudgeResponse{}, fmt.Errorf("%w: write rubric: %v", ErrJudgeFailed, err)
++		}
++	}
++
++	// Build strict env: extract PATH via exact-key match (mirrors exec_runner.go).
++	pathVal := extractPATHFromEnv(os.Environ())
++	env := []string{
++		"PATH=" + pathVal,
++		"ETUDE_INPUTS_DIR=" + inputsDir,
++		"ETUDE_OUTPUT_FILE=" + outputPath,
++		"ETUDE_MODEL=" + e.Model,
++	}
++	if req.Rubric != nil {
++		env = append(env, "ETUDE_RUBRIC_FILE="+rubricPath)
++	}
++
++	var stderrBuf bytes.Buffer
++	cmd := exec.CommandContext(ctx, e.Command[0], e.Command[1:]...)
++	cmd.Dir = scratch
++	cmd.Env = env
++	cmd.Stderr = &stderrBuf
++
++	runErr := cmd.Run()
++
++	// Context cancellation/timeout takes precedence over generic exit-status errors.
++	if ctx.Err() != nil {
++		return JudgeResponse{}, fmt.Errorf("judge: context done: %w", ctx.Err())
++	}
++	if runErr != nil {
++		stderr := strings.TrimSpace(stderrBuf.String())
++		return JudgeResponse{}, fmt.Errorf("%w: %s: %v: %s", ErrJudgeFailed, e.Command[0], runErr, stderr)
++	}
++
++	// Read output (symlink-safe via Lstat).
++	fi, statErr := os.Lstat(outputPath)
++	if statErr != nil {
++		if os.IsNotExist(statErr) {
++			return JudgeResponse{}, ErrJudgeOutputMissing
++		}
++		return JudgeResponse{}, fmt.Errorf("%w: %v", ErrJudgeOutputMissing, statErr)
++	}
++	if !fi.Mode().IsRegular() {
++		return JudgeResponse{}, ErrJudgeOutputNotRegular
++	}
++
++	data, err := os.ReadFile(outputPath)
++	if err != nil {
++		return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
++	}
++
++	// Decode with DisallowUnknownFields + trailing-data check (reuses ensureEOF).
++	var wire judgeOutputJSON
++	dec := json.NewDecoder(bytes.NewReader(data))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&wire); err != nil {
++		return JudgeResponse{}, fmt.Errorf("%w: decode: %v", ErrJudgeOutputInvalid, err)
++	}
++	if err := ensureEOFJudge(dec); err != nil {
++		return JudgeResponse{}, err
++	}
++
++	// Per-method output validation.
++	if err := validateJudgeOutput(req.Method, wire); err != nil {
++		return JudgeResponse{}, err
++	}
++
++	// Map wire -> JudgeResponse.
++	resp := JudgeResponse{
++		Value:      wire.Value,
++		Max:        wire.Max,
++		Winner:     Winner(wire.Winner),
++		Confidence: wire.Confidence,
++	}
++	if len(wire.Findings) > 0 {
++		resp.Findings = make([]Finding, 0, len(wire.Findings))
++		for _, fw := range wire.Findings {
++			resp.Findings = append(resp.Findings, Finding{
++				Severity: Severity(fw.Severity),
++				Message:  fw.Message,
++				Pointer:  fw.Pointer,
++			})
++		}
++	}
++	return resp, nil
++}
++
++// validateJudgeOutput applies per-method shape validation to the decoded wire output.
++func validateJudgeOutput(method string, w judgeOutputJSON) error {
++	switch method {
++	case "rubric":
++		if w.Value == nil {
++			return fmt.Errorf("%w: rubric method requires value", ErrJudgeOutputInvalid)
++		}
++		if w.Max == nil {
++			return fmt.Errorf("%w: rubric method requires max", ErrJudgeOutputInvalid)
++		}
++		if *w.Max <= 0 {
++			return fmt.Errorf("%w: rubric max must be > 0", ErrJudgeOutputInvalid)
++		}
++		if *w.Value < 0 || *w.Value > *w.Max {
++			return fmt.Errorf("%w: rubric value must be in [0, max]", ErrJudgeOutputInvalid)
++		}
++		if w.Winner != "" {
++			return fmt.Errorf("%w: rubric method must not set winner", ErrJudgeOutputInvalid)
++		}
++		if w.Confidence != nil {
++			return fmt.Errorf("%w: rubric method must not set confidence", ErrJudgeOutputInvalid)
++		}
++	default:
++		return fmt.Errorf("%w: unsupported method %q", ErrJudgeOutputInvalid, method)
++	}
++	// Validate findings severity and message for all methods.
++	for i, fw := range w.Findings {
++		validSeverities := map[string]bool{"info": true, "warning": true, "error": true}
++		if !validSeverities[fw.Severity] {
++			return fmt.Errorf("%w: findings[%d].severity %q must be info, warning, or error", ErrJudgeOutputInvalid, i, fw.Severity)
++		}
++		if strings.TrimSpace(fw.Message) == "" {
++			return fmt.Errorf("%w: findings[%d].message required", ErrJudgeOutputInvalid, i)
++		}
++	}
++	return nil
++}
++
++// ensureEOFJudge checks that no trailing data follows the decoded JSON value.
++// It mirrors ensureEOF in result.go but wraps with ErrJudgeOutputInvalid.
++func ensureEOFJudge(dec *json.Decoder) error {
++	var extra any
++	if err := dec.Decode(&extra); err == io.EOF {
++		return nil
++	} else if err != nil {
++		return fmt.Errorf("%w: trailing data: %v", ErrJudgeOutputInvalid, err)
++	}
++	return fmt.Errorf("%w: trailing data", ErrJudgeOutputInvalid)
++}
++
++// extractPATHFromEnv returns the value of PATH from the environment slice.
++// It uses exact-key matching (mirrors extractPATH in exec_runner.go).
++func extractPATHFromEnv(environ []string) string {
++	for _, entry := range environ {
++		idx := strings.IndexByte(entry, '=')
++		if idx < 0 {
++			continue
++		}
++		if entry[:idx] == "PATH" {
++			return entry[idx+1:]
++		}
++	}
++	return ""
++}
+diff --git a/internal/eval/exec_judge_test.go b/internal/eval/exec_judge_test.go
+new file mode 100644
+index 0000000..54a55d0
+--- /dev/null
++++ b/internal/eval/exec_judge_test.go
+@@ -0,0 +1,621 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++// writeJudgeScript writes a POSIX sh script to path and makes it executable.
++func writeJudgeScript(t *testing.T, path, content string) {
++	t.Helper()
++	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+content+"\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestExecJudge_EmptyCommand(t *testing.T) {
++	j := &ExecJudge{}
++	_, err := j.Judge(context.Background(), JudgeRequest{Method: "rubric"})
++	if !errors.Is(err, ErrJudgeNotConfigured) {
++		t.Fatalf("want ErrJudgeNotConfigured, got %v", err)
++	}
++}
++
++func TestExecJudge_Success(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":7.5,"max":10.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	content := []byte("artifact content")
++	j := &ExecJudge{Command: []string{script}}
++	resp, err := j.Judge(context.Background(), JudgeRequest{
++		Method: "rubric",
++		Targets: []JudgeInput{
++			{Role: "output", Content: content},
++		},
++		Rubric: []byte("score this"),
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if resp.Value == nil || *resp.Value != 7.5 {
++		t.Errorf("Value = %v, want 7.5", resp.Value)
++	}
++	if resp.Max == nil || *resp.Max != 10.0 {
++		t.Errorf("Max = %v, want 10.0", resp.Max)
++	}
++}
++
++func TestExecJudge_MultiTargetOrdering(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	// Script verifies that 00-target-A and 01-target-B are both present,
++	// then writes a valid rubric response.
++	writeJudgeScript(t, script, `
++[ -f "$ETUDE_INPUTS_DIR/00-target-A" ] || { echo "missing 00-target-A" >&2; exit 1; }
++[ -f "$ETUDE_INPUTS_DIR/01-target-B" ] || { echo "missing 01-target-B" >&2; exit 1; }
++printf '{"value":5.0,"max":10.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method: "rubric",
++		Targets: []JudgeInput{
++			{Role: "A", Content: []byte("first")},
++			{Role: "B", Content: []byte("second")},
++		},
++		Rubric: []byte("rubric bytes"),
++	})
++	if err != nil {
++		t.Fatalf("multi-target ordering: %v", err)
++	}
++}
++
++func TestExecJudge_ContextOrdering(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `
++[ -f "$ETUDE_INPUTS_DIR/00-context-task" ]  || { echo "missing 00-context-task" >&2; exit 1; }
++[ -f "$ETUDE_INPUTS_DIR/01-context-plan" ]  || { echo "missing 01-context-plan" >&2; exit 1; }
++printf '{"value":3.0,"max":5.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method: "rubric",
++		Targets: []JudgeInput{
++			{Role: "output", Content: []byte("artifact")},
++		},
++		Context: []JudgeInput{
++			{Role: "task", Content: []byte("the task")},
++			{Role: "plan", Content: []byte("the plan")},
++		},
++		Rubric: []byte("rubric bytes"),
++	})
++	if err != nil {
++		t.Fatalf("context ordering: %v", err)
++	}
++}
++
++func TestExecJudge_EnvIsolation(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	// Set a parent env var that must NOT be visible to the judge.
++	t.Setenv("ETUDE_TEST_PARENT_SECRET", "should-not-leak")
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `
++# Fail if parent secret leaked into judge env.
++if [ -n "$ETUDE_TEST_PARENT_SECRET" ]; then
++  echo "parent env leaked: ETUDE_TEST_PARENT_SECRET=$ETUDE_TEST_PARENT_SECRET" >&2
++  exit 1
++fi
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte("r"),
++	})
++	if err != nil {
++		t.Fatalf("env isolation: %v", err)
++	}
++}
++
++func TestExecJudge_ETUDEMODELAlwaysSet(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	// Test that ETUDE_MODEL is set even when Model is empty string.
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `
++# ETUDE_MODEL must be defined (even if empty).
++if ! env | grep -q '^ETUDE_MODEL='; then
++  echo "ETUDE_MODEL not set" >&2
++  exit 1
++fi
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	// First test with empty Model.
++	j := &ExecJudge{Command: []string{script}, Model: ""}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte("r"),
++	})
++	if err != nil {
++		t.Fatalf("ETUDE_MODEL empty: %v", err)
++	}
++
++	// Also test with a non-empty Model value.
++	dir2 := t.TempDir()
++	script2 := filepath.Join(dir2, "judge.sh")
++	writeJudgeScript(t, script2, `
++model_val=$(printenv ETUDE_MODEL)
++if [ "$model_val" != "claude-opus-4-7" ]; then
++  echo "ETUDE_MODEL wrong: $model_val" >&2
++  exit 1
++fi
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j2 := &ExecJudge{Command: []string{script2}, Model: "claude-opus-4-7"}
++	_, err = j2.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte("r"),
++	})
++	if err != nil {
++		t.Fatalf("ETUDE_MODEL set: %v", err)
++	}
++}
++
++func TestExecJudge_RubricFileSetWhenRubricPresent(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	rubricContent := "my rubric text"
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, fmt.Sprintf(`
++rubric_content=$(cat "$ETUDE_RUBRIC_FILE")
++if [ "$rubric_content" != "%s" ]; then
++  echo "rubric content wrong: $rubric_content" >&2
++  exit 1
++fi
++printf '{"value":2.0,"max":5.0}' > "$ETUDE_OUTPUT_FILE"
++`, rubricContent))
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte(rubricContent),
++	})
++	if err != nil {
++		t.Fatalf("ETUDE_RUBRIC_FILE: %v", err)
++	}
++}
++
++func TestExecJudge_RubricFileAbsentWhenRubricNil(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `
++# ETUDE_RUBRIC_FILE must NOT be set when Rubric is nil.
++if [ -n "$ETUDE_RUBRIC_FILE" ]; then
++  echo "ETUDE_RUBRIC_FILE should be absent, got: $ETUDE_RUBRIC_FILE" >&2
++  exit 1
++fi
++# For this test we use a non-rubric method — just write valid output.
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j := &ExecJudge{Command: []string{script}}
++	// Use rubric method but with Rubric nil — note: this bypasses RubricEvaluator's
++	// validation, testing ExecJudge directly (ExecJudge itself does not enforce method).
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  nil,
++	})
++	if err != nil {
++		t.Fatalf("ETUDE_RUBRIC_FILE absent: %v", err)
++	}
++}
++
++func TestExecJudge_NonZeroExit(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `echo "judge crash" >&2; exit 3`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeFailed) {
++		t.Fatalf("want ErrJudgeFailed, got %v", err)
++	}
++	if !strings.Contains(err.Error(), "judge crash") {
++		t.Errorf("want stderr in error, got: %v", err)
++	}
++}
++
++func TestExecJudge_OutputMissing(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `exit 0`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputMissing) {
++		t.Fatalf("want ErrJudgeOutputMissing, got %v", err)
++	}
++}
++
++func TestExecJudge_OutputIsSymlink(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX symlink tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	outsideFile := filepath.Join(dir, "outside.txt")
++	if err := os.WriteFile(outsideFile, []byte(`{"value":1,"max":1}`), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, fmt.Sprintf(`ln -s %s "$ETUDE_OUTPUT_FILE"`, outsideFile))
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputNotRegular) {
++		t.Fatalf("want ErrJudgeOutputNotRegular, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_NonJSON(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf 'not json' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for non-JSON, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_UnknownField(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":1.0,"max":1.0,"unknown_field":"x"}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for unknown field, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_TrailingData(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":1.0,"max":1.0}extra' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for trailing data, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_MissingValue(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"max":10.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for missing value, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_MissingMax(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":5.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for missing max, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_MaxZero(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":0.0,"max":0.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for max=0, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_ValueExceedsMax(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":11.0,"max":10.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for value>max, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_WinnerSetForRubric(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":5.0,"max":10.0,"winner":"A"}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for winner set in rubric, got %v", err)
++	}
++}
++
++func TestExecJudge_MalformedOutput_BadSeverity(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":5.0,"max":10.0,"findings":[{"severity":"critical","message":"bad"}]}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for bad severity, got %v", err)
++	}
++}
++
++func TestExecJudge_CancelledContext(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `sleep 10`)
++
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(ctx, JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want context.DeadlineExceeded, got %v", err)
++	}
++}
++
++func TestExecJudge_CancelledContextBeforeRun(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"`)
++
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel() // cancel before Judge
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(ctx, JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++	})
++	if err == nil {
++		t.Fatal("want error for pre-cancelled context, got nil")
++	}
++	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want context.Canceled or DeadlineExceeded, got %v", err)
++	}
++}
++
++func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
++	v := 7.5
++	m := 10.0
++	validRubricOutput := judgeOutputJSON{Value: &v, Max: &m}
++
++	cases := []struct {
++		name   string
++		method string
++	}{
++		{"pairwise method", "pairwise"},
++		{"empty method", ""},
++		{"unknown method", "foobar"},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			err := validateJudgeOutput(tc.method, validRubricOutput)
++			if !errors.Is(err, ErrJudgeOutputInvalid) {
++				t.Errorf("method %q: want ErrJudgeOutputInvalid, got %v", tc.method, err)
++			}
++		})
++	}
++}
++
++func TestExecJudge_RoleWithPathSeparator(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	// Role "a/b" must materialize as "00-target-b" (base only), not try to create a subdir.
++	writeJudgeScript(t, script, `
++[ -f "$ETUDE_INPUTS_DIR/00-target-b" ] || { echo "missing 00-target-b" >&2; exit 1; }
++printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"
++`)
++
++	j := &ExecJudge{Command: []string{script}}
++	_, err := j.Judge(context.Background(), JudgeRequest{
++		Method: "rubric",
++		Targets: []JudgeInput{
++			{Role: "a/b", Content: []byte("content")},
++		},
++		Rubric: []byte("rubric"),
++	})
++	if err != nil {
++		t.Fatalf("role with path separator: %v", err)
++	}
++}
++
++func TestExecJudge_WithFindings(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"value":6.0,"max":10.0,"findings":[{"severity":"warning","message":"minor issue","pointer":"/section1"},{"severity":"info","message":"overall good"}]}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	resp, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "rubric",
++		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  []byte("rubric"),
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if len(resp.Findings) != 2 {
++		t.Fatalf("want 2 findings, got %d", len(resp.Findings))
++	}
++	if resp.Findings[0].Severity != SeverityWarning || resp.Findings[0].Message != "minor issue" {
++		t.Errorf("finding[0] = %+v", resp.Findings[0])
++	}
++	if resp.Findings[0].Pointer != "/section1" {
++		t.Errorf("finding[0].Pointer = %q, want %q", resp.Findings[0].Pointer, "/section1")
++	}
++	if resp.Findings[1].Severity != SeverityInfo || resp.Findings[1].Message != "overall good" {
++		t.Errorf("finding[1] = %+v", resp.Findings[1])
++	}
++}
+diff --git a/internal/eval/judge.go b/internal/eval/judge.go
+new file mode 100644
+index 0000000..a0dd4d0
+--- /dev/null
++++ b/internal/eval/judge.go
+@@ -0,0 +1,104 @@
++package eval
++
++import (
++	"context"
++	"errors"
++
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// Sentinel errors for Judge implementations.
++var (
++	// ErrJudgeNotConfigured is returned when the Judge has no command configured.
++	ErrJudgeNotConfigured = errors.New("judge not configured")
++	// ErrJudgeFailed is returned when the judge process exits with a non-zero status.
++	ErrJudgeFailed = errors.New("judge failed")
++	// ErrJudgeOutputMissing is returned when the judge does not write the output file.
++	ErrJudgeOutputMissing = errors.New("judge output missing")
++	// ErrJudgeOutputNotRegular is returned when the output path is not a regular file (e.g. symlink).
++	ErrJudgeOutputNotRegular = errors.New("judge output is not a regular file")
++	// ErrJudgeOutputInvalid is returned when the judge output cannot be decoded or fails
++	// per-method validation (missing value/max for rubric, Max<=0, Value>Max, winner set
++	// for rubric, bad severity, unknown field, trailing data, etc.).
++	ErrJudgeOutputInvalid = errors.New("judge output invalid")
++)
++
++// JudgeInput is one fully-materialised artifact passed to a Judge.
++// Content is always fully-materialized bytes; pointer rejection is the
++// caller's responsibility (mirrors EvalInput / replay.RunInput).
++type JudgeInput struct {
++	Role      string
++	MediaType string
++	Content   []byte         // fully-materialized bytes
++	Source    ArtifactSource // provenance back-link
++}
++
++// JudgeRequest describes a single judge invocation.
++//
++// Method drives per-method output-shape validation in both ExecJudge and
++// RubricEvaluator:
++//
++//	"rubric"   — Targets len 1; Rubric non-nil; judge must return Value+Max.
++//	"pairwise" — Targets len 2 (A=Targets[0], B=Targets[1]); Rubric nil;
++//	             judge must return Winner; Value/Max absent (future bead).
++//
++// Targets ordering is preserved: ExecJudge materialises them as
++// 00-target-<role>, 01-target-<role>, … so pairwise judges see A before B.
++// Context inputs are materialised similarly as 00-context-<role>, etc.
++type JudgeRequest struct {
++	// Method is the eval method ("rubric" | "pairwise"). Drives output validation.
++	Method string
++	// Targets are the ordered artifacts being judged. len 1 for rubric, len 2 for pairwise.
++	Targets []JudgeInput
++	// Context are optional unscored inputs (task description, plan, diff, etc.).
++	Context []JudgeInput
++	// Rubric holds the rubric file bytes the judge scores against. Nil for pairwise.
++	Rubric []byte
++	// Producer carries model/skill/harness identity for the judge invocation.
++	Producer runmanifest.Producer
++}
++
++// JudgeResponse is the method-neutral verdict returned by a Judge.
++//
++// Rubric judges set Value+Max (Winner="" / Confidence=nil).
++// Pairwise judges (future bead) set Winner and optionally Confidence
++// (Value/Max remain nil).
++//
++// Pointer fields distinguish "absent" from "zero" under JSON round-trips,
++// mirroring eval.Score's per-Kind coherence.
++type JudgeResponse struct {
++	Value      *float64 // rubric only
++	Max        *float64 // rubric only
++	Winner     Winner   // pairwise only ('' | A | B | tie)
++	Confidence *float64 // pairwise only, optional
++	Findings   []Finding
++}
++
++// Judge scores one or more artifacts according to a method-tagged JudgeRequest.
++// Mirrors replay.Runner.
++type Judge interface {
++	Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error)
++}
++
++// StubJudge is a test double that satisfies Judge without touching the
++// filesystem or executing any external process.
++//
++//   - Err, if non-nil, is returned immediately with a zero JudgeResponse.
++//   - Otherwise Canned is returned verbatim.
++//
++// Mirrors StubRunner / StubEvaluator.
++type StubJudge struct {
++	Canned JudgeResponse
++	Err    error
++}
++
++// compile-time interface satisfaction assertion.
++var _ Judge = (*StubJudge)(nil)
++
++// Judge implements Judge for StubJudge.
++func (s *StubJudge) Judge(_ context.Context, _ JudgeRequest) (JudgeResponse, error) {
++	if s.Err != nil {
++		return JudgeResponse{}, s.Err
++	}
++	return s.Canned, nil
++}
+diff --git a/internal/eval/judge_test.go b/internal/eval/judge_test.go
+new file mode 100644
+index 0000000..5cbfbca
+--- /dev/null
++++ b/internal/eval/judge_test.go
+@@ -0,0 +1,53 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"testing"
++)
++
++func TestStubJudge_ReturnsCanned(t *testing.T) {
++	v := 8.0
++	m := 10.0
++	canned := JudgeResponse{
++		Value: &v,
++		Max:   &m,
++		Findings: []Finding{
++			{Severity: SeverityInfo, Message: "well structured"},
++		},
++	}
++	stub := &StubJudge{Canned: canned}
++
++	got, err := stub.Judge(context.Background(), JudgeRequest{Method: "rubric"})
++	if err != nil {
++		t.Fatalf("Judge returned error: %v", err)
++	}
++	if got.Value == nil || *got.Value != v {
++		t.Errorf("Value = %v, want %v", got.Value, v)
++	}
++	if got.Max == nil || *got.Max != m {
++		t.Errorf("Max = %v, want %v", got.Max, m)
++	}
++	if len(got.Findings) != 1 || got.Findings[0].Message != "well structured" {
++		t.Errorf("Findings = %v, want one finding", got.Findings)
++	}
++}
++
++func TestStubJudge_ReturnsErr(t *testing.T) {
++	sentinel := errors.New("model unavailable")
++	stub := &StubJudge{Err: sentinel}
++
++	got, err := stub.Judge(context.Background(), JudgeRequest{})
++	if !errors.Is(err, sentinel) {
++		t.Fatalf("err = %v, want sentinel", err)
++	}
++	// Must return zero JudgeResponse on error.
++	if got.Value != nil || got.Max != nil || got.Winner != "" || got.Confidence != nil || got.Findings != nil {
++		t.Errorf("want zero JudgeResponse on error, got %+v", got)
++	}
++}
++
++func TestStubJudge_InterfaceAssertion(t *testing.T) {
++	// Verifies the compile-time assertion holds at runtime too.
++	var _ Judge = (*StubJudge)(nil)
++}
+diff --git a/internal/eval/rubricevaluator.go b/internal/eval/rubricevaluator.go
+new file mode 100644
+index 0000000..77e392d
+--- /dev/null
++++ b/internal/eval/rubricevaluator.go
+@@ -0,0 +1,209 @@
++package eval
++
++import (
++	"context"
++	"crypto/sha256"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// Sentinel errors for RubricEvaluator.
++var (
++	// ErrRubricLoad is returned when the rubric file cannot be loaded (path escape,
++	// missing file, or read error).
++	ErrRubricLoad = errors.New("rubric load failed")
++	// ErrRubricVersionMismatch is returned when the rubric bytes on disk do not
++	// match the pinned SHA-256 version in the RubricRef.
++	ErrRubricVersionMismatch = errors.New("rubric version mismatch")
++)
++
++// RubricEvaluator implements Evaluator by loading a versioned rubric from disk,
++// invoking a Judge, and mapping the response to a rubric-coherent Evaluation.
++//
++// Root is the rubric resolution root (e.g. the .etude dir or repo root).
++// Rubric paths in EvalRequests are resolved relative to Root; path-escape
++// is rejected.
++type RubricEvaluator struct {
++	Judge Judge
++	Root  string
++}
++
++// compile-time interface satisfaction assertion.
++var _ Evaluator = (*RubricEvaluator)(nil)
++
++// PinRubric loads the rubric at path under root and returns a RubricRef with
++// the SHA-256 content hash as the Version. The same loadRubric used by
++// Evaluate ensures pin and verify can never skew.
++func PinRubric(root, path string) (RubricRef, error) {
++	data, err := loadRubric(root, path)
++	if err != nil {
++		return RubricRef{}, err
++	}
++	return RubricRef{
++		Path:    path,
++		Version: sha256hex(data),
++	}, nil
++}
++
++// Evaluate scores a single target against a versioned rubric.
++//
++// Requirements:
++//   - req.Method must be "rubric"
++//   - req.Rubric must be non-nil with Path and Version set
++//   - req.Targets must have exactly one entry
++//
++// The rubric file is loaded from disk and its SHA-256 hash verified against
++// req.Rubric.Version before the judge is called. A mismatch returns
++// ErrRubricVersionMismatch. Tamper-evident comparability: a rubric edit
++// silently changing scoring semantics is caught before any LLM call.
++func (r *RubricEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	if req.Method != "rubric" {
++		return Evaluation{}, fmt.Errorf("RubricEvaluator requires method \"rubric\", got %q", req.Method)
++	}
++	if req.Rubric == nil {
++		return Evaluation{}, fmt.Errorf("RubricEvaluator requires non-nil Rubric")
++	}
++	if strings.TrimSpace(req.Rubric.Path) == "" {
++		return Evaluation{}, fmt.Errorf("RubricEvaluator requires non-empty Rubric.Path")
++	}
++	if strings.TrimSpace(req.Rubric.Version) == "" {
++		return Evaluation{}, fmt.Errorf("RubricEvaluator requires non-empty Rubric.Version")
++	}
++	if len(req.Targets) != 1 {
++		return Evaluation{}, fmt.Errorf("RubricEvaluator requires exactly 1 target, got %d", len(req.Targets))
++	}
++	if r.Judge == nil {
++		return Evaluation{}, ErrJudgeNotConfigured
++	}
++
++	data, err := loadRubric(r.Root, req.Rubric.Path)
++	if err != nil {
++		return Evaluation{}, err
++	}
++
++	if sha256hex(data) != req.Rubric.Version {
++		return Evaluation{}, fmt.Errorf("%w: rubric %q on-disk hash does not match pinned version", ErrRubricVersionMismatch, req.Rubric.Path)
++	}
++
++	// Build the JudgeRequest from the EvalRequest.
++	targets := make([]JudgeInput, 0, len(req.Targets))
++	for _, t := range req.Targets {
++		targets = append(targets, JudgeInput{
++			Role:      t.Role,
++			MediaType: t.MediaType,
++			Content:   t.Content,
++			Source:    t.Source,
++		})
++	}
++	context_ := make([]JudgeInput, 0, len(req.Context))
++	for _, c := range req.Context {
++		context_ = append(context_, JudgeInput{
++			Role:      c.Role,
++			MediaType: c.MediaType,
++			Content:   c.Content,
++			Source:    c.Source,
++		})
++	}
++
++	jr := JudgeRequest{
++		Method:   "rubric",
++		Targets:  targets,
++		Context:  context_,
++		Rubric:   data,
++		Producer: req.Producer,
++	}
++
++	resp, err := r.Judge.Judge(ctx, jr)
++	if err != nil {
++		return Evaluation{}, err
++	}
++
++	// Validate rubric-method coherence on the response.
++	if resp.Value == nil {
++		return Evaluation{}, fmt.Errorf("%w: rubric response missing value", ErrJudgeOutputInvalid)
++	}
++	if resp.Max == nil {
++		return Evaluation{}, fmt.Errorf("%w: rubric response missing max", ErrJudgeOutputInvalid)
++	}
++	if *resp.Max <= 0 {
++		return Evaluation{}, fmt.Errorf("%w: rubric response max must be > 0", ErrJudgeOutputInvalid)
++	}
++	if *resp.Value < 0 || *resp.Value > *resp.Max {
++		return Evaluation{}, fmt.Errorf("%w: rubric response value must be in [0, max]", ErrJudgeOutputInvalid)
++	}
++	if resp.Winner != WinnerNone {
++		return Evaluation{}, fmt.Errorf("%w: rubric response must not set winner", ErrJudgeOutputInvalid)
++	}
++	if resp.Confidence != nil {
++		return Evaluation{}, fmt.Errorf("%w: rubric response must not set confidence", ErrJudgeOutputInvalid)
++	}
++
++	// Validate findings severity (cheap; mirrors validateFinding in result.go).
++	for i, f := range resp.Findings {
++		if err := validateFinding(i, f); err != nil {
++			return Evaluation{}, fmt.Errorf("%w: %v", ErrJudgeOutputInvalid, err)
++		}
++	}
++
++	return Evaluation{
++		Score: Score{
++			Kind:  ScoreRubric,
++			Value: resp.Value,
++			Max:   resp.Max,
++		},
++		Findings: resp.Findings,
++	}, nil
++}
++
++// loadRubric loads the rubric file at path resolved under root.
++// It rejects absolute paths outright and relative paths that escape root, both
++// lexically (via "..") and after resolving symlink components.
++func loadRubric(root, path string) ([]byte, error) {
++	if filepath.IsAbs(path) {
++		return nil, fmt.Errorf("%w: rubric path %q must be relative to root", ErrRubricLoad, path)
++	}
++
++	// Join cleans the path — no need for a redundant filepath.Clean(path).
++	joined := filepath.Join(root, path)
++
++	// Lexical containment check: cheap, and rejects ".." escapes even when the
++	// target does not exist.
++	if rel, err := filepath.Rel(root, joined); err != nil {
++		return nil, fmt.Errorf("%w: resolve path %q: %v", ErrRubricLoad, path, err)
++	} else if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++		return nil, fmt.Errorf("%w: path %q escapes root", ErrRubricLoad, path)
++	}
++
++	// Symlink-resolved containment check: a path component may be a symlink
++	// pointing outside root, which the lexical check cannot see. Resolve both
++	// sides (root itself may legitimately contain symlinks, e.g. /tmp on macOS)
++	// and re-verify containment before reading.
++	realRoot, err := filepath.EvalSymlinks(root)
++	if err != nil {
++		return nil, fmt.Errorf("%w: resolve root: %v", ErrRubricLoad, err)
++	}
++	realPath, err := filepath.EvalSymlinks(joined)
++	if err != nil {
++		return nil, fmt.Errorf("%w: resolve %q: %v", ErrRubricLoad, path, err)
++	}
++	if rel, err := filepath.Rel(realRoot, realPath); err != nil {
++		return nil, fmt.Errorf("%w: resolve path %q: %v", ErrRubricLoad, path, err)
++	} else if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++		return nil, fmt.Errorf("%w: path %q escapes root via symlink", ErrRubricLoad, path)
++	}
++
++	data, err := os.ReadFile(realPath)
++	if err != nil {
++		return nil, fmt.Errorf("%w: read %q: %v", ErrRubricLoad, path, err)
++	}
++	return data, nil
++}
++
++// sha256hex returns the lowercase hex SHA-256 hash of data.
++func sha256hex(data []byte) string {
++	sum := sha256.Sum256(data)
++	return fmt.Sprintf("%x", sum)
++}
+diff --git a/internal/eval/rubricevaluator_test.go b/internal/eval/rubricevaluator_test.go
+new file mode 100644
+index 0000000..ee3aa51
+--- /dev/null
++++ b/internal/eval/rubricevaluator_test.go
+@@ -0,0 +1,431 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// validArtifactSource returns a valid ArtifactSource for test use.
++// Uses a fixed 40-char hex commit OID and a 64-char hex artifact SHA256.
++func validArtifactSource() ArtifactSource {
++	return ArtifactSource{
++		RunID:    "rubric-test-run",
++		Stage:    "output",
++		Commit:   "aabbccddeeff00112233445566778899aabbccdd",                         // 40 hex chars
++		Artifact: "0000000000000000000000000000000000000000000000000000000000000001", // 64 hex chars
++	}
++}
++
++// writeRubricFile writes content to a file named "rubric.md" in dir and returns its path.
++func writeRubricFile(t *testing.T, dir, content string) string {
++	t.Helper()
++	path := filepath.Join(dir, "rubric.md")
++	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	return path
++}
++
++func TestRubricEvaluator_EndToEnd(t *testing.T) {
++	dir := t.TempDir()
++	rubricContent := "Score the response from 0 to 10."
++	writeRubricFile(t, dir, rubricContent)
++
++	ref, err := PinRubric(dir, "rubric.md")
++	if err != nil {
++		t.Fatalf("PinRubric: %v", err)
++	}
++
++	v := 7.5
++	m := 10.0
++	stub := &StubJudge{Canned: JudgeResponse{
++		Value: &v,
++		Max:   &m,
++		Findings: []Finding{
++			{Severity: SeverityInfo, Message: "well done"},
++		},
++	}}
++
++	re := &RubricEvaluator{Judge: stub, Root: dir}
++	src := validArtifactSource()
++	eval_, err := re.Evaluate(context.Background(), EvalRequest{
++		Method: "rubric",
++		Targets: []EvalInput{
++			{Role: "output", Content: []byte("model response"), Source: src},
++		},
++		Rubric:   &ref,
++		Producer: testProducer(),
++	})
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Kind != ScoreRubric {
++		t.Errorf("Score.Kind = %q, want %q", eval_.Score.Kind, ScoreRubric)
++	}
++	if eval_.Score.Value == nil || *eval_.Score.Value != v {
++		t.Errorf("Score.Value = %v, want %v", eval_.Score.Value, v)
++	}
++	if eval_.Score.Max == nil || *eval_.Score.Max != m {
++		t.Errorf("Score.Max = %v, want %v", eval_.Score.Max, m)
++	}
++	if len(eval_.Findings) != 1 || eval_.Findings[0].Message != "well done" {
++		t.Errorf("Findings = %v, want one finding", eval_.Findings)
++	}
++}
++
++func TestRubricEvaluator_EvalResultValidate(t *testing.T) {
++	dir := t.TempDir()
++	rubricContent := "Rubric text."
++	writeRubricFile(t, dir, rubricContent)
++
++	ref, err := PinRubric(dir, "rubric.md")
++	if err != nil {
++		t.Fatalf("PinRubric: %v", err)
++	}
++
++	v := 8.0
++	m := 10.0
++	stub := &StubJudge{Canned: JudgeResponse{Value: &v, Max: &m}}
++
++	re := &RubricEvaluator{Judge: stub, Root: dir}
++	src := validArtifactSource()
++	eval_, err := re.Evaluate(context.Background(), EvalRequest{
++		Method: "rubric",
++		Targets: []EvalInput{
++			{Role: "output", Content: []byte("response"), Source: src},
++		},
++		Rubric:   &ref,
++		Producer: testProducer(),
++	})
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++
++	// Wrap into EvalResult and assert Validate() passes.
++	base := EvalIDBase("rubric", "rubric-test-run", "output", time.Now())
++	evalResult := EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            base,
++		Method:            "rubric",
++		Score:             eval_.Score,
++		Findings:          eval_.Findings,
++		Rubric:            &ref,
++		Targets:           []ArtifactSource{src},
++		Producer:          testProducer(),
++		Created:           time.Now().UTC(),
++	}
++	if err := evalResult.Validate(); err != nil {
++		t.Fatalf("EvalResult.Validate() failed: %v", err)
++	}
++}
++
++func TestPinRubric_VersionMatchAndMismatch(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "version A content")
++
++	ref, err := PinRubric(dir, "rubric.md")
++	if err != nil {
++		t.Fatalf("PinRubric: %v", err)
++	}
++	if ref.Path != "rubric.md" {
++		t.Errorf("Path = %q, want rubric.md", ref.Path)
++	}
++	if ref.Version == "" {
++		t.Error("Version should not be empty")
++	}
++
++	v := 5.0
++	m := 10.0
++	stub := &StubJudge{Canned: JudgeResponse{Value: &v, Max: &m}}
++	re := &RubricEvaluator{Judge: stub, Root: dir}
++
++	src := validArtifactSource()
++
++	// Evaluate with correct version — must succeed.
++	_, err = re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x"), Source: src}},
++		Rubric:  &ref,
++	})
++	if err != nil {
++		t.Fatalf("Evaluate with matching version: %v", err)
++	}
++
++	// Mutate the file on disk.
++	if err := os.WriteFile(filepath.Join(dir, "rubric.md"), []byte("version B — different content"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	// Evaluate again with the old pinned version — must return ErrRubricVersionMismatch.
++	_, err = re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x"), Source: src}},
++		Rubric:  &ref,
++	})
++	if !errors.Is(err, ErrRubricVersionMismatch) {
++		t.Fatalf("want ErrRubricVersionMismatch after on-disk edit, got %v", err)
++	}
++}
++
++func TestLoadRubric_PathEscape(t *testing.T) {
++	dir := t.TempDir()
++	// Create a real file just outside root — tests that the escape guard rejects
++	// it even when the file exists (not caught by ReadFile-missing).
++	parent := filepath.Dir(dir)
++	secretPath := filepath.Join(parent, "secret_probe.txt")
++	if err := os.WriteFile(secretPath, []byte("secret"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	escapeTests := []struct {
++		name string
++		path string
++	}{
++		{"relative dot-dot", "../escape"},
++		{"relative dot-dot chain", "../../secret.txt"},
++		// real readable file just outside root — proves the escape guard, not ReadFile
++		{"relative escape to real file", "../secret_probe.txt"},
++		// absolute path is now rejected outright regardless of location
++		{"absolute outside root", filepath.Join(parent, "secret.txt")},
++	}
++
++	for _, tc := range escapeTests {
++		t.Run(tc.name, func(t *testing.T) {
++			_, err := loadRubric(dir, tc.path)
++			if !errors.Is(err, ErrRubricLoad) {
++				t.Errorf("path %q: want ErrRubricLoad, got %v", tc.path, err)
++			}
++		})
++	}
++}
++
++func TestLoadRubric_SymlinkEscape(t *testing.T) {
++	root := t.TempDir()
++	outside := t.TempDir() // sibling temp dir, definitely outside root
++	secret := filepath.Join(outside, "secret.txt")
++	if err := os.WriteFile(secret, []byte("secret"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	// Symlink inside root pointing at the outside directory. "link/secret.txt"
++	// is lexically under root but resolves outside it.
++	link := filepath.Join(root, "link")
++	if err := os.Symlink(outside, link); err != nil {
++		t.Skipf("symlinks unsupported: %v", err)
++	}
++	if _, err := loadRubric(root, "link/secret.txt"); !errors.Is(err, ErrRubricLoad) {
++		t.Fatalf("want ErrRubricLoad for symlink escape, got %v", err)
++	}
++
++	// Positive control: an in-root symlink to an in-root file must still load,
++	// so the resolved-containment check does not over-reject legitimate links.
++	target := filepath.Join(root, "real_rubric.md")
++	if err := os.WriteFile(target, []byte("ok"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Symlink(target, filepath.Join(root, "alias.md")); err != nil {
++		t.Skipf("symlinks unsupported: %v", err)
++	}
++	data, err := loadRubric(root, "alias.md")
++	if err != nil {
++		t.Fatalf("in-root symlink should load, got %v", err)
++	}
++	if string(data) != "ok" {
++		t.Fatalf("data = %q, want %q", data, "ok")
++	}
++}
++
++func TestRubricEvaluator_NilJudge(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "rubric text")
++	ref, err := PinRubric(dir, "rubric.md")
++	if err != nil {
++		t.Fatalf("PinRubric: %v", err)
++	}
++
++	re := &RubricEvaluator{Judge: nil, Root: dir}
++	src := validArtifactSource()
++	_, err = re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x"), Source: src}},
++		Rubric:  &ref,
++	})
++	if !errors.Is(err, ErrJudgeNotConfigured) {
++		t.Fatalf("want ErrJudgeNotConfigured for nil Judge, got %v", err)
++	}
++}
++
++func TestLoadRubric_MissingFile(t *testing.T) {
++	dir := t.TempDir()
++	_, err := loadRubric(dir, "nonexistent.md")
++	if !errors.Is(err, ErrRubricLoad) {
++		t.Fatalf("want ErrRubricLoad for missing file, got %v", err)
++	}
++}
++
++func TestRubricEvaluator_RequiresRubricMethod(t *testing.T) {
++	re := &RubricEvaluator{Judge: &StubJudge{}, Root: t.TempDir()}
++	_, err := re.Evaluate(context.Background(), EvalRequest{Method: "pairwise"})
++	if err == nil {
++		t.Fatal("want error for non-rubric method, got nil")
++	}
++}
++
++func TestRubricEvaluator_RequiresNonNilRubric(t *testing.T) {
++	re := &RubricEvaluator{Judge: &StubJudge{}, Root: t.TempDir()}
++	_, err := re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x")}},
++		Rubric:  nil,
++	})
++	if err == nil {
++		t.Fatal("want error for nil Rubric, got nil")
++	}
++}
++
++func TestRubricEvaluator_RequiresExactlyOneTarget(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "rubric text")
++	ref, _ := PinRubric(dir, "rubric.md")
++
++	re := &RubricEvaluator{Judge: &StubJudge{}, Root: dir}
++
++	// Zero targets.
++	_, err := re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{},
++		Rubric:  &ref,
++	})
++	if err == nil {
++		t.Error("want error for zero targets, got nil")
++	}
++
++	// Two targets.
++	src := validArtifactSource()
++	_, err = re.Evaluate(context.Background(), EvalRequest{
++		Method: "rubric",
++		Targets: []EvalInput{
++			{Role: "A", Content: []byte("a"), Source: src},
++			{Role: "B", Content: []byte("b"), Source: src},
++		},
++		Rubric: &ref,
++	})
++	if err == nil {
++		t.Error("want error for two targets, got nil")
++	}
++}
++
++func TestRubricEvaluator_MalformedJudgeResponse_Matrix(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "rubric text")
++	ref, _ := PinRubric(dir, "rubric.md")
++
++	src := validArtifactSource()
++	baseReq := EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x"), Source: src}},
++		Rubric:  &ref,
++	}
++
++	v := 5.0
++	m := 10.0
++	winnerA := WinnerA
++	conf := 0.9
++
++	tests := []struct {
++		name string
++		resp JudgeResponse
++	}{
++		{
++			name: "value nil",
++			resp: JudgeResponse{Max: &m},
++		},
++		{
++			name: "max nil",
++			resp: JudgeResponse{Value: &v},
++		},
++		{
++			name: "max zero",
++			resp: JudgeResponse{Value: func() *float64 { z := 0.0; return &z }(), Max: func() *float64 { z := 0.0; return &z }()},
++		},
++		{
++			name: "value exceeds max",
++			resp: JudgeResponse{Value: func() *float64 { x := 11.0; return &x }(), Max: &m},
++		},
++		{
++			name: "winner set for rubric",
++			resp: JudgeResponse{Value: &v, Max: &m, Winner: winnerA},
++		},
++		{
++			name: "confidence set for rubric",
++			resp: JudgeResponse{Value: &v, Max: &m, Confidence: &conf},
++		},
++		{
++			name: "bad severity finding",
++			resp: JudgeResponse{
++				Value: &v, Max: &m,
++				Findings: []Finding{{Severity: "critical", Message: "bad"}},
++			},
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			re := &RubricEvaluator{
++				Judge: &StubJudge{Canned: tc.resp},
++				Root:  dir,
++			}
++			_, err := re.Evaluate(context.Background(), baseReq)
++			if !errors.Is(err, ErrJudgeOutputInvalid) {
++				t.Errorf("%s: want ErrJudgeOutputInvalid, got %v", tc.name, err)
++			}
++		})
++	}
++}
++
++func TestRubricEvaluator_JudgeErrorPropagates(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "rubric text")
++	ref, _ := PinRubric(dir, "rubric.md")
++
++	sentinel := errors.New("judge down")
++	re := &RubricEvaluator{
++		Judge: &StubJudge{Err: sentinel},
++		Root:  dir,
++	}
++	src := validArtifactSource()
++	_, err := re.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{{Role: "out", Content: []byte("x"), Source: src}},
++		Rubric:  &ref,
++	})
++	if !errors.Is(err, sentinel) {
++		t.Fatalf("want sentinel error propagated, got %v", err)
++	}
++}
++
++func TestPinRubric_DeterministicHash(t *testing.T) {
++	dir := t.TempDir()
++	writeRubricFile(t, dir, "deterministic content")
++
++	ref1, _ := PinRubric(dir, "rubric.md")
++	ref2, _ := PinRubric(dir, "rubric.md")
++
++	if ref1.Version != ref2.Version {
++		t.Errorf("PinRubric not deterministic: %q != %q", ref1.Version, ref2.Version)
++	}
++	if len(ref1.Version) != 64 {
++		t.Errorf("Version should be 64 hex chars (SHA-256), got %d: %q", len(ref1.Version), ref1.Version)
++	}
++}
++
++// testProducer returns a minimal Producer for test use.
++func testProducer() runmanifest.Producer {
++	return runmanifest.Producer{Model: "test-model"}
++}
