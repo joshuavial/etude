@@ -1,0 +1,31 @@
+# etude-n9b.6 PR review correction final review
+
+ROLE: Independent final reviewer.
+PHASE: review
+DECISION STANDARD: BLOCK on any unresolved PR-panel finding, regression, incomplete proof, docs contradiction, or scope expansion; otherwise PASS or PASS_WITH_FOLLOWUPS.
+BEAD: etude-n9b.6 — review-panel corrections for PR #20.
+ANCESTOR: etude-n9b (P1) — opt-in pinned checkout reads, output-only default, authoritative embedded measurement provenance.
+BLAST RADIUS: four tracked files only: internal/liverun gate orchestration, prompt wording, adversarial tests, and docs/gates.md.
+TOPOLOGY: serial model seats; fixed-SHA checkout factory invoked and closed per read-granted seat; cleanup failure halts the panel.
+DURABILITY CLASS: source, tests, user docs, manifests, and temporary linked worktrees.
+TRUST BOUNDARY: same-user OS sandboxing remains out of scope; cross-seat pristine evidence and protected-origin launch isolation are enforced by the harness.
+IRREVERSIBLE SEQUENCES: Checkout -> runner/output/session capture -> Close; Close failure is recorded and prevents another Checkout.
+
+CRASH-PREFIX RESIDUALS: a hard termination after Checkout and before Close may leave that invocation's registered `etude-worktree-*` directory; retries create a different checkout and never reuse the residual. It is visible through `git worktree list` and the temp prefix, and can be removed with `git worktree remove --force <path>` plus `git worktree prune`. Automatic global sweeping is excluded because concurrent runs use the same prefix. After successful Close no checkout residual remains.
+
+READINESS SUMMARY:
+- Blocking review finding fixed: no checkout is cached across seats, reruns, or escalation tiers. The adversarial writer/reader test proves different fixed-SHA paths and writer removal before reader invocation.
+- High review finding fixed: protected-origin executable paths launch the resolved external target even when a parent component or the protected root is symlinked; external-origin symlink paths remain unchanged for compatibility.
+- Session transcript evidence is captured against the seat checkout before cleanup; cleanup failure produces failed evidence and halts later seats.
+- Prompt no longer asserts an unenforced immutable directory. It says fresh disposable/pristine and tells seats not to modify it. Exact authoritative-measurement literals remain in the prompt.
+- Docs name the live adapter's single `gate-prompt` role and the new lifecycle/dispatch behavior.
+- Automated checks all pass on the final alias-hardening code: `make test`, `make lint`, `make docs-check`, `make docs-reality`, `make build`.
+- Built-binary QA runs `qa-review2-output-only` and `qa-review2-read` pass; manifests prove grant omission/presence, seat evidence is respectively `read-denied` and `read:PINNED_GH16_7F3A91`, and captured prompts prove policy wording.
+- Strict implementation gate: Codex PASS; Opus PASS_WITH_FOLLOWUPS. Strict verification gate after bounded corrections: Codex PASS; Opus PASS_WITH_FOLLOWUPS.
+- Docs gate: Opus PASS_WITH_FOLLOWUPS; the same Opus seat confirmed the folded cwd, prompt-level-policy, and symlinked-component wording with PASS_WITH_FOLLOWUPS and no blocker.
+- Source inspection confirms there is no `continue` or early return between a successful checkout-factory call and the cleanup block; runner and envelope failures flow through cleanup.
+- `docs/run.md` contains no immutable-checkout claim and continues to document the same-user non-sandbox and GH #14 fail-closed limits.
+- GitHub issue #14 is OPEN. Submodule content remains untested and opted-in gitlinks fail closed.
+- No n9b.7 was created; this is the requested correction bead only.
+
+KNOWN LIMITATION: a seat may mutate its own disposable checkout during its invocation; this is harness isolation, not an OS sandbox.
