@@ -1332,6 +1332,62 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T06:26:00Z"
+    },
+    {
+      "gate_id": "rebase-implement.r2",
+      "phase": "rebase-implement",
+      "round": 2,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "rebase-implement.r3",
+          "role": "implementation",
+          "artifact": "1073249cfaf56190938d8d30ed11b514b861f0ee3ea83fa77cc5d3e262a65f22"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirm legacy multi-SHA hermetic capture compatibility.",
+            "Consider snapshotting transitive Git config include targets if tracked bytes are not compared independently.",
+            "Consider info/exclude only if untracked effects enter the guard contract.",
+            "Consider reducing redundant cleanliness scans.",
+            "Consider hardening the temporary-index name handoff against a same-host actor.",
+            "Remove the unused firstCheckoutGitlink helper separately."
+          ],
+          "timestamp": "2026-08-17T06:44:36Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Recheck repository metadata identity after the runner so replacing .git cannot redirect provenance.",
+            "Compare tracked working bytes independently of mutable clean filters, including branch-activated filters."
+          ],
+          "timestamp": "2026-08-17T06:44:36Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T06:44:36Z"
     }
   ]
 }
