@@ -1,0 +1,17 @@
+### A1. Early dogfood workflow retro
+- **Trigger/date/scope:** end of the agent-workflow-audit / consolidate-test-qa
+  work (early dogfood setup). Scope: the dev workflow + review process.
+- **Evidence:** `docs/plans/dogfood/dogfood-process-retro.md` (top section);
+  commits 9965869, a22cc44, 0b71ca8.
+- **Findings:** process drift (human gate → 3-reviewer), stale Verify-phase
+  language, inline `bd update` backtick failures, Opus seat-role confusion.
+- **Recommended changes / Landed:** gate execution checklist `[IMPLEMENTED]`;
+  file/stdin `bd update` rule `[IMPLEMENTED]`; exact-artifact reviewer payloads
+  `[IMPLEMENTED]`; optional-improvements-mandatory-before-advance `[IMPLEMENTED]`;
+  reviewer run-status surfacing `[IMPLEMENTED]`; explicit reviewer-seat prompts
+  `[IMPLEMENTED]` (all in review-gate-runbook.md / review-gate-process.md).
+- **Follow-up beads / Remaining:** none open — the safe-bead-update rule landed
+  in the runbook's "Safe Bead Updates" section and the dev-workflow skill
+  delegates to that runbook. `[IMPLEMENTED]` (The separate scope-fence rule, B5,
+  is a distinct later improvement.)
+
