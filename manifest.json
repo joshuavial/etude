@@ -205,6 +205,37 @@
         "degraded_reason": "Tier 3 docs-only; ran 2 seats (opus+codex) for factual-accuracy stakes (gemini/pilms not seated). Both independently verified the 13-command list (root.go:36-48), deferred list, brief reconciliation lines, doc-location policy, and the docs-reality phrasing trap."
       },
       "timestamp": "2026-05-27T15:31:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T15:50:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat. GO — every table row re-verified against cobra Short strings; deferred list + brief reconciliation accurate; docs-reality + reconcile green; scope clean. A factual error in the prime row was caught at verify and fixed before commit."
+      },
+      "timestamp": "2026-05-27T15:51:00Z"
     }
   ]
 }
