@@ -1,0 +1,7 @@
+## Verify — etude-zcq (status: pass, recommend proceed to Docs)
+
+Automated: go test ./... -count=1 -race all packages ok; go vet clean; gofmt clean; TestClassifyFetchBangAbortSurfacesStderr PASS.
+Mutation check: reverting only the stderr-surfacing lines made the test FAIL on exactly the "not a valid commit name" assertion (result/ref/exit-code + benign no-leak still passed), then restored to green — proves the test genuinely locks the abort-path stderr surfacing.
+Built-binary round-trip (go install; bare remote + 2 clones): clone A capture+sync pushed refs/etude/runs/mt-run-1; clone B sync fast-forward-fetched it; run list showed it. No regression to real fetch/push.
+Abort branch (merge-base exit 128) is unreachable via real etude sync (successful fetch downloads the new object -> merge-base resolves at 0/1); unit-tested by design.
+QA: minimal + on-plan; bytes already imported; stderr only in abort branch with empty-guard; benign/real-failure untouched. Pre-existing (not introduced): dead fetchBangAbort case in fetch() — user still gets the enriched classifyFetchBang error.
