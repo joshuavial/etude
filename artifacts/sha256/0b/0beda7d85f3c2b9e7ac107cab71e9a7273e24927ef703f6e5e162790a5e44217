@@ -1,0 +1,13 @@
+# Final Review — etude-aqt (render retro-meta sidecar in retro show/list)
+
+Verdict: GO. Commit 72532dd "render retro-meta sidecar in retro show and list".
+
+- Coherent: completes the read-side of etude-2ku's retro-meta sidecar. `findRetroMetaStage` locates the sidecar by `Output.Role=="retro-meta"` (role-based, robust to stage position; body stays Stages[0]). `retro show` renders a `--- retro meta ---` section after the body, pretty-printed via json.Indent (2-space) with a raw-bytes fallback; meta read mirrors the body read (store.ReadFile + content/pointer branch + `retro meta: %w` wrap). `retro list` gains a META Y/N column inserted before CREATED.
+- Correctness of the codex-caught edge (verified built-binary): the body is printed with Fprint (no trailing newline); a guard emits one newline before the divider only when the content-body is non-empty and doesn't already end in '\n' — so a body without a trailing newline yields `...\n--- retro meta ---\n` (divider on its own line), a body WITH a newline gets no double-blank, an empty body doesn't index out-of-range, and a pointer body (already '\n'-terminated) skips the guard.
+- Backward compatible: no-sidecar retros render byte-identically to before (no meta section; META=N in list). No schema change, no write-path change, no new flag → no docs/cli regeneration.
+- Docs: docs/retro.md updated — the "does not yet render" prose replaced with the rendering description, a META column row added to the list-columns table, and a `--- retro meta ---` example in the show section. docs/log.md correctly left untouched (it emits a 1-line summary, never a body/sidecar — the planner caught the handoff error). docs-check / docs-reality (13 cmds) / gen-docs TestDriftGuard / lint all green.
+- Scope: internal/cli/retro.go, internal/cli/retro_test.go (6 new/updated tests incl. the trailing-newline regression), docs/retro.md. 1-bead=1-commit.
+
+Gate history (3-seat degraded, pilms outage):
+- Plan Tier-1: codex BLOCK (verified-true: the `--- retro meta ---` divider would glue onto a body lacking a trailing newline because the body is printed with Fprint at retro.go:381 — a "exact rendered slot" defect both Opus and gemini missed) → design amended with a mandatory newline-guard + regression test; gemini + Opus GO; the other 6 points unanimous.
+- Implement Tier-1: UNANIMOUS GO (codex, gemini, Opus). Opus + codex both empirically verified the newline-guard, role-based detection, read parity, pretty-print, list column, and backward compat; full suite green incl gen-docs.
