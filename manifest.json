@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-kb0.4",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,39 @@
         "size": 472
       },
       "timestamp": "2026-05-27T10:19:49.81719Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T17:20:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: in-harness Opus accepted the dev-planner design (verified make lint target exists + sync caveat vs docs/sync.md). The plan SURFACED a real v1-blocker — make lint was red from gofmt drift — which was fixed as etude-kb0.5 before this bead's checklist could claim a green gate."
+      },
+      "timestamp": "2026-05-27T17:21:00Z"
     }
   ]
 }
