@@ -117,6 +117,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T07:32:07Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "State the temporary docs-check-red window between the aul.4 and aul.5 commits and land aul.5 immediately.",
+            "Define deterministic handling when prompt-path symlink resolution fails.",
+            "Print fixture keys excluded from the common denominator and the failed variants.",
+            "Clarify that failure occurs when no fixture succeeds for all variants.",
+            "Pin deterministic per-variant and per-cell output ordering."
+          ],
+          "timestamp": "2026-08-15T23:24:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Scope GOCACHE and GOMODCACHE to the temporary verification directory or declare their shared-state mutation in the blast radius."
+          ],
+          "timestamp": "2026-08-15T23:24:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus was run as the required unnamed in-harness general-purpose Task with model opus because that seat cannot be represented by the subprocess gate adapter."
+      },
+      "timestamp": "2026-08-15T23:24:00Z"
     }
   ]
 }
