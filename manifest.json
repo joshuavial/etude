@@ -302,6 +302,70 @@
         "degraded_reason": "pilms down; gemini malfunctioned (no verdict). codex BLOCK on cutoff-date ambiguity adopted: switched to a precise-instant cutoff 2026-05-27T00:00:00Z."
       },
       "timestamp": "2026-05-27T05:31:30Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "lexical comparison of fractional-second timestamps breaks at the boundary (2026-05-27T00:00:00.000001Z sorts before 2026-05-27T00:00:00Z since '.'<'Z'); parse/normalize timestamps before comparing"
+          ],
+          "timestamp": "2026-05-27T05:50:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "same fractional-seconds lexical boundary hole; pad the cutoff or parse to datetime"
+          ],
+          "timestamp": "2026-05-27T05:50:30Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T05:51:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. codex + gemini independently caught the same lexical/fractional-seconds boundary bug. Adopted codex's stated sufficient fix: parse both created and cutoff to datetime instants (datetime.fromisoformat) instead of lexical string compare."
+      },
+      "timestamp": "2026-05-27T05:51:30Z"
     }
   ]
 }
