@@ -1,0 +1,1195 @@
+commit 10a49bac5c56c386bc603fd741f4a1bc366c1062
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 18:53:54 2026 +0800
+
+    add pairwise evaluator
+
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+index b63ce63..eed1a34 100644
+--- a/internal/eval/exec_judge.go
++++ b/internal/eval/exec_judge.go
+@@ -233,6 +233,20 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
+ 		if w.Confidence != nil {
+ 			return fmt.Errorf("%w: rubric method must not set confidence", ErrJudgeOutputInvalid)
+ 		}
++	case "pairwise":
++		validWinners := map[string]bool{"A": true, "B": true, "tie": true}
++		if !validWinners[w.Winner] {
++			return fmt.Errorf("%w: pairwise method requires winner to be A, B, or tie; got %q", ErrJudgeOutputInvalid, w.Winner)
++		}
++		if w.Value != nil {
++			return fmt.Errorf("%w: pairwise method must not set value", ErrJudgeOutputInvalid)
++		}
++		if w.Max != nil {
++			return fmt.Errorf("%w: pairwise method must not set max", ErrJudgeOutputInvalid)
++		}
++		if w.Confidence != nil && (*w.Confidence < 0 || *w.Confidence > 1) {
++			return fmt.Errorf("%w: pairwise confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *w.Confidence)
++		}
+ 	default:
+ 		return fmt.Errorf("%w: unsupported method %q", ErrJudgeOutputInvalid, method)
+ 	}
+diff --git a/internal/eval/exec_judge_test.go b/internal/eval/exec_judge_test.go
+index 54a55d0..e690791 100644
+--- a/internal/eval/exec_judge_test.go
++++ b/internal/eval/exec_judge_test.go
+@@ -547,7 +547,6 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
+ 		name   string
+ 		method string
+ 	}{
+-		{"pairwise method", "pairwise"},
+ 		{"empty method", ""},
+ 		{"unknown method", "foobar"},
+ 	}
+@@ -562,6 +561,68 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
+ 	}
+ }
+ 
++func TestValidateJudgeOutput_Pairwise(t *testing.T) {
++	conf05 := 0.5
++	conf15 := 1.5
++
++	t.Run("valid winner A", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A"})
++		if err != nil {
++			t.Errorf("want nil, got %v", err)
++		}
++	})
++	t.Run("valid winner B", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "B"})
++		if err != nil {
++			t.Errorf("want nil, got %v", err)
++		}
++	})
++	t.Run("valid winner tie", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "tie"})
++		if err != nil {
++			t.Errorf("want nil, got %v", err)
++		}
++	})
++	t.Run("valid winner A with confidence 0.5", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf05})
++		if err != nil {
++			t.Errorf("want nil, got %v", err)
++		}
++	})
++	t.Run("reject empty winner", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: ""})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject unknown winner X", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "X"})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject value set", func(t *testing.T) {
++		v := 5.0
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Value: &v})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject max set", func(t *testing.T) {
++		m := 10.0
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Max: &m})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject confidence out of range", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf15})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++}
++
+ func TestExecJudge_RoleWithPathSeparator(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+ 		t.Skip("POSIX sh tests skipped on Windows")
+diff --git a/internal/eval/pairwiseevaluator.go b/internal/eval/pairwiseevaluator.go
+new file mode 100644
+index 0000000..3537145
+--- /dev/null
++++ b/internal/eval/pairwiseevaluator.go
+@@ -0,0 +1,314 @@
++package eval
++
++import (
++	"context"
++	"encoding/binary"
++	"fmt"
++	"hash/fnv"
++	"math/rand/v2"
++)
++
++// PairwiseEvaluator implements Evaluator using a Judge to compare two artifacts
++// and produce a canonical winner verdict.
++//
++// Canonical orientation is PINNED: Targets[0]=original=A, Targets[1]=replay=B.
++// Position bias is mitigated by randomising the order targets are presented to
++// the Judge (per-pair, seeded by Seed + stable content-addressed identities),
++// then back-mapping the position-relative winner to canonical A/B.
++//
++// DoubleJudge=false (default): one judge call with randomised presentation order.
++// DoubleJudge=true: two deterministic judge calls (A-first, then B-first); the
++// canonical winners are compared and collapsed to a tie on disagreement.
++type PairwiseEvaluator struct {
++	Judge       Judge
++	Seed        int64 // folded into per-pair RNG; 0 is valid and deterministic
++	DoubleJudge bool  // false=single randomised pass; true=both-orders mode
++}
++
++// compile-time interface satisfaction assertion.
++var _ Evaluator = (*PairwiseEvaluator)(nil)
++
++// Evaluate scores two targets against each other.
++//
++// Head-validation order (mirrors RubricEvaluator):
++//  1. req.Method must be "pairwise"
++//  2. req.Rubric must be nil (pairwise forbids rubric config)
++//  3. req.Assertion must be nil
++//  4. len(req.Targets) must be exactly 2
++//  5. p.Judge must be non-nil
++func (p *PairwiseEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	if req.Method != "pairwise" {
++		return Evaluation{}, fmt.Errorf("PairwiseEvaluator requires method \"pairwise\", got %q", req.Method)
++	}
++	if req.Rubric != nil {
++		return Evaluation{}, fmt.Errorf("PairwiseEvaluator requires nil Rubric (pairwise forbids rubric config)")
++	}
++	if req.Assertion != nil {
++		return Evaluation{}, fmt.Errorf("PairwiseEvaluator requires nil Assertion")
++	}
++	if len(req.Targets) != 2 {
++		return Evaluation{}, fmt.Errorf("PairwiseEvaluator requires exactly 2 targets, got %d", len(req.Targets))
++	}
++	if p.Judge == nil {
++		return Evaluation{}, ErrJudgeNotConfigured
++	}
++
++	if p.DoubleJudge {
++		return p.evaluateDouble(ctx, req)
++	}
++	return p.evaluateSingle(ctx, req)
++}
++
++// evaluateSingle runs one judge call with a per-pair-randomised presentation order.
++func (p *PairwiseEvaluator) evaluateSingle(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	swapped := p.perPairSwap(req)
++	jr := p.buildJudgeRequest(req, swapped)
++
++	resp, err := p.Judge.Judge(ctx, jr)
++	if err != nil {
++		return Evaluation{}, err
++	}
++
++	if err := checkResponseCoherence(resp); err != nil {
++		return Evaluation{}, err
++	}
++
++	winner := mapWinnerBack(resp.Winner, swapped)
++	return Evaluation{
++		Score: Score{
++			Kind:       ScorePairwise,
++			Winner:     winner,
++			Confidence: resp.Confidence,
++		},
++		Findings: resp.Findings,
++	}, nil
++}
++
++// evaluateDouble runs two deterministic judge calls (A-first, then B-first),
++// validates both, and combines results.
++func (p *PairwiseEvaluator) evaluateDouble(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	// Pass 1: present [A, B] (not swapped).
++	jr1 := p.buildJudgeRequest(req, false)
++	resp1, err := p.Judge.Judge(ctx, jr1)
++	if err != nil {
++		return Evaluation{}, err
++	}
++	if err := checkResponseCoherence(resp1); err != nil {
++		return Evaluation{}, err
++	}
++
++	// Pass 2: present [B, A] (swapped).
++	jr2 := p.buildJudgeRequest(req, true)
++	resp2, err := p.Judge.Judge(ctx, jr2)
++	if err != nil {
++		return Evaluation{}, err
++	}
++	if err := checkResponseCoherence(resp2); err != nil {
++		return Evaluation{}, err
++	}
++
++	// Back-map each pass to canonical A/B orientation.
++	canon1 := mapWinnerBack(resp1.Winner, false)
++	canon2 := mapWinnerBack(resp2.Winner, true)
++
++	winner, confidence, findings := combineDouble(canon1, canon2, resp1, resp2)
++
++	return Evaluation{
++		Score: Score{
++			Kind:       ScorePairwise,
++			Winner:     winner,
++			Confidence: confidence,
++		},
++		Findings: findings,
++	}, nil
++}
++
++// perPairSwap derives a deterministic swap decision for the given pair.
++//
++// Byte layout (two independent FNV-64a streams):
++//
++//	hi stream: [8-byte big-endian Seed] [0x00] [k0 bytes] [0x1f] [k1 bytes]
++//	lo stream: [8-byte big-endian Seed] [0x01] [k1 bytes] [0x1f] [k0 bytes]
++//
++// The two targets appear in OPPOSITE order across streams so hi≠lo even when
++// k0==k1. The 128-bit (hi,lo) pair seeds a PCG generator; swap iff IntN(2)==1.
++// Changing Seed reshuffles every pair; identical (Seed,k0,k1) always produces
++// the same decision.
++func (p *PairwiseEvaluator) perPairSwap(req EvalRequest) bool {
++	k0 := pairKey(req.Targets[0])
++	k1 := pairKey(req.Targets[1])
++
++	seed8 := make([]byte, 8)
++	binary.BigEndian.PutUint64(seed8, uint64(p.Seed))
++
++	hi := fnv.New64a()
++	hi.Write(seed8)
++	hi.Write([]byte{0x00})
++	hi.Write([]byte(k0))
++	hi.Write([]byte{0x1f})
++	hi.Write([]byte(k1))
++
++	lo := fnv.New64a()
++	lo.Write(seed8)
++	lo.Write([]byte{0x01})
++	lo.Write([]byte(k1))
++	lo.Write([]byte{0x1f})
++	lo.Write([]byte(k0))
++
++	rng := rand.New(rand.NewPCG(hi.Sum64(), lo.Sum64()))
++	return rng.IntN(2) == 1
++}
++
++// pairKey returns a stable per-target identity string for use in perPairSwap.
++// When Source.Artifact is non-empty (a 64-hex sha256), it is used directly.
++// Otherwise falls back to Role + ":" + sha256hex(Content) so stubs and tests
++// without artifact IDs still get deterministic, per-pair-varying behaviour.
++func pairKey(t EvalInput) string {
++	if t.Source.Artifact != "" {
++		return t.Source.Artifact
++	}
++	return t.Role + ":" + sha256hex(t.Content)
++}
++
++// mapWinnerBack converts a judge's position-relative winner to canonical A/B.
++//
++// When swapped=false the judge received [A, B] so positions match canonical:
++//
++//	judgeA→A, judgeB→B, tie→tie.
++//
++// When swapped=true the judge received [B, A] so positions are reversed:
++//
++//	judgeA (=first=canonical B)→B, judgeB (=second=canonical A)→A, tie→tie.
++func mapWinnerBack(judged Winner, swapped bool) Winner {
++	if !swapped {
++		return judged
++	}
++	switch judged {
++	case WinnerA:
++		return WinnerB
++	case WinnerB:
++		return WinnerA
++	default:
++		return judged // tie stays tie
++	}
++}
++
++// buildJudgeRequest constructs a JudgeRequest from an EvalRequest.
++// Targets are presented with neutral roles "left"/"right" (not "original"/"replay")
++// so the judge cannot infer canonical provenance from role text.
++// If swapped=true, canonical B is presented first (left); otherwise canonical A
++// is presented first.
++func (p *PairwiseEvaluator) buildJudgeRequest(req EvalRequest, swapped bool) JudgeRequest {
++	a := req.Targets[0] // canonical A
++	b := req.Targets[1] // canonical B
++
++	var first, second EvalInput
++	if swapped {
++		first, second = b, a
++	} else {
++		first, second = a, b
++	}
++
++	targets := []JudgeInput{
++		{Role: "left", MediaType: first.MediaType, Content: first.Content, Source: first.Source},
++		{Role: "right", MediaType: second.MediaType, Content: second.Content, Source: second.Source},
++	}
++
++	context_ := make([]JudgeInput, 0, len(req.Context))
++	for _, c := range req.Context {
++		context_ = append(context_, JudgeInput{
++			Role:      c.Role,
++			MediaType: c.MediaType,
++			Content:   c.Content,
++			Source:    c.Source,
++		})
++	}
++
++	return JudgeRequest{
++		Method:   "pairwise",
++		Targets:  targets,
++		Context:  context_,
++		Rubric:   nil,
++		Producer: req.Producer,
++	}
++}
++
++// checkResponseCoherence validates pairwise-method coherence on a JudgeResponse.
++// This is belt-and-suspenders: ExecJudge already calls validateJudgeOutput, but
++// StubJudge bypasses that path so we re-check here.
++func checkResponseCoherence(resp JudgeResponse) error {
++	if resp.Winner != WinnerA && resp.Winner != WinnerB && resp.Winner != WinnerTie {
++		return fmt.Errorf("%w: pairwise response winner must be A, B, or tie; got %q", ErrJudgeOutputInvalid, resp.Winner)
++	}
++	if resp.Value != nil {
++		return fmt.Errorf("%w: pairwise response must not set value", ErrJudgeOutputInvalid)
++	}
++	if resp.Max != nil {
++		return fmt.Errorf("%w: pairwise response must not set max", ErrJudgeOutputInvalid)
++	}
++	if resp.Confidence != nil && (*resp.Confidence < 0 || *resp.Confidence > 1) {
++		return fmt.Errorf("%w: pairwise response confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *resp.Confidence)
++	}
++	for i, f := range resp.Findings {
++		if err := validateFinding(i, f); err != nil {
++			return fmt.Errorf("%w: %v", ErrJudgeOutputInvalid, err)
++		}
++	}
++	return nil
++}
++
++// combineDouble merges two canonically-oriented judge verdicts into a single
++// result. It takes the already-back-mapped canonical winners plus the raw
++// responses for confidence and findings.
++//
++// Rules:
++//   - winner: canonical winners agree → that winner; disagree → WinnerTie.
++//   - confidence: both set → pointer to MIN (conservative); one set → that one; neither → nil.
++//   - findings: pass1 findings prefixed "[A-first] " followed by pass2 findings
++//     prefixed "[B-first] " (provenance-tagged for audit).
++func combineDouble(canon1, canon2 Winner, resp1, resp2 JudgeResponse) (Winner, *float64, []Finding) {
++	// Winner: agree or collapse to tie.
++	winner := canon1
++	if canon1 != canon2 {
++		winner = WinnerTie
++	}
++
++	// Confidence: conservative minimum.
++	var confidence *float64
++	switch {
++	case resp1.Confidence != nil && resp2.Confidence != nil:
++		min := *resp1.Confidence
++		if *resp2.Confidence < min {
++			min = *resp2.Confidence
++		}
++		confidence = &min
++	case resp1.Confidence != nil:
++		v := *resp1.Confidence
++		confidence = &v
++	case resp2.Confidence != nil:
++		v := *resp2.Confidence
++		confidence = &v
++	}
++
++	// Findings: tag and concatenate.
++	findings := make([]Finding, 0, len(resp1.Findings)+len(resp2.Findings))
++	for _, f := range resp1.Findings {
++		findings = append(findings, Finding{
++			Severity: f.Severity,
++			Message:  "[A-first] " + f.Message,
++			Pointer:  f.Pointer,
++		})
++	}
++	for _, f := range resp2.Findings {
++		findings = append(findings, Finding{
++			Severity: f.Severity,
++			Message:  "[B-first] " + f.Message,
++			Pointer:  f.Pointer,
++		})
++	}
++	if len(findings) == 0 {
++		findings = nil
++	}
++
++	return winner, confidence, findings
++}
+diff --git a/internal/eval/pairwiseevaluator_test.go b/internal/eval/pairwiseevaluator_test.go
+new file mode 100644
+index 0000000..cc5d84c
+--- /dev/null
++++ b/internal/eval/pairwiseevaluator_test.go
+@@ -0,0 +1,757 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// recordingJudge is a test double that returns canned responses in sequence
++// and records each JudgeRequest it receives.
++type recordingJudge struct {
++	responses []JudgeResponse
++	errors    []error
++	recorded  []JudgeRequest
++	callCount int
++}
++
++func (r *recordingJudge) Judge(_ context.Context, req JudgeRequest) (JudgeResponse, error) {
++	idx := r.callCount
++	r.callCount++
++	r.recorded = append(r.recorded, req)
++	if idx < len(r.errors) && r.errors[idx] != nil {
++		return JudgeResponse{}, r.errors[idx]
++	}
++	if idx < len(r.responses) {
++		return r.responses[idx], nil
++	}
++	// default: winner A, no error
++	return JudgeResponse{Winner: WinnerA}, nil
++}
++
++// makeTarget builds a minimal EvalInput with a stable artifact id.
++func makeTarget(role, artifact string, content []byte) EvalInput {
++	return EvalInput{
++		Role:    role,
++		Content: content,
++		Source:  ArtifactSource{Artifact: artifact},
++	}
++}
++
++// hexArtifact returns a 64-char lowercase hex string filled with the given byte.
++func hexArtifact(b byte) string {
++	return strings.Repeat(string([]byte{hexByte(b >> 4), hexByte(b & 0xf)}), 32)
++}
++
++func hexByte(n byte) byte {
++	if n < 10 {
++		return '0' + n
++	}
++	return 'a' + n - 10
++}
++
++// validArtifact builds a 64-char all-zero lowercase hex string with controlled variation.
++func validArtifact(prefix string) string {
++	s := prefix + strings.Repeat("0", 64-len(prefix))
++	return s[:64]
++}
++
++// ---- Head-validation tests ----
++
++func TestPairwiseEvaluator_RejectWrongMethod(t *testing.T) {
++	p := &PairwiseEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerA}}}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method:  "rubric",
++		Targets: []EvalInput{makeTarget("a", validArtifact("aa"), []byte("x")), makeTarget("b", validArtifact("bb"), []byte("y"))},
++	})
++	if err == nil || !strings.Contains(err.Error(), "pairwise") {
++		t.Fatalf("want pairwise method error, got %v", err)
++	}
++}
++
++func TestPairwiseEvaluator_RejectRubricConfig(t *testing.T) {
++	p := &PairwiseEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerA}}}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method:  "pairwise",
++		Rubric:  &RubricRef{Path: "r.md", Version: "abc"},
++		Targets: []EvalInput{makeTarget("a", validArtifact("aa"), []byte("x")), makeTarget("b", validArtifact("bb"), []byte("y"))},
++	})
++	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "rubric") {
++		t.Fatalf("want rubric error, got %v", err)
++	}
++}
++
++func TestPairwiseEvaluator_RejectAssertionConfig(t *testing.T) {
++	p := &PairwiseEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerA}}}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method:    "pairwise",
++		Assertion: &AssertionSpec{Checks: []AssertionCheck{{Kind: "exact"}}},
++		Targets:   []EvalInput{makeTarget("a", validArtifact("aa"), []byte("x")), makeTarget("b", validArtifact("bb"), []byte("y"))},
++	})
++	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "assertion") {
++		t.Fatalf("want assertion error, got %v", err)
++	}
++}
++
++func TestPairwiseEvaluator_RejectWrongTargetCount(t *testing.T) {
++	p := &PairwiseEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerA}}}
++	for _, targets := range [][]EvalInput{
++		{},
++		{makeTarget("a", validArtifact("aa"), []byte("x"))},
++		{makeTarget("a", validArtifact("aa"), []byte("x")), makeTarget("b", validArtifact("bb"), []byte("y")), makeTarget("c", validArtifact("cc"), []byte("z"))},
++	} {
++		_, err := p.Evaluate(context.Background(), EvalRequest{Method: "pairwise", Targets: targets})
++		if err == nil || !strings.Contains(err.Error(), "2 targets") {
++			t.Fatalf("len=%d: want '2 targets' error, got %v", len(targets), err)
++		}
++	}
++}
++
++func TestPairwiseEvaluator_NilJudge(t *testing.T) {
++	p := &PairwiseEvaluator{}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method:  "pairwise",
++		Targets: []EvalInput{makeTarget("a", validArtifact("aa"), []byte("x")), makeTarget("b", validArtifact("bb"), []byte("y"))},
++	})
++	if !errors.Is(err, ErrJudgeNotConfigured) {
++		t.Fatalf("want ErrJudgeNotConfigured, got %v", err)
++	}
++}
++
++// ---- Back-mapping table ----
++
++func TestMapWinnerBack(t *testing.T) {
++	cases := []struct {
++		judged   Winner
++		swapped  bool
++		wantBack Winner
++	}{
++		{WinnerA, false, WinnerA},
++		{WinnerB, false, WinnerB},
++		{WinnerTie, false, WinnerTie},
++		{WinnerA, true, WinnerB}, // judge saw [B,A]; first position=B; judge says A→canonical B
++		{WinnerB, true, WinnerA}, // judge saw [B,A]; second position=A; judge says B→canonical A
++		{WinnerTie, true, WinnerTie},
++	}
++	for _, tc := range cases {
++		got := mapWinnerBack(tc.judged, tc.swapped)
++		if got != tc.wantBack {
++			t.Errorf("mapWinnerBack(%q, swapped=%v) = %q, want %q", tc.judged, tc.swapped, got, tc.wantBack)
++		}
++	}
++}
++
++// ---- End-to-end single-pass ----
++
++func TestPairwiseEvaluator_SinglePass_WinnerA(t *testing.T) {
++	// Use a fixed seed + fixed artifacts so the swap is deterministic.
++	// We don't care which order is chosen; we just verify the canonical
++	// winner is back-mapped correctly.
++	aArtifact := validArtifact("aa")
++	bArtifact := validArtifact("bb")
++	p := &PairwiseEvaluator{
++		Seed:  42,
++		Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerA}},
++	}
++	req := EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("original", aArtifact, []byte("content-a")),
++			makeTarget("replay", bArtifact, []byte("content-b")),
++		},
++	}
++	// Compute the expected canonical winner via the back-mapping logic.
++	swapped := p.perPairSwap(req)
++	wantCanonical := mapWinnerBack(WinnerA, swapped) // judge always returns A
++
++	eval, err := p.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Kind != ScorePairwise {
++		t.Errorf("Score.Kind = %q, want ScorePairwise", eval.Score.Kind)
++	}
++	if eval.Score.Winner != wantCanonical {
++		t.Errorf("Score.Winner = %q, want %q", eval.Score.Winner, wantCanonical)
++	}
++}
++
++func TestPairwiseEvaluator_SinglePass_FindingsPassthrough(t *testing.T) {
++	findings := []Finding{
++		{Severity: SeverityInfo, Message: "looks good"},
++		{Severity: SeverityWarning, Message: "minor issue", Pointer: "/top"},
++	}
++	p := &PairwiseEvaluator{
++		Seed:  0,
++		Judge: &StubJudge{Canned: JudgeResponse{Winner: WinnerTie, Findings: findings}},
++	}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if len(eval.Findings) != 2 {
++		t.Fatalf("want 2 findings, got %d", len(eval.Findings))
++	}
++	if eval.Findings[0].Message != "looks good" {
++		t.Errorf("finding[0].Message = %q", eval.Findings[0].Message)
++	}
++}
++
++// ---- Per-pair variation (deterministic proof) ----
++//
++// We precompute a fixed set of (artifact-pair) inputs with known swap decisions
++// for Seed=0 and assert that the cohort produces BOTH swap values — no single
++// constant outcome for all pairs.
++
++func TestPairwiseEvaluator_PerPairVariation(t *testing.T) {
++	// Build 16 distinct artifact pairs and record their swap decisions for Seed=0.
++	p := &PairwiseEvaluator{Seed: 0}
++	swapCounts := map[bool]int{}
++	for i := byte(0); i < 16; i++ {
++		aArt := validArtifact(strings.Repeat(string(rune('a'+i%26)), 2))
++		bArt := validArtifact(strings.Repeat(string(rune('A'+i%26)), 2))
++		req := EvalRequest{
++			Method: "pairwise",
++			Targets: []EvalInput{
++				makeTarget("a", aArt, []byte{i}),
++				makeTarget("b", bArt, []byte{i + 100}),
++			},
++		}
++		sw := p.perPairSwap(req)
++		swapCounts[sw]++
++	}
++	if swapCounts[false] == 0 || swapCounts[true] == 0 {
++		t.Errorf("per-pair swap not varied across cohort: swapCounts=%v (want both true and false present)", swapCounts)
++	}
++}
++
++// ---- Determinism ----
++
++func TestPairwiseEvaluator_Determinism(t *testing.T) {
++	aArt := validArtifact("aabbcc")
++	bArt := validArtifact("ddeeff")
++
++	req := EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("original", aArt, []byte("hello")),
++			makeTarget("replay", bArt, []byte("world")),
++		},
++	}
++
++	// Same seed + same targets → same swap, reproducibly.
++	p1 := &PairwiseEvaluator{Seed: 123}
++	p2 := &PairwiseEvaluator{Seed: 123}
++	if p1.perPairSwap(req) != p2.perPairSwap(req) {
++		t.Error("same Seed + same targets produced different swap decisions")
++	}
++
++	// Different seed → may produce different decision (for this pair it should differ).
++	p3 := &PairwiseEvaluator{Seed: 456}
++	// We just verify the per-pair function is pure (same call twice → same result).
++	swap3a := p3.perPairSwap(req)
++	swap3b := p3.perPairSwap(req)
++	if swap3a != swap3b {
++		t.Error("perPairSwap is not deterministic within same evaluator")
++	}
++}
++
++// ---- Determinism via recording judge ----
++
++func TestPairwiseEvaluator_DeterministicPresentationOrder(t *testing.T) {
++	aArt := validArtifact("aaaa11")
++	bArt := validArtifact("bbbb22")
++
++	req := EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("original", aArt, []byte("content-a")),
++			makeTarget("replay", bArt, []byte("content-b")),
++		},
++	}
++
++	j1 := &recordingJudge{responses: []JudgeResponse{{Winner: WinnerA}, {Winner: WinnerA}}}
++	j2 := &recordingJudge{responses: []JudgeResponse{{Winner: WinnerA}, {Winner: WinnerA}}}
++
++	p1 := &PairwiseEvaluator{Seed: 77, Judge: j1}
++	p2 := &PairwiseEvaluator{Seed: 77, Judge: j2}
++
++	_, _ = p1.Evaluate(context.Background(), req)
++	_, _ = p2.Evaluate(context.Background(), req)
++
++	if len(j1.recorded) != 1 || len(j2.recorded) != 1 {
++		t.Fatalf("expected 1 judge call each, got %d and %d", len(j1.recorded), len(j2.recorded))
++	}
++
++	// Both calls must have received the same presentation order.
++	r1 := j1.recorded[0]
++	r2 := j2.recorded[0]
++	if r1.Targets[0].Source.Artifact != r2.Targets[0].Source.Artifact {
++		t.Errorf("presentation order differs between identical evaluators: first[0].Artifact=%q vs %q",
++			r1.Targets[0].Source.Artifact, r2.Targets[0].Source.Artifact)
++	}
++}
++
++// ---- Fallback pairKey (empty artifact) ----
++
++func TestPairwiseEvaluator_FallbackKey(t *testing.T) {
++	// Targets with empty Source.Artifact but distinct content/role.
++	req1 := EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			{Role: "a", Content: []byte("content-alpha")},
++			{Role: "b", Content: []byte("content-beta")},
++		},
++	}
++	req2 := EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			{Role: "a", Content: []byte("content-gamma")},
++			{Role: "b", Content: []byte("content-delta")},
++		},
++	}
++
++	p := &PairwiseEvaluator{Seed: 0}
++	// Deterministic: repeated calls for same content → same result.
++	sw1a := p.perPairSwap(req1)
++	sw1b := p.perPairSwap(req1)
++	if sw1a != sw1b {
++		t.Error("fallback key: perPairSwap not deterministic for same content")
++	}
++
++	// Distinct content → can differ (vary across the cohort if enough pairs).
++	// We just verify the pairKey fallback doesn't panic and produces a string.
++	k0 := pairKey(req1.Targets[0])
++	k1 := pairKey(req2.Targets[0])
++	if k0 == k1 {
++		t.Errorf("fallback keys for distinct content should differ: %q == %q", k0, k1)
++	}
++}
++
++// ---- Neutral roles ----
++
++func TestPairwiseEvaluator_NeutralRoles(t *testing.T) {
++	j := &recordingJudge{responses: []JudgeResponse{{Winner: WinnerA}}}
++	p := &PairwiseEvaluator{Seed: 0, Judge: j}
++
++	_, _ = p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("original", validArtifact("aa"), []byte("a")),
++			makeTarget("replay", validArtifact("bb"), []byte("b")),
++		},
++	})
++
++	if len(j.recorded) != 1 {
++		t.Fatalf("expected 1 judge call, got %d", len(j.recorded))
++	}
++	req := j.recorded[0]
++	if len(req.Targets) != 2 {
++		t.Fatalf("want 2 judge targets, got %d", len(req.Targets))
++	}
++	for _, target := range req.Targets {
++		if target.Role != "left" && target.Role != "right" {
++			t.Errorf("expected neutral role left/right, got %q", target.Role)
++		}
++	}
++}
++
++// ---- Judge error propagation ----
++
++func TestPairwiseEvaluator_JudgeErrorPropagates(t *testing.T) {
++	sentinel := errors.New("judge failed for test")
++	p := &PairwiseEvaluator{Judge: &StubJudge{Err: sentinel}}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if !errors.Is(err, sentinel) {
++		t.Fatalf("want sentinel error, got %v", err)
++	}
++}
++
++// ---- Malformed response tests ----
++
++func TestPairwiseEvaluator_MalformedResponse(t *testing.T) {
++	v := 5.0
++	m := 10.0
++	conf15 := 1.5
++	conf_neg := -0.1
++
++	cases := []struct {
++		name string
++		resp JudgeResponse
++	}{
++		{"empty winner", JudgeResponse{Winner: ""}},
++		{"unknown winner C", JudgeResponse{Winner: "C"}},
++		{"value set", JudgeResponse{Winner: WinnerA, Value: &v}},
++		{"max set", JudgeResponse{Winner: WinnerA, Max: &m}},
++		{"confidence out of range high", JudgeResponse{Winner: WinnerA, Confidence: &conf15}},
++		{"confidence out of range low", JudgeResponse{Winner: WinnerA, Confidence: &conf_neg}},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			p := &PairwiseEvaluator{Judge: &StubJudge{Canned: tc.resp}}
++			_, err := p.Evaluate(context.Background(), EvalRequest{
++				Method: "pairwise",
++				Targets: []EvalInput{
++					makeTarget("a", validArtifact("aa"), []byte("x")),
++					makeTarget("b", validArtifact("bb"), []byte("y")),
++				},
++			})
++			if !errors.Is(err, ErrJudgeOutputInvalid) {
++				t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++			}
++		})
++	}
++}
++
++func TestPairwiseEvaluator_MalformedResponse_BadSeverity(t *testing.T) {
++	resp := JudgeResponse{
++		Winner:   WinnerA,
++		Findings: []Finding{{Severity: "critical", Message: "bad"}},
++	}
++	p := &PairwiseEvaluator{Judge: &StubJudge{Canned: resp}}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for bad severity, got %v", err)
++	}
++}
++
++// ---- DoubleJudge tests ----
++
++func TestPairwiseEvaluator_DoubleJudge_Agree_A(t *testing.T) {
++	conf := 0.8
++	// pass1 presents [A,B]; judge returns "A" → back-map(A, swapped=false) = canonical A
++	// pass2 presents [B,A]; judge returns "B" → back-map(B, swapped=true) = canonical A
++	// both canonical A → agree → winner A
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA, Confidence: &conf, Findings: []Finding{{Severity: SeverityInfo, Message: "pass1 note"}}},
++			{Winner: WinnerB, Confidence: &conf, Findings: []Finding{{Severity: SeverityInfo, Message: "pass2 note"}}},
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Winner != WinnerA {
++		t.Errorf("Winner = %q, want A", eval.Score.Winner)
++	}
++	if j.callCount != 2 {
++		t.Errorf("expected 2 judge calls, got %d", j.callCount)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_Disagree_Tie(t *testing.T) {
++	// pass1 presents [A,B] and judges winner=A → canonical A
++	// pass2 presents [B,A] and judges winner=A → back-map → canonical B
++	// canonical A vs canonical B → tie
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA}, // pass1: [A,B] presented, judge says A → canonical A
++			{Winner: WinnerA}, // pass2: [B,A] presented, judge says A → canonical B
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Winner != WinnerTie {
++		t.Errorf("Winner = %q, want tie (disagreement should collapse)", eval.Score.Winner)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_AVersusTie_CollapsesTie(t *testing.T) {
++	// pass1 canonical=A, pass2 canonical=tie → disagree → tie
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA},   // pass1: [A,B]; judge A → canonical A
++			{Winner: WinnerTie}, // pass2: [B,A]; judge tie → canonical tie
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Winner != WinnerTie {
++		t.Errorf("Winner = %q, want tie", eval.Score.Winner)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_ConfidenceMin(t *testing.T) {
++	conf1 := 0.9
++	conf2 := 0.6
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA, Confidence: &conf1},
++			{Winner: WinnerA, Confidence: &conf2},
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Confidence == nil {
++		t.Fatal("Confidence is nil, want 0.6")
++	}
++	if *eval.Score.Confidence != 0.6 {
++		t.Errorf("Confidence = %v, want 0.6 (min)", *eval.Score.Confidence)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_ConfidenceOneSet(t *testing.T) {
++	conf1 := 0.7
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA, Confidence: &conf1},
++			{Winner: WinnerA}, // no confidence
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Confidence == nil || *eval.Score.Confidence != 0.7 {
++		t.Errorf("Confidence = %v, want 0.7", eval.Score.Confidence)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_ConfidenceNeitherSet(t *testing.T) {
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA},
++			{Winner: WinnerA},
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if eval.Score.Confidence != nil {
++		t.Errorf("Confidence = %v, want nil", *eval.Score.Confidence)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_FindingsTagged(t *testing.T) {
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{
++				Winner: WinnerA,
++				Findings: []Finding{
++					{Severity: SeverityInfo, Message: "first observation"},
++				},
++			},
++			{
++				Winner: WinnerA,
++				Findings: []Finding{
++					{Severity: SeverityWarning, Message: "second observation", Pointer: "/p"},
++				},
++			},
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	eval, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if len(eval.Findings) != 2 {
++		t.Fatalf("want 2 findings, got %d", len(eval.Findings))
++	}
++	if !strings.HasPrefix(eval.Findings[0].Message, "[A-first] ") {
++		t.Errorf("finding[0].Message = %q, want [A-first] prefix", eval.Findings[0].Message)
++	}
++	if !strings.HasPrefix(eval.Findings[1].Message, "[B-first] ") {
++		t.Errorf("finding[1].Message = %q, want [B-first] prefix", eval.Findings[1].Message)
++	}
++	if eval.Findings[0].Severity != SeverityInfo {
++		t.Errorf("finding[0].Severity = %q", eval.Findings[0].Severity)
++	}
++	if eval.Findings[1].Pointer != "/p" {
++		t.Errorf("finding[1].Pointer = %q, want /p", eval.Findings[1].Pointer)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_Call2ErrorPropagates(t *testing.T) {
++	sentinel := errors.New("call2 failed")
++	j := &recordingJudge{
++		responses: []JudgeResponse{{Winner: WinnerA}},
++		errors:    []error{nil, sentinel},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if !errors.Is(err, sentinel) {
++		t.Fatalf("want sentinel error from call2, got %v", err)
++	}
++}
++
++func TestPairwiseEvaluator_DoubleJudge_CoherenceFailurePropagates(t *testing.T) {
++	// pass2 returns an invalid response (empty winner).
++	j := &recordingJudge{
++		responses: []JudgeResponse{
++			{Winner: WinnerA},
++			{Winner: ""}, // invalid
++		},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("a", validArtifact("aa"), []byte("x")),
++			makeTarget("b", validArtifact("bb"), []byte("y")),
++		},
++	})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid for coherence failure, got %v", err)
++	}
++}
++
++// ---- DoubleJudge presentation order test ----
++
++func TestPairwiseEvaluator_DoubleJudge_PresentationOrder(t *testing.T) {
++	aArt := validArtifact("aaaaaa")
++	bArt := validArtifact("bbbbbb")
++
++	j := &recordingJudge{
++		responses: []JudgeResponse{{Winner: WinnerA}, {Winner: WinnerA}},
++	}
++	p := &PairwiseEvaluator{DoubleJudge: true, Judge: j}
++	_, err := p.Evaluate(context.Background(), EvalRequest{
++		Method: "pairwise",
++		Targets: []EvalInput{
++			makeTarget("original", aArt, []byte("a-content")),
++			makeTarget("replay", bArt, []byte("b-content")),
++		},
++	})
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if j.callCount != 2 {
++		t.Fatalf("want 2 calls, got %d", j.callCount)
++	}
++	// pass1: A first → first target Source.Artifact == aArt
++	if j.recorded[0].Targets[0].Source.Artifact != aArt {
++		t.Errorf("pass1 first target = %q, want aArt", j.recorded[0].Targets[0].Source.Artifact)
++	}
++	// pass2: B first → first target Source.Artifact == bArt
++	if j.recorded[1].Targets[0].Source.Artifact != bArt {
++		t.Errorf("pass2 first target = %q, want bArt", j.recorded[1].Targets[0].Source.Artifact)
++	}
++}
++
++// ---- EvalResult round-trip through validateScoreCoherence ----
++
++func TestPairwiseEvaluator_ScorePassesValidation(t *testing.T) {
++	conf := 0.75
++	score := Score{
++		Kind:       ScorePairwise,
++		Winner:     WinnerA,
++		Confidence: &conf,
++	}
++	if err := validateScoreCoherence("pairwise", score); err != nil {
++		t.Errorf("valid pairwise score rejected: %v", err)
++	}
++
++	// Also test without confidence (optional).
++	score2 := Score{Kind: ScorePairwise, Winner: WinnerTie}
++	if err := validateScoreCoherence("pairwise", score2); err != nil {
++		t.Errorf("valid pairwise tie score rejected: %v", err)
++	}
++}
++
++func TestPairwiseEvaluator_EvalResultValidate(t *testing.T) {
++	// A full EvalResult round-trip exercising result.go's pairwise arm.
++	aArt := strings.Repeat("a", 64)
++	bArt := strings.Repeat("b", 64)
++	commit := strings.Repeat("c", 40)
++
++	er := EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            "pairwise-run1-stage1-20260101T000000Z",
++		Method:            "pairwise",
++		Score:             Score{Kind: ScorePairwise, Winner: WinnerA},
++		Targets: []ArtifactSource{
++			{RunID: "run1", Stage: "stage1", Commit: commit, Artifact: aArt},
++			{RunID: "run2", Stage: "stage1", Commit: commit, Artifact: bArt},
++		},
++		Producer: runmanifest.Producer{},
++		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
++	}
++	if err := er.Validate(); err != nil {
++		t.Errorf("EvalResult.Validate() failed: %v", err)
++	}
++}
