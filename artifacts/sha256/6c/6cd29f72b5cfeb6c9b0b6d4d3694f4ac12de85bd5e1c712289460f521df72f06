@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. Close out `etude-noo9` (concurrent full-suite timeout/starvation flake) before it masks a real regression in a later gate — currently `make test` is only reliably green when run in isolation. 2. Consider asserting the timeout-tail 500 ms case with a relative/deadline-based bound rather than a wall-clock margin, so it stops being load-sensitive. 3. Record the corrected read-checkout QA fixture (the seat-session envelope contract) as a committed regression test so the first-run failure mode cannot silently return.
+CONFIDENCE: high

@@ -1549,6 +1549,145 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:10:17.07131Z"
+    },
+    {
+      "gate_id": "verify.r3",
+      "phase": "verify",
+      "round": 3,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "0f3426dbcc00c4489e6fb5e26b78dcbd0510d7bd4dc39821befe8d10eaaafba5"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "block",
+          "required": [
+            "exit 2: make: *** [test] Error 1"
+          ],
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "47a5d183b55ea3a0e97a9684d797260c9a440d20b210b56207a6285f335420ed",
+            "path": "artifacts/sha256/47/47a5d183b55ea3a0e97a9684d797260c9a440d20b210b56207a6285f335420ed",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1441
+          },
+          "timestamp": "2026-08-17T07:26:06.443185Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-17T07:26:07.009966Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Close out `etude-noo9` (concurrent full-suite timeout/starvation flake) before it masks a real regression in a later gate — currently `make test` is only reliably green when run in isolation. 2. Consider asserting the timeout-tail 500 ms case with a relative/deadline-based bound rather than a wall-clock margin, so it stops being load-sensitive. 3. Record the corrected read-checkout QA fixture (the seat-session envelope contract) as a committed regression test so the first-run failure mode cannot silently return."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "587bdfdb0f8faf69fca15bc29606863b29ecd26863f69b0e009228c90976ce5e",
+            "path": "artifacts/sha256/58/587bdfdb0f8faf69fca15bc29606863b29ecd26863f69b0e009228c90976ce5e",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 670
+          },
+          "session": {
+            "session_id": "opus-6cd29f72b5cfeb6c",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "6cd29f72b5cfeb6c9b0b6d4d3694f4ac12de85bd5e1c712289460f521df72f06",
+              "path": "artifacts/sha256/6c/6cd29f72b5cfeb6c9b0b6d4d3694f4ac12de85bd5e1c712289460f521df72f06",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 577
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:26:24.417209Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Track `etude-noo9` so the unrelated concurrent full-suite flake does not keep polluting verify signal."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "7499433348d0299e11f8925760379e176983462da71f7c8e9288887aea93d727",
+            "path": "artifacts/sha256/74/7499433348d0299e11f8925760379e176983462da71f7c8e9288887aea93d727",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 252
+          },
+          "session": {
+            "session_id": "codex-8fc2e6412c26646b",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "8fc2e6412c26646b2a192bddc025c7ad6d2b867695e02897d3034bf4421d5b10",
+              "path": "artifacts/sha256/8f/8fc2e6412c26646b2a192bddc025c7ad6d2b867695e02897d3034bf4421d5b10",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 160
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:26:42.476964Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T07:26:42.479162Z"
     }
   ]
 }
