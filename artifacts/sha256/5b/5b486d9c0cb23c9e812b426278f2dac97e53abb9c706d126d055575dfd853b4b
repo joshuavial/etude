@@ -1,0 +1,77 @@
+# etude-o9z plan — stage session sidecar and log artifact
+
+Track: full STRICT loop. This changes the run-manifest schema and durable live-run evidence.
+
+ANCESTOR: GitHub issue #17 asks 1-2 require a stage runner to report session identity independently of its arbitrary output artifact, and require stdout/stderr to survive as stage evidence. This bead supplies the generic runner/engine contract; the blocked `s6z.1` producer wrapper is deliberately not part of this issue branch.
+
+MEASUREMENT: `RunResult.Session` and `runAndCaptureStage` session import already exist, but `ExecRunner` exports no session path and never populates the field. Its stdout/stderr buffers are discarded on success. Consequently real external stage runners cannot record session identity and successful diagnostics are unrecoverable.
+
+BLAST RADIUS: Go runner, live engine, manifest schema/JSON/traversal/show/replay tests, generated CLI docs if output changes, and `docs/run.md`. Each successful stage can newly add one transcript artifact of at most 16 MiB, one log artifact of at most 2 MiB plus fixed framing/truncation metadata, and bounded session strings in the manifest; a run with N session-reporting stages can therefore add roughly N×18 MiB beyond existing output artifacts. The default five-stage workflow is bounded near 90 MiB of new evidence. Test/build commands may write standard Go caches. No external model calls, credentials, installs, host configuration, or shared services.
+
+IRREVERSIBLE SEQUENCES: pre-launch cleanup unlinks the fixed engine-owned `<attempt-scratch>/session.json` path without following symlinks; failure other than not-exist aborts before child launch. This is safe disposable attempt state, not user data. Content-addressed artifact writes can precede the existing manifest CAS/ref update, which remains the single visibility/commit point.
+
+CRASH-PREFIX RESIDUALS:
+
+| Prefix | Residual | Visibility/retry |
+|---|---|---|
+| before child launch | inputs plus empty/stale-cleaned attempt scratch | no new artifact; retry starts fresh scratch |
+| child running or direct child exited while a descendant holds a pipe | scratch files plus bounded stream prefixes; existing `cmd.WaitDelay` closes held pipe ends after the configured grace | no manifest reference; existing descendant-pipe regression pins bounded completion |
+| child exited, before transcript add | complete scratch files and in-memory result | no CAS/manifest evidence |
+| after transcript add, before log add | transcript blob only, unreferenced | invisible to run readers; retry reuses its content hash; later GC may collect |
+| after log add, before output add | transcript and log blobs, unreferenced | same idempotent/hash and GC behavior |
+| after output add, before manifest write | transcript, log, and output blobs, all unreferenced | same idempotent/hash and GC behavior |
+| after manifest CAS object, before ref CAS | manifest/tree and blobs exist but run ref still names prior commit | retry uses expected-old ref and content hashes |
+| after ref CAS | Stage atomically exposes output plus optional session/transcript/log refs | complete |
+
+TOPOLOGY: one runner process writes optional sidecar/output files while ExecRunner owns stdout/stderr pipes. Descendant processes may survive the direct child; existing `cmd.WaitDelay=runnerWaitDelay` bounds descendants that retain pipe write ends, and its existing regression remains required. Every initial attempt and gate rerun receives a distinct scratch directory (`stageNN`, then `stageNN-r<round>`), and a new process run gets a fresh top-level scratch tree, so an old descendant cannot publish into a later attempt's fixed session path. Transcript validation cannot be separated from import, so the engine uses Go 1.26 `os.Root` plus a limit+1 read to return bytes beneath scratch in one containment-bound operation; it never validates and later reopens the path. The engine is the only artifact-store/manifest writer and adds artifacts in transcript→log→output order before one manifest write. No retry policy changes.
+
+DURABILITY CLASS: atomically visible with the existing stage manifest record, not physically all-or-nothing in the object database. Pre-commit crashes may leave unreferenced content-addressed blobs as enumerated above. An absent session sidecar and empty stdout+stderr preserve today's behavior.
+
+COMPLETENESS ENUMERATION: session sidecar states are absent; regular valid JSON; malformed/unknown-field JSON; symlink/non-regular; oversized; missing session_id; overlong string; optional opaque transcript URI; transcript path relative/absolute inside scratch; escape/absolute outside scratch; transcript symlink/non-regular; transcript below/at/above 16 MiB. Log states are neither stream present; stdout only; stderr only; both in deterministic order; arbitrary binary bytes; each stream below, at, and above its 1 MiB cap; successful runner; failed runner. Manifest sites are Stage schema, validation, JSON encode/decode, artifact traversal/file verification, writer carry-forward, run show, replay/live engine construction, and every mechanically enumerated consumer of `Stage.Output` including GC/export/reference walking.
+
+TRUST BOUNDARY: workflow/registry configuration and the selected Go `Runner` implementation are trusted engine inputs rooted in the pinned repository and compiled binary; arbitrary same-process code execution is outside the boundary because such code can already forge any `RunResult`. RunRequest paths/roles are engine-produced control data. Sidecar JSON, transcript bytes, output, logs, and every value returned by a Runner are untrusted evidence; they may populate evidence fields but never select executable code or a runner. Sidecar bytes are read through the same single no-follow capped operation used for transcript bytes, then strict-parsed; session ID is required and each string is capped at 4 KiB. A stage transcript path must resolve beneath the attempt scratch tree, contain no symlink components, name a regular file, and be read through a 16 MiB+1 limit in the same operation that supplies bytes for storage; transcript URIs are opaque recorded strings and are never fetched. Invalid/outside/oversized/secret-bearing transcripts produce failed retrieval/redaction evidence and a note but do not fail a good stage; rejected transcript bytes are never added to the artifact store. A runner must copy its transcript into attempt scratch to make it importable. Logs are stored byte-for-byte with length-bearing fixed framing; they receive the same trust classification as existing gate raw-output artifacts and are not interpreted as control data. `etude-ps9` must make missing/failed transcript evidence fatal to the retry handoff before consuming it.
+
+## Contract and implementation
+
+- Add reserved `ETUDE_SESSION_FILE=<scratch>/session.json` to ExecRunner. Remove stale sidecar at attempt start; any removal error other than not-exist fails before child launch. The runner-side protocol is mandatory: write complete JSON to a sibling temporary, atomically rename it to `$ETUDE_SESSION_FILE`, and do not leave writers alive after exit. After a successful child exit, absent means nil; present bytes are obtained with `sessionevidence.ReadRegularFileUnderLimit(scratch, path, 64 KiB)` in one no-follow capped read, then strict-decoded as JSON containing `session_id` plus optional `transcript_uri`/`transcript_path`, with each string capped at 4 KiB. A present partial/malformed sidecar violates that protocol and fails the stage. ExecRunner returns path/URI metadata only; URI is never dereferenced.
+- Add `Log []byte` to `RunResult`. Replace unbounded pipe buffers with bounded writers that retain stdout's first 1 MiB and stderr's last 1 MiB, continue draining, and count discarded bytes. A stream is present iff captured bytes or dropped count is non-zero. Each present stream is encoded as `[stdout bytes=<captured> dropped=<n> retained=head]\n<exact bytes>` or `[stderr bytes=<captured> dropped=<n> retained=tail]\n<exact bytes>`; when both exist, stdout segment comes first and exactly one newline separates segments. Neither present stream produces nil, while two absent streams do. On non-zero exit, the bounded stderr tail—including the final fatal line—remains in the returned error; no Stage exists to reference a durable log, and durable failed-run attempt records are explicitly outside asks 1-2.
+- Add optional `Log *ArtifactRef` to `runmanifest.Stage`, serialized with `omitempty` so legacy/logless records retain their shape. Thread it through validation, JSON, artifact path traversal and verification, manifest round trips, run-show digest/size output (never raw control bytes), and replay/live stage creation. Replay determinism/equality remains defined by stage output, not nondeterministic logs.
+- In `runAndCaptureStage`, treat an explicit non-nil session result as sufficient agentic evidence even when an inline runner has no harness metadata; deterministic runners remain unchanged because they report no session. Add a stage-specific evidence importer that resolves only under attempt scratch and uses a thin `os.Root`-backed `sessionevidence.ReadRegularFileUnderLimit` operation to bind containment, symlink checks, the 16 MiB limit, and returned bytes in one read; scan/store accepted bytes without reopening. The resulting ref is assigned to the existing `Stage.Producer.Session.TranscriptArtifact`, already included by `ArtifactPaths`, manifest file verification, carry-forward, GC, and export walks. Rejected transcript bytes are not stored. Seat sessions retain their existing importer. Store a non-empty log as `<stage>-log`, `application/octet-stream`, before the same manifest write as output.
+- Extend ExecRunner tests for every sidecar/log boundary, manifest tests for optional-log compatibility and referenced-file integrity, and engine/run CLI tests for session+transcript+log display and persistence.
+- Update `docs/run.md` with the fourth reserved env var, strict sidecar schema, log framing, absent-file compatibility, and current non-fatal transcript-rejection policy. Regenerate CLI docs only if `run show` generated text changes.
+
+Planned regression: ExecRunner session tests cover absent, valid, malformed, unknown-field, symlink, oversized, missing-ID, overlong-string, URI-only, and path-bearing sidecars, with distinct expected errors for every negative seam.
+
+Planned regression: a concurrent sidecar replacement attempt cannot change bytes after the one capped no-follow read begins, and FIFO/device/symlink inputs fail without blocking.
+
+Planned regression: a sidecar published by sibling-temp rename parses, while a deliberately partial present sidecar fails with the JSON diagnostic required by the runner protocol.
+
+Planned regression: stage transcript tests cover scratch-relative and scratch-absolute files, outside-scratch escape, symlink/non-regular input, the 16 MiB boundary, opaque URI non-fetching, stale-sidecar unlink failure before child invocation, non-fatal failed evidence, and a replacement attempt during the `os.Root` bounded read proving imported bytes come from that single operation and land at Producer.Session.TranscriptArtifact.
+
+Planned regression: a trusted in-process test Runner can report session evidence directly, while its returned values remain data and cannot alter runner/config selection.
+
+Planned regression: deterministic and shell runners that report no Session remain without Producer.Session despite the relaxed explicit-session evidence rule.
+
+Planned regression: ExecRunner log tests assert independent literal bytes for empty, stdout-only head retention, stderr-only tail retention with a final fatal line, both-stream ordering, arbitrary invalid UTF-8, exact-cap, and over-cap truncation without unbounded retention.
+
+Planned regression: a failed runner returns bounded stderr diagnostics and no Stage/log artifact, preserving the existing failure contract explicitly.
+
+Planned regression: the existing WaitDelay descendant-held-pipe test remains green with bounded stream writers, proving a successful direct child cannot hang evidence capture indefinitely.
+
+Planned regression: an attempt-1 descendant writing its old fixed sidecar path after attempt 2 starts cannot affect attempt 2's distinct `stageNN-r2/session.json` identity.
+
+Planned regression: engine fault-injection tests at transcript-add, log-add, output-add, manifest-object, and ref-CAS boundaries assert the exact unreferenced/reference residuals and idempotent retry behavior.
+
+Planned regression: manifest and engine tests prove an optional stage log round-trips with literal `omitempty` legacy JSON, participates in artifact verification/carry-forward/GC-export reference walking, displays digest and size from `run show`, remains absent for legacy/no-log runners, and is ignored by replay output equality.
+
+## Required decisions for the next bead
+
+`etude-ps9` will append prior-attempt evidence as declared inputs. A rerun that reports the same session ID as an earlier attempt is a resumed conversation and is therefore not replayable from inputs alone; this is detectable from existing ordered Stage records without a schema change. Before transcript content becomes a retry input, `buildSessionEvidence` secret-scan failure must stop that handoff rather than merely log and continue. Those policy changes belong to `ps9`, not this first commit.
+
+## Verification
+
+- Focused: `go test ./internal/replay ./internal/runmanifest ./internal/liverun ./internal/cli`.
+- Full: `make test`, `make lint`, `make shell-test`, `make docs-check`, `make docs-reality`.
+- Built-binary proof: run a temporary inline stage fixture that writes output, a valid sidecar and both streams; inspect `etude run show` and the manifest for session ID, imported transcript digest, log digest/content and output digest. Repeat with no sidecar/no streams to prove backward compatibility.
+
+Delivery: first commit on `issue/17-stage-attempt-evidence`, followed by one `etude-ps9` commit. Rebase on `origin/main`, open one unmerged PR with `Closes #17`, and do not push either commit to `origin/main`.
