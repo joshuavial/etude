@@ -309,6 +309,56 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:08:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Derive runtime authorization from workflow configuration, never a parsed manifest record.",
+            "Audit GateConfig and GateAttempt copy sites during etude-n9b.2 runtime wiring."
+          ],
+          "timestamp": "2026-08-16T01:16:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "Correct the packet builder auto-test inventory before later gates."
+          ],
+          "timestamp": "2026-08-16T01:16:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:16:00Z"
     }
   ]
 }
