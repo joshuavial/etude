@@ -1,0 +1,24 @@
+# Verify — etude-roadmap.2.1 (Design gate reviewer record schema)
+
+## Scope
+Design bead. Deliverable is the schema spec docs/plans/product/gate-reviewer-record-schema.md (committed e8d5efe) defining the structured data model for review-gate attempts + reviewer-seat results in the run manifest. No Go code in this bead (implemented by .2).
+
+## Acceptance criteria — all met
+1. **Multiple rounds per phase** — `GateAttempt.Round` (1-based) + enforced `(phase, round)` uniqueness; BLOCK→rerun produces round 1, 2, …
+2. **Verdicts go/block/failed/empty/malfunction/disregarded** — six-state `SeatVerdict`; `disregarded` + `GateDecision.DegradedReason` represent the pilms degraded-gate skip explicitly (not silently absent).
+3. **Provider explicit** — `Provider{Name,Model}` on `SeatResult`; validated non-empty/non-control (handles `qwen/qwen3.6-35b-a3b` slash); pilms = `{lmstudio, qwen/qwen3.6-35b-a3b}`.
+4. **Backward-compat v0/v2** — §7: gate-less runs stay byte-identical v2 (no `gates` key), v0/v2 parse as empty gates, only gate-carrying runs become v3; parser allowlist `{0,2,3}`.
+5. **Embed-vs-separate decision recorded** — §2.1: embed structured records in the manifest (the queryable index), reference large raw transcripts as content-addressed artifacts.
+
+## Soundness verification (Opus seat, against real code)
+- gc-safety: confirmed gate raw_output blobs MUST be added to `referencedArtifactPaths`/`ArtifactPaths` — `ArtifactPaths` is the append carry-forward set (`readExistingRun`), the real data-loss path; design names both functions.
+- Golden/round-trip tests stay byte-identical (toJSON emits 3 iff len(gates)>0 else 2; `gates,omitempty`).
+- DisallowUnknownFields reasoning true; `{0,2,3}` allowlist is a genuine new guard (today version is copied through unchecked).
+- run show surfacing feasible (flat printf walk).
+
+## Doc/scope checks
+- Planning doc under docs/plans/product/, indexed in product README; not shipped user docs (schema not yet implemented). Docs policy ✓.
+- git status: only the new spec + plans README index changed; no Go code (correct for a design bead). Code fences balanced; worked example uses this bead's own four-seat gate.
+
+## Result: PASS
+All 5 acceptance criteria satisfied; design verified implementable against the real manifest/gc/run code.
