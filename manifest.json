@@ -650,6 +650,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T08:00:37.088579Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "638612d0a6ca6b63070a0fef9ad09191acf2eb2c270fcfdc5b599b12c76605f3"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) `docs/plans/product/V1-SCOPE.md:45-48` — the bullet's source anchors were not refreshed after this branch inserted 6 lines into `manifest.go`: `1196` (HEAD's `if s.RawOutput != nil`) is now `1202`, and no anchor points at the actual v4 rule (`internal/runmanifest/manifest.go:1131-1136`); cite that instead of the stale offset. 2) Same bullet has a ragged rewrap (\"stage-log artifact references; the producer\" / next line) — reflow to match surrounding fill. 3) `docs/gates.md:73-76` — \"new writers always emit version 4\" is only true for stage-log-carrying manifests; scoping it (\"…emit version 4 for such runs\") removes an unconditional reading. 4) `docs/replay.md:87-89` — the fail-closed gate-rerun sentence describes live-run handoff (`internal/liverun/gate.go:452-470`), which never consumes a replay run's stage; a \"see Runs\" pointer would make the cross-reference explicit."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "93e59c2508d2bdaac7930a492215b5683f38b28f5fbfd1380b3bdff87d649208",
+            "path": "artifacts/sha256/93/93e59c2508d2bdaac7930a492215b5683f38b28f5fbfd1380b3bdff87d649208",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1062
+          },
+          "session": {
+            "session_id": "opus-3e267273e4946a64",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "3e267273e4946a648504371f13d0ffdb1554f4b7432b6926b1688b75a5cdae69",
+              "path": "artifacts/sha256/3e/3e267273e4946a648504371f13d0ffdb1554f4b7432b6926b1688b75a5cdae69",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 949
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T08:02:59.480033Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T08:02:59.480266Z"
     }
   ]
 }

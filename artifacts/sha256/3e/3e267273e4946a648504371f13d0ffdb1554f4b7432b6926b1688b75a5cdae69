@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1) `docs/plans/product/V1-SCOPE.md:45-48` — the bullet's source anchors were not refreshed after this branch inserted 6 lines into `manifest.go`: `1196` (HEAD's `if s.RawOutput != nil`) is now `1202`, and no anchor points at the actual v4 rule (`internal/runmanifest/manifest.go:1131-1136`); cite that instead of the stale offset. 2) Same bullet has a ragged rewrap ("stage-log artifact references; the producer" / next line) — reflow to match surrounding fill. 3) `docs/gates.md:73-76` — "new writers always emit version 4" is only true for stage-log-carrying manifests; scoping it ("…emit version 4 for such runs") removes an unconditional reading. 4) `docs/replay.md:87-89` — the fail-closed gate-rerun sentence describes live-run handoff (`internal/liverun/gate.go:452-470`), which never consumes a replay run's stage; a "see Runs" pointer would make the cross-reference explicit.
+CONFIDENCE: high
