@@ -1554,6 +1554,42 @@
         "degraded_reason": "BLOCK, and the most serious finding of the epic - about my own record-keeping, on the bead offered as proof of the model. The seat did not trust the manifest: it recomputed seat-envelope timestamps against stage capture times and found that THREE of four passing attempts named an artifact the seats had never been handed. implement.r4 named a stage captured 13 minutes AFTER codex's envelope. verify.r3 named the original artifact while calling it 'the corrected' one. Worst, plan.r2's two seats did not read the same bytes at all - codex was handed the revision frozen at 96c0efd0, its optionals were folded to produce 1551aa66, and the opus packet froze that - so the record shows a unanimous two-seat panel assembled from seats reviewing different artifacts. Unanimous quorum over different artifacts is not quorum, and nothing in the record signalled it. Corrections appended as plan.r4, implement.r5 and verify.r4, each naming what its seats actually read, re-running nothing and granting no new approval; the originals stay because deleting them would make the record tidier and less true. Root cause is structural: the bootstrap path takes reviewed-stage, artifact and seats as author-supplied arguments, so nothing forces a panel to share a prompt or to name what it read - and etude gate cannot make either mistake, since it composes one prompt, runs every seat against it, and resolves the reviewed stage itself. Written onto etude-4ed as the strongest argument for verdict injection this epic has produced. Two further self-corrections folded: 'captured after a gate had passed' was false for four of five (they follow RERUNS), and 'six unrecorded verdicts' is not reproducible - three holes, five seat slots - a figure I carried from retro 3 without recomputing, in an artifact about recomputing."
       },
       "timestamp": "2026-08-15T20:34:01Z"
+    },
+    {
+      "gate_id": "review.r3",
+      "phase": "review",
+      "round": 3,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review.r3",
+          "role": "review",
+          "artifact": "991c7c81fbe1ca90d9aaea5e0080593966099ea7537a3efe36bf70ed0a31ba13"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The 'This bead's own gate record' section is stale against the ref it names. refs/etude/runs/etude-9uf.5 records 21 attempts - 7 pass, 9 rerun, 5 escalated - and 11 seat BLOCK verdicts, and the review row is 2, not 1. The artifact says 20 / 7 / 8 / 5 / 10 with review = 1, which is exactly the manifest minus review.r2. review.r2 was appended at 20:34:01Z and this artifact was captured at 20:43:36Z, so the round-2 BLOCK was on the record - and pushed - before the freeze. This is not the unavoidable cannot-count-its-own-in-flight-round regress; it is one round behind the previous round. It also falsifies two claims the artifact makes about itself in the exact domain this bead exists to prove: 'including this review round, which is why the figure exceeds any earlier draft' and 'Every count above computed from a manifest, not typed.'"
+          ],
+          "timestamp": "2026-08-15T20:54:28Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, correct, and the third consecutive round on the same theme in the artifact whose subject IS that theme: the gate-record counts were one round stale while claiming to be computed from the manifest. Not the unavoidable regress of an artifact unable to count its own in-flight round - the PREVIOUS round's BLOCK had been appended and pushed nine minutes before the freeze. Fixed by recomputing and PINNING to a named ref state (f7b6c614), with the reason stated in the artifact: an unpinned count of an append-only log describes a moment and says which moment only by accident. Three optionals folded. The sharpest is a correction to a correction of a correction: etude-a1i's proposed discriminator - a hole is a real missing verdict if a later attempt reviews an OLD stage - MISFIRES on this bead's own manifest, because appending plan.r4 as a correction record created a hole at plan.r3 and plan.r4 reviews the older plan.r2, matching the rule exactly. So the check has three cases to separate, not two, and the third is indistinguishable by round numbers alone - which argues for a manifest MARKER distinguishing an adjudicating attempt from a correcting one, rather than smarter arithmetic. Written onto etude-a1i. Also folded: the 2-of-3 drift denominator, restated as a measure that needs no denominator; and the run-provenance limit, filed as etude-7yb, since this epic's practice is that a disclosed limit with no owner decays into a fact nobody acts on. The seat also judged the epic's amended acceptance honest - it preserves the original wording, names what the run did not meet, cites the measured 0-of-5, and points at OPEN etude-4ed."
+      },
+      "timestamp": "2026-08-15T20:54:28Z"
     }
   ]
 }
