@@ -1,0 +1,60 @@
+# Implement — etude-1od: docs stages in run manifests
+
+## What shipped
+
+Two regressions and a runbook mapping. No production code changed, because the
+capability already works — what was missing was anything pinning it or telling a
+supervisor how to use it.
+
+**`TestGateStageResolvesDocsStageByRoleNotName`.** A run whose stage is named
+`docs` and produces `docs-diff` is gateable at `--stage docs`, and the recorded
+`reviewed_stages` entry carries both the stage name and the role.
+
+This is deliberately not a copy of the existing
+`TestGateStageRunWithoutReviewableStageIsAClearError`, which pins the generic
+"no stage for this role" path — the opus seat correctly warned that a duplicate
+would be a rename, not a regression. What this pins is the thing that PRODUCED
+the bead: resolution keys on the produced ROLE, and `docs` is the only stage in
+the workflow whose role differs from its name.
+
+Negative control: switching resolution from `req.Stage.Produces` to
+`req.Stage.Name` fails this test and nothing else in the suite — every other
+stage would still pass, which is exactly how the original defect stayed
+invisible.
+
+**`TestGateStageDocsWithoutDocsDiffStageWritesNothing`.** The half the generic
+test does not cover: on the failure path the run ref is left completely
+untouched — no gate attempt, no stage change. The original defect was
+`capture-gate` REJECTING a gate whose `reviewed_stages` named an absent stage;
+`etude gate` has to refuse upstream without leaving a partial attempt behind.
+
+The fixture is a run with a stage NAMED `docs` that produces the wrong role —
+the case a name-keyed resolver would wrongly accept.
+
+**`docs/plans/dogfood/supervisor-runbook.md`.** A literal, copy-pasteable
+`etude capture docs … --output docs-diff=…` line, with the reason it exists: four
+of five stages produce a role that tracks their name, `docs` produces
+`docs-diff`, and a supervisor pattern-matching the other four writes
+`--output docs=…` and then meets "no reviewable stage on run". The runbook
+already listed `docs-diff` among the roles; the seat's point was that a
+restatement pays for nothing and only a command does.
+
+## Why no production change
+
+The bead names `scripts/dogfood-capture.sh`, which bead `.3` deletes. Both
+plan-gate seats accepted resolving the defect in the model instead, taking the
+bead's own second branch ("define a lossless supported mapping"). Recorded on the
+bead so the tracker does not contradict this commit.
+
+`etude capture-run` needed no change either: I checked rather than assumed — its
+only stage-name check is `validateCLIIdentifier`, a generic identifier rule with
+no allow-list. The four-stage limitation lived in the dogfood script alone.
+
+## Checks
+
+`make test` green · `make lint` green · `make docs-check` green ·
+`make docs-reality` OK, 15 commands.
+
+Live evidence this is true in practice and not only in tests:
+`etude run show etude-9uf.2` lists a `docs` stage with `role=docs-diff`, and its
+run ref carries `gate: docs.r1` attached to it.
