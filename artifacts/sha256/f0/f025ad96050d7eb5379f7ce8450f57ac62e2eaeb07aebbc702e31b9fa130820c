@@ -1,0 +1,16 @@
+# Final Review — etude-q87 (Retro storage + `etude retro capture`)
+
+Verdict: GO — ready to commit. No blockers.
+
+1. **Coherence (plan ↔ impl ↔ tests ↔ docs):** Consistent and complete for Phase B.1. Delivers exactly the three stated pieces: refstore allowlist extension for `refs/etude/retros/*`, the new `internal/retro` package (Writer + AllocateRetroId/RetroIDBase), and `etude retro capture <scope>`. Subjects land in `Refs` only (indexed `subject_run.N`/`bead.N`); `Stage.Inputs` empty `[]`; no generator/list/show/retro-meta — every deferral matches the plan + the OUT-of-scope beads (etude-8t4/n0t/Phase B+). The plan's open decision (export runmanifest helpers vs replicate) resolved correctly toward exporting (manifest.go:586-602) — single source of truth, zero replication drift.
+
+2. **Code quality:** Solid. Both round-2 fixes present and test-covered: `--ref` reserved-key guard (cli/retro.go:213-230, `TestRetroCaptureReservedRefKeys`); manifest.json collision guard (retro.go:80-82, `TestWriterRejectsManifestCollision`) — making the Writer doc-comment's "the same guards" claim accurate. Seats picked the right precedent: retro.Writer mirrors runmanifest.Writer (files-map + artifact verify + unreferenced-file guard), not eval.Writer (which stores a single JSON blob and needs none). No debug code/TODO/panic; error handling + naming consistent with capture.go.
+   - Non-blocking follow-up: `retroWorkflow`/`retroWorkflowVersion` consts (retro.go:16-17) are test-only; cli/retro.go:254-255 re-literals "retro"/"retro-v1". Harmless (consts unexported). Tidy follow-up: export + reference to kill the duplication. Not worth blocking B.1.
+
+3. **Scope/commit hygiene:** Genuine 1-bead = 1-commit. All changed entries belong to this bead; no stray files, no unrelated drift; generated docs produced via `make docs`.
+
+4. **Docs adequacy:** Right for Phase B.1. Generated `etude_retro*.md` carry the DO-NOT-EDIT banner; README/docs/README/etude.md additions are minimal index links mirroring `gc`/`reindex`. No shipped doc promises unimplemented behavior; planning narrative stays in `docs/plans/`.
+
+5. **Blockers / follow-ups:** None blocking. One optional follow-up (const wiring) recorded on the bead.
+
+Commit: `add etude retro capture command and refs/etude/retros storage` (landed as 7c07cd2).
