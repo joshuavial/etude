@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-phase-prep.4",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,56 @@
         "size": 637
       },
       "timestamp": "2026-05-25T18:40:57.203535Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T20:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "make the C1 ledger backlink edit mandatory (bidirectional)"
+          ],
+          "timestamp": "2026-05-26T20:01:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 2 (Opus+codex); conservative 1-bead backfill"
+      },
+      "timestamp": "2026-05-26T20:05:00Z"
     }
   ]
 }
