@@ -1,0 +1,16 @@
+# GH #15 rebased final review
+
+Final candidate is based on `fc86fbc` and contains exactly two one-sentence commits for bead `etude-5dr.5`. The only working-tree item is ignored `.lane-done` scratch.
+
+Acceptance trace:
+
+- `runner.workspace: caller` executes in the invocation directory; omission stays hermetic.
+- Manifest records the explicit workspace, immutable run-original SHA, caller post-run SHA, and populated submodule map.
+- Caller tracked-tree mutation fails the stage before output storage, manifest write, run-ref creation, or gate pass.
+- A clean untouched caller tree passes, proving the guard is not unconditional failure.
+- Gates stay hermetic and use original SHA A.
+- Resume, replay, forward replay, recorded replay, and bench select A even after caller stage records B.
+- All merged GH #14 checkout paths retain submodule population and validation.
+- Full automated checks and fresh built-binary QA are green.
+
+No merge is authorized: the deliverable remains an open PR with `Closes #15` and fresh Manual QA evidence.
