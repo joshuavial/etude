@@ -1050,6 +1050,48 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T05:15:00Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "define N in direct evidence roles",
+            "relate redaction status to secret scanning"
+          ],
+          "raw_output": {
+            "role": "opus-docs-r2",
+            "artifact": "f5088b776b8e0188809b6b91b2f23b5256c07109d5428da63e961375b1048126",
+            "path": "artifacts/sha256/f5/f5088b776b8e0188809b6b91b2f23b5256c07109d5428da63e961375b1048126",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 374
+          },
+          "timestamp": "2026-08-16T05:20:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T05:20:00Z"
     }
   ]
 }
