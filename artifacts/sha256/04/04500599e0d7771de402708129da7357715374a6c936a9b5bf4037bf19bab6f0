@@ -1,0 +1,170 @@
+# Plan — etude-n9b.2 checkout isolation and seat prompt
+
+Goal: consume the gated `read_checkout` contract so model seats are output-only
+by default and receive reproducible read access only after an explicit workflow
+grant, while placing the measurement-authority rule in the exact prompt every
+seat reads.
+
+ANCESTOR: etude-n9b (P1) — deliver GitHub issue #16 as an opt-in checkout-read
+verification capability without changing the default. MEASUREMENT: today both
+`GateStage` and live `runGate` call `runGateSeats` with the checkout as every
+seat's process working directory; there is no neutral output-only execution path.
+
+BLAST RADIUS: none: worktree and repo only. Tests create and remove private temp
+git repositories/worktrees. No host package, system path, container, shared
+service, credential, or external state is changed. Gate scratch stays bounded
+to one per-seat neutral directory and is removed with the existing scratch root.
+
+## Build decision
+
+Build. The contract child establishes a per-gate boolean; this child is the
+consumer that makes the grant real. Existing `replay.ExecRunner` already treats
+its `WorktreeDir` as the child process cwd, so selecting a neutral sibling
+directory for false and the pinned checkout for true uses the existing primitive.
+
+## Runtime design
+
+1. Thread `gate.ReadCheckout` through both gate paths into `runGateSeats` and
+   `buildGatePrompt`.
+2. For `read_checkout: false` or an absent field, create a unique empty cwd for
+   each seat under the system-temp gate scratch root. The existing runner
+   contract rejects scratch at or below the checkout; add an explicit relative-
+   path assertion before launch so the neutral cwd is provably outside the
+   checkout. The seat still receives only the shared prompt through
+   `ETUDE_INPUTS_DIR`; it has no checkout as cwd. A unique cwd also avoids
+   cross-seat hidden state, independently of the trusted registry mode.
+3. For `read_checkout: true`, use the pinned checkout as the seat cwd. Live runs
+   already hold the detached run checkout. A supervised `etude gate` normally
+   reviews uncommitted work in the caller tree, which cannot be reproduced from
+   the captured commit. Therefore a supervised read grant first requires the
+   caller tree to be clean; a dirty tree is a clear fail-closed error before any
+   seat runs. On a clean tree, materialize a fresh detached checkout at the
+   captured reviewed stage's `git_sha`; checks continue to run in the caller
+   tree. Fail closed if the pin cannot be materialized, always call the existing
+   worktree cleanup (which removes and prunes registration), and tell the seat
+   the exact access mode and pin in its prompt. This preserves the supervised
+   default: ordinary dirty pre-commit gates remain usable only as output-only.
+   Until GitHub issue #14 lands, also fail closed when the pinned tree contains
+   `.gitmodules`: an explicit grant must never expose an empty/unidentified
+   submodule directory. This guard is replaced by #14's populated-and-recorded
+   submodule proof after rebase, not silently bypassed.
+4. Record the resolved boolean on every `GateAttempt` created by either gate
+   path. False stays omitted from JSON by the schema contract; true is durable.
+5. Build one identical prompt for all seats. It states the resolved access mode
+   and carries this rule verbatim in substance:
+   - embedded provenance is AUTHORITATIVE for measurements;
+   - seats must not re-derive arithmetic because provenance is embedded so they
+     do not;
+   - checkout reads exist to falsify a stage-output claim, not recompute it;
+   - when checkout evidence shows the output wrong, return BLOCK with evidence
+     instead of silently substituting new numbers.
+
+The prompt carries the rule even on output-only gates, phrased conditionally for
+the unavailable checkout, so no seat invocation depends on prose outside the
+prompt for measurement authority.
+
+## Complete call-site set
+
+- `Engine.GateStage` in `internal/liverun/gate_once.go` (supervised gate).
+- `Engine.runGate` in `internal/liverun/gate.go` (live run and forward replay).
+- `runGateSeats` is the single execution helper both paths share.
+- `buildGatePrompt` is the single prompt builder used by the supervised path;
+  live-run gates currently pass the stage output directly rather than this rich
+  prompt, so add the same measurement/access block to their gate input assembly
+  or factor one shared prompt builder. The implementation gate must verify no
+  path emits a seat prompt without the rule.
+
+## Files
+
+- `internal/liverun/gate.go`
+- `internal/liverun/gate_once.go`
+- `internal/liverun/gate_test.go`
+- `internal/liverun/gate_once_test.go`
+- `docs/run.md`
+- `docs/gates.md`
+
+If factoring the prompt requires one additional existing liverun test file, the
+implementation gate will name that mechanically forced test touch explicitly.
+
+## Planned regressions
+
+Planned regression: output-only seat cwd is outside the checkout, cannot resolve
+a checkout marker by relative traversal, and fails `git rev-parse
+--show-toplevel`, while its prompt input remains readable.
+
+Planned regression: opted-in live-run seat cwd resolves the checkout marker and
+the resulting GateAttempt records read_checkout true.
+
+Planned regression: opted-in supervised gate refuses a dirty caller tree before
+any seat runs; with a clean caller tree it materializes the captured stage SHA,
+the seat locates the reviewed committed marker, and deterministic checks still
+execute in the caller worktree.
+
+Planned regression: before GH #14 integration, read_checkout true rejects a
+pinned repository containing `.gitmodules` before any seat runs, with a clear
+dependency error; output-only gates in the same repository remain unchanged.
+
+Planned regression: every seat receives a byte-identical prompt containing the
+authoritative-provenance, no-rederived-arithmetic, falsification-only, and
+block-with-evidence instructions.
+
+Planned regression: false/absent access prompts explicitly say output-only and
+the gate record omits read_checkout.
+
+Each filesystem-absence test contains a positive control: the same recorder or
+runner reads the marker when given the granted checkout, proving that an empty
+observation is not caused by broken instrumentation.
+
+Prompt assertions use independent literal strings written in the test; they do
+not import a production rule constant or derive the oracle by calling the prompt
+builder under test.
+
+## Sequencing and disclosed limitation
+
+KNOWN LIMITATION (disclosed, tracked): GitHub issue #14 is still open. Until it
+lands, `worktree.Checkout` does not populate submodules or record their SHAs, so
+this child supports only ordinary non-submodule repositories and rejects an
+opted-in pinned tree containing `.gitmodules` before any seat runs. Output-only
+gates remain unchanged. If #14 lands before final review, rebase, integrate its
+manifest shape, replace the temporary rejection with the populated checkout,
+and add the submodule regression. Otherwise the PR body must say submodule read
+grants remain fail-closed pending #14. Reviewers should judge whether that is
+acceptable scope for this PR-only deliverable or a blocker.
+
+## L2 author declarations
+
+TOPOLOGY: one gate orchestrator invokes seats sequentially today. The change
+adds no concurrent writer. Each output-only seat gets a distinct neutral cwd;
+granted seats share the already-existing read-only-by-contract pinned checkout.
+
+DURABILITY CLASS: no irreversible operation. Gate attempts retain the existing
+at-most-once CAS append per round; the new boolean is part of that same manifest
+write. Temp checkout/cwd creation is reversible and cleaned up.
+
+COMPLETE SET / all-sites enumeration: every seat-execution site is the single
+`runGateSeats` helper; its two callers are `GateStage` and `runGate`. Every gate
+record construction site is those same two callers. Every seat-prompt path is
+enumerated above and must receive the rule. No other model-seat invocation is in
+the liverun package.
+
+TRUST BOUNDARY: workflow YAML and captured run manifests are untrusted until
+their existing strict decoders validate them. The resolved boolean, captured
+stage `git_sha`, and checkout returned by `worktree.Checkout` are trusted facts
+rooted in those validators plus git object resolution. Stage output and model
+seat behavior are untrusted. Arbitrary same-process code execution is outside
+scope; configured external seat commands are trusted to obey their registry
+read-only/no-tools modes and the prompt's no-edit rule.
+
+IRREVERSIBLE SEQUENCES: none
+
+## Verification
+
+- Run focused `internal/liverun` tests, including actual process-cwd marker
+  probes rather than only mocked request inspection.
+- Run `make test` and `make lint` to completion before the verify gate.
+- This changes engine behavior but no CLI flags or commands, so it is not
+  CLI-facing under the manual-CLI directive; still run a built-binary
+  non-submodule workflow proof if practical.
+- Docs impact: check and update `docs/run.md` for workflow/runtime behavior and
+  `docs/gates.md` for prompt/manifest semantics. Check `docs/replay.md` for
+  applicability and record a path-specific no-change reason if unchanged.
