@@ -248,6 +248,98 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:43:29.578539Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "c8a649d224b4afb18dc2983413f92451a8e2832f3fb2b0d2aa103c8798d8876e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Only three packages are shown green; a rebase touching engine.go, gate.go, replay, resume, and bench should get a full-suite run before the verify gate. 2. The v4 decoder policy (require original_git_sha for caller stages, allow log-only, reject featureless) deserves a table-driven decoder test pinned to it so issue #24 inherits an executable spec rather than prose."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "078cf9c21986abac96f73e5126129fb0adc3e1355e3e6830fa0328c3eabfffa7",
+            "path": "artifacts/sha256/07/078cf9c21986abac96f73e5126129fb0adc3e1355e3e6830fa0328c3eabfffa7",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 516
+          },
+          "session": {
+            "session_id": "opus-18f0a8dd0be457df",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "18f0a8dd0be457df5516d20ae1a639d3f3a3c0c37cc95e47d884f61f322f33d5",
+              "path": "artifacts/sha256/18/18f0a8dd0be457df5516d20ae1a639d3f3a3c0c37cc95e47d884f61f322f33d5",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 428
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:44:25.673879Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The artifact contains only a narrative summary and test claims, not the actual diff/code required to assess code correctness against the approved plan."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "001a120fa786596f25d1de14fa70c6fa2aebd9d87d57a82a5ce0e70c9ce94c74",
+            "path": "artifacts/sha256/00/001a120fa786596f25d1de14fa70c6fa2aebd9d87d57a82a5ce0e70c9ce94c74",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 304
+          },
+          "session": {
+            "session_id": "codex-f2b5de8aca2acb09",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "f2b5de8aca2acb090f32db862ef359ad760151750985b7330000ef4de4fd57d7",
+              "path": "artifacts/sha256/f2/f2b5de8aca2acb090f32db862ef359ad760151750985b7330000ef4de4fd57d7",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 212
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:44:45.311817Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:44:45.313104Z"
     }
   ]
 }

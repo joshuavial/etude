@@ -1,0 +1,4 @@
+VERDICT: GO
+BLOCKING: none
+OPTIONAL: 1. Only three packages are shown green; a rebase touching engine.go, gate.go, replay, resume, and bench should get a full-suite run before the verify gate. 2. The v4 decoder policy (require original_git_sha for caller stages, allow log-only, reject featureless) deserves a table-driven decoder test pinned to it so issue #24 inherits an executable spec rather than prose.
+CONFIDENCE: medium
