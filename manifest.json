@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.2",
   "workflow": "blocker-resolution",
   "workflow_version": "blocker-resolution-v1",
@@ -32,6 +32,54 @@
         "size": 1127
       },
       "timestamp": "2026-08-16T02:30:27.698678Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "resolution.r1",
+      "phase": "resolution",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "resolution",
+          "role": "resolution"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirm the active replacement child carries the complete atomic acceptance surface."
+          ],
+          "timestamp": "2026-08-16T02:31:52Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T02:31:52Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T02:31:52Z"
     }
   ]
 }
