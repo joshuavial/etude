@@ -1,0 +1,28 @@
+# etude-l8tz implementation plan
+
+Profile: dev-codex. Run: etude-l8tz-dev-codex. Lead: Astra. Worker: requested gpt-5.6-sol, high reasoning. Consequential understood fix; no early gate. Parent owns fresh independent Astra + Fable final gate, capture/sync and integration. Leave changes uncommitted and bead open.
+
+Baseline: 42d3593c1099093519345c4cd0969dad17d968f6. Canonical tracker verified by `bd show etude-l8tz` through `.beads/redirect` (/Users/jv/projects/etude/.beads); issue already in progress. Read docs/development.md, selected workflow, docs/init.md, docs/sync.md, docs/doctor.md, init source/tests, doctor refspec checks/tests, sync explicit transfer source and Makefile.
+
+## Contract and implementation
+
+1. Init never installs a remote push mapping. On the selected existing remote, normal and force init remove all local values exactly equal to `refs/etude/*:refs/etude/*`. Use exact matching and Git's config lock/retry support; preserve every other value byte-for-byte and in order. No trimming or semantic equivalence for ownership. The literal is an ownership heuristic, not proof: document removal even if a user intentionally set that same local value.
+2. Only local configuration is eligible for migration. Preserve system/global/included policies, other remotes, push.default, upstream and branch policies. Do not manufacture a heads refspec to counter inherited mappings. Test scoped config using disposable GIT_CONFIG_SYSTEM/GIT_CONFIG_GLOBAL files; never edit real global settings. Inherited canonical values remain user policy and may still affect push. Inspect include handling so preview does not promise removal of entries it cannot edit.
+3. Preserve hazardous-fetch cleanup order/semantics and safe sibling mirror fetching. Force retains existing behavior of not adding mirror mappings, while performing both legacy cleanups. Preserve missing-remote normal/explicit/force outcomes. Dry-run is write-free and accurately previews push removals on both paths and the existing supported fetch actions.
+4. Replace missing-push warnings with explicit metadata-publication guidance (`etude sync`). Doctor must accept absent/partial metadata push coverage: sync supplies its own explicit refspec. Preserve doctor validation of configured invalid mappings and mirror-push hazards. No unrelated doctor redesign.
+5. Sync continues explicit non-forced refs/etude transfer; branch pushing follows Git user policy. Sibling mirror refs must not be uploaded by sync.
+
+## Files and documentation
+
+Primary code/tests: internal/cli/init.go, init_test.go, doctor.go, doctor_test.go; sync_test.go where relevant. Audit scaffold/help and current docs for claims about plain push. Update docs/init.md (migration, scopes, force, dry-run, counts, examples), docs/sync.md and docs/doctor.md, then regenerate command references if help changed. Preserve historical plans as history unless a directly affected plan needs a superseded note. Fix relevant stale mirror/push wording encountered without broadening scope.
+
+## Acceptance evidence
+
+- Bare local remote: establish main/upstream, run fresh init, commit, plain `git push` advances branch without installing a push refspec. Repeat with legacy-only config migration.
+- Exact duplicates all disappear on normal and force init; other values and ordering survive (custom branch, forced/name-changing/colonless Etude-looking mappings, and surrounding whitespace). Test selected alternate remote and leave other remotes intact.
+- Disposable system/global/included config values stay unchanged and effective policy is preserved. Show natural push.default/upstream behavior when no explicit mapping remains; retain deliberate policies such as push.default=nothing.
+- Dry-run (normal/force) leaves config and scaffold byte-identical, truthfully reports only eligible removals, preserves missing-remote behavior.
+- Existing fetch-prune safety and mirror tests remain valid. Explicit sync publishes authoritative run refs and excludes sibling mirrors, even with custom branch push mappings.
+- Doctor after new init does not report missing push coverage as failure; invalid configured mappings and mirror hazards remain diagnosed.
+
+Demonstrate original plain-push failure before production changes if practical. Worker runs focused regression tests; build with `make build` and exercise absolute bin/etude in disposable repos with local bare remote. Run `make test`, `make lint`, `make docs-check`, `make docs-reality`. Shell suite only if shell/hooks/process files change. No concurrency/lifecycle change expected, no race suite required. Use writable temporary build caches if sandbox requires, record that environment. Record exact commands, exit status, environment, source hash/diff, product effects and limitations in .etude/tmp/verify.md. Source changes invalidate affected checks. Final independent QA/gate remains pending for parent, never label it passed here.
