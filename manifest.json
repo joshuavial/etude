@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-s6z.1",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -86,6 +86,78 @@
         "size": 9052
       },
       "timestamp": "2026-08-15T23:25:26.062668Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "reject empty model output",
+            "declare the remote-request crash residual",
+            "include temporary Git objects in the blast radius"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r1",
+            "artifact": "724c1959c3ea8dc8923e72639890dcfaad8a652d831e106653c8c2158c06526d",
+            "path": "artifacts/sha256/72/724c1959c3ea8dc8923e72639890dcfaad8a652d831e106653c8c2158c06526d",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 701
+          },
+          "timestamp": "2026-08-15T23:19:12Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "prove pinned-worktree resolution",
+            "pin and prove all five stage-agent mappings",
+            "reject empty model output",
+            "delimit untrusted prior-stage artifacts as data"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r1",
+            "artifact": "e9cb83deb87fec38216c565a06119771c9d809b56a63c63e8abae88b97fe23c3",
+            "path": "artifacts/sha256/e9/e9cb83deb87fec38216c565a06119771c9d809b56a63c63e8abae88b97fe23c3",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 753
+          },
+          "timestamp": "2026-08-15T23:25:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:26:36Z"
     }
   ]
 }
