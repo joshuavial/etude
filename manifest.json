@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-egg",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,86 @@
         "size": 1060
       },
       "timestamp": "2026-05-26T09:07:02.704384Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "synthesize-on-absent loses presence bit (Validate cant gate generator on block-presence) + breaks round-trip (ParseYAML(legacy).YAML() emits spurious retros:)"
+          ],
+          "timestamp": "2026-05-26T14:50:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "synthesize-on-absent loses presence bit (Validate cant gate generator on block-presence) + breaks round-trip (ParseYAML(legacy).YAML() emits spurious retros:)"
+          ],
+          "timestamp": "2026-05-26T14:50:20Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T14:50:40Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang all session; known artifact, seat skipped",
+          "timestamp": "2026-05-26T14:50:50Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms 0-CPU hang all session; 3 active seats reviewed"
+      },
+      "timestamp": "2026-05-26T14:50:55Z"
     }
   ]
 }
