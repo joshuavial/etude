@@ -1,0 +1,19 @@
+# Final review — etude-8u3 / GH #14
+
+The diff populates recursively pinned submodules in disposable run checkouts, reuses source object stores through alternates, records the root-relative submodule path/OID map beside every stage's superproject SHA, and validates non-legacy recorded maps before every checkout consumer executes.
+
+Acceptance proof: `TestEngineRunCheckReadsPinnedSubmoduleAndManifestRecordsSHA` creates a real throwaway superproject and submodule, advances the source beyond the pinned commit, runs the production check command against `modules/lib/payload.txt`, and asserts both durable raw output `pinned-content` and the pinned manifest OID across original, rerun, and downstream stages.
+
+Recursive/concurrency proof: two simultaneously alive, differently pinned checkouts populate nested content under a conflicting global activation rule, retain isolated submodule gitdirs, and borrow both top-level and nested source object stores.
+
+Identity/compatibility proof: manifest round-trip, omission, path/OID validation, resume propagation, legacy replay replacement, and mismatch-before-runner seam tests cover live resume, single replay, forward replay, and bench.
+
+Final local gates after all source changes:
+
+- `make test`: PASS
+- `make lint`: PASS
+- `make docs-check`: PASS
+- `make docs-reality`: PASS
+- `git diff --check`: PASS
+
+Non-blocking hardening observations are tracked separately as `etude-0jh`; they are outside this PR's scope-frozen GH #14 acceptance.
