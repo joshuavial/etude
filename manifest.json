@@ -236,6 +236,85 @@
         "degraded_reason": "pilms reproducible 0-CPU hang all session; other 3 seats unanimous GO; autonomous-loop degraded-gate fallback"
       },
       "timestamp": "2026-05-25T21:07:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "resolveSubjectStage (retro.go:925) silently picks one arbitrary stage of a multi-stage run (plan->implement->verify generates from plan); make stage selection explicit (--stage) + deterministic; also retro.go:965 masks ErrAmbiguousStage behind a stale ErrStageNotFound"
+          ],
+          "timestamp": "2026-05-25T21:30:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "provenance spoofing: `generator` set as a Ref but NOT in checkReservedRefs reserved set; --ref generator=malicious overwrites real provenance (extraRefs merge after) -- add generator to reserved keys",
+            "resolveSubjectStage masks ambiguity for multi-stage runs; require explicit --stage and error on >1 stage"
+          ],
+          "timestamp": "2026-05-25T21:30:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-25T21:31:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang reproduced all session (backend healthy); known artifact, seat skipped",
+          "timestamp": "2026-05-25T21:31:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms reproducible 0-CPU hang all session; the 3 active seats reviewed; codex+gemini BLOCK on 2 verified-true defects (generator-not-reserved provenance spoof + resolveSubjectStage silent-stage-guess/ambiguity-mask) drove the rerun"
+      },
+      "timestamp": "2026-05-25T21:32:00Z"
     }
   ]
 }
