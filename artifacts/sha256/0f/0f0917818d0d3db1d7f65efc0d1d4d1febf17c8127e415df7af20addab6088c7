@@ -1,0 +1,136 @@
+## Plan
+
+**Approach:** Provide a self-contained backfill SCRIPT (`scripts/backfill-gate-records.sh`)
+that reconstructs structured GateAttempts from the prose gate notes of EXPLICITLY
+NAMED beads, emits gate JSON, and feeds each through the EXISTING validated
+`etude capture-gate` path (never writing the ref directly). No Go/CLI change, no
+schema change. Provenance is carried HONESTLY in existing free-text fields with a
+documented `[backfilled]` convention; ambiguity is refused, not invented.
+
+**Key decision — provenance marking WITHOUT a schema change (AC#2/#3):**
+The frozen schema already anticipates backfill, so no new field is needed:
+- `tier: 0` is the schema-blessed "unknown / backfilled from prose" marker
+  (schema §6: "0 means UNKNOWN ... backfilled by .5 from prose notes that did not
+  record a tier"). EVERY backfilled gate uses `tier: 0` — this is the primary,
+  queryable "this record is imported/inferred" flag.
+- Gate-level source + inference note: `decision.degraded_reason` carries a leading
+  marker `"[backfilled from <bead> notes; verdicts parsed from prose, provider/model
+  convention-derived, timestamps approximate]"` on EVERY backfilled gate (appended
+  after any real degraded reason). `degraded_reason` is free-text and unconstrained,
+  so this is honest and reversible (grep `^\[backfilled`).
+- Source artifact refs (AC#2 "source refs retained"): `reviewed_stages` cites the
+  REAL stage names + artifact shas already on the target run (read from its
+  manifest), giving each backfilled gate a verifiable link to the artifacts it
+  reviewed. The source *bead-note* provenance lives in the `degraded_reason` marker.
+- pilms convention provenance (AC#3): provider `{lmstudio, qwen/qwen3.6-35b-a3b}`
+  and model are filled from the runbook table ONLY when the parsed seat token is
+  `pilms`/`pi`; the `[backfilled ... provider/model convention-derived]` marker
+  records that this provider was not observed but inferred from convention. Same for
+  the other three seats' provider/model (all convention-derived on backfill).
+- Per-seat inference note: for non-go/block verdicts (`failed`/`empty`/`malfunction`/
+  `disregarded`) the required `failure_note` gets a leading `[backfilled]` prefix.
+  For `go`/`block` seats `failure_note` is FORBIDDEN by validation, so per-seat
+  inference is signaled by the gate-wide `tier: 0` + `degraded_reason` marker (not a
+  per-seat field) — no schema field is abused. This is honest: the gate as a whole
+  is flagged inferred.
+NO schema change is required or proposed.
+
+**Importer shape — SCRIPT (not a Go command):** mirrors `scripts/dogfood-gate-capture.sh`
+(build-fresh, fetch ref, verify-before-push). A Go subcommand would be a CLI-surface
+change (heavier, Tier-1) and is not justified — the parse is a one-off bounded import.
+- INPUT (bounded, no auto-scan): explicit bead IDs as args:
+  `scripts/backfill-gate-records.sh <bead-id> [<bead-id>...]`. The orchestrator
+  supplies the targets. For each bead it requires BOTH an existing run ref
+  (`refs/etude/runs/<bead>`) AND a parseable canonical gate-note block; a bead with
+  no run, or no run with zero gates already, is the precondition.
+- PARSE (strict, canonical-format only): parse ONLY the canonical runbook
+  "Recording Results" block (`<Phase> gate attempt <n>:` followed by per-seat
+  `- Gemini Pro|Claude Opus|fresh GPT-5.5 xhigh|pi/pilms: GO|BLOCK|failed (...)`
+  lines and a `- result: pass|rerun required|escalated` line). Seat-token → seat
+  map: Gemini Pro→gemini, Claude Opus→opus, fresh GPT-5.5 xhigh→codex, pi/pilms→pilms.
+  Verdict map: GO→go, BLOCK→block, failed/failure→failed, empty→empty,
+  malfunction→malfunction, disregarded/skipped/outage→disregarded. `result: pass`→
+  status `pass`; `rerun required`→`rerun`; `escalated`→`escalated`. `attempt <n>`→
+  `round n`; `gate_id = <phase>.r<n>`. provider/model from the runbook table per seat.
+  `reviewed_stages` = the matching stage(s) on the run for that phase, with real shas.
+- REFUSE (AC#4 — refuse, never invent): the script SKIPS a record (clear stderr
+  message, non-zero exit at the end if any refusal) when ANY of: (a) the bead's
+  notes contain no canonical gate block (loose narrative like gc-command's
+  "PLAN gate: PASS (3 GO ...)" or 2.1's close-reason prose is NOT parsed — refused
+  with "ambiguous prose, no canonical gate block"); (b) an unknown seat token;
+  (c) an unparseable verdict token; (d) a missing/non-integer attempt/round;
+  (e) a non-`go`/`block` verdict with no reason text to seed a failure_note;
+  (f) the phase names no stage on the target run (referential integrity would fail).
+  It NEVER guesses a verdict, round, provider, or seat. capture-gate's own
+  validation is the second backstop (rejects without mutating on any bad field).
+- OUTPUT: one gate JSON per parsed attempt written to a temp file, then
+  `etude capture-gate --run <bead> --gate-file <tmp>` per attempt (ascending round),
+  with the same verify-before-push guard as dogfood-gate-capture.sh
+  (manifest_version 3 + appended gate_id present) BEFORE `git push`.
+
+**Demonstration:** backfill ONE real recent bead that actually has a canonical
+gate block, as evidence, AFTER exercising the script end-to-end in a throwaway
+`mktemp -d` git repo per the capture-protocol isolation rule. If no recent bead
+has a canonical block (recent ones use compact narrative), the script + throwaway
+demo + a refusal demonstration on a narrative bead (e.g. gc-command) is the evidence;
+no real-run write is forced. Verify-before-push protects any real write.
+
+**Files:**
+- `scripts/backfill-gate-records.sh` - NEW. The bounded, refuse-on-ambiguity
+  importer: parse canonical gate blocks from named beads' notes → per-attempt gate
+  JSON (tier:0, `[backfilled]` degraded_reason marker, convention provider/model,
+  real reviewed_stages shas) → `etude capture-gate` per attempt → verify-before-push.
+  Mirrors dogfood-gate-capture.sh (build fresh, fetch, python3 for JSON/parse).
+- `docs/gates.md` - add a "Backfilled gate records" subsection (AC#5): how to read
+  `tier: 0` + the `[backfilled]` `degraded` marker, that provider/model is
+  convention-derived (not observed), timestamps are approximate, only canonical
+  gate blocks are imported, ambiguous prose is refused, and no raw transcripts exist
+  for backfilled seats.
+
+**Tests:**
+- Parser unit behavior exercised via the script in a THROWAWAY repo (isolation rule):
+  seed a `mktemp -d && git init` repo, create a synthetic run with plan/implement
+  stages via `etude capture`, feed a canonical gate block, assert the appended gate
+  has tier:0, the `[backfilled]` marker on degraded_reason, pilms provider
+  `lmstudio/qwen/qwen3.6-35b-a3b`, correct seat/verdict/round mapping, and that
+  `etude run show` renders it.
+- Refuse-ambiguous: feed (a) a loose-narrative note (gc-command style), (b) an
+  unknown seat token, (c) a bad verdict, (d) a missing round, (e) a phase with no
+  matching stage — assert each is SKIPPED with a clear message and the run is NOT
+  mutated (manifest gate count unchanged), and the script exits non-zero.
+- Provenance: assert convention provider/model is applied ONLY for recognized seat
+  tokens and the convention-derived marker is present; assert source `reviewed_stages`
+  shas equal the run's real stage artifact shas.
+- All in the throwaway repo; never the working repo (capture-protocol rule).
+
+**Docs:** `docs/gates.md` "Backfilled gate records" subsection (AC#5) — the
+limitations: imported/inferred, `tier: 0` marker, convention-derived provider/model,
+approximate timestamps, canonical-block-only / ambiguous-refused, no raw transcripts.
+No generated CLI reference changes (no command added). No runbook change needed
+(structured capture conventions already shipped in .4).
+
+**Risks:**
+- Most recent beads use COMPACT NARRATIVE, not the canonical block, so the strict
+  parser may legitimately backfill few/zero real runs. This is by design (refuse >
+  invent, AC#4) and is documented as a limitation; it is not a defect. Escalate to
+  the user ONLY if the orchestrator instead wants the parser to attempt loose
+  narrative (that trades honesty for coverage — not recommended).
+- Writing to a REAL `refs/etude/runs/*` is production data; mitigated by
+  throwaway-repo exercise first + verify-before-push + capture-gate's
+  validate-without-mutate guarantee.
+- Provenance-in-free-text is a CONVENTION not enforced by validation; mitigated by
+  documenting it in docs/gates.md and using the schema-blessed `tier: 0` as the
+  primary machine-detectable flag.
+- NO escalation needed: an existing-field convention satisfies AC#2/#3 honestly;
+  no schema addition is proposed.
+
+**Capture:**
+- inputs: bead etude-roadmap.2.5 description + acceptance; gate-reviewer-record-schema.md
+  (§3 fields, §6 tier:0 = backfilled, §7 backfill note); internal/cli/capture.go
+  (gateInputJSON DTO); internal/runmanifest/manifest.go (validation, forbidden
+  failure_note on go/block, free-text degraded_reason); scripts/dogfood-gate-capture.sh
+  + scripts/dogfood-capture.sh (style); review-gate-runbook.md (Recording Results
+  canonical format + seat/provider/verdict tables); capture-protocol.md (isolation
+  rule); real prose of etude-roadmap.2.1 / etude-gc-command / etude-bench-command
+  (varied/loose formats → strict-parse + refuse decision).
+- output: bead --design field
