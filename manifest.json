@@ -447,6 +447,68 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T23:48:54Z"
+    },
+    {
+      "gate_id": "plan.r5",
+      "phase": "plan",
+      "round": 5,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-plan-r5",
+            "artifact": "c002783f92e0fda83bfc7acc3d63945d546998ee55419aeef2dbb2573bce1c6c",
+            "path": "artifacts/sha256/c0/c002783f92e0fda83bfc7acc3d63945d546998ee55419aeef2dbb2573bce1c6c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 270
+          },
+          "timestamp": "2026-08-15T23:51:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "prove fresh rerun output paths or remove stale output instead of rejecting it"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r5",
+            "artifact": "b4193d2ae2623ce357a33d9d2b24bb2aefa5a006f8a485a37577e2bf7c963fd5",
+            "path": "artifacts/sha256/b4/b4193d2ae2623ce357a33d9d2b24bb2aefa5a006f8a485a37577e2bf7c963fd5",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 462
+          },
+          "timestamp": "2026-08-15T23:57:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T23:58:48Z"
     }
   ]
 }
