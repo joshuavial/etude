@@ -1,0 +1,164 @@
+# Implement — etude-3xt
+
+**Diff:** `internal/cli/retro.go` (+137/-15), `internal/cli/retro_test.go` (+219).
+No other files. `make test` and `make lint` are green.
+
+## What was built
+
+The approved plan, unchanged in substance: `etude retro capture` and `etude retro
+generate` now land the retro body as markdown under `<repo-root>/.etude/retros/`
+and record its repo-relative path in the manifest as `refs["retro_file"]`.
+
+All of it lives in `assembleAndWriteRetro`, which capture and generate already
+share, so there is one implementation and both commands get it.
+
+### The landing rule — `retroMarkdownTarget`
+
+Decides where a body lives on disk, given the resolved repo root, the path the
+body was read from (empty for stdin and for a generated body), and the allocated
+retro id. Returns the repo-relative path to record and the absolute path to
+write; the latter is empty when nothing needs writing.
+
+- **source outside `.etude/retros/`, or no source at all** → land at
+  `.etude/retros/<retro-id>.md`.
+- **source already inside `.etude/retros/`** → record it where it is, write
+  nothing. Both sides are `EvalSymlinks`-resolved before the prefix test (a macOS
+  temp dir is a symlink, so an unresolved comparison calls a file that is plainly
+  inside "outside"), and containment is decided with `filepath.Rel` + a `..`
+  check rather than a string prefix.
+
+### Ordering and failure contracts
+
+- The repo root resolves **before** anything is written, so an unresolvable root
+  leaves no ref behind.
+- `refsMap["retro_file"]` is set right after the id is allocated, so it is inside
+  the manifest that gets committed.
+- The file is written **after** the ref commit succeeds — a failed ref write
+  leaves no stray markdown.
+- The reverse failure is loud and names both artifacts:
+  `retro ref refs/etude/retros/<id> was written, but landing its markdown at
+  .etude/retros/<id>.md failed: <cause>`. Swallowing it would recreate exactly
+  the divergence this bead removes.
+- The write is **create-only** (`O_CREATE|O_EXCL`). A freshly-allocated id cannot
+  normally collide, so a collision means a markdown outlived its ref, and
+  clobbering it would destroy the only copy of that prose.
+
+### `retro_file` is reserved
+
+Added to `reservedExactKeys` alongside `scope` / `trigger` / `produced_via`, so
+`--ref retro_file=…` is rejected and the linkage cannot be forged. `retro show`
+already renders unrecognised refs under `metadata:`, so it surfaces with no
+display change.
+
+## Departures from the approved plan
+
+1. **The stdout line is `retro markdown <path>`, not `wrote <path>`.** The plan's
+   contract table said `wrote`, which is false in the in-place case — nothing was
+   written. One accurate line beats two conditional ones.
+2. **`assembleAndWriteRetro` returns a fourth value** (the `retro_file` path) so
+   both callers can print it. The plan implied this without saying it.
+
+Everything else is as approved. Check (c), the audit script, and the already-landed
+`.etude/retros/*.md` files are untouched, per the plan's scope boundary.
+
+## Plan-gate optionals — disposition
+
+1. **Asymmetry: markdown→no-ref survives.** Accepted, and **filed as `etude-24d`**
+   before this bead closes, as asked. It carries the check design plus optional 2's
+   warning and two open questions (WARN vs hard; allowlist vs backfill for the
+   pre-existing files that have no ref at all).
+2. **In-place breaks "file name IS the ref name".** Correct. Folded: the
+   `retroMarkdownTarget` doc comment states that this is the one case where
+   `retro_file != "<retro-id>.md"` and that a consumer must read the manifest
+   rather than derive the name; `TestRetroCaptureInPlaceDoesNotDuplicate` says the
+   same in its comment; and `etude-24d` repeats it as a design constraint so the
+   follow-on cannot be built against the weaker claim. Docs sentence in the docs
+   phase.
+3. **Capture does not `git add`.** True and deliberate — a CLI that stages files
+   behind the operator's back is worse than one that prints the path. The stdout
+   line exists so the path to stage is in front of you. Docs sentence in the docs
+   phase.
+4. **No regression on the failure/create-only contracts.** Folded:
+   `TestRetroLandingIsCreateOnly` covers create-only, the both-artifacts-named
+   error, and that the pre-existing file's bytes are unchanged.
+5. **No regression on the new stdout line.** Folded into
+   `TestRetroCaptureLandsMarkdownUnderEtudeRetros`.
+6. **New params field + path normalization.** Folded: `retroWriteParams.sourceFile`,
+   and the `EvalSymlinks` + `filepath.Rel` normalization described above.
+7. **Non-zero exit after a successful ref commit is new for scripted callers.**
+   Confirmed no in-tree caller: `grep -rn "retro capture" scripts/ Makefile`
+   returns only doc prose and allowlist comments. Docs-only blast radius; the docs
+   phase will state it.
+
+## Tests
+
+Five regressions, all in `internal/cli/retro_test.go`:
+
+| Test | Pins |
+|---|---|
+| `TestRetroCaptureLandsMarkdownUnderEtudeRetros` | body lands under the id, byte-identical; `retro_file` recorded; stdout reports the path |
+| `TestRetroCaptureInPlaceDoesNotDuplicate` | in-place capture records the existing path and leaves the directory holding exactly one file |
+| `TestRetroCaptureRejectsReservedRetroFileRef` | `--ref retro_file=…` rejected |
+| `TestRetroLandingIsCreateOnly` | collision errors naming ref + file; existing bytes intact |
+| `TestRetroGenerateLandsMarkdownUnderEtudeRetros` | the shared path covers generate too |
+
+Plus one assertion added to the existing `TestRetroCaptureStdinFile`: a stdin body
+has no source path, so it always lands anew.
+
+**Red without the fix.** With the landing write and the `retro_file` assignment
+neutered (and nothing else changed), all five fail for the right reasons:
+
+```
+--- FAIL: TestRetroCaptureStdinFile — stdin retro body not landed under .etude/retros
+--- FAIL: TestRetroCaptureLandsMarkdownUnderEtudeRetros — landed retro markdown not written
+--- FAIL: TestRetroCaptureInPlaceDoesNotDuplicate — manifest refs[retro_file] = ""
+--- FAIL: TestRetroLandingIsCreateOnly — expected landing to fail rather than clobber
+--- FAIL: TestRetroGenerateLandsMarkdownUnderEtudeRetros — generated retro markdown not landed
+```
+
+The neutering was reverted from a backup before the suite was re-run green.
+
+## Manual CLI verification (this bead is CLI-facing)
+
+Built binary (`go build -o <scratch>/etude ./cmd/etude`) driven from a throwaway
+git repo — not the test harness:
+
+1. **capture from outside the dir** — `retro capture cohort --file draft.md
+   --subject-run r1 --subject-run r2 --trigger cadence-retro` →
+   `retro markdown .etude/retros/retro-cohort-r1-20260815T161954Z.md`; the file is
+   there with the draft's bytes.
+2. **capture in place** — `--file .etude/retros/2026-08-16-epic-etude-retro-1.md`
+   → reports that same path; the directory still holds exactly the two distinct
+   retros, no third copy.
+3. **`retro show`** — renders `metadata:` → `retro_file: .etude/retros/…md` above
+   the body, no display change otherwise.
+4. **`retro list`** — unchanged columns, both retros listed.
+5. **reserved ref** — `--ref retro_file=elsewhere.md` →
+   `--ref key "retro_file" is reserved; use the dedicated flag`, exit 1.
+6. **stdin** — `printf … | retro capture workflow --file -` lands under the
+   allocated id.
+7. **outside a git repo** — fails at the existing HEAD resolution
+   (`could not resolve HEAD; run capture inside a repo with at least one commit`),
+   exit 1, before the landing path is reached.
+8. **create-only collision** — pre-created `.etude/retros/<next-id>.md`, then
+   captured into the same second:
+   `retro ref refs/etude/retros/retro-cohort-cc1-… was written, but landing its
+   markdown at .etude/retros/retro-cohort-cc1-….md failed: … file exists`, exit 1,
+   and the pre-existing file's contents were unchanged.
+
+`retro generate` was not driven manually — it needs a configured external
+generator; the stub-injected `TestRetroGenerateLandsMarkdownUnderEtudeRetros`
+covers it, and both commands go through the same landing code.
+
+## Suite
+
+```
+make lint   → gofmt clean, go vet clean
+make test   → go test ./...  all packages ok (internal/cli 66.0s)
+```
+
+## Follow-on filed
+
+`etude-24d` — "the completeness audit cannot see a retro markdown that was never
+captured" (P2, bug). Open, not started; it owns the audit-check half of the
+symptom and must not be folded into this commit.
