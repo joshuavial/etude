@@ -272,6 +272,95 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-09-07T03:20:53.419639Z"
+    },
+    {
+      "gate_id": "review.r2",
+      "phase": "review",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "50ec1d7bd7efaa787e956701b85093c31bfaae3699295fe2ada9f1112dda4bff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "astra",
+            "artifact": "2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "path": "artifacts/sha256/29/2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "astra-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T10:36:54.601565Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. The seven-file packet lists a final diff SHA but no per-file hash for `.etude/registry.yaml`; add it to the changed-file hash list before commit so the registry repair is pinned like the other six files. 2. Record the reviewer-only USER allowlist addition in the bead notes and commit message since it is outside the ticket's replay scope."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "fcbcb66ceab98be2034a8aafc3d25bca8ad51b6b604195f82202f8f6318e30a7",
+            "path": "artifacts/sha256/fc/fcbcb66ceab98be2034a8aafc3d25bca8ad51b6b604195f82202f8f6318e30a7",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 489
+          },
+          "session": {
+            "session_id": "fable-5d4753717bc0183c",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "5d4753717bc0183c08884358beecb44ee6e3b602c61d6fb6ee1d9c498dbfef43",
+              "path": "artifacts/sha256/5d/5d4753717bc0183c08884358beecb44ee6e3b602c61d6fb6ee1d9c498dbfef43",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 397
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T10:37:24.119233Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T10:37:24.122249Z"
     }
   ]
 }
