@@ -1,0 +1,12 @@
+# Verification — etude-8u3
+
+- `go test -count=1 ./internal/worktree`: PASS, including real nested local submodule pins, root-relative recursive map keys, linked source worktree isolation, top-level and nested shared-object alternates, source-relative remote normalization, missing/partial configuration failure, exact gitlink coverage, and clone cleanup.
+- `go test -count=1 ./internal/runmanifest`: PASS, including submodule map round-trip, omission, path validation, and OID validation.
+- `go test -count=1 ./internal/liverun`: PASS, including a real checks-only gate command that reads `modules/lib/payload.txt`, emits `pinned-content`, forces a gate rerun, and records that raw output and the pinned submodule SHA on every original/rerun/downstream stage after the source repository advances; resume propagation is also covered.
+- `go test -count=1 ./internal/replay ./internal/cli`: PASS, including an integration replay from a legacy map-less stage whose newly recorded stage contains the actual populated map.
+- `make test`: PASS.
+- `make lint`: PASS.
+- `make docs-check`: PASS.
+- `make docs-reality`: PASS.
+
+The acceptance test observes file content through the production check runner and then reads the durable raw-output artifact; it does not merely assert that a Git command executed.
