@@ -1,0 +1,547 @@
+diff --git a/docs/gates.md b/docs/gates.md
+index 50bf99a..24d0330 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -69,8 +69,11 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
+ recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+ strictly: an unknown or misspelled field (at any nesting level) is rejected
+ rather than silently dropped, as is any trailing content after the gate object.
+-Invalid input is rejected without changing the run. A run that carries
+-any gates is written as `manifest_version` 3; gate-less runs are unchanged.
++Invalid input is rejected without changing the run. A run that carries gates
++is written as `manifest_version` 3 unless it also carries a stage-log artifact,
++which requires version 4; gate-less runs without stage logs are unchanged. For
++compatibility with durable refs written by development builds, readers also
++accept a stage log in version 2 or 3, but new writers always emit version 4.
+ 
+ The capture input above uses `session.transcript_path` because it points at a
+ local file to import. Stored manifests replace that input-only path with:
+@@ -271,7 +274,8 @@ live-specific characteristics:
+   empty, or malfunction) — even when the gate still passes — so the audit
+   record reflects a degraded panel.
+ - `decision.escalation_reason` is required when `status="escalated"`.
+-- A run that carries any gate attempts is stored as `manifest_version` 3.
++- A run that carries gate attempts is stored as `manifest_version` 3, or
++  version 4 when any stage carries a log artifact.
+ 
+ ### Resuming an unusable-seat outage
+ 
+diff --git a/docs/plans/product/V1-SCOPE.md b/docs/plans/product/V1-SCOPE.md
+index b959b52..2d67e60 100644
+--- a/docs/plans/product/V1-SCOPE.md
++++ b/docs/plans/product/V1-SCOPE.md
+@@ -42,7 +42,8 @@ Source: `internal/cli/root.go:36-48`.
+   per-run refs; no shared write point (`internal/refstore`).
+ - **Content-addressed inline artifacts** — blobs stored by hash inside the
+   ref store (`internal/artifactstore/store.go`).
+-- **Run manifests v2 and v3** — v3 adds gate-reviewer records; the producer
++- **Run manifests v2, v3, and v4** — v3 adds gate-reviewer records; v4 adds
++  stage-log artifact references; the producer
+   record is authoritative (`internal/runmanifest/manifest.go:932-935, 1063,
+   1196`).
+ - **Retro-meta sidecars** — retrospective metadata stored alongside run
+diff --git a/docs/replay.md b/docs/replay.md
+index 10f6c0e..32f571f 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -68,6 +68,11 @@ The new run contains a single stage with:
+ - `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
+   content-addressed refs).
+ - `output` — the artifact produced by the replay run.
++- `log` — the bounded successful runner stdout/stderr artifact, when either
++  stream was non-empty.
++- `producer.session` — the replay runner's reported session identity and, when
++  `transcript_path` resolves beneath replay scratch or its pinned worktree, the
++  imported and secret-scanned transcript artifact.
+ - `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
+   `commit` is the immutable git commit of the source run ref (not the stage's
+   `git_sha`). This pins the link durably even if the source run ref is later
+diff --git a/docs/run.md b/docs/run.md
+index 332466e..b5632db 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -386,7 +386,10 @@ rerun continues without transcript bytes. The redaction status reports whether
+ the transcript secret scan passed or failed. A transcript that was imported
+ but failed that scan stops the rerun before its stage runner is invoked.
+ Output and stage-log artifacts follow their existing storage contract and are
+-not secret-scanned.
++not secret-scanned. Prior-attempt logs are handed to every later rerun as raw
++inputs, so a credential printed by a producer can persist in the run and cross
++attempt boundaries; runner authors must treat stdout and stderr as durable,
++shared evidence rather than an ephemeral console.
+ 
+ Session ids are opaque and compared byte-for-byte; whitespace is used only to
+ recognize an empty id. Reusing an exact non-empty id marks the later attempt as
+@@ -410,9 +413,9 @@ by unusable model seats is resumable; substantive reviewer decisions remain
+ terminal.
+ 
+ Each gate attempt is recorded automatically as a `GateAttempt` in the run
+-manifest (`manifest_version` 3); gate attempts appear after stages in
+-`etude run show`. No separate `etude capture-gate` call is required for live
+-runs.
++manifest (`manifest_version` 3, or version 4 when a stage log is present); gate
++attempts appear after stages in `etude run show`. No separate
++`etude capture-gate` call is required for live runs.
+ 
+ ### Env passthrough
+ 
+diff --git a/internal/bench/run.go b/internal/bench/run.go
+index 639db36..3876b29 100644
+--- a/internal/bench/run.go
++++ b/internal/bench/run.go
+@@ -176,7 +176,10 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
+ 	}
+ 
+ 	// Step 6: record the replay run.
+-	recorded, err := p.Recorder.Record(ctx, cr.RunID, stageName, resolved, res)
++	recorder := p.Recorder
++	recorder.SessionScratchDir = scratch
++	recorder.SessionWorktreeDir = wt.Dir
++	recorded, err := recorder.Record(ctx, cr.RunID, stageName, resolved, res)
+ 	if err != nil {
+ 		return BenchOutcome{}, wrap("record replay run", err)
+ 	}
+diff --git a/internal/cli/replay.go b/internal/cli/replay.go
+index 6f00f7d..4422e30 100644
+--- a/internal/cli/replay.go
++++ b/internal/cli/replay.go
+@@ -259,7 +259,7 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
+ 		if len(res.Output) == 0 {
+ 			return fmt.Errorf("replay produced no output; cannot record empty run")
+ 		}
+-		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
++		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs, scratch, wt.Dir); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -310,8 +310,12 @@ func (r *replayRunner) recordRun(
+ 	resolved replay.ResolvedStage,
+ 	res replay.RunResult,
+ 	_ []replay.RunInput, // materialized inputs unused here; raw bytes come from source commit
++	scratchDir, worktreeDir string,
+ ) error {
+-	rec := replay.RunRecorder{Store: store, Now: r.now}
++	rec := replay.RunRecorder{
++		Store: store, Now: r.now,
++		SessionScratchDir: scratchDir, SessionWorktreeDir: worktreeDir,
++	}
+ 	recorded, err := rec.Record(ctx, sourceRunID, sourceStageName, resolved, res)
+ 	if err != nil {
+ 		return err
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index 85ebb13..329ef11 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -408,14 +408,13 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
+ 	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
+ 	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
+ 	files := as.Files()
+-	seenSessions := make(map[string]bool)
+ 
+ 	for _, gate := range killingGates {
+ 		if len(gate.ReviewedStages) != 1 {
+ 			return nil, nil, fmt.Errorf("prior attempts: gate %s has %d reviewed stages, want exactly one", gate.GateID, len(gate.ReviewedStages))
+ 		}
+ 		reviewed := gate.ReviewedStages[0]
+-		stage, ok := stageByName(stages, reviewed.Stage)
++		stage, stageIndex, ok := stageByName(stages, reviewed.Stage)
+ 		if !ok {
+ 			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s", gate.GateID, reviewed.Stage)
+ 		}
+@@ -457,10 +456,7 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
+ 			// an identifier is blank; non-blank identities compare byte-for-byte.
+ 			sessionID := session.SessionID
+ 			nonBlankSessionID := strings.TrimSpace(sessionID) != ""
+-			attempt.ResumedSession = nonBlankSessionID && seenSessions[sessionID]
+-			if nonBlankSessionID {
+-				seenSessions[sessionID] = true
+-			}
++			attempt.ResumedSession = nonBlankSessionID && sessionSeenBefore(stages[:stageIndex], sessionID)
+ 			attempt.TranscriptRetrievalStatus = session.RetrievalStatus
+ 			attempt.TranscriptRedactionStatus = session.RedactionStatus
+ 			if err := validatePriorTranscriptEvidence(session); err != nil {
+@@ -493,13 +489,22 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
+ 	return refs, inputs, nil
+ }
+ 
+-func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, bool) {
++func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, int, bool) {
+ 	for i := len(stages) - 1; i >= 0; i-- {
+ 		if stages[i].Name == name {
+-			return stages[i], true
++			return stages[i], i, true
++		}
++	}
++	return runmanifest.Stage{}, 0, false
++}
++
++func sessionSeenBefore(stages []runmanifest.Stage, sessionID string) bool {
++	for _, stage := range stages {
++		if session := stage.Producer.Session; session != nil && session.SessionID == sessionID {
++			return true
+ 		}
+ 	}
+-	return runmanifest.Stage{}, false
++	return false
+ }
+ 
+ func appendPriorAttemptArtifact(refs []runmanifest.ArtifactRef, inputs []replay.RunInput, files map[string][]byte, source runmanifest.ArtifactRef, role string) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
+diff --git a/internal/liverun/gate_test.go b/internal/liverun/gate_test.go
+index 5c3cb9e..a061151 100644
+--- a/internal/liverun/gate_test.go
++++ b/internal/liverun/gate_test.go
+@@ -859,6 +859,45 @@ func TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs(t *t
+ 	}
+ }
+ 
++func TestBuildPriorAttemptInputsSeedsSessionHistoryFromPassedAttempts(t *testing.T) {
++	as := artifactstore.New()
++	upstreamArtifact, err := as.AddContent("upstream", "text/plain", []byte("passed output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	blockedArtifact, err := as.AddContent("plan", "text/plain", []byte("blocked output"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	session := func() *runmanifest.SessionEvidence {
++		return &runmanifest.SessionEvidence{
++			SessionID:       "reused-session",
++			RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
++			RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
++		}
++	}
++	stages := []runmanifest.Stage{
++		{Name: "upstream", Output: runmanifest.ArtifactFromManifestArtifact(upstreamArtifact), Producer: runmanifest.Producer{Session: session()}},
++		{Name: "plan", Output: runmanifest.ArtifactFromManifestArtifact(blockedArtifact), Producer: runmanifest.Producer{Session: session()}},
++	}
++	gates := []runmanifest.GateAttempt{
++		{GateID: "upstream.r1", Phase: "upstream", Round: 1, Status: runmanifest.GateStatusPass, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "upstream"}}},
++		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
++	}
++
++	_, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
++	if err != nil {
++		t.Fatalf("buildPriorAttemptInputs: %v", err)
++	}
++	var index priorAttemptsIndex
++	if err := json.Unmarshal(inputs[0].Content, &index); err != nil {
++		t.Fatalf("decode index: %v", err)
++	}
++	if len(index.Attempts) != 1 || !index.Attempts[0].ResumedSession {
++		t.Fatalf("attempt index = %#v, want killed attempt marked resumed from earlier passed producer", index.Attempts)
++	}
++}
++
+ func TestBuildPriorAttemptInputsRequiresOneReviewedStage(t *testing.T) {
+ 	as := artifactstore.New()
+ 	outputArtifact, err := as.AddContent("plan", "text/plain", []byte("output"))
+diff --git a/internal/replay/record.go b/internal/replay/record.go
+index 17358f8..3dd71e4 100644
+--- a/internal/replay/record.go
++++ b/internal/replay/record.go
+@@ -4,12 +4,16 @@ import (
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"time"
+ 
++	"github.com/joshuavial/etude/internal/artifactmedia"
+ 	"github.com/joshuavial/etude/internal/artifactstore"
+ 	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
++	"github.com/joshuavial/etude/internal/sessionevidence"
+ )
+ 
+ // RecordedRun is the result of RunRecorder.Record: the identity of the new
+@@ -33,6 +37,11 @@ type RunRecorder struct {
+ 	// Now returns the current time. Defaults to time.Now when nil; tests inject a
+ 	// fixed clock to make replay run ids deterministic.
+ 	Now func() time.Time
++	// SessionScratchDir and SessionWorktreeDir are the containment roots from
++	// the runner invocation. They remain live through Record and let a reported
++	// transcript_path be imported without trusting an arbitrary filesystem path.
++	SessionScratchDir  string
++	SessionWorktreeDir string
+ }
+ 
+ // Record writes a new linked replay run and returns its identity.
+@@ -81,6 +90,14 @@ func (r RunRecorder) Record(
+ 		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
+ 		logRef = &ref
+ 	}
++
++	producer := res.Producer
++	if res.Session != nil && strings.ToLower(strings.TrimSpace(producer.Harness.Name)) != "shell" {
++		if err := ValidateSessionInfo(res.Session); err != nil {
++			return RecordedRun{}, fmt.Errorf("record: runner session: %w", err)
++		}
++		producer.Session = r.buildSessionEvidence(as, sourceStageName+"-transcript", res.Session)
++	}
+ 	files := as.Files()
+ 
+ 	// Copy each source input raw from the source commit. Using ReadCommitFile
+@@ -97,18 +114,6 @@ func (r RunRecorder) Record(
+ 
+ 	// Build the stage. Both Stage.Skill and Stage.Producer must be set
+ 	// (mirrors capture.go's pattern; validateStage requires Skill fields).
+-	producer := res.Producer
+-	if res.Session != nil && strings.ToLower(strings.TrimSpace(producer.Harness.Name)) != "shell" {
+-		if err := ValidateSessionInfo(res.Session); err != nil {
+-			return RecordedRun{}, fmt.Errorf("record: runner session: %w", err)
+-		}
+-		producer.Session = &runmanifest.SessionEvidence{
+-			SessionID:       res.Session.SessionID,
+-			TranscriptURI:   res.Session.TranscriptURI,
+-			RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+-			RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+-		}
+-	}
+ 	skill := producer.Skill
+ 	stage := runmanifest.Stage{
+ 		Name:       sourceStageName,
+@@ -151,6 +156,69 @@ func (r RunRecorder) Record(
+ 	}, nil
+ }
+ 
++func (r RunRecorder) buildSessionEvidence(as *artifactstore.Store, role string, session *SessionInfo) *runmanifest.SessionEvidence {
++	evidence := &runmanifest.SessionEvidence{
++		SessionID:       session.SessionID,
++		TranscriptURI:   session.TranscriptURI,
++		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
++		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
++	}
++	if strings.TrimSpace(session.TranscriptPath) == "" {
++		return evidence
++	}
++
++	path, root := resolveRecordedTranscriptPath(session.TranscriptPath, r.SessionScratchDir, r.SessionWorktreeDir)
++	if root == "" {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	content, err := sessionevidence.ReadRegularFileUnder(root, path)
++	if err != nil {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
++	if err := sessionevidence.ScanForSecrets(content); err != nil {
++		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
++		return evidence
++	}
++	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
++	artifact, err := as.AddContent(role, artifactmedia.Infer(path), content)
++	if err != nil {
++		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
++		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
++		return evidence
++	}
++	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
++	evidence.TranscriptArtifact = &ref
++	return evidence
++}
++
++func resolveRecordedTranscriptPath(pathValue, scratchDir, worktreeDir string) (string, string) {
++	if filepath.IsAbs(pathValue) {
++		for _, root := range []string{scratchDir, worktreeDir} {
++			if root == "" {
++				continue
++			}
++			rel, err := filepath.Rel(root, pathValue)
++			if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++				return pathValue, root
++			}
++		}
++		return "", ""
++	}
++	if scratchDir != "" {
++		scratchPath := filepath.Join(scratchDir, pathValue)
++		if _, err := os.Lstat(scratchPath); err == nil {
++			return scratchPath, scratchDir
++		}
++	}
++	if worktreeDir != "" {
++		return filepath.Join(worktreeDir, pathValue), worktreeDir
++	}
++	return "", ""
++}
++
+ // AllocateRunID probes for a free replay run id, trying base then
+ // base-2 through base-10. Returns an error if none are free.
+ // Mirrors allocateReplayRunID (now exported for use by bench).
+diff --git a/internal/replay/record_test.go b/internal/replay/record_test.go
+index 6cd9b46..d335ebd 100644
+--- a/internal/replay/record_test.go
++++ b/internal/replay/record_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"errors"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -141,6 +143,50 @@ func TestRunRecorderHappyPath(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunRecorderImportsSessionTranscript(t *testing.T) {
++	store, _, resolved := seedRunForRecord(t)
++	scratch := t.TempDir()
++	transcript := []byte("recorded replay transcript\n")
++	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	res := RunResult{
++		Output:    []byte("replay output"),
++		MediaType: "text/plain",
++		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: "transcript.jsonl"},
++		Producer: runmanifest.Producer{
++			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		},
++	}
++	rec := RunRecorder{
++		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC) },
++		SessionScratchDir: scratch,
++	}
++	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
++	if err != nil {
++		t.Fatalf("Record: %v", err)
++	}
++	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
++	if err != nil {
++		t.Fatal(err)
++	}
++	m, err := runmanifest.ParseJSON(raw)
++	if err != nil {
++		t.Fatal(err)
++	}
++	session := m.Stages[0].Producer.Session
++	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed || session.TranscriptArtifact == nil {
++		t.Fatalf("session evidence = %#v", session)
++	}
++	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(got, transcript) {
++		t.Fatalf("transcript bytes = %q, want %q", got, transcript)
++	}
++}
++
+ // TestRunRecorderInputBytesCopiedVerbatim verifies that source input raw bytes
+ // appear byte-identical in the recorded replay run (reading from the source commit
+ // path is the mechanism that handles both content and pointer records correctly).
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index bd1f5ce..ba41b79 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -34,8 +34,8 @@ var (
+ type Manifest struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = schema with stage-log artifact refs.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+ 	ManifestVersion int
+ 	RunID           string
+ 	Workflow        string
+@@ -932,8 +932,8 @@ func cloneBytes(in []byte) []byte {
+ type manifestJSON struct {
+ 	// ManifestVersion versions the on-disk document format.
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+-	// 3 = schema with gates.
+-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
++	// 3 = schema with gates; 4 = schema with stage-log artifact refs.
++	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
+ 	ManifestVersion int    `json:"manifest_version,omitempty"`
+ 	RunID           string `json:"run_id"`
+ 	Workflow        string `json:"workflow"`
+@@ -1128,6 +1128,12 @@ func (m Manifest) toJSON() manifestJSON {
+ 			gatesOut = append(gatesOut, gate.toJSON())
+ 		}
+ 	}
++	for _, stage := range m.Stages {
++		if stage.Log != nil {
++			version = 4
++			break
++		}
++	}
+ 
+ 	return manifestJSON{
+ 		ManifestVersion: version,
+@@ -1262,13 +1268,14 @@ func ensureEOF(dec *json.Decoder) error {
+ }
+ 
+ func (m manifestJSON) toManifest() (Manifest, error) {
+-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
++	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
++	// and 4 (with stage-log artifact refs).
+ 	// Reject 1 (never emitted) and any future version this binary cannot model.
+ 	switch m.ManifestVersion {
+-	case 0, 2, 3:
++	case 0, 2, 3, 4:
+ 		// accepted
+ 	default:
+-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
++		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+ 	}
+ 
+ 	created, err := parseTime("created", m.Created)
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 45e88d1..7b5f644 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1602,8 +1602,8 @@ func TestValidateGateRejects(t *testing.T) {
+ 	})
+ }
+ 
+-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
+-// and rejects 1 and 4 with ErrInvalidManifest.
++// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3,
++// and 4, and rejects unsupported versions with ErrInvalidManifest.
+ func TestVersionAllowlist(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	m := validManifest(output)
+@@ -1635,8 +1635,34 @@ func TestVersionAllowlist(t *testing.T) {
+ 		}
+ 	})
+ 
++	// Version 4: a stage-log artifact requires the stage-log schema.
++	t.Run("accept version 4", func(t *testing.T) {
++		m4 := validManifest(output)
++		log := contentArtifact("stage-log", "application/octet-stream", []byte("log"))
++		m4.Stages[0].Log = &log
++		j, err := m4.JSON()
++		if err != nil {
++			t.Fatalf("JSON: %v", err)
++		}
++		if !strings.Contains(string(j), `"manifest_version": 4`) {
++			t.Fatalf("stage log did not emit manifest_version 4:\n%s", j)
++		}
++		if _, err := ParseJSON(j); err != nil {
++			t.Fatalf("ParseJSON rejected version 4: %v", err)
++		}
++
++		// Development builds briefly emitted stage logs under v2/v3 before v4
++		// existed. Keep those durable refs readable while all new writes use v4.
++		for _, legacyVersion := range []int{2, 3} {
++			legacy := strings.Replace(string(j), `"manifest_version": 4`, fmt.Sprintf(`"manifest_version": %d`, legacyVersion), 1)
++			if _, err := ParseJSON([]byte(legacy)); err != nil {
++				t.Fatalf("ParseJSON rejected legacy stage log at version %d: %v", legacyVersion, err)
++			}
++		}
++	})
++
+ 	// Versions that should be rejected.
+-	for _, v := range []int{1, 4, 5, 100} {
++	for _, v := range []int{1, 5, 100} {
+ 		v := v
+ 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
+ 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
