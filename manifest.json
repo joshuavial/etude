@@ -435,6 +435,46 @@
         "degraded_reason": "Opus was run as the required unnamed in-harness general-purpose Task with model opus because that seat cannot be represented by the subprocess gate adapter."
       },
       "timestamp": "2026-08-15T23:55:00Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r3",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Fix the gate-packet test extractor false negative; tracked as etude-84u.",
+            "An explicit empty fixture slice would make the empty-corpus fake intent more obvious.",
+            "The resolved-unreadable-path test uses a directory EISDIR failure, so its name is broader than the exact mechanism."
+          ],
+          "timestamp": "2026-08-16T00:03:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "This is the allowed confirmation re-gate with only the seat whose non-blocking follow-ups were folded. Codex already passed the production-and-test diff in implement.r2. Opus ran as the required unnamed in-harness Task.",
+        "deferred_beads": [
+          "etude-84u"
+        ]
+      },
+      "timestamp": "2026-08-16T00:03:00Z"
     }
   ]
 }
