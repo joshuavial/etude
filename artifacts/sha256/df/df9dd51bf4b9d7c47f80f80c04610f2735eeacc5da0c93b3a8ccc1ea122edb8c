@@ -1,0 +1,8 @@
+✓ etude-f6h · Gitignore the gen-docs build artifact (make docs leaves ./gen-docs untracked)   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: gitignored /gen-docs (root-anchored, doesn't hide cmd/gen-docs source); the stray binary from go build ./cmd/gen-docs no longer shows untracked; Tier-3 gate passed, 9ff869b
+
+DESCRIPTION
+make docs / make docs-check build a ./gen-docs binary (14MB) in the repo root that is not gitignored, so it shows as untracked after running the docs targets. Add it to .gitignore (or have the Makefile clean it up). Surfaced during etude-712. Trivial repo-hygiene; kept out of 712 to stay scoped.
+
