@@ -1,0 +1,144 @@
+✓ etude-roadmap.2.4 · Update dogfood workflow to capture gate reviewers   [● P0 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Wired dogfood workflow to capture structured gate-reviewer records via etude capture-gate (57deaf9): new scripts/dogfood-gate-capture.sh (build-fresh, fetch, append, verify-before-push) + runbook 'Structured capture' conventions (seat harness/provider/model table, verdict mapping incl failure_note, combined-gate note) + capture-protocol note. Four-seat gate PASS (3 GO incl Opus throwaway-repo verification; pilms skipped). Demonstration on .4's own run follows.
+
+DESCRIPTION
+Update the dogfood capture protocol and dev workflow conventions so every review gate records structured reviewer results. This should replace prose-only gate summaries as the durable source of truth while still allowing human-readable notes.
+
+Acceptance:
+- runbook names the structured capture step for each gate attempt
+- reviewer seat conventions specify harness/provider/model values for Opus, Gemini, Codex, and pilms
+- pi/pilms is explicitly captured with provider=lmstudio and model=qwen/qwen3.6-35b-a3b
+- process covers reruns, empty outputs, auth failures, quota failures, and disregarded malfunctioning seats
+- at least one new dogfood run demonstrates structured gate reviewer records
+
+DESIGN
+## Plan
+
+**Approach:** This bead is docs/process + one small self-contained helper script + one
+demonstration capture. It does NOT touch the Go `capture-gate` code (shipped in .2). Three
+moves: (1) extend the dogfood docs so every gate attempt now ALSO emits a structured
+`GateAttempt` JSON and runs `etude capture-gate` against the bead's run ref — making structured
+records the durable source of truth, with prose notes kept as a human-readable mirror; (2) add a
+thin wrapper script `scripts/dogfood-gate-capture.sh` that builds etude fresh, sanity-checks the
+run exists, runs `capture-gate --gate-file`, VERIFIES the local append, and only then pushes the
+ref — lowest-friction for the autonomous /loop because the orchestrator already holds every seat's
+verdict/feedback/provider at gate time and only has to hand-author one JSON doc per attempt; (3)
+demonstrate it on THIS bead's OWN new dogfood run — `refs/etude/runs/etude-roadmap.2.4`, created
+by .4's normal post-close dogfood-capture — by encoding .4's OWN real gate attempt(s) (its plan
+gate, incl. the codex+gemini BLOCK→rerun and pilms disregarded, plus its implement+final gate) as
+`GateAttempt`s and appending them via the new script. This is a genuinely NEW run (satisfies "a
+new dogfood run demonstrates structured gate reviewer records") AND real production dogfood data
+(not synthetic), and it dogfoods the new capability on the very bead that introduces it.
+Backfilling PRE-EXISTING runs (roadmap.2.2 etc.) is explicitly bead .5's scope, NOT this bead.
+Gate JSON authored by hand (NOT a generated assembler): a GateAttempt is small and the
+orchestrator writes it once per attempt; a generator script would be more surface for no payoff.
+dogfood-capture.sh is left UNCHANGED — stage capture runs once post-close, gates run per-attempt
+at gate time (a different lifecycle), so gate capture is a separate script, not a new step bolted
+onto the stage script.
+
+**Files:**
+- `docs/plans/dogfood/review-gate-runbook.md` - extend the existing "Recording Results" section:
+  after the prose-note block, add a "Structured capture (etude capture-gate)" subsection naming
+  the per-attempt step (emit gate JSON -> `scripts/dogfood-gate-capture.sh <bead> <gate.json>`),
+  documenting the exact snake_case gate-file shape (gate_id `<phase>.r<round>`, phase, round,
+  tier, status pass|rerun|escalated, reviewed_stages with real stage names + artifact shas or
+  name-only `artifact:""`, seats, decision, timestamp), the REVIEWER-SEAT CONVENTIONS table
+  (acceptance #2) pinning harness/provider/model per seat, and the per-outcome verdict mapping
+  (acceptance #3): GO->go(+optional), BLOCK->block(+required, status rerun, next round = new
+  attempt with round+1), auth/quota failure->failed(+failure_note), empty completion->empty
+  (+failure_note), root-caused outage->malfunction(+failure_note), autonomous-loop skip->
+  disregarded(+failure_note AND decision.degraded_reason). State explicitly that `failure_note` is
+  REQUIRED for every non-go/block verdict (failed/empty/malfunction/disregarded) — the schema's
+  validateGate enforces this, and the convention must say so, so seats like pilms always carry
+  both `failure_note` (what broke) and `decision.degraded_reason` (why the gate still passed).
+  Cross-link from "Reruns" (each rerun = a new GateAttempt, round incremented) and note prose
+  notes remain the human mirror, structured is the source of truth. Add a one-line note that a
+  COMBINED gate (e.g. "Implement+Final") is modeled as a single GateAttempt whose `phase`/`gate_id`
+  names the dominant phase and whose `reviewed_stages` lists the artifacts it actually reviewed
+  (e.g. implement+verify) — a deliberate modeling choice, not "the implement gate only".
+- `docs/plans/dogfood/capture-protocol.md` - in the existing "Review Gate Capture" section, add
+  that gate results are ALSO captured structurally via `etude capture-gate` (append-only to the
+  run ref, one GateAttempt per attempt) and point to the runbook's conventions; keep the prose
+  block as the human-readable mirror. Note this is now the import-ready structured form (replaces
+  the "future import" hand-parsing of prose for gates).
+- `scripts/dogfood-gate-capture.sh` (NEW) - self-contained: usage `<bead-id> <gate-json-file>`;
+  builds etude fresh to a mktemp bindir (mirrors dogfood-capture.sh; never uses an ambient
+  binary), `git fetch`es the run ref then verifies it exists (so capture-gate's ExpectedOld CAS
+  guards against a stale tip and fails loudly rather than clobbering), runs `"$bin" capture-gate
+  --run <bead> --gate-file <file>` (LOCAL append). Then — BEFORE pushing — VERIFIES the local
+  result: read back the manifest via `git cat-file -p refs/etude/runs/<bead>:manifest.json | python3`
+  (NOT `run show --json`, which does not exist), assert `manifest_version == 3` and the appended
+  gate_id is present, and echo the resolved tip + gate count; exit non-zero if the assertion fails.
+  ONLY after local verification passes does it `git push origin refs/etude/runs/<bead>`. No flags,
+  no JSON assembly — it wraps the built binary + verify + push.
+
+**Tests:** No Go code changes, so no unit tests. Verified in two phases:
+1. **Script behaviour — THROWAWAY repo first (synthetic; per the isolation rule).** Before any
+   real use, exercise `scripts/dogfood-gate-capture.sh` in a throwaway `git init` repo under /tmp:
+   create a run (capture a stage), author a gate JSON, run the script, and confirm: it appends
+   (manifest_version 3, gate present), the local verify-before-push assertion fires (test the
+   FAILURE path too — a bad gate JSON must exit non-zero and NOT push), and a clean run pushes.
+   This proves the mutating/push behaviour synthetically without touching real refs.
+2. **Real demonstration — on THIS bead's OWN new run (real dogfood data).** During .4's normal
+   post-close dogfood-capture, the run `refs/etude/runs/etude-roadmap.2.4` is created with its
+   stages. Then author .4's OWN GateAttempt(s) from its real gate notes — the plan gate (codex
+   BLOCK→GO + gemini BLOCK→GO across rounds, opus GO, pilms disregarded + failure_note +
+   decision.degraded_reason) and the implement+final gate — with `reviewed_stages` citing .4's own
+   stage names (artifact shas or name-only `artifact:""`), and run the script against
+   `etude-roadmap.2.4`. Verify by reading manifest.json back from the ref: `manifest_version` 3,
+   `gates` present with the attempt(s), pilms = lmstudio / qwen/qwen3.6-35b-a3b, original stages
+   untouched, ref pushed. This is a genuinely NEW run AND real (not synthetic) dogfood data;
+   backfilling pre-existing runs is bead .5.
+
+**Docs:** The two dogfood planning docs above ARE the doc deliverable (acceptance #1-#3). No
+user-facing CLI prose or generated reference changes — `docs/cli/etude_capture-gate.md` already
+shipped in .2 and the command is unchanged. The runbook/protocol are planning notes under
+docs/plans, so the "shipped docs describe implemented behavior" policy is satisfied (capture-gate
+exists; pilms provider is real).
+
+**Risks:**
+- Writing a real ref: the demonstration writes only THIS bead's OWN new run
+  (`refs/etude/runs/etude-roadmap.2.4`), not an old pushed ref — and only after the script's
+  mutating/push behaviour is proven in a throwaway repo first, and only after the local
+  verify-before-push assertion passes. capture-gate is additive + validates referential integrity
+  + fails loudly without mutating on bad input. The `git fetch` + ExpectedOld CAS guards a stale
+  tip.
+- reviewed_stages artifact integrity: the gate JSON must cite an EXACT Output/Inputs sha of a real
+  stage on .4's run, or use `artifact:""` name-only. Low risk, caught by validation if wrong.
+- Scope: strictly the two docs + one new script + one demonstration capture on .4's own run. The
+  Go capture-gate code stays untouched; backfilling pre-existing runs is bead .5, not here.
+
+**Capture:**
+- inputs: bead etude-roadmap.2.4 (description + acceptance), spec docs/plans/product/gate-reviewer-record-schema.md (§4 wire shape, §5 worked example, verdict semantics), internal/cli/capture.go (gateInputJSON DTOs — exact snake_case gate-file contract), scripts/dogfood-capture.sh (build-fresh + push pattern to mirror), docs/plans/dogfood/review-gate-runbook.md (Recording Results / Reruns / Result Classification), docs/plans/dogfood/capture-protocol.md (Review Gate Capture), bd show etude-roadmap.2.2 notes (real four-seat gate outcomes), etude run show etude-roadmap.2.2 (real stage names + artifact shas)
+- output: bead --design field
+
+
+NOTES
+Raised to P0: dogfood must start capturing reviewer seat provenance and gate outcomes structurally once the capture path exists; until then the richest retro evidence remains invisible to etude.
+## Plan gate — four-seat: PASS (3 substantive GO, pilms skipped per outage)
+- codex: BLOCK→GO. BLOCK: verdict mapping omitted failure_note for malfunction/disregarded (AC#3). Fixed: failure_note required for all non-go/block verdicts (schema-enforced); pilms carries failure_note + decision.degraded_reason.
+- gemini: BLOCK→GO. BLOCKs: (1) backfilling old roadmap.2.2 ≠ AC#4 "new run"; (2) test ref-mutating+push script in throwaway repo first; (3) verify local append before push. Fixed: demo now targets THIS bead's OWN new run refs/etude/runs/etude-roadmap.2.4 (real data, new run; backfill is .5's scope); script throwaway-tested first incl. failure path; script verifies (git cat-file manifest, assert v3+gate) BEFORE push.
+- Claude Opus (in-harness): GO. Empirically verified capture-gate DTO contract accurate, additive+fail-closed (throwaway /tmp test), doc placement sound, separate-script call right; recommended the real-ref append as SAFE (but a synthetic fresh run would be less faithful — resolved by using .4's OWN real gate on a new run). Folded its optionals: git fetch + ExpectedOld CAS; combined-gate modeling note; git cat-file readback (run show has no --json).
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+Scope: docs/plans/dogfood/review-gate-runbook.md + capture-protocol.md + NEW scripts/dogfood-gate-capture.sh; demonstration on .4's own run. No Go changes.
+## Implement+Final gate — four-seat: PASS (3 substantive GO, pilms skipped per outage)
+Reviewed: NEW scripts/dogfood-gate-capture.sh + docs (review-gate-runbook.md "Structured capture" subsection + capture-protocol.md note). No Go changes.
+- codex (GPT-5.5 xhigh): GO. Script ordering correct (build-fresh, fetch best-effort, require run ref, local append, verify manifest_version==3 + gate_id BEFORE push, set -euo pipefail prevents push on verify failure); docs match DTO/verdict/failure_note/seat-pins/combined-gate. Nit (folded): absolutize gate_file before cd so relative paths from a subdir resolve.
+- gemini Pro: GO. Safe verify-before-push; strict pipeline; docs comprehensively map the ground-truth schema + anchors.
+- Claude Opus (in-harness): GO. Empirical throwaway-repo test (full etude copy + bare origin): good gate appended→v3→verified→pushed; bad gate (dangling artifact) rejected, set -e aborted before push, refs unchanged; nonexistent/missing-file/argc clean exits; pipefail proof (verify failure stops before push); multi-round append carries prior+new blobs; failed-seat/escalated path works and failure_note enforcement confirmed. Verified docs vs validateSeat (lines 497-506), run show has no --json (git cat-file is correct), cross-link anchor matches slug. Scope clean (script + 2 docs). Optionals (no change): verdict-table block→rerun is shorthand (escalated also valid); fetch||true swallow is safe (CAS catches stale tip).
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+Demonstration (acceptance #4) runs post-close on .4's own new run refs/etude/runs/etude-roadmap.2.4.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-roadmap.2: (EPIC) Capture gate reviewer visibility ● P0
+
+DEPENDS ON
+  → ✓ etude-roadmap.2.2: Implement gate reviewer capture ● P2
+
+BLOCKS
+  ← ○ etude-roadmap.2.6: Document gate reviewer visibility ● P2
+
