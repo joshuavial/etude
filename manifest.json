@@ -389,6 +389,57 @@
         ]
       },
       "timestamp": "2026-08-15T06:50:02Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verification"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Record validateStageName's non-empty caller precondition",
+            "Do not add a synthetic node encoder injection seam"
+          ],
+          "timestamp": "2026-08-15T06:40:35Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T06:40:35Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-kcd"
+        ]
+      },
+      "timestamp": "2026-08-15T06:40:35Z"
     }
   ]
 }
