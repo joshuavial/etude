@@ -1,0 +1,32 @@
+## Plan
+
+**Approach:** Add a top-level `etude prime` cobra command that prints a static, structured READ-ONLY primer to stdout and exits 0 anywhere (no refstore, no git, no network, no writes). Mirror the bd prime shape. The primer body is built in Go (not a docs file) so it is always available offline: a static template for purpose/concepts/storage/workflow sections plus a DYNAMICALLY-DERIVED 'available commands' list. To kill implemented-vs-planned drift, the available list is generated at runtime by walking cmd.Root().Commands() and emitting each non-hidden subcommand's Use+Short (recursing one level so run list/show and retro list/show/capture/generate appear). PLANNED-but-unregistered commands (standalone `eval`, `import`) live in a separate explicit 'Planned / not yet built' section. NOTE: the bead's stale lists are wrong — derive from the live tree (bench/capture/capture-gate/capture-run/gc/init/reindex/replay/retro/run/sync are all SHIPPED).
+
+**Files:**
+- internal/cli/prime.go - new. newPrimeCommand(out, errOut). cobra.Command{Use: "prime", Short, Args: cobra.NoArgs, SilenceUsage/Errors}. RunE walks cmd.Root().Commands(), skips hidden + the auto 'help'/'completion' commands, formats each via a renderPrimer(root) helper that splices the derived command list into the static template, writes to cmd.OutOrStdout(). The registered `prime` command IS included in the derived available-commands list (it is a real command an agent can run); do NOT special-case-exclude prime from its own primer. No refstore.New, no git calls.
+- internal/cli/prime_test.go - new. Drift-proofing + content + side-effect-free tests (below).
+- internal/cli/root.go - add cmd.AddCommand(newPrimeCommand(out, errOut)) in alpha order (after newInitCommand / before newReindexCommand).
+
+**Primer sections (concise, agent-context-budget):**
+1. WHAT/PURPOSE: etude empirically tests AI coding-agent skills by capturing stage artifacts as git-native run records and replaying past work.
+2. CORE CONCEPTS (per BRIEF s3): workflow, stage (inputs->output), artifact (content-addressed immutable blob), run (one workflow pass w/ manifest), replay, eval (rubric/pairwise/assertion — library, no CLI), cohort, bench (headline: replay+eval a stage across a cohort).
+3. STORAGE MODEL: refs/etude/* namespace (runs/<id>, evals/<id>), content-addressed artifacts under artifacts/sha256/<aa>/<hash>, per-run manifest.json (manifest_version 2, stages w/ producer harness/model/skill + git_sha).
+4. COMMANDS: 'Available' (derived from cobra tree, with Short — includes prime itself) + 'Planned / not yet built' = standalone eval CLI (eval is a library used by bench), import (xenota/GitHub, Phase 1).
+5. WORKFLOW: typical capture flow + .etude/workflow.yaml (name + ordered stages w/ produces/inputs/skill/eval) created by 'etude init'.
+
+**Tests (prime_test.go):**
+- TestPrimeRunsAnywhere: ExecuteWithWriters(prime) in a NON-git temp dir (t.Chdir to t.TempDir) -> err==nil, stderr=='', non-empty stdout. Confirms no repo/git/side-effect dependency.
+- TestPrimeDriftGuard (the key test): build root via NewRootCommand, walk EVERY registered non-hidden subcommand name (+ one level of subcommands), assert each appears in prime output. The registered `prime` command is NOT excluded from this assertion — prime appears in its own primer and is covered by the guard like any other command. (If for some reason the primer would naturally omit a command, the test must account for that explicitly; default is: prime is present + covered.) Adding a future command without it surfacing in the primer FAILS this test. Also assert the planned-list names (eval, import) are NOT registered commands (no overlap / mislabel).
+- TestPrimeContent: stdout contains the section anchors + key terms (refs/etude/, artifacts/sha256, manifest.json, workflow.yaml, bench, replay) and the 'Planned' markers for eval/import.
+- TestPrimeNoArgs: `prime foo` -> error (cobra.NoArgs).
+
+**Docs:**
+- The etude-712 drift guard DOES enumerate the cobra command tree, so adding the new `prime` command WILL require a generated CLI reference page. The Docs phase MUST run `make docs` to (a) generate a new docs/cli/etude_prime.md page and (b) refresh docs/cli/etude.md with the new subcommand entry; the new page must be committed. `make docs-check` and `TestDriftGuard` MUST be green before advancing. (No additional hand-written prose docs are required by the acceptance criteria — the primer ships in-binary.)
+
+**Risks:** Low. Read-only, isolated. Only nuance: the drift test must account for cobra's auto-injected 'help'/'completion' commands and any hidden flags/commands so the derive-and-assert logic stays stable; mitigated by filtering hidden + the help/completion names.
+
+**Capture:**
+- inputs: bead etude-7no (desc/DESIGN/AC), internal/cli/root.go (live command tree), gc.go/reindex.go/run.go (command shape + OutOrStdout pattern), root_test.go (test harness execute()), docs/plans/product/BRIEF.md s3-5 (concepts/storage/CLI), .etude/workflow.yaml, bd prime output (model), etude-712 drift guard / make docs pipeline
+- output: bead --design field
+
+**Gate tier:** Tier 1 (full four-seat; running 3-seat degraded since pilms is down — codex + gemini + in-harness Opus). Rationale: the review-gate runbook lists "product code and public CLI behavior" as a Tier-1 trigger, and `etude prime` is a NEW public CLI command (new user-facing surface). Read-only stdout lowers implementation risk and the primer's accuracy is enforced by the drift-guard test, but those mitigations do not remove the public-CLI surface that the runbook gates at Tier 1.
