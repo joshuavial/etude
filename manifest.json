@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.5",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -32,6 +32,61 @@
         "size": 5896
       },
       "timestamp": "2026-08-16T07:05:32.91802Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "d5811bd98336c5077aa29d9a57a0f56d69016047dc1ae0813561674b2a792116"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Make recorded replay propagation of the source original checkout explicit.",
+            "Document that pre-fix v4 manifests fail closed without original_git_sha.",
+            "Keep detached-worktree selection centralized through the manifest accessor.",
+            "packet sha256 6f99ff95ab503f076efb9bf1860e81cf94b0a47029443c4d5897ba20eab199dd"
+          ],
+          "timestamp": "2026-08-16T07:07:31Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet sha256 6f99ff95ab503f076efb9bf1860e81cf94b0a47029443c4d5897ba20eab199dd"
+          ],
+          "timestamp": "2026-08-16T07:07:31Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T07:07:31Z"
     }
   ]
 }
