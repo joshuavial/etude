@@ -1,0 +1,16 @@
+# etude-ldf mirror namespace verification
+
+The pre-land audit found and corrected one contradictory classification: the
+rejected nested `refs/etude/remotes/...` layout could fail the general safety
+contract yet still receive `OK fetch-mirror`. The legacy destination is now an
+explicit FAIL and only the landed sibling `refs/etude-mirror/...` layout counts
+as mirror coverage.
+
+Verified:
+
+- `TestDoctorRejectsNestedRemoteMirrorLayout` passes and requires a non-zero
+  result, `FAIL fetch-refspec`, `WARN fetch-mirror`, and no contradictory OK.
+- `TestDoctorPinsLandedSiblingMirrorNamespace` passes and independently pins
+  the production mirror prefix to `refs/etude-mirror/origin/runs/`.
+- The correction adds no write or network command and does not change the local
+  mirror comparison model.
