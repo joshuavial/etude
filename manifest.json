@@ -539,6 +539,55 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:44:44Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r2",
+          "role": "documentation",
+          "artifact": "ca27b6361213ce7a66ef7161e701dba78473eb5db84fe7350caee140089d21c8"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Collapse the unreachable caller-submodule explanatory combination.",
+            "Clarify that missing original_git_sha refers to a pre-release v4 shape.",
+            "Normalize ragged prose wrapping."
+          ],
+          "timestamp": "2026-08-17T07:50:38Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-17T07:50:38Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:50:38Z"
     }
   ]
 }
