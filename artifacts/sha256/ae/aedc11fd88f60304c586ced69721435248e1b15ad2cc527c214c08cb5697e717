@@ -1,0 +1,124 @@
+# Final review — etude-9uf.4: Shrink the completeness audit
+
+## The change
+
+12 files, **+708 / −2445**. Net −1737.
+
+| File | Before | After |
+|---|---|---|
+| `scripts/dogfood-completeness-audit.sh` | 902 | **223** |
+| `scripts/dogfood-completeness-audit_test.sh` | 1579 | **473** |
+| total | 2481 | 696 |
+
+Counts by `wc -l`. The audit keeps three hard checks — run-ref present, run has
+gates, refs pushed — plus retro cadence as a warning, and the ~40-line header
+recording why the first two survive.
+
+`.lane-done` is untracked operator state, excluded by staging every path by name.
+
+## Acceptance
+
+Revised at the plan gate, because the bead's stated premise was false: nothing
+forces `etude gate`, so the two checks the bead called "structurally true" are in
+fact the only detectors of a supervisor who skipped the model. Both seats upheld
+that, and the bead text and acceptance were updated in this bead.
+
+Against the revised text: exact line count reported; (a), (b), (d) hard and (c)
+warning; the pre-push hook's 0/1/2 contract preserved; a focused test; 2481 lines
+replaced; `make dogfood-audit` exits 0 on a clean tree where it failed before;
+`scripts/pre-push_test.sh` unchanged at 20/20.
+
+## Gate record
+
+**12 attempts across four gates; 4 passed, 8 did not** (6 `rerun`,
+2 `escalated`), counted from the manifest rather than by hand — the habit that
+final review on bead `.3` had to block twice to establish.
+
+| phase | attempts | outcomes |
+|---|---|---|
+| `plan` | 2 | pass ×1, rerun ×1 |
+| `implement` | 3 | pass ×1, rerun ×2 |
+| `verify` | 3 | escalated ×2, pass ×1 |
+| `docs` | 4 | pass ×1, rerun ×3 |
+
+Both `escalated` attempts are the `opus` seat having no working subprocess path
+(bead `etude-8li`), which is `etude gate` failing closed on an incomplete panel —
+the machine behaving correctly, not a finding.
+
+## What the gates found
+
+This bead SHRANK a safety check that sits on every lane's push path, and that is
+exactly when fail-opens get written. The gates found **eight**, plus three holes
+where a check existed but nothing tested it:
+
+| Where | Defect |
+|---|---|
+| implement r1 | a run ref with no readable `manifest.json` exited **0, clean** on a hard check — `pipefail` plus an `\|\| echo -1` fallback appending to a sentinel already printed |
+| implement r1 | `git ls-remote` failure swallowed by `\|\| true` — an unreachable origin became a pile of "unpushed" gaps and exit 1 instead of exit 2 |
+| implement r2 | a `case` with no default arm |
+| implement r2 | `gates` counted by `len()` with no type check |
+| implement r2 | `mapfile < <(python3 …)` discarding its producer's status — a truncated window read as clean |
+| implement r2 | `for-each-ref` failure making check (d) pass vacuously |
+| verify r2 | `for-each-ref` guard downgradeable to `\|\| true` with the suite green |
+| verify r2 | a python3 failure defaulting to "one gate" — every run would have recorded as gated |
+| verify r1 | **half of check (d) untested**: every case minted only run refs, so deleting `refs/etude/retros` from its sweep left 34/34 green |
+| verify r1 | the fail-closed `case` arm untested — the instance was pinned, the class was not |
+| verify r1 | `cd "$REPO_ROOT"` untested, and the test written for it could not fail |
+
+The first was found independently by both seats and reproduced before fixing. The
+902-line predecessor handled it correctly, so it was a regression this bead
+introduced — into the very check whose job is not to fail open.
+
+**The verify seat did not read the tests, it mutated the script.** That is what
+found the three coverage holes, and every pin was then verified by re-running its
+mutation. A regression never seen to fail is a guess.
+
+## What the docs gate found
+
+Four rounds, three BLOCKs, every one on the artifact claiming a file was clean
+when it was not — and twice on errors the sweep itself had introduced.
+
+Deleting a check invalidates every document that promised the guarantee, and
+correcting those documents can be wrong in **both** directions:
+
+- asserting a guarantee that is gone — `docs/retro.md` still said the sidecar
+  "**is checked by** the dogfood audit script" three sentences below a bold
+  "Nothing enforces it now";
+- past-tensing a behavior that survives — I wrote that the audit's superseded-set
+  was "the pattern used before `etude-9uf.4` shrank it" when the shrunk audit
+  still builds it, in a comment 22 lines above another comment I wrote saying it
+  still uses it.
+
+The second is harder to catch because the sentence looks appropriately humble.
+
+**Nothing mechanical in this repo detects either.** `make docs-check` and
+`make docs-reality` were green through all four rounds and neither reads prose. A
+seat reading the text is the only check there is, and that is worth knowing given
+this bead just removed a documentation-drift check as redundant.
+
+## Honest limits
+
+- **Nothing forces `etude gate`.** (a) and (b) DETECT a skipped model; they do
+  not prevent one. That gap justified keeping them and is not closed here.
+- **Check (b) counts gate ATTEMPTS, not passing verdicts.** A run whose gates all
+  BLOCKed satisfies it.
+- **Check (c) measures retro REFS, lanes write retro MARKDOWN** — `etude-3xt`.
+  It is WARN-only for that reason.
+- **The 7-key sidecar convention is now unenforced** while `retro-meta-index.sh`
+  still consumes it — `etude-k47`.
+- **Check (d) does not cover `refs/etude/evals/*`**, which `etude sync` pushes.
+  Pre-existing scope, unchanged here.
+- **Check (c)'s coverage computation is unpinned** — deletable with the suite
+  green. WARN-only, and `etude-3xt` owns what it measures.
+- **The audit needs the network**, since check (d) calls `git ls-remote`. An
+  unreachable origin is now correctly exit 2 rather than a false gap.
+
+## Ready
+
+`make test`, `make lint`, `make docs-check`, `make docs-reality`,
+`make shell-test` (all four suites), `make dogfood-audit` exit 0,
+`make dogfood-audit-test` 45/45, `make pre-push-test` 20/20.
+
+`etude sync` must precede the code push: check (d) will otherwise gap on this
+bead's own run ref, and the pre-push hook blocks on it. One commit, every path
+staged by name.
