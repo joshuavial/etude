@@ -233,6 +233,78 @@
         "degraded_reason": "pilms reproducible 0-CPU hang all session; other 3 seats unanimous GO; line-by-line equivalence confirmed"
       },
       "timestamp": "2026-05-25T22:32:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-25T22:50:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-25T22:50:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-25T22:51:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang reproduced all session (backend healthy); known artifact, seat skipped",
+          "timestamp": "2026-05-25T22:51:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms reproducible 0-CPU hang all session; other 3 seats unanimous GO round 1; verbatim extraction, existing tests pass unchanged (behavior lock)"
+      },
+      "timestamp": "2026-05-25T22:52:00Z"
     }
   ]
 }
