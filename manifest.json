@@ -140,6 +140,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:28:59Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "b91f4ecb63043d6694c0584613d71b21ac71ce023617ba9e2e5fd908b8b2a308"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Document that concurrent writers after runner completion are outside the synchronous-runner guarantee.",
+            "Reject a submodule added and committed during the caller runner, not only one present before invocation.",
+            "packet path .etude/tmp/etude-5dr.3/implement-gate-r1.md sha256 84da44cee251330bf80e8a2e31451e9f5f1b10e929fc5eb1f712731af521f539"
+          ],
+          "timestamp": "2026-08-16T01:33:04Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "Do not claim fail-closed behavior against arbitrary external writers across the final inspection-to-publication gap; either serialize them or scope the guarantee to the completed synchronous runner required by issue #15."
+          ],
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/implement-gate-r1.md sha256 84da44cee251330bf80e8a2e31451e9f5f1b10e929fc5eb1f712731af521f539"
+          ],
+          "timestamp": "2026-08-16T01:33:04Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:33:04Z"
     }
   ]
 }
