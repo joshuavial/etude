@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-ps9",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -41,6 +41,74 @@
         "size": 3348
       },
       "timestamp": "2026-08-16T03:09:49.468829Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-plan-r1",
+            "artifact": "4bf56fb87388656574a2058ad842f0d90895ae39368e9189f147deb44979fd57",
+            "path": "artifacts/sha256/4b/4bf56fb87388656574a2058ad842f0d90895ae39368e9189f147deb44979fd57",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 1225
+          },
+          "timestamp": "2026-08-16T03:16:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "require non-empty session ids for resumed detection and test empty equality",
+            "name the persisted transcript failure fields and production path used by fail-closed reruns"
+          ],
+          "optional": [
+            "pin ordering, collision behavior, identical digests, deterministic JSON, independent golden, growth and no bypass"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r1",
+            "artifact": "558a172c3d1450e9e0f271811a5674cc42dad887919c9aa5a0c8e5b369a95572",
+            "path": "artifacts/sha256/55/558a172c3d1450e9e0f271811a5674cc42dad887919c9aa5a0c8e5b369a95572",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 944
+          },
+          "timestamp": "2026-08-16T03:16:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:16:00Z"
     }
   ]
 }

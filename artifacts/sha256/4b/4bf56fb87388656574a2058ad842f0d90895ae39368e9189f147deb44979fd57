@@ -1,0 +1,7 @@
+Proportionality: The ancestor is issue #17 ask 3: preserve all prior rerun evidence. Existing manifest/CAS primitives provide storage and atomic publication, but no existing handoff assembler is identified or reimplemented. The measured loss is concrete: each rerun currently receives only gate feedback and loses prior execution context. The relevant actor is the untrusted stage runner; its reachable transcript/session output passes through existing validation before admission.
+
+Cohesion: One change—publish complete prior-attempt evidence as rerun inputs.
+
+Correctness: The contract covers complete history, replacement without losing ordinary inputs, deterministic roles, optional evidence, resumed-session marking, fail-closed transcript handling, and durable gate-before-stage failure behavior. The serial CAS topology introduces no new writer or irreversible operation, so dedup, veto races, generation identity, and crash-prefix sequencing are inapplicable. The proposed two-/three-round, failure-path, persistence, ordering, and race tests have adequate independent detection targets despite lacking a separately labeled “Planned regression” declaration. Blast radius matches the declaration.
+
+VERDICT: PASS

@@ -1,0 +1,8 @@
+The plan is proportional and cohesive, reuses existing CAS/input primitives, and correctly declares a serial CAS topology with no new irreversible action. Two defects block it.
+
+1. Resumed detection compares optional session ids by equality, so two attempts with no session would be falsely marked resumed. Require a non-empty session id and test empty-vs-empty as not resumed.
+2. The fail-closed rule does not name the durable transcript-failure state while declaring no schema change. Name the existing persisted failure fields and the production path that sets them, or include the required schema/importer change.
+
+Follow-ups: order entries by ascending round; preserve colliding ordinary roles without namespace filtering; pin identical-digest distinct-role behavior; exclude nondeterministic fields; use an independent inline JSON golden; document full-evidence input growth and the deliberate lack of a redaction bypass.
+
+VERDICT: BLOCK
