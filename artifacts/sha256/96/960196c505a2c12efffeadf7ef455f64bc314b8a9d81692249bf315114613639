@@ -1,0 +1,935 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a65318a..4ba17e7 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -20,6 +20,21 @@ mechanics.
+ 
+ ---
+ 
++## [Unreleased]
++
++### Fixed
++
++- `etude gate` now hashes the supplied `--artifact` and refuses to run any
++  check or reviewer when it does not match the latest captured output for the
++  stage's role, closing the audit findings where a stale or wrong file could
++  be reviewed and recorded as if it were the captured artifact (A01, A15).
++  Manifest validation now accepts a `reviewed_stages` digest matching any
++  same-named stage occurrence's output, log, or input rather than only the
++  newest, so recapturing a stage under the same name (`--expect append`) keeps
++  earlier gates valid.
++
++---
++
+ ## [v1.0.0] — 2026-07-30
+ 
+ ### Added
+diff --git a/docs/capture.md b/docs/capture.md
+index 1cc1b37..642b305 100644
+--- a/docs/capture.md
++++ b/docs/capture.md
+@@ -109,6 +109,14 @@ fail rather than choose.
+ passed through (reviewer seats, verdicts, provider/model/harness), use
+ `etude capture-gate` — see [Gate reviewer records](gates.md).
+ 
++`etude gate` checks the supplied `--artifact` against the latest captured
++output for the stage's role before it invokes any reviewer, and refuses on a
++mismatch (see [Binding a supervised gate to the reviewed bytes](gates.md#binding-a-supervised-gate-to-the-reviewed-bytes)).
++When reviewed bytes need to change, recapture under the SAME stage name with
++`--expect append` rather than a new name. This appends another occurrence and
++does not replace the earlier one. Earlier gates keep citing the earlier
++occurrence by its recorded digest, so they remain valid after the recapture.
++
+ ## Current Limits
+ 
+ Not implemented yet:
+diff --git a/docs/cli/etude_gate.md b/docs/cli/etude_gate.md
+index ca93c67..9f5bc6d 100644
+--- a/docs/cli/etude_gate.md
++++ b/docs/cli/etude_gate.md
+@@ -8,6 +8,8 @@ Run one stage's review gate and record the attempt on a run
+ 
+ Resolve a stage's gate tier and abstraction from .etude/workflow.yaml, invoke that tier's seats from .etude/registry.yaml against one shared prompt, and append the gate attempt to refs/etude/runs/<run>.
+ 
++The supplied --artifact must be byte-identical to the latest captured output for the stage's role; a mismatch is refused before any reviewer runs.
++
+ Exits 0 only when the gate passes. A blocked gate, a failing check, and a seat outage all exit non-zero, so a supervisor cannot advance past a gate that did not actually pass.
+ 
+ ```
+diff --git a/docs/development.md b/docs/development.md
+index c57c8dc..00c600c 100644
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -123,7 +123,9 @@ Run the plan gate only for high-risk designs. For the final gate, choose exactly
+ one of `review` (consequential, L2) or `routine-review` (routine, L3 for dev-claude,
+ L4 for dev-codex), capturing the matching output role before gating it. Supply
+ `--harness`, `--model` and `--git-sha` when capturing actual agent work. Always
+-recapture changed bytes before a review, preserving earlier attempts.
++recapture changed bytes before a review, preserving earlier attempts. `etude
++gate` enforces this: it refuses a supplied artifact that does not hash to the
++latest captured output for the stage's role, before any check or reviewer runs.
+ 
+ Every configured gate explicitly requires `pass_threshold: 1`. L2 means both
+ Astra and Fable must pass. Auth failures, timeout, missing tools or truncated
+diff --git a/docs/gates.md b/docs/gates.md
+index af4dda1..6ae1bf5 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -66,7 +66,13 @@ The gate file is a single JSON object. Field names mirror the stored record:
+ Appending is additive and validated: existing stages and prior gate attempts are
+ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
+ `reviewed_stages` artifact (when set) must match one of the named stage's
+-recorded artifacts (its output or one of its inputs). The gate JSON is parsed
++recorded artifacts (its output, log, or one of its inputs). A stage name is not
++unique: recapturing the same stage name (for example after fixing reviewed
++bytes) appends another occurrence rather than replacing the earlier one, and
++the artifact only has to match SOME occurrence carrying that name, not
++necessarily the newest. This is what lets an earlier gate keep validating
++against the exact bytes it actually reviewed after the stage is recaptured.
++The gate JSON is parsed
+ strictly: an unknown or misspelled field (at any nesting level) is rejected
+ rather than silently dropped, as is any trailing content after the gate object.
+ Invalid input is rejected without changing the run. A run that carries gates
+@@ -234,6 +240,19 @@ for the full live execution semantics (check/seat invocation, synthesis,
+ rerun, escalate). This section documents the **seat output envelope** contract
+ that seat runners must satisfy when invoked by the live engine.
+ 
++### Binding a supervised gate to the reviewed bytes
++
++`etude gate` hashes the `--artifact` file with SHA-256 and refuses to proceed
++when that digest differs from the latest captured output for the stage's
++role. The refusal happens before any check runs, before any seat is invoked,
++and before anything is written to the run, so a mismatched artifact never buys
++a reviewer's attention or a recorded verdict. The error names the run, stage,
++role, expected digest, supplied digest, and the recapture command to run
++(`etude capture <stage> --run <run> --expect append --output <role>=<path>`)
++before regating. Recapturing under the same stage name, as described above,
++appends a new occurrence rather than replacing the old one, so an earlier gate
++keeps citing the exact bytes it reviewed.
++
+ Live model adapters receive exactly one input file with role `gate-prompt`.
+ It contains the checkout policy and the artifact under review; adapters do not
+ receive the stage's `produces` role as a separate raw input.
+diff --git a/docs/plans/dogfood/supervisor-runbook.md b/docs/plans/dogfood/supervisor-runbook.md
+index cddc278..74dc79f 100644
+--- a/docs/plans/dogfood/supervisor-runbook.md
++++ b/docs/plans/dogfood/supervisor-runbook.md
+@@ -150,7 +150,10 @@ etude gate --run <bead> --stage <phase> --artifact ...
+ 
+ The rerun stage name matches the convention `etude run`'s own gate uses for a
+ re-driven stage. `etude gate` derives the round from the attempts already on the
+-run, so the second attempt records as round 2 without being told.
++run, so the second attempt records as round 2 without being told. The `.r2`
++rename above is a convention, not a requirement: recapturing under the SAME
++stage name with `--expect append` also works and keeps earlier gates valid
++against the earlier occurrence's digest (see [Gate reviewer records](../../gates.md)).
+ 
+ **Verify the ref after every capture.** `git show-ref refs/etude/runs/<bead>`
+ before moving on. The run ref is the whole durable record; a capture that
+diff --git a/internal/cli/gate.go b/internal/cli/gate.go
+index 36aa6ab..562df3c 100644
+--- a/internal/cli/gate.go
++++ b/internal/cli/gate.go
+@@ -41,6 +41,8 @@ func newGateCommand(out, errOut io.Writer) *cobra.Command {
+ 		Long: "Resolve a stage's gate tier and abstraction from .etude/workflow.yaml, " +
+ 			"invoke that tier's seats from .etude/registry.yaml against one shared prompt, " +
+ 			"and append the gate attempt to refs/etude/runs/<run>.\n\n" +
++			"The supplied --artifact must be byte-identical to the latest captured output " +
++			"for the stage's role; a mismatch is refused before any reviewer runs.\n\n" +
+ 			"Exits 0 only when the gate passes. A blocked gate, a failing check, and a " +
+ 			"seat outage all exit non-zero, so a supervisor cannot advance past a gate " +
+ 			"that did not actually pass.",
+diff --git a/internal/liverun/gate_once.go b/internal/liverun/gate_once.go
+index 3f6fcd5..2ac4772 100644
+--- a/internal/liverun/gate_once.go
++++ b/internal/liverun/gate_once.go
+@@ -2,6 +2,8 @@ package liverun
+ 
+ import (
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -29,6 +31,13 @@ var ErrRunNotFound = errors.New("run not found")
+ // producing the gated phase's role — there is nothing for the gate to review.
+ var ErrNoReviewableStage = errors.New("no reviewable stage on run")
+ 
++// ErrArtifactMismatch is returned when the artifact supplied to GateStage does
++// not hash to the same digest as the latest captured output for the stage's
++// produced role. A mismatch means the bytes about to be reviewed are not the
++// bytes actually captured, so the gate refuses before any check, seat
++// invocation, or run-ref write.
++var ErrArtifactMismatch = errors.New("gate artifact does not match captured output")
++
+ // GateRequest describes one supervised gate invocation.
+ //
+ // Unlike runGate, there is no stage runner to re-invoke: a not-pass returns to
+@@ -114,6 +123,23 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest)
+ 			ErrNoReviewableStage, req.RunID, req.Stage.Produces, req.Stage.Name)
+ 	}
+ 
++	// The gate must review the exact bytes that were captured, not merely
++	// whatever file the caller currently points at. Hash req.Artifact — the
++	// same slice handed to buildGatePrompt below — and compare it against the
++	// digest already recorded on the reviewed stage's output. Every stage
++	// output already carries a valid SHA-256 (validateArtifactRef), so there is
++	// no digestless branch to consider.
++	suppliedSum := sha256.Sum256(req.Artifact)
++	supplied := hex.EncodeToString(suppliedSum[:])
++	if supplied != reviewed.Output.Artifact {
++		return GateOutcome{}, fmt.Errorf(
++			"%w: run %s stage %q output role %q is %s but the supplied artifact is %s; "+
++				"recapture it first (etude capture %s --run %s --expect append --output %s=<artifact-path>, "+
++				"where <artifact-path> is the file given to gate --artifact) then rerun this gate",
++			ErrArtifactMismatch, req.RunID, reviewed.Name, req.Stage.Produces, reviewed.Output.Artifact, supplied,
++			reviewed.Name, req.RunID, req.Stage.Produces)
++	}
++
+ 	// Resolve seats for the configured tier. No flag can widen or narrow this.
+ 	var seatNames []string
+ 	if gate.Tier != "" {
+diff --git a/internal/liverun/gate_once_test.go b/internal/liverun/gate_once_test.go
+index 9a28161..afb4646 100644
+--- a/internal/liverun/gate_once_test.go
++++ b/internal/liverun/gate_once_test.go
+@@ -3,6 +3,8 @@ package liverun
+ import (
+ 	"bytes"
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -21,6 +23,13 @@ import (
+ 	"github.com/joshuavial/etude/internal/workflow"
+ )
+ 
++// seededGateArtifact is the exact byte content seedGateRun captures as the
++// reviewed stage's output. Tests that expect checks/seats to actually run must
++// pass this (or newline-equivalent bytes covered by the mismatch table test)
++// as GateRequest.Artifact, or the binding check added in etude-3343 rejects
++// them before either runs.
++const seededGateArtifact = "the artifact under review\n"
++
+ // gateOnceStage is the stage under test: a `verify` stage gated at L2 with an
+ // abstraction, mirroring the repo's own .etude/workflow.yaml.
+ func gateOnceStage(checks []workflow.Runner) workflow.Stage {
+@@ -38,10 +47,17 @@ func gateOnceStage(checks []workflow.Runner) workflow.Stage {
+ // seedGateRun creates a run ref carrying one captured stage that produces the
+ // gated role, which is the precondition `etude gate` enforces.
+ func seedGateRun(t *testing.T, repo, runID, stageName, role string) {
++	t.Helper()
++	seedGateRunWithContent(t, repo, runID, stageName, role, seededGateArtifact)
++}
++
++// seedGateRunWithContent is seedGateRun with the captured output content
++// parameterized, so tests can pin exact newline-boundary bytes.
++func seedGateRunWithContent(t *testing.T, repo, runID, stageName, role, content string) {
+ 	t.Helper()
+ 	store := refstore.New(repo)
+ 	as := artifactstore.New()
+-	art, err := as.AddContent(role, "text/markdown; charset=utf-8", []byte("the artifact under review\n"))
++	art, err := as.AddContent(role, "text/markdown; charset=utf-8", []byte(content))
+ 	if err != nil {
+ 		t.Fatalf("add artifact: %v", err)
+ 	}
+@@ -196,6 +212,154 @@ func TestGateStageRunWithoutReviewableStageIsAClearError(t *testing.T) {
+ 	}
+ }
+ 
++// TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats is the etude-3343
++// regression: a supplied artifact that does not hash to the latest captured
++// output for the stage's role must be refused before any check runs, before
++// any seat is invoked, before ScratchDir is created, and without touching the
++// run ref at all.
++func TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats(t *testing.T) {
++	repo := initTestRepo(t)
++	seedGateRun(t, repo, "r1", "verify", "verify")
++	before, err := refstore.New(repo).Resolve(context.Background(), runsPrefix+"r1")
++	if err != nil {
++		t.Fatalf("resolve before gate: %v", err)
++	}
++
++	checkResolutions := 0
++	seatResolutions := 0
++	e := &Engine{
++		Store: refstore.New(repo),
++		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
++			checkResolutions++
++			return &stubCheckRunner{passed: true}, nil
++		},
++		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
++			seatResolutions++
++			return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{}, nil
++		},
++		Tiers: fixedTiers(map[string][2]interface{}{
++			"L2": {[]string{"opus", "codex"}, "L1"},
++		}),
++		Root: repo,
++		Now:  fixedClock(),
++	}
++
++	scratch := gateScratch(t)
++	mismatched := []byte("this is not the reviewed artifact\n")
++	_, err = e.GateStage(context.Background(), io.Discard, GateRequest{
++		RunID:       "r1",
++		Stage:       gateOnceStage([]workflow.Runner{{Command: "true"}}),
++		Artifact:    mismatched,
++		WorktreeDir: repo,
++		ScratchDir:  scratch,
++	})
++	if !errors.Is(err, ErrArtifactMismatch) {
++		t.Fatalf("expected ErrArtifactMismatch, got %v", err)
++	}
++
++	suppliedSum := sha256.Sum256(mismatched)
++	supplied := hex.EncodeToString(suppliedSum[:])
++	expectedSum := sha256.Sum256([]byte(seededGateArtifact))
++	expected := hex.EncodeToString(expectedSum[:])
++	for _, want := range []string{
++		"r1", "verify",
++		supplied, expected,
++		"etude capture verify --run r1 --expect append --output verify=",
++	} {
++		if !strings.Contains(err.Error(), want) {
++			t.Errorf("error missing %q, got %q", want, err.Error())
++		}
++	}
++
++	if checkResolutions != 0 || seatResolutions != 0 {
++		t.Fatalf("mismatch resolved checks=%d seats=%d, want neither invoked", checkResolutions, seatResolutions)
++	}
++	if _, statErr := os.Stat(scratch); !os.IsNotExist(statErr) {
++		t.Fatalf("ScratchDir was created despite the rejected artifact: err=%v", statErr)
++	}
++	after, err := refstore.New(repo).Resolve(context.Background(), runsPrefix+"r1")
++	if err != nil {
++		t.Fatalf("resolve after gate: %v", err)
++	}
++	if after != before {
++		t.Fatalf("run ref commit changed on a rejected mismatch: before %s after %s", before, after)
++	}
++	if got := readLiveManifest(t, repo, "r1"); len(got.Gates) != 0 {
++		t.Fatalf("rejected mismatch recorded %d gate attempts, want none", len(got.Gates))
++	}
++}
++
++// TestGateStageArtifactNewlineDifferenceIsAMismatch pins the invariant that the
++// binding hash is over the raw bytes with no trimming or normalization: a
++// trailing-newline difference in either direction is a mismatch, and
++// byte-identical content (with or without a trailing newline) passes.
++func TestGateStageArtifactNewlineDifferenceIsAMismatch(t *testing.T) {
++	cases := []struct {
++		name       string
++		seeded     string
++		supplied   string
++		wantReject bool
++	}{
++		{"identical without trailing newline passes", "no trailing newline here", "no trailing newline here", false},
++		{"identical with trailing newline passes", "has a trailing newline\n", "has a trailing newline\n", false},
++		{"seeded has newline, supplied strips it", "has a trailing newline\n", "has a trailing newline", true},
++		{"seeded lacks newline, supplied adds one", "no trailing newline here", "no trailing newline here\n", true},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := initTestRepo(t)
++			seedGateRunWithContent(t, repo, "r1", "verify", "verify", tc.seeded)
++			e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
++
++			_, err := e.GateStage(context.Background(), io.Discard, GateRequest{
++				RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(tc.supplied),
++				WorktreeDir: repo, ScratchDir: gateScratch(t),
++			})
++			if tc.wantReject {
++				if !errors.Is(err, ErrArtifactMismatch) {
++					t.Fatalf("expected ErrArtifactMismatch, got %v", err)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("expected byte-identical content to pass, got %v", err)
++			}
++		})
++	}
++}
++
++// TestGateStageRecordsDigestOfReviewedBytes is R2: the recorded
++// reviewed_stages[0].artifact digest is the digest of the exact bytes every
++// seat reviewed (req.Artifact), which after the binding check is provably
++// equal to the stage's own recorded output digest.
++func TestGateStageRecordsDigestOfReviewedBytes(t *testing.T) {
++	repo := initTestRepo(t)
++	seedGateRun(t, repo, "r1", "verify", "verify")
++	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
++
++	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
++		WorktreeDir: repo, ScratchDir: gateScratch(t),
++	})
++	if err != nil {
++		t.Fatalf("GateStage: %v", err)
++	}
++	if !outcome.Passed() {
++		t.Fatalf("expected pass, got %s", outcome.Status)
++	}
++
++	sum := sha256.Sum256([]byte(seededGateArtifact))
++	want := hex.EncodeToString(sum[:])
++	if len(outcome.Attempt.ReviewedStages) != 1 || outcome.Attempt.ReviewedStages[0].Artifact != want {
++		t.Fatalf("reviewed_stages = %+v, want one entry with artifact %s", outcome.Attempt.ReviewedStages, want)
++	}
++
++	m := readLiveManifest(t, repo, "r1")
++	if len(m.Gates) != 1 || len(m.Gates[0].ReviewedStages) != 1 || m.Gates[0].ReviewedStages[0].Artifact != want {
++		t.Fatalf("stored gate reviewed artifact = %+v, want %s", m.Gates, want)
++	}
++}
++
+ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
+ 	repo := initTestRepo(t)
+ 	seedGateRun(t, repo, "r1", "verify", "verify")
+@@ -206,7 +370,7 @@ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
+ 	outcome, err := e.GateStage(context.Background(), &out, GateRequest{
+ 		RunID:       "r1",
+ 		Stage:       gateOnceStage(nil),
+-		Artifact:    []byte("the artifact under review\n"),
++		Artifact:    []byte(seededGateArtifact),
+ 		WorktreeDir: repo,
+ 		ScratchDir:  gateScratch(t),
+ 	})
+@@ -297,7 +461,7 @@ func TestGateStageOutputOnlySeatsUseNeutralRepoAndChecksUseCallerTree(t *testing
+ 	}
+ 	stage := gateOnceStage([]workflow.Runner{{Command: "inspect-caller"}})
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: stage, Artifact: []byte("artifact"),
++		RunID: "r1", Stage: stage, Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -376,7 +540,7 @@ func TestGateStageBlockDoesNotPassAndCarriesRequired(t *testing.T) {
+ 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), blockEnvelope()}, true, nil)
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -410,7 +574,7 @@ func TestGateStageSeatOutageEscalates(t *testing.T) {
+ 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), nil}, true, nil)
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -439,7 +603,7 @@ func TestGateStageFailingCheckDoesNotPass(t *testing.T) {
+ 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, false, nil)
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(checks), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(checks), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -458,7 +622,7 @@ func TestGateStageRoundIncrementsAcrossInvocations(t *testing.T) {
+ 
+ 	first := gateOnceEngine(t, repo, [][]byte{goEnvelope(), blockEnvelope()}, true, nil)
+ 	o1, err := first.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -470,7 +634,7 @@ func TestGateStageRoundIncrementsAcrossInvocations(t *testing.T) {
+ 
+ 	second := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+ 	o2, err := second.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -517,7 +681,7 @@ func TestGateStageRecordParitesWithCaptureGate(t *testing.T) {
+ 	}
+ 
+ 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	}); err != nil {
+ 		t.Fatalf("GateStage: %v", err)
+@@ -565,7 +729,7 @@ func TestGateStageSeatClaimingMissingTranscriptIsNotGo(t *testing.T) {
+ 	}
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -587,7 +751,7 @@ func TestGateStageRemovesNothingFromPriorRun(t *testing.T) {
+ 
+ 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+ 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	}); err != nil {
+ 		t.Fatalf("GateStage: %v", err)
+@@ -729,7 +893,7 @@ func TestGateStageResolvesDocsStageByRoleNotName(t *testing.T) {
+ 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte("docs artifact"),
++		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -801,7 +965,7 @@ func TestSeatLadderResolvesCandidatesOncePerSeat(t *testing.T) {
+ 	}
+ 
+ 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	}); err != nil {
+ 		t.Fatalf("GateStage: %v", err)
+@@ -823,7 +987,7 @@ func TestSeatLadderPrimarySucceedsFallbackUntouched(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -852,7 +1016,7 @@ func TestSeatLadderFallsThroughAndRecordsTheHarnessThatRan(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -891,7 +1055,7 @@ func TestSeatLadderBlockFromPrimaryIsNeverReplacedByAFallbackGo(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -927,7 +1091,7 @@ func TestSeatLadderSkipsInHarnessAndKeepsGoing(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -957,7 +1121,7 @@ func TestSeatLadderExhaustedRecordsEveryRungAndAHarness(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+@@ -993,7 +1157,7 @@ func TestSeatLadderAllInHarnessRunsNothing(t *testing.T) {
+ 	})
+ 
+ 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
++		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+ 		WorktreeDir: repo, ScratchDir: gateScratch(t),
+ 	})
+ 	if err != nil {
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 52f64c3..050ae2f 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -309,9 +309,12 @@ func (m Manifest) Validate() error {
+ 	}
+ 
+ 	// Build a stage index for referential integrity checks in gate validation.
+-	stageIndex := make(map[string]Stage, len(m.Stages))
++	// Stage names are not unique: a stage may be recaptured under the same name
++	// (e.g. after fixing reviewed bytes), so every occurrence is retained in
++	// declaration order rather than only the latest.
++	stageIndex := make(map[string][]Stage, len(m.Stages))
+ 	for _, stage := range m.Stages {
+-		stageIndex[stage.Name] = stage
++		stageIndex[stage.Name] = append(stageIndex[stage.Name], stage)
+ 	}
+ 
+ 	for _, name := range m.EnvAllowlist {
+@@ -577,7 +580,7 @@ func validateStage(index int, stage Stage) error {
+ 	return nil
+ }
+ 
+-func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) error {
++func validateGate(index int, gate GateAttempt, stageIndex map[string][]Stage) error {
+ 	prefix := fmt.Sprintf("gate[%d]", index)
+ 
+ 	if err := validateIdentifier(prefix+".gate_id", gate.GateID); err != nil {
+@@ -606,7 +609,7 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
+ 		if err := validateIdentifier(refPrefix+".stage", ref.Stage); err != nil {
+ 			return err
+ 		}
+-		stage, ok := stageIndex[ref.Stage]
++		occurrences, ok := stageIndex[ref.Stage]
+ 		if !ok {
+ 			return fmt.Errorf("%w: %s stage %q not found in manifest", ErrInvalidManifest, refPrefix, ref.Stage)
+ 		}
+@@ -619,8 +622,19 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
+ 			if !validSHA256(ref.Artifact) {
+ 				return fmt.Errorf("%w: %s artifact must be a lowercase sha256", ErrInvalidManifest, refPrefix)
+ 			}
+-			// Artifact must match the stage's output or one of its inputs.
+-			if !stageHasArtifact(stage, ref.Artifact) {
++			// The artifact must match the output, log, or an input of SOME stage
++			// occurrence carrying this name — not necessarily the newest one. A
++			// stage can be recaptured under the same name (etude-3343), and an
++			// earlier gate's reviewed_stages digest must keep validating against
++			// the earlier occurrence it actually reviewed.
++			found := false
++			for _, occurrence := range occurrences {
++				if stageHasArtifact(occurrence, ref.Artifact) {
++					found = true
++					break
++				}
++			}
++			if !found {
+ 				return fmt.Errorf("%w: %s artifact %q not found on stage %q output or inputs", ErrInvalidManifest, refPrefix, ref.Artifact, ref.Stage)
+ 			}
+ 		}
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 7f9eea4..582f6d8 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -1765,6 +1765,120 @@ func TestValidateGateRejects(t *testing.T) {
+ 	})
+ }
+ 
++// sameNameStage builds a fully-valid Stage named "review" carrying the given
++// output/input/log artifacts, for the etude-3343 same-name recapture tests.
++func sameNameStage(output ArtifactRef, inputs []ArtifactRef, log *ArtifactRef, gitSHA string, ts time.Time) Stage {
++	return Stage{
++		Name:       "review",
++		ProducedBy: "original",
++		GitSHA:     gitSHA,
++		Skill:      Skill{ID: "dev-reviewer", Repo: "github.com/example/skills", Version: "v1"},
++		Inputs:     inputs,
++		Output:     output,
++		Log:        log,
++		Timestamp:  ts,
++	}
++}
++
++// TestValidateAcceptsReviewedRefOnEarlierSameNameStage is the etude-3343
++// R4/R5 regression: a stage can be recaptured under the same name (e.g. after
++// fixing reviewed bytes), and an earlier gate's reviewed_stages digest must
++// keep validating against the earlier occurrence it actually reviewed, not
++// only the newest one sharing that name.
++func TestValidateAcceptsReviewedRefOnEarlierSameNameStage(t *testing.T) {
++	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
++	outputA := contentArtifact("review", "text/markdown", []byte("review draft A"))
++	outputB := contentArtifact("review", "text/markdown", []byte("review draft B"))
++
++	m := validManifest(contentArtifact("plan", "text/markdown", []byte("plan")))
++	m.Stages = append(m.Stages,
++		sameNameStage(outputA, nil, nil, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now),
++		sameNameStage(outputB, nil, nil, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now.Add(time.Minute)),
++	)
++	m.Gates = []GateAttempt{{
++		GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
++		ReviewedStages: []ReviewedRef{{Stage: "review", Role: "review", Artifact: outputA.Artifact}},
++		Seats: []SeatResult{{
++			Seat: "opus", Harness: Harness{Name: "claude-code"}, Provider: Provider{Name: "anthropic", Model: "claude-opus"},
++			Verdict: SeatVerdictGo, Timestamp: now,
++		}},
++		Timestamp: now,
++	}}
++
++	if err := m.Validate(); err != nil {
++		t.Fatalf("Validate rejected a gate citing the EARLIER same-name occurrence: %v", err)
++	}
++
++	encoded, err := m.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	got, err := ParseJSON(encoded)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	if len(got.Stages) != 3 {
++		t.Fatalf("stage count after roundtrip = %d, want 3 (both same-name occurrences kept)", len(got.Stages))
++	}
++	if got.Stages[1].Output.Artifact != outputA.Artifact || got.Stages[2].Output.Artifact != outputB.Artifact {
++		t.Fatalf("same-name stage outputs not preserved in order: %+v", got.Stages[1:])
++	}
++	if len(got.Gates) != 1 || got.Gates[0].ReviewedStages[0].Artifact != outputA.Artifact {
++		t.Fatalf("reviewed_stages digest not preserved: %+v", got.Gates)
++	}
++}
++
++// TestValidateAcceptsSameNameEarlierOccurrenceViaInputOrLogDigest extends the
++// same regression to the input- and log-digest branches of stageHasArtifact:
++// a reviewed_stages digest naming an EARLIER same-name occurrence's input or
++// log (not its output) must also validate.
++func TestValidateAcceptsSameNameEarlierOccurrenceViaInputOrLogDigest(t *testing.T) {
++	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
++	earlierInput := contentArtifact("review-source", "text/markdown", []byte("earlier input"))
++	earlierLog := contentArtifact("review-log", "text/plain", []byte("earlier log"))
++	earlierOutput := contentArtifact("review", "text/markdown", []byte("earlier output"))
++	laterOutput := contentArtifact("review", "text/markdown", []byte("later output"))
++
++	base := func() Manifest {
++		m := validManifest(contentArtifact("plan", "text/markdown", []byte("plan")))
++		m.Stages = append(m.Stages,
++			sameNameStage(earlierOutput, []ArtifactRef{earlierInput}, &earlierLog, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now),
++			sameNameStage(laterOutput, nil, nil, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now.Add(time.Minute)),
++		)
++		return m
++	}
++	seat := SeatResult{
++		Seat: "opus", Harness: Harness{Name: "claude-code"}, Provider: Provider{Name: "anthropic", Model: "claude-opus"},
++		Verdict: SeatVerdictGo, Timestamp: now,
++	}
++
++	t.Run("matched via earlier occurrence's input digest", func(t *testing.T) {
++		m := base()
++		m.Gates = []GateAttempt{{
++			GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
++			ReviewedStages: []ReviewedRef{{Stage: "review", Artifact: earlierInput.Artifact}},
++			Seats:          []SeatResult{seat},
++			Timestamp:      now,
++		}}
++		if err := m.Validate(); err != nil {
++			t.Fatalf("Validate rejected a reviewed_stages digest matching an earlier occurrence's INPUT: %v", err)
++		}
++	})
++
++	t.Run("matched via earlier occurrence's log digest", func(t *testing.T) {
++		m := base()
++		m.Gates = []GateAttempt{{
++			GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
++			ReviewedStages: []ReviewedRef{{Stage: "review", Artifact: earlierLog.Artifact}},
++			Seats:          []SeatResult{seat},
++			Timestamp:      now,
++		}}
++		if err := m.Validate(); err != nil {
++			t.Fatalf("Validate rejected a reviewed_stages digest matching an earlier occurrence's LOG: %v", err)
++		}
++	})
++}
++
+ // TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3,
+ // and 4, and rejects unsupported versions with ErrInvalidManifest.
+ func TestVersionAllowlist(t *testing.T) {
+diff --git a/internal/cli/gate_test.go b/internal/cli/gate_test.go
+new file mode 100644
+index 0000000..1ff06e5
+--- /dev/null
++++ b/internal/cli/gate_test.go
+@@ -0,0 +1,190 @@
++package cli
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/joshuavial/etude/internal/liverun"
++	"github.com/joshuavial/etude/internal/refstore"
++)
++
++// writeGatedWorkflowFiles writes a `gated` workflow (one stage `review`
++// producing role `review`, gated at tier L1 with one seat) plus a registry
++// wiring that seat to a script which BLOCKS on its first invocation and
++// returns GO on every invocation after that, tracked via a counter file.
++// This lets a test observe exactly how many times the seat actually ran,
++// which matters for the etude-3343 mismatch-must-not-invoke-seats assertion.
++func writeGatedWorkflowFiles(t *testing.T, repo string) {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh scripts not supported on Windows")
++	}
++
++	counterPath := filepath.Join(t.TempDir(), "seat-calls")
++	seatScript := filepath.Join(repo, "seat.sh")
++	body := fmt.Sprintf(`#!/bin/sh
++if [ -s %q ]; then
++  printf '{"verdict":"go"}' > "$ETUDE_OUTPUT_FILE"
++else
++  printf 'x' >> %q
++  printf '{"verdict":"block","required":["fix the draft"]}' > "$ETUDE_OUTPUT_FILE"
++fi
++`, counterPath, counterPath)
++	if err := os.WriteFile(seatScript, []byte(body), 0o755); err != nil {
++		t.Fatalf("write seat.sh: %v", err)
++	}
++
++	etDir := filepath.Join(repo, ".etude")
++	if err := os.MkdirAll(filepath.Join(etDir, "workflows"), 0o755); err != nil {
++		t.Fatalf("mkdir .etude/workflows: %v", err)
++	}
++	workflowContent := "name: gated\n" +
++		"stages:\n" +
++		"  - name: review\n" +
++		"    produces: review\n" +
++		"    skill: review-skill\n" +
++		"    gate:\n" +
++		"      tier: L1\n"
++	if err := os.WriteFile(filepath.Join(etDir, "workflows", "gated.yaml"), []byte(workflowContent), 0o644); err != nil {
++		t.Fatalf("write workflows/gated.yaml: %v", err)
++	}
++
++	registryContent := fmt.Sprintf(`quorum: unanimous
++seats:
++  reviewer:
++    provider: deterministic/reviewer
++    harness: shell
++    invoke: %s
++tiers:
++  L1:
++    name: Gate test tier
++    seats:
++      - reviewer
++`, seatScript)
++	if err := os.WriteFile(filepath.Join(etDir, "registry.yaml"), []byte(registryContent), 0o644); err != nil {
++		t.Fatalf("write registry.yaml: %v", err)
++	}
++}
++
++// TestGateRejectsMismatchThenAcceptsSameNameRecapture is the etude-3343
++// end-to-end regression, driven entirely through the CLI:
++//
++//  1. capture `review` with file content A.
++//  2. gate: bytes match the capture, so the seat runs (its first invocation
++//     blocks) -> recorded as review.r1, citing digest A.
++//  3. the file is edited to content B WITHOUT recapturing; gate on those bytes
++//     must fail closed with ErrArtifactMismatch, and the run ref must not move.
++//  4. capture `review` again (same stage name) with content B via
++//     --expect append.
++//  5. gate on the recaptured bytes passes as review.r2, citing digest B.
++//
++// Both stage occurrences and both gate digests must remain intact throughout.
++func TestGateRejectsMismatchThenAcceptsSameNameRecapture(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeGatedWorkflowFiles(t, repo)
++	chdir(t, repo)
++
++	reviewFile := filepath.Join(repo, "review.md")
++	writeFile(t, repo, "review.md", "draft A\n")
++
++	if _, stderr, err := execute("capture", "review", "--run", "r1", "--output", "review="+reviewFile); err != nil {
++		t.Fatalf("capture A: %v\nstderr: %s", err, stderr)
++	}
++
++	// The first gate reviews byte-identical content, so it reaches the seat.
++	// The seat script's FIRST invocation blocks.
++	_, stderr, err := execute("gate", "--run", "r1", "--stage", "review", "--artifact", reviewFile, "--workflow", "gated")
++	if err == nil {
++		t.Fatal("expected the first gate attempt to fail (blocked), got nil error")
++	}
++	var notPassed *ErrGateNotPassed
++	if !errors.As(err, &notPassed) || notPassed.GateID != "review.r1" {
++		t.Fatalf("first gate error = %v (stderr %q), want ErrGateNotPassed for review.r1", err, stderr)
++	}
++
++	afterFirst := readRunManifest(t, repo, "r1")
++	if len(afterFirst.Gates) != 1 || afterFirst.Gates[0].GateID != "review.r1" {
++		t.Fatalf("after the first gate, gates = %+v", afterFirst.Gates)
++	}
++	digestA := afterFirst.Gates[0].ReviewedStages[0].Artifact
++	if digestA == "" || digestA != afterFirst.Stages[0].Output.Artifact {
++		t.Fatalf("review.r1 reviewed digest = %q, want the first occurrence's output digest %q",
++			digestA, afterFirst.Stages[0].Output.Artifact)
++	}
++
++	store := refstore.New(repo)
++	refBeforeMismatch, err := store.Resolve(context.Background(), "refs/etude/runs/r1")
++	if err != nil {
++		t.Fatalf("resolve after first gate: %v", err)
++	}
++
++	// Change the file WITHOUT recapturing. Gating on it must refuse closed.
++	writeFile(t, repo, "review.md", "draft B\n")
++	_, stderr, err = execute("gate", "--run", "r1", "--stage", "review", "--artifact", reviewFile, "--workflow", "gated")
++	if !errors.Is(err, liverun.ErrArtifactMismatch) {
++		t.Fatalf("gate on unrecaptured bytes = %v (stderr %q), want ErrArtifactMismatch", err, stderr)
++	}
++	refAfterMismatch, err := store.Resolve(context.Background(), "refs/etude/runs/r1")
++	if err != nil {
++		t.Fatalf("resolve after rejected mismatch: %v", err)
++	}
++	if refAfterMismatch != refBeforeMismatch {
++		t.Fatalf("run ref moved after a rejected mismatch: before %s after %s", refBeforeMismatch, refAfterMismatch)
++	}
++	if got := readRunManifest(t, repo, "r1"); len(got.Gates) != 1 {
++		t.Fatalf("a rejected mismatch recorded an attempt: gates = %+v", got.Gates)
++	}
++
++	// Recapture the SAME stage name with the new bytes.
++	if _, stderr, err := execute("capture", "review", "--run", "r1", "--output", "review="+reviewFile, "--expect", "append"); err != nil {
++		t.Fatalf("recapture B: %v\nstderr: %s", err, stderr)
++	}
++
++	// The second gate reviews the recaptured bytes, so it reaches the seat.
++	// The seat script's SECOND invocation returns go.
++	stdout, stderr, err := execute("gate", "--run", "r1", "--stage", "review", "--artifact", reviewFile, "--workflow", "gated")
++	if err != nil {
++		t.Fatalf("second gate: %v\nstderr: %s\nstdout: %s", err, stderr, stdout)
++	}
++	if !strings.Contains(stdout, "review.r2") {
++		t.Fatalf("expected review.r2 in stdout, got %q", stdout)
++	}
++
++	final := readRunManifest(t, repo, "r1")
++	if len(final.Stages) != 2 || final.Stages[0].Name != "review" || final.Stages[1].Name != "review" {
++		t.Fatalf("expected two same-named `review` stage occurrences, got %+v", final.Stages)
++	}
++	if len(final.Gates) != 2 || final.Gates[0].GateID != "review.r1" || final.Gates[1].GateID != "review.r2" {
++		t.Fatalf("expected review.r1 then review.r2, got %+v", final.Gates)
++	}
++	digestB := final.Gates[1].ReviewedStages[0].Artifact
++	if digestB == "" || digestB == digestA {
++		t.Fatalf("review.r2 digest = %q, want a digest distinct from review.r1's %q", digestB, digestA)
++	}
++	if final.Gates[0].ReviewedStages[0].Artifact != digestA {
++		t.Errorf("review.r1's digest changed after the recapture and second gate: %q, want %q",
++			final.Gates[0].ReviewedStages[0].Artifact, digestA)
++	}
++	if digestA != final.Stages[0].Output.Artifact {
++		t.Errorf("review.r1 no longer cites the FIRST occurrence's output digest")
++	}
++	if digestB != final.Stages[1].Output.Artifact {
++		t.Errorf("review.r2 does not cite the SECOND occurrence's output digest")
++	}
++
++	// Both stage occurrences' bytes are still readable from the ref.
++	contentA, err := store.ReadFile(context.Background(), "refs/etude/runs/r1", final.Stages[0].Output.Path)
++	if err != nil || string(contentA) != "draft A\n" {
++		t.Errorf("first occurrence bytes = %q, err %v, want %q", contentA, err, "draft A\n")
++	}
++	contentB, err := store.ReadFile(context.Background(), "refs/etude/runs/r1", final.Stages[1].Output.Path)
++	if err != nil || string(contentB) != "draft B\n" {
++		t.Errorf("second occurrence bytes = %q, err %v, want %q", contentB, err, "draft B\n")
++	}
++}
