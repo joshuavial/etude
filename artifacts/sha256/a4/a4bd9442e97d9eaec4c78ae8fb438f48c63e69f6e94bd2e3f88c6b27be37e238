@@ -1,0 +1,27 @@
+# etude-ldf docs impact
+
+Canonical user-facing paths checked: `README.md`, `docs/README.md`,
+`docs/init.md`, `docs/sync.md`, `docs/cli/`, and the new `docs/doctor.md`.
+
+Changed:
+
+- `README.md` and `docs/README.md` now list the shipped command and link its guide.
+- `docs/doctor.md` documents status/exit semantics, every check class, the
+  sibling mirror-ref layout, actual reviewer resolution, the intentionally
+  offline remote model, exact versus human-authored remediation, and the
+  non-transactional snapshot model.
+- `docs/init.md` now describes doctor's implemented remediation contract rather
+  than calling it separately tracked work.
+- `docs/sync.md` now names the shipped
+  `refs/etude-mirror/<remote>/<kind>/*` mirror layout and current init refspecs.
+- `docs/cli/etude.md` and `docs/cli/etude_doctor.md` were generated from Cobra.
+
+No plan document changed: the command is implemented and belongs in shipped
+documentation. No changelog exists for this unreleased repository.
+
+The guide says explicitly that doctor performs no network or credential
+operation, reports reachability as `NOT CHECKED`, reports mirror update time as
+`NOT RECORDED`, and explains where mirror staleness changes the answer.
+
+Checks: `make docs` PASS and `make docs-check` PASS. The generated Cobra page
+retains its generator-standard terminal blank line.
