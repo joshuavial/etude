@@ -1,0 +1,13 @@
+### A2. Gate-auth + four-seat expansion retro (2026-05-23)
+- **Trigger/date/scope:** a nested `claude -p` reviewer hit a 401 auth failure,
+  and a 3-seat panel proved too thin (codex caught a BLOCK the others missed).
+- **Evidence:** dogfood-process-retro.md (lower section); commits 8f03314
+  ("expand dogfood review gate to four reviewers") + 7d6b702 ("fix pi
+  reviewer-seat invocation to use read-only tools"); review-gate-runbook.md,
+  review-gate-process.md, verify-phase-design.md, capture-protocol.md.
+- **Findings:** in-session `claude -p` can't auth; three seats miss real findings.
+- **Recommended changes / Landed:** in-harness Claude Task-seat rule
+  `[IMPLEMENTED]` (8f03314); pi/pilms 4th seat with a read-only tool allowlist
+  `[IMPLEMENTED]` (7d6b702).
+- **Remaining:** none (the four-seat gate has been the default since).
+
