@@ -1,0 +1,31 @@
+# Final Review — etude-8hq.1
+
+## Gate summary
+PLAN gate (tier 2; codex/gemini/opus + pilms-down):
+- codex GO, opus GO; **gemini BLOCK (r1)** — wrapper alone is enforcement-by-
+  convention, the phase doc demands a mechanical close/push gate. gemini
+  prescribed a pre-push hook that exempts `refs/etude/*` pushes and runs the
+  batch audit on code pushes. This BLOCK was verified-true: the planner's
+  rejection of option (b) rested on a false premise (the hook needs no bead id —
+  it runs the batch `--last 9` audit — and does not recurse because etude-only
+  pushes are exempt). Plan amended to a HYBRID (wrapper for ergonomics + hard
+  pre-push hook for enforcement).
+- gemini re-confirm (r2): **GO** — hybrid resolves both the "mechanical not a
+  reminder" requirement and the chicken-and-egg.
+
+IMPLEMENT gate (tier 2; codex/gemini/opus + pilms-down): **unanimous GO**.
+- All three independently confirmed the hook cannot wrongly block (etude/tag
+  pushes stay exempt) nor wrongly allow (any `refs/heads/*` triggers the audit);
+  deletions ignored; exit-2 fails closed; markers intact; wrapper propagates the
+  audit exit verbatim with a correct create-only preflight.
+- NITs folded in: (1) allowlist parse handles a missing trailing newline; (2)
+  added named regression tests for empty-stdin / unknown-ref-only /
+  missing-audit-script / audit-exit-2.
+
+## Scope
+6 files, 1 commit (7d8771f): `scripts/dogfood-close.sh`, `scripts/dogfood-close_test.sh`,
+`.beads/hooks/pre-push`, `Makefile`, `docs/plans/dogfood/README.md`,
+`docs/plans/dogfood/capture-protocol.md`. No `etude` Go subcommand, no audit-script
+change, no other 8hq beads — in scope.
+
+## Verdict: GO — ready to close.

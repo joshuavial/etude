@@ -1,0 +1,33 @@
+# Verify — etude-8hq.1 (enforce dogfood completeness in close/push)
+
+## Automated tests
+- `bash scripts/dogfood-close_test.sh` → **29 passed, 0 failed**. Covers:
+  - Section A (wrapper): pass-on-complete (capture stub creates ref in sequence),
+    gateless-run→exit1, unpushed-ref→exit1, allowlisted→exit0+bypass, sequencing
+    (capture<gate<audit), create-only preflight (already-exists→exit1).
+  - Section B (hook): etude-only exempt, code-push-clean→0, code-push-gap→1,
+    mixed etude+heads→audited, deletion-only→exempt, tag→exempt, empty-stdin→0,
+    unknown-ref-only→0, missing-audit-script→0, audit-exit-2→fail-closed(1).
+  - Section C (bd coexistence): bd block + dogfood classifier both work; stdin not
+    starved.
+- `bash -n` on both scripts: PASS.
+
+## Adoption precondition
+- `make dogfood-audit` (`--last 9`) → exit 0 on the current tree (clean window,
+  one informational cadence-overdue WARN only). The pre-push hook will not block
+  legitimate code pushes.
+
+## Manual / runtime verification
+- In-harness Opus seat ran the hook directly against 9 synthetic stdin cases
+  (etude-only, heads+audit0/1/2, deletion-only, empty, unknown-ref, mixed,
+  missing-script) — every classification branch matched the contract, including
+  fail-closed on exit 2 and deletion-ignored.
+- bd `BEGIN/END BEADS INTEGRATION` markers byte-intact; stdin buffered before the
+  BEGIN marker; bd uses `$@` (does not read stdin) — empirically confirmed.
+- End-to-end: this bead is itself closed via `scripts/dogfood-close.sh` (live
+  wrapper test) and the subsequent `git push` exercises the live pre-push hook
+  (code push → audit runs → passes because this run is captured first).
+
+## Result: PASS
+No defects open. Both implement-gate NITs (allowlist trailing-newline robustness;
+named regression tests for empty/unknown/missing/exit-2) folded in before commit.

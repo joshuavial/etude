@@ -1,0 +1,193 @@
+✓ etude-8hq.1 · Enforce dogfood completeness in close/push path   [● P0 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Move dogfood capture from out-of-band memory into the critical path. Wire the completeness audit into the session close, bead close, pre-push, or reconcile path so missing run/gate/retro artifacts block claiming dogfood work is done.
+
+DESIGN
+## Plan
+
+**Approach:** Wire the existing `scripts/dogfood-completeness-audit.sh --bead <id>` (from etude-8hq.4) into the dogfood close path by adding a single orchestrating wrapper, `scripts/dogfood-close.sh`, that owns the FULL close sequence and runs the audit as its TERMINAL, blocking step. This resolves the chicken-and-egg: the audit's `--bead` hard checks (run ref present, gates present, that ref pushed) can only pass AFTER capture, so the gate cannot precede capture — it must follow it. The wrapper calls the existing `dogfood-capture.sh` and `dogfood-gate-capture.sh` (orchestrate, don't replace), then runs `--bead` and propagates its exit code. Do NOT re-implement the audit. Do NOT implement the other 8hq beads.
+
+### Design decision 1 — gate form: a wrapper script (option a)
+
+Recommend **(a) a `scripts/dogfood-close.sh` wrapper**. Rejected alternatives, with justification:
+
+- **(b) git pre-push hook** — cannot see the bead id (push args are refs, not beads), cannot sequence "capture then gate then audit" (capture itself pushes, so the hook would recurse / fire mid-sequence), and `refs/etude/runs/*` are pushed by the very scripts the gate must run first. A pre-push hook on `refs/etude/*` would either deadlock the capture push or run the audit before gates are captured (always-fail). The bd-managed `.beads/hooks/pre-push` already owns that hook surface for bead-DB sync; layering an etude gate there is fragile.
+- **(c) bd-close hook** — `bd` has no close-time hook of the right shape; the bd hooks (`post-checkout`, `pre-push`, etc.) are DB-sync hooks, and `bd close` does not run the capture for us. A close hook also fires before artifacts exist.
+- **(d) `make dogfood-close BEAD=...`** — viable as a thin alias, but make's positional/`VAR=` argument handling is clumsy for 4+ required args (commit, verify file, review file, gate dir). Offered as an OPTIONAL convenience target that shells out to the script, not the primary surface.
+
+The wrapper is cleanest because **capture IS part of completing** the bead (the retro's core lesson: "capture is out-of-band → omission"). One command makes the whole close mechanical and makes the audit unavoidable.
+
+**Exact contract of `scripts/dogfood-close.sh`:**
+
+```
+scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+```
+
+- `<bead-id>` — the bead/run id to close (same as dogfood-capture's first arg).
+- `<commit-sha>` — implement-stage diff source (passed to dogfood-capture).
+- `<verify-file>` — Verify-stage artifact (passed to dogfood-capture).
+- `<review-file>` — Final-Review-stage artifact (passed to dogfood-capture).
+- `[gate-dir]` — OPTIONAL directory of one-or-more `*.json` GateAttempt files (shape per review-gate-runbook "Structured capture"), authored by the agent during the bead. Each file is captured in lexical order via `dogfood-gate-capture.sh`. If omitted, NO gates are captured here and the terminal audit will fail check (b) for a non-allowlisted bead — which is the correct, loud signal that gate records are missing.
+
+**Orchestration order (resolves the chicken-and-egg):**
+
+1. **Preflight (fail fast, no mutation):** validate arg count; check files exist; `cd` to repo root; verify `refs/etude/runs/<bead>` does NOT already exist (capture-run is create-only — mirror dogfood-capture's guard so we fail before any side effects). If `<bead>` is allowlisted, print a notice (it will be bypassed at step 4) but still run capture/gates if a gate-dir was given.
+2. **Capture the run:** `scripts/dogfood-capture.sh <bead> <commit> <verify> <review>` — creates `refs/etude/runs/<bead>` and pushes it. (Satisfies audit checks (a) run-ref present, and partially (d) pushed.)
+3. **Capture gate records:** for each `<gate-dir>/*.json` in sorted order, `scripts/dogfood-gate-capture.sh <bead> <file>` — appends each GateAttempt and re-pushes the ref. (Satisfies audit check (b) gates present, and re-satisfies (d) pushed after each append.)
+4. **TERMINAL GATE — run the audit and BLOCK:** `scripts/dogfood-completeness-audit.sh --bead <bead>`. Propagate its exit code verbatim as the wrapper's exit code. Exit 0 = close complete; exit 1 = a hard gap (run/gates/pushed) — wrapper fails loudly and prints the audit's actionable GAP lines (which already name what is missing); exit 2 = environment/usage error.
+
+The audit runs LAST, after run+gates+push exist, so it gates on real artifacts instead of always-failing on not-yet-captured ones. The wrapper does no git ref mutation itself — all mutation happens inside the already-tested capture scripts.
+
+### Design decision 2 — relationship to capture / gate-capture scripts
+
+**Orchestrate, do not replace.** `dogfood-close.sh` CALLS `dogfood-capture.sh` and `dogfood-gate-capture.sh` so there is ONE close command but the underlying, already-tested capture mechanics are unchanged. No behavior duplication; the wrapper only sequences + gates. Gate records are supplied as a directory of GateAttempt JSON files the agent authored during the bead (one file per gate attempt, shape per review-gate-runbook "Structured capture"). This keeps gate-record authorship where it belongs (at gate time, by the agent) while making capture+audit mechanical at close.
+
+### Design decision 3 — bypass / defer policy (explicit, per acceptance)
+
+The mechanism is the existing allowlist `scripts/dogfood-completeness-allow.txt` consumed by the audit. The wrapper does NOT add a second bypass mechanism — it inherits the audit's behavior: an allowlisted bead is reported as `bypass: <id> — <reason>` and does NOT cause exit 1. The documented policy (added to the gate doc):
+
+- **Non-dogfood beads** (data backfills, docs-only with no code run / no gates, process beads): add to the allowlist with a reason, then run the wrapper (or skip it — the wrapper is only required for code beads that produce a run + gates). The allowlist entry is the audit-visible record of WHY it is exempt.
+- **User-blocked / deferred / reserved work** (e.g. Phase 1 reserved scaffolding, sidecar-dependent beads): allowlist with reason `# deferred (...)` or `# blocked (...)`. These have no run because work was reserved, not shipped.
+- **Epic/rollup beads** (closed when children ship; no direct code run): allowlist with `# epic rollup — children have runs`.
+- **Every bypass requires a one-line reason and a commit.** Bypasses are always printed in audit output, keeping them visible and auditable. Use sparingly; an over-broad entry hides real gaps.
+
+This matches the policy already documented in capture-protocol.md "Allowlist" — the gate doc cross-links it rather than restating.
+
+### Design decision 4 — what BLOCKS vs WARNS
+
+The audit's `--bead` mode is already the source of truth and is correct:
+
+- **BLOCK (hard, exit 1):** (a) run ref present, (b) gated run has ≥1 gate record, (d) that bead's run ref pushed to origin.
+- **WARN (never blocks):** (e) docs-drift (manifest git_sha touched `docs/`) — informational only. (c) cadence retro is NOT run in `--bead` mode (deadlock avoidance — a cadence retro is written after the cohort's 3rd bead closes).
+
+The wrapper simply PROPAGATES the audit exit code (non-zero blocks the close). It prints the audit output verbatim so the failure is loud and actionable (the GAP lines already say e.g. `missing-run`, `gateless-run`, `unpushed-ref` with the bead/ref). No new block/warn logic in the wrapper.
+
+### Design decision 5 — docs (per acceptance)
+
+Point the dogfood **Session Boot** and **close protocol** at the gate:
+
+- `docs/plans/dogfood/README.md` — **Session Boot** (step 7 "Work the bead through plan → ... → final review"): add a close step that the bead is not complete until `scripts/dogfood-close.sh` exits 0. Add `scripts/dogfood-close.sh` to the **Dogfood Scripts** table.
+- `docs/plans/dogfood/capture-protocol.md` — **"At bead close"** section (line ~446): replace the loose manual checklist ("commit and push... ensure reviewer results appended...") with: run `scripts/dogfood-close.sh <bead> <commit> <verify> <review> [gate-dir]` as the TERMINAL close step; it captures the run, captures gate records, pushes, and runs the completeness audit; the bead is NOT complete until it exits 0. Add a new **"Dogfood Close Gate"** subsection documenting the wrapper's contract, the orchestration order, what blocks vs warns, and the bypass/defer policy (cross-linking the existing "Allowlist" subsection). Cross-link from the existing "Dogfood Completeness Audit" section's `--bead` note ("This is the mode etude-8hq.1 calls at close/push time") to the wrapper.
+
+No generated CLI reference (`docs/cli`) changes — this is a shell wrapper, not an `etude` subcommand. These docs are dogfood planning docs (not shipped user-facing product docs), so no product doc / README at repo root changes.
+
+### Design decision 6 — tests
+
+The wrapper is a thin orchestrator over the already-tested audit + already-working capture scripts. Use a **light fixture test** `scripts/dogfood-close_test.sh` that confirms the wrapper's TWO load-bearing behaviors without rebuilding the heavy capture path:
+
+- **Propagation / blocking:** stub `dogfood-capture.sh` and `dogfood-gate-capture.sh` on PATH (or via injectable script-path env vars) to be no-ops, seed a throwaway repo + bare origin like the audit test does, and assert: (1) when run ref + gates + push exist → wrapper exits 0; (2) when gates are missing (no gate-dir) → wrapper exits 1 and output contains `gateless-run`; (3) when the run ref is unpushed → exits 1 with `unpushed-ref`; (4) when bead is allowlisted with no run → exits 0 with `bypass:`.
+- **Sequencing:** assert the wrapper invokes capture BEFORE gate-capture BEFORE audit (e.g. stubs append to an order-log file; assert order). This guards the chicken-and-egg ordering against regression.
+
+Reuse the audit test's harness pattern (bare origin, `bd` shim, `seed_run_ref`, `DOGFOOD_AUDIT_ETUDE_BIN` injection) so the test stays fast and mutates no real data. Add a `dogfood-close-test` target to the Makefile mirroring `dogfood-audit-test`. Do NOT re-test the audit's internal checks (already covered by `dogfood-completeness-audit_test.sh`).
+
+### Design decision 7 — scope / files (1 bead = 1 commit)
+
+- `scripts/dogfood-close.sh` — NEW. The orchestrating wrapper (preflight → capture → gate-capture → push → audit --bead → propagate exit). Style follows `dogfood-capture.sh` / `dogfood-gate-capture.sh` (set -euo pipefail, repo-root cd, fail-fast arg checks).
+- `scripts/dogfood-close_test.sh` — NEW. Light fixture test for propagation + sequencing.
+- `Makefile` — add `dogfood-close-test` PHONY target (and optionally a `dogfood-close` convenience target taking `BEAD=`/`COMMIT=` etc.); update `.PHONY`.
+- `docs/plans/dogfood/README.md` — Session Boot close step + Dogfood Scripts table row.
+- `docs/plans/dogfood/capture-protocol.md` — "At bead close" rewrite + new "Dogfood Close Gate" subsection + cross-link from the audit section.
+
+Out of scope (do NOT touch): the audit script itself, the allowlist content (seed entries already exist), the other 8hq beads (.2/.3/.5/.6/.7/.8), any `etude` Go subcommand, any git ref mutation during planning.
+
+**Risks:**
+- The wrapper's value depends on agents actually running it as the close step; it is enforcement-by-convention (a script), not a hard git/bd hook. Mitigation: Session Boot + close protocol both point at it, and the batch `make dogfood-audit --last 9` sweep catches anything that skipped the wrapper. A future bead could add a true pre-push enforcement once the ordering problem is solved differently; out of scope here.
+- capture-run is create-only: re-running the wrapper on an already-captured bead fails at step 2. This is intended (no double-capture); the preflight surfaces it clearly with the manual re-capture recipe from dogfood-capture.sh's header.
+
+## AMENDMENT (plan gate r1 — gemini BLOCK adopted: add HARD pre-push enforcement)
+
+The plan gate split 2 GO (codex, Opus) / 1 BLOCK (gemini). The BLOCK is **verified-true and adopted**: the original Design decision 1 rejected option (b) the git pre-push hook on a FALSE premise. It claimed the hook "cannot see the bead id" and "would recurse / fire mid-sequence / always-fail." Both objections are defeated:
+
+- **No bead id needed.** The hook does NOT gate a single bead by id. It runs the existing **batch** audit `make dogfood-audit --last 9` (which scans recently-closed beads). Push args are refs, not beads — and that is fine, because the batch mode needs no bead id.
+- **No recursion / no mid-sequence fire.** Empirically, `core.hooksPath = .beads/hooks` (verified), so `.beads/hooks/pre-push` IS the active hook. `dogfood-capture.sh` pushes `refs/etude/runs/<bead>` and `dogfood-gate-capture.sh` re-pushes `refs/etude/runs/<bead>` (verified at their tails). The hook **exempts pushes whose ref set is exclusively `refs/etude/*` (and `refs/tags/*`)** — so capture's and gate-capture's pushes pass unhindered (no recursion, no deadlock). The audit only runs when the push includes a **code ref (`refs/heads/*`)**, which in the correct workflow happens AFTER capture. So the audit never "runs before gates are captured."
+
+This makes dogfood completeness a **true mechanical gate**, satisfying the bead's core acceptance ("move dogfood completeness into a mechanical close/push gate … not another reminder", wide-retro-analysis.md:43-46). The wrapper alone was enforcement-by-convention; the hook closes that gap.
+
+### Revised Design decision 1 — HYBRID: wrapper (ergonomics) + pre-push hook (enforcement)
+
+Ship BOTH, with distinct roles:
+
+1. **`scripts/dogfood-close.sh` (unchanged from the original plan) — the happy-path orchestrator.** One command: preflight → capture run → capture gate records → push etude refs → terminal `--bead` audit. This is how an agent SHOULD close a bead (capture before code-push), and it produces the etude-ref pushes the hook exempts.
+
+2. **`.beads/hooks/pre-push` enforcement block (NEW) — the unskippable backstop.** Append a dogfood-enforcement section AFTER the existing bd-managed block (must NOT touch/remove the `--- BEGIN/END BEADS INTEGRATION ---` markers). Behavior:
+   - Buffer stdin once: `refs="$(cat)"` (git feeds `<local-ref> <local-oid> <remote-ref> <remote-oid>` lines on stdin). The bd block above uses `"$@"` (remote name+URL), not stdin, so buffering here does not starve it — but the bd block currently consumes the hook's stdin position; **implementer must buffer stdin at the very top of a combined hook and tee/forward to bd if bd needs it** (verify whether `bd hooks run pre-push` reads stdin; if it does not, simply buffer after the bd block returns). Resolve this concretely at implement time and add a test.
+   - Classify the push: if EVERY local-ref line is empty or matches `^refs/etude/` or `^refs/tags/` → **exempt, exit 0** (capture/gate pushes pass).
+   - If any local-ref matches `^refs/heads/` (a code push) → run `bash scripts/dogfood-completeness-audit.sh --last 9` (same as `make dogfood-audit`, but call the script directly to avoid a make dependency inside the hook; build/locate the etude binary via the audit's existing `DOGFOOD_AUDIT_ETUDE_BIN`-or-`go run` resolution). Propagate: audit exit 1 → **`exit 1` (git rejects the push)**; exit 2 (env/usage) → print + `exit 1` (fail closed) OR `exit 0` with a loud warning — choose fail-closed unless it proves too brittle; decide at implement and test it. Exit 0 → allow.
+   - Respect `--no-verify` as the documented human emergency escape hatch (git's built-in; do not defeat it).
+   - **Adoption precondition (already satisfied):** the `--last 9` window must be clean (every in-window closed bead is captured or allowlisted) BEFORE this hook lands, else it blocks all code pushes. The session backfill + `scripts/dogfood-completeness-allow.txt` already satisfy this; the implement step must verify `make dogfood-audit` exits 0 on the current tree before committing the hook.
+
+### Revised test plan (decision 6 addendum)
+
+Add hook coverage to `scripts/dogfood-close_test.sh` (or a sibling `pre-push` test) using the existing bare-origin harness:
+- **etude-only push is exempt:** simulate a pre-push invocation whose stdin lists only `refs/etude/...` → hook exits 0 WITHOUT running the audit (assert via an audit-stub sentinel that it was not called).
+- **code push with clean window passes:** stdin lists `refs/heads/main`, window clean → exit 0 (audit ran, passed).
+- **code push with a gap blocks:** stdin lists `refs/heads/main`, seed a non-allowlisted closed bead missing its run → hook exits 1 (push rejected).
+- **mixed push (etude + heads) runs the audit** (heads present → not exempt).
+- Also keep codex's non-blocking refinement for the wrapper test: the "pass-on-complete" case must let the capture stub CREATE the run ref in sequence (the wrapper preflights "run ref must NOT already exist"), not preseed it.
+
+### Revised scope / files (decision 7 addendum)
+
+- `.beads/hooks/pre-push` — NEW enforcement block appended after the bd markers (do not edit inside the markers). The load-bearing change for "mechanical gate".
+- `scripts/dogfood-close.sh`, `scripts/dogfood-close_test.sh`, `Makefile`, `docs/plans/dogfood/README.md`, `docs/plans/dogfood/capture-protocol.md` — as in the original plan, PLUS: docs must describe the pre-push hook (what it exempts, what it blocks, the `--no-verify` escape hatch, and the "window must be clean" precondition) in the new "Dogfood Close Gate" subsection.
+
+### Revised risks
+
+- Original risk ("enforcement-by-convention") is now **resolved** for code pushes by the hook. Residual: `git push --no-verify` bypasses it (intended human escape hatch); the batch sweep + allowlist remain the audit-of-record.
+- Hook latency: the audit builds/locates etude + does `git ls-remote`/rev-parse on each code push (a few seconds). Acceptable for a push; mitigate by reusing a built binary via `DOGFOOD_AUDIT_ETUDE_BIN`.
+- stdin handling vs the bd block is the one real implementation hazard — must be resolved + tested so neither bd sync nor the dogfood check is starved of stdin.
+
+**Capture:**
+- inputs: bead etude-8hq.1 (description/acceptance), parent epic etude-8hq, dep etude-8hq.4; `scripts/dogfood-completeness-audit.sh`, `scripts/dogfood-capture.sh`, `scripts/dogfood-gate-capture.sh`, `scripts/dogfood-completeness-allow.txt`, `scripts/dogfood-completeness-audit_test.sh`; `docs/plans/dogfood/wide-retro-analysis.md`, `README.md`, `capture-protocol.md`, `review-gate-runbook.md` (structured-capture); `Makefile`; `.beads/hooks/pre-push`, `.git/hooks/`
+- output: bead --design field
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- `scripts/dogfood-close.sh` (NEW): orchestrating wrapper; preflight → capture run → capture gate records → terminal audit --bead; exits 0 only when all hard checks pass. Supports DOGFOOD_CLOSE_CAPTURE_SCRIPT / DOGFOOD_CLOSE_GATE_CAPTURE_SCRIPT / DOGFOOD_CLOSE_AUDIT_SCRIPT env vars for test injection.
+- `.beads/hooks/pre-push` (MODIFIED): stdin buffered at top (`_dogfood_refs="$(cat)"`) before the bd block; dogfood enforcement block added AFTER the END BEADS INTEGRATION marker; exempts refs/etude/* and refs/tags/* pushes; blocks refs/heads/* code pushes when --last 9 audit fails; supports DOGFOOD_HOOK_AUDIT_SCRIPT for test injection.
+- `scripts/dogfood-close_test.sh` (NEW): 23 fixture tests covering wrapper propagation/sequencing (A1-A6), hook classification (B1-B6), and bd/stdin coexistence (C1). All pass.
+- `Makefile`: added `dogfood-close-test` PHONY target.
+- `docs/plans/dogfood/README.md`: added step 10 to Session Boot; added dogfood-close.sh row to Dogfood Scripts table.
+- `docs/plans/dogfood/capture-protocol.md`: rewrote 'At bead close' section; added 'Dogfood Close Gate' subsection with full contract/orchestration/bypass/hook docs; cross-linked audit --bead note.
+
+**Key decisions:**
+- bd stdin hazard resolved empirically: bd hooks run pre-push does NOT read stdin (uses $@ only). Buffering `_dogfood_refs="$(cat)"` before the bd block is safe and sufficient.
+- Added DOGFOOD_HOOK_AUDIT_SCRIPT env var to hook for testability (avoids PATH shadowing complexity).
+- Gate stub uses parent commit (commit-tree -p) to enable fast-forward push to bare origin.
+
+**Checks run:**
+- `bash -n` on all 3 scripts: PASS
+- `make dogfood-close-test`: 23/23 PASS
+- `make dogfood-audit`: EXIT 0 (adoption precondition met; pre-push hook will not block pushes)
+
+**Changed files:**
+- scripts/dogfood-close.sh (NEW)
+- scripts/dogfood-close_test.sh (NEW)
+- .beads/hooks/pre-push (MODIFIED)
+- Makefile (MODIFIED)
+- docs/plans/dogfood/README.md (MODIFIED)
+- docs/plans/dogfood/capture-protocol.md (MODIFIED)
+
+**Plan deviations:** None. HYBRID (wrapper + hook) implemented as specified in the AMENDMENT section.
+
+**Capture:**
+- inputs: approved plan (etude-8hq.1 --design), existing dogfood-capture.sh, dogfood-gate-capture.sh, dogfood-completeness-audit.sh, dogfood-completeness-audit_test.sh, pre-push hook, Makefile, docs
+- output: working tree diff (6 files) and bead notes
+
+ACCEPTANCE CRITERIA
+There is a documented and runnable close/push gate that calls the completeness audit; missing required artifacts block completion with actionable output; bypass/defer policy is explicit for non-dogfood or user-blocked work; the dogfood Session Boot and close protocol point at the gate.
+
+LABELS: dogfood, enforcement, phase, phase:implement, retro
+
+PARENT
+  ↑ ○ etude-8hq: (EPIC) Phase: enforce dogfood completeness ● P0
+
+DEPENDS ON
+  → ✓ etude-8hq.4: Implement dogfood completeness audit ● P0
+
