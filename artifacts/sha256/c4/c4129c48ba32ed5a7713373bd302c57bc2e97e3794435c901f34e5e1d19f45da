@@ -1,0 +1,5 @@
+VERIFY (dev-qa): PASS — proceed to Docs.
+- Automated: gofmt + go vet clean; go test ./... all green; 4 structural producer tests pass; mutation spot-check confirms discrimination (Model:WRONG fails T1+T4).
+- Manual built-binary test (make build + bin/etude in throwaway repo): plan-with-all-flags → producer{harness:{claude-code,2.1.0}, model:claude-opus-4-7, skill:{dev-planner,codewithjv-agent-skills,abc123}}; implement-no-flags → producer{skill:{dev-executor,manual,manual}}, harness+model OMITTED; manifest_version=2; no top-level stages[].skill; run show shows skill id/repo/ver, does NOT show harness/model (deferred to 1.4).
+- Back-compat: run show etude-88o (genuine legacy, no manifest_version/producer) parses + renders all 5 stages clean against the fresh binary, exit 0.
+VERIFY GATE: 4/4 GO (Codex, Opus, Gemini, pilms; Gemini+pilms each needed one transient-glitch reroll). Opus independently injected a leaked top-level skill into toJSON and confirmed parseRawProducer catches it. Proceeding to Docs (capture flags changed → docs/capture.md + SKILL.md dogfood convention need updates).
