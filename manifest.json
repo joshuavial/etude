@@ -1047,6 +1047,43 @@
         "degraded_reason": "Docs gate PASSES at round 4. Four rounds, three BLOCKs, and every one found the artifact claiming a file was clean when it was not - twice on errors the sweep itself had introduced. The pattern is worth keeping: deleting a check invalidates every document that promised the guarantee, and correcting those documents can be wrong in BOTH directions. Asserting a removed guarantee is the obvious failure; past-tensing a surviving behavior is the subtle one, and I did it twice, the second time inside the fix for the first. Five optionals folded: a tense slip inside a single sentence about a command that survives; an over-broad claim that the audit's retro bookkeeping was removed wholesale when the cadence warning survives and refs-pushed still covers refs/etude/retros/*; mandate-shaped wording in the ledger's convention block aligned with the softened wording in docs/retro.md; a 'four checks' count that included the warning, now 'three hard checks plus a warning' to match the script header; and a stray double period. One deliberate non-change, recorded: the ledger heading keeps '(required, etude-8hq.3)' because it names the bead that introduced the convention, it is cited verbatim from retro-capture.md, and the paragraph directly beneath it says 'No longer enforced'. L4 is single-seat and that seat has no working subprocess path (etude-8li), so every round was produced in-harness per the documented registry exception."
       },
       "timestamp": "2026-08-15T13:41:43Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "aedc11fd88f60304c586ced69721435248e1b15ad2cc527c214c08cb5697e717"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The verify gate record is incomplete - two substantive opus BLOCK rounds were acted on and never appended. gate-verify-r2.packet.md is a full L2 seat packet on artifact ce317bc0 with no corresponding json and no verify.r2 entry (the manifest jumps verify.r1 to verify.r3); its verdict was a BLOCK, quoted verbatim in the next packet, and it changed the code (three mutation survivors pinned, suite 34 to 40). Manifest-wide there are 7 block verdicts and none in any verify gate, so 'etude run show' reports verify as escalated/escalated/pass - the silently overwritten verdict the review-gate runbook forbids, and exactly the defect that blocked bead .3 five times. The artifact compounds it by claiming the record was counted from the manifest while its own findings table cites 'verify r1'/'verify r2' rounds that exist in no gate record.",
+            "2. The only recorded verify PASS certifies a superseded artifact: verify.r4 reviewed verify.r2/bd2d9d94, which still carries the stale 40-cases numbers; the corrected verify artifact (stage verify.r3, ea641e95) was never gated."
+          ],
+          "timestamp": "2026-08-15T13:51:54Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, correct, and recorded on receipt rather than after the fact - which is the whole point, since the finding IS that verdicts were acted on without being appended. Bead .3 hit this five times and I wrote a retro about it; .4 reproduced it twice in the verify phase. The cause is structural and unchanged: the opus seat cannot be invoked as a subprocess, so no 'etude gate' run produces its attempt, and appending it is a separate manual step easiest to skip exactly when the verdict is interesting enough to act on immediately. Bead etude-4ed (verdict injection) is the real fix. The second finding is subtler and I had missed it entirely: the recorded verify PASS certifies bd2d9d94, but the optionals folded after that verdict produced ea641e95, which shipped ungated. A pass that points at a superseded revision is not a pass on what lands."
+      },
+      "timestamp": "2026-08-15T13:51:54Z"
     }
   ]
 }
