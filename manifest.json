@@ -653,6 +653,62 @@
         ]
       },
       "timestamp": "2026-08-16T07:59:38Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "b171aabda52913d447947cdd074a04179835f441758147a3e316d41b08d860b8"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add a non-vacuous runner-invoked assertion to the bench regression.",
+            "Consider legacy fallback wording in gate recovery and updating the missing-checkout error wording.",
+            "packet sha256 987516c5240a264c54ef47ae975753d605618f9efec4e8cde616c21a83ea98d0"
+          ],
+          "timestamp": "2026-08-16T08:03:19Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet sha256 987516c5240a264c54ef47ae975753d605618f9efec4e8cde616c21a83ea98d0"
+          ],
+          "timestamp": "2026-08-16T08:03:19Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-gunr"
+        ]
+      },
+      "timestamp": "2026-08-16T08:03:19Z"
     }
   ]
 }
