@@ -1,0 +1,67 @@
+## Plan
+
+**Scope (v1 = build + reindex ONLY):** Build the derived SQLite cache and the
+`etude reindex` command + a small typed query API in a new `internal/index`
+package. DEFER rewiring run list / bench / gc to USE the index — those keep
+walking refs (run list already documents "no query index", docs/run.md:32,110).
+The index is purely ADDITIVE: no existing command changes behaviour. Using the
+index to accelerate queries is a separate follow-up bead.
+
+**Driver:** pure-Go `modernc.org/sqlite` (database/sql driver name "sqlite").
+Justification: Phase 4 is OSS distribution polish — cgo-free means trivial
+cross-compile and `go install` with no C toolchain. cgo `mattn/go-sqlite3` is
+faster but adds a build burden inappropriate for an OSS CLI. This is the FIRST
+external dep beyond cobra/yaml; accepted tradeoff (pulls a few modernc.org
+transitive modules). New go.mod requirement + go.sum.
+
+**DB location + lifecycle:** `.git/etude-index.db`. Resolve the git dir with
+`git rev-parse --absolute-git-dir` run with cwd=store.RepoDir (refstore does not
+expose the git dir, so reindex shells out the same way refstore does), then join
+"etude-index.db". DERIVED/disposable, FULL-REBUILD ONLY in v1 (matches
+"rebuildable cache"; incremental update is a follow-up). Working-tree safety:
+inside .git/ (never committed) AND `*.db` already in .gitignore — double safe.
+
+**Schema (CREATE on rebuild; minimal but sufficient):**
+- runs(run_id PK, workflow, workflow_version, created, commit) — run list "last N", run show.
+- stages(run_id, name, produced_by, git_sha, skill_id, model, harness, PRIMARY KEY(run_id,name)) — "runs with stage X", cohort selection.
+- artifacts(run_id, stage, role, kind(input|output), sha256, size, storage, media_type) — gc sizing, artifact lookups.
+- evals(eval_id PK, method, score_kind, created) — eval lookups.
+- eval_sources(eval_id, kind(target|context), idx, run_id, stage, commit, artifact) — gc pin-set (runs referenced by evals).
+- meta(schema_version, built_at) — cache versioning so a future schema bump triggers reindex.
+Indexes: stages(name), stages(skill_id), artifacts(sha256), eval_sources(run_id). Each table maps directly to a known query; no speculative columns.
+
+**Reindex operation (atomicity + errors):** Build into a TEMP db file
+(`.git/etude-index.db.tmp-<pid>`), open with modernc, CREATE schema, walk
+`refs/etude/runs/*` + `refs/etude/evals/*` (reuse gc enumeration: List + ReadFile
++ runmanifest.ParseJSON / eval.ParseJSON), INSERT all rows inside ONE
+transaction, commit, close, then os.Rename temp -> final (atomic replace; a
+failed reindex leaves the prior db intact and removes the temp via defer).
+A malformed manifest/eval FAILS the reindex naming the ref (mirrors run list/gc),
+never produces a partial cache. Report counts: "reindexed N runs, M evals into <path>".
+
+**CLI surface:** `etude reindex` (cobra; SilenceUsage/SilenceErrors; Args
+NoArgs). Hidden/test flag `--db-path` overrides the resolved path for in-process
+tests. Mirror newGCCommand: a `reindexRunner{store, dbPath, stdout}` built by
+`buildReindexCommand`, registered in root.go. Output one summary line to stdout.
+
+**Files:**
+- internal/index/index.go - NEW. Schema DDL consts, Open(path), Reindex(ctx, store) that builds temp+rename, typed query helpers (e.g. ListRuns, RunsWithStage) for the future-use bead. Imports modernc.org/sqlite, refstore, runmanifest, eval.
+- internal/index/reindex.go (or in index.go) - the walk+insert logic.
+- internal/cli/reindex.go - NEW. cobra command + runner (mirror gc.go), git-dir resolution helper.
+- internal/cli/root.go - add cmd.AddCommand(newReindexCommand(...)).
+- go.mod / go.sum - add modernc.org/sqlite.
+
+**Tests:**
+- internal/index: reindex from seeded temp repo (initCaptureRepo + runmanifest.Writer/eval.Writer) -> assert row counts and specific rows (a run's stages, an eval's eval_sources/targets).
+- idempotent: reindex twice yields identical row counts/content.
+- empty store -> schema created, zero rows.
+- malformed manifest -> Reindex errors naming the ref; prior db unchanged (atomicity via temp+rename).
+- internal/cli/reindex_test.go: command registered (`reindex --help`); end-to-end reindex with --db-path into temp dir asserts summary output + file exists; reindex inside repo writes to .git/etude-index.db.
+
+**Docs:** Add docs/reindex.md (mirror docs/run.md/gc style): db location, derived/disposable, full-rebuild semantics, driver note. Update BRIEF §4 command table if it tracks status. Generated command reference (if any) regenerated separately. Note in docs/run.md that the index exists but run list does not yet consume it.
+
+**Risks:** modernc.org/sqlite is a sizeable new dep tree (acceptable, justified). Go 1.26 compatibility of modernc must be confirmed at implement time (pin a recent version). Concurrency: single-writer full-rebuild + atomic rename avoids partial-state readers. None blocking.
+
+**Capture:**
+- inputs: bead description + parent etude-phase4, BRIEF.md §4.5/§4, internal/gc/gc.go (enumeration pattern), internal/refstore/store.go (List/ReadFile/RepoDir, no git-dir accessor), internal/runmanifest/manifest.go + internal/eval/result.go + eval.go ArtifactSource (indexed fields), internal/cli/{gc.go,run.go,root.go} (command pattern), internal/cli/{gc_test.go,capture_test.go} (temp-repo+Writer harness), .gitignore (*.db ignored)
+- output: bead --design field

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 2,
+  "run_id": "etude-reindex-command",
+  "workflow": "default",
+  "workflow_version": "v1",
+  "created": "2026-05-25T14:14:29.45146Z",
+  "refs": {
+    "bead": "etude-reindex-command"
+  },
+  "stages": [
+    {
+      "stage": "plan",
+      "produced_by": "original",
+      "git_sha": "1611c69564cb0f406f62da74208eba2390aa9cb8",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-planner",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "task",
+          "artifact": "c75809460b8f6cb32309423de7ecbe906f46d17cfd562eb09c1f325e2a78af8a",
+          "path": "artifacts/sha256/c7/c75809460b8f6cb32309423de7ecbe906f46d17cfd562eb09c1f325e2a78af8a",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 7727
+        }
+      ],
+      "output": {
+        "role": "plan",
+        "artifact": "5cbf17f1312db72f431b7ce21f058c33c1f2416a79ef94ab41f12382e81a9788",
+        "path": "artifacts/sha256/5c/5cbf17f1312db72f431b7ce21f058c33c1f2416a79ef94ab41f12382e81a9788",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 5394
+      },
+      "timestamp": "2026-05-25T14:14:29.45146Z"
+    }
+  ]
+}
