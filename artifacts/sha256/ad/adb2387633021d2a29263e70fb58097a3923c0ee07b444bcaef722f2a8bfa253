@@ -1,0 +1,95 @@
+# Verify — etude-rep: worktree leak tests scan the shared TMPDIR
+
+## Track
+
+Fast-lane (test-only, localized, unambiguous): lightweight plan → do → verify →
+ONE gate on the verified diff. Not fast-lane-able surfaces (money, security,
+data-egress, schema migration) are not touched — this changes two test functions
+and adds one test helper. No production code changes: `git diff` on
+`internal/worktree/worktree.go` is empty.
+
+## Plan (recorded here; no separate plan gate on the fast lane)
+
+`snapshotWorktreeTempDirs` scans the process-global `os.TempDir()` for entries
+named `etude-worktree-*`. `worktree.Checkout` is also called from the `liverun`,
+`bench` and `cli` test packages, which `go test ./...` runs as separate
+concurrent test binaries against the SAME `TMPDIR`. A dir another package created
+between the before- and after-snapshot is therefore attributed to the `Checkout`
+under test.
+
+Fix: point `os.TempDir()` at a per-test directory for the duration of each leak
+test (`t.Setenv("TMPDIR", t.TempDir())`), so the scan can only ever see dirs this
+test's own `Checkout` created. Nothing about what the assertion checks changes —
+only which directory it looks in. Rejected alternative: filtering the snapshot by
+mtime or pid, which is heuristic and would still race.
+
+## Diff
+
+```diff
++// isolateTempDir points os.TempDir() at a per-test directory for the rest of the
++// test. [full rationale comment in the diff]
++func isolateTempDir(t *testing.T) {
++	t.Helper()
++	t.Setenv("TMPDIR", t.TempDir())
++}
+```
+
+plus one `isolateTempDir(t)` call as the first statement of
+`TestNoTempDirLeakOnSHANotFound` and `TestNoTempDirLeakOnWorktreeAddFailure`.
+
+Neither test calls `t.Parallel()`, so `t.Setenv` is legal in both.
+
+## Evidence
+
+**Failure reproduced on clean `origin/main` (b38cece), before the fix:**
+
+```
+--- FAIL: TestNoTempDirLeakOnWorktreeAddFailure (0.13s)
+    worktree_test.go:441: Checkout leaked temp dir(s) on worktree-add failure: [etude-worktree-3677800337]
+FAIL	github.com/joshuavial/etude/internal/worktree	8.643s
+make: *** [test] Error 1
+```
+
+The same test passed in isolation (`go test ./internal/worktree/ -run
+TestNoTempDirLeakOnWorktreeAddFailure`), which is the signature of cross-package
+interference rather than a defect in `Checkout`.
+
+**Root cause confirmed by inspection, not inferred:**
+`internal/worktree/worktree.go:57` is the only `MkdirTemp(\"\", \"etude-worktree-*\")`
+call site; `worktree.Checkout` callers outside the package are
+`internal/liverun/engine.go:229`, `:315`, `internal/liverun/replay_forward.go:54`,
+`internal/bench/run.go:135`, `internal/cli/replay.go:191`.
+
+**NEGATIVE CONTROL — the guard is load-bearing, not merely green.**
+With the fix applied, `os.RemoveAll(dir)` was deleted from the `addErr != nil`
+branch of `Checkout` and the tests re-run:
+
+```
+--- PASS: TestNoTempDirLeakOnSHANotFound (0.08s)
+    worktree_test.go:456: Checkout leaked temp dir(s) on worktree-add failure: [etude-worktree-1240529042]
+--- FAIL: TestNoTempDirLeakOnWorktreeAddFailure (0.09s)
+```
+
+The test still catches a real leak. `worktree.go` was then restored; `git diff`
+on it is empty, confirmed before staging.
+
+**Full parallel suite, twice, both exit 0:**
+
+```
+=== run 1 ===  go test ./...  exit=0
+=== run 2 ===  go test ./...  exit=0
+```
+
+`make test` and `make lint` both green.
+
+## Not CLI-facing
+
+This bead changes no command surface, no flag, and no output. `etude --help` is
+unchanged, so the CLI manual-coverage requirement does not apply. No process,
+server or app was launched, so there is nothing to tear down.
+
+## Blast radius
+
+`internal/worktree/worktree_test.go` only. `isolateTempDir` is a new unexported
+helper in the test package with two call sites; nothing outside the package can
+see it. No production file changed.
