@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.7",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,39 @@
         "size": 1297
       },
       "timestamp": "2026-05-27T01:58:42.478664Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T12:30:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat (Tier-3 standard). GO — one-new-checklists.md-as-index avoids a drifting second copy (no rule body copied; mechanized steps→command, prose steps→anchors), satisfies acceptance, respects the 8hq.6 lens-section boundary."
+      },
+      "timestamp": "2026-05-27T12:31:00Z"
     }
   ]
 }
