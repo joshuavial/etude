@@ -1,0 +1,1606 @@
+diff --git a/README.md b/README.md
+index 74d6e6a..0cf196e 100644
+--- a/README.md
++++ b/README.md
+@@ -19,7 +19,7 @@ Implemented:
+ - Go module and `etude` binary entrypoint.
+ - Root command help and version output.
+ - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
+-  and configure `refs/etude/*` fetch/push refspecs on a git remote.
++  and configure safe per-remote metadata mirrors without changing branch push policy.
+ - `etude doctor` to perform a strictly read-only health check of configuration,
+   refspec safety, locally mirrored run refs, configured paths, and reviewer executables.
+ - Manual `etude capture` command for local file artifacts.
+diff --git a/RELEASING.md b/RELEASING.md
+index 29dc4fe..9197be7 100644
+--- a/RELEASING.md
++++ b/RELEASING.md
+@@ -120,15 +120,16 @@ retros) after a normal clone.
+ To move run data explicitly:
+ 
+ ```bash
+-etude init     # writes the +refs/etude/*:refs/etude/* fetch refspec into
+-               # git config so subsequent plain git-fetches pick up the namespace
+-etude sync     # explicitly pushes and fetches refs/etude/* right now
++etude init     # configures per-kind fetches into
++               # refs/etude-mirror/<remote>/<kind>/*
++etude sync     # explicitly fetches and pushes authoritative refs/etude/* now
+ ```
+ 
+ `etude sync` passes the refspec on the command line and works regardless of
+ whether `etude init` was previously run. Running both is the recommended
+-post-release sequence: `init` wires up future fetches; `sync` transfers any
+-run data accumulated on the release commit immediately.
++post-release sequence: `init` wires up safe mirror snapshots without making a
++plain `git fetch` populate authoritative `refs/etude/*`; `sync` transfers any
++authoritative run data accumulated on the release commit immediately.
+ 
+ See [`docs/sync.md`](docs/sync.md) for the full sync behavior, reconciliation
+ rules, and error cases.
+diff --git a/docs/README.md b/docs/README.md
+index 4311c22..df09b94 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -7,7 +7,7 @@ This directory holds user-facing documentation for implemented behavior.
+ 
+ ## Sections
+ 
+-- [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
++- [Init](init.md) - scaffold `.etude/` config and configure safe metadata mirrors.
+ - [Doctor](doctor.md) - check Etude setup and receive safe, specific remediation guidance.
+ - [Manual Capture](capture.md) - record local file artifacts into a run ref.
+ - [Batch Capture](capture-run.md) - capture a complete multi-stage run from a single YAML spec.
+diff --git a/docs/cli/etude.md b/docs/cli/etude.md
+index 750d8fe..6626b0a 100644
+--- a/docs/cli/etude.md
++++ b/docs/cli/etude.md
+@@ -28,7 +28,7 @@ etude [flags]
+ * [etude gate](etude_gate.md)	 - Run one stage's review gate and record the attempt on a run
+ * [etude gc](etude_gc.md)	 - Report artifact storage or prune named run refs
+ * [etude import](etude_import.md)	 - Import historical runs from an external source (e.g. GitHub PRs)
+-* [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs
++* [etude init](etude_init.md)	 - Scaffold .etude/ config and configure safe metadata fetching
+ * [etude log](etude_log.md)	 - Show a chronological timeline of runs and retros
+ * [etude prime](etude_prime.md)	 - Print a structured agent-onboarding primer to stdout
+ * [etude reindex](etude_reindex.md)	 - Rebuild the SQLite query index from all run and eval refs
+diff --git a/docs/cli/etude_init.md b/docs/cli/etude_init.md
+index 4441c76..440b66d 100644
+--- a/docs/cli/etude_init.md
++++ b/docs/cli/etude_init.md
+@@ -2,7 +2,7 @@
+ 
+ ## etude init
+ 
+-Scaffold .etude/ config and register refs/etude/* refspecs
++Scaffold .etude/ config and configure safe metadata fetching
+ 
+ ```
+ etude init [flags]
+@@ -14,7 +14,7 @@ etude init [flags]
+       --dry-run         preview the planned actions without writing files or modifying git config
+       --force           overwrite existing scaffolded files with fresh generated content
+   -h, --help            help for init
+-      --remote string   git remote to configure refspecs on (default: origin) (default "origin")
++      --remote string   git remote whose metadata mirrors to configure (default: origin) (default "origin")
+ ```
+ 
+ ### SEE ALSO
+diff --git a/docs/doctor.md b/docs/doctor.md
+index a451d6c..b4a38dc 100644
+--- a/docs/doctor.md
++++ b/docs/doctor.md
+@@ -39,7 +39,8 @@ For every configured Git remote, doctor checks:
+ - fetch refspecs cannot prune authoritative local `refs/etude/<kind>/*` refs;
+ - ordinary fetches mirror each kind into
+   `refs/etude-mirror/<remote>/<kind>/*`, not the old authoritative namespace;
+-- name-preserving push refspecs cover every Etude ref kind;
++- configured push refspecs are syntactically valid, and `remote.<name>.mirror`
++  is not enabled with its remote-deletion semantics;
+ - each local run, retro, and eval ref is present in the last locally fetched
+   mirror, without recommending a push when the mirrored ref is newer or its
+   direction cannot be established.
+@@ -50,6 +51,12 @@ comparison uses `refs/etude-mirror/<remote>/<kind>/*`, the disposable local
+ snapshot updated by the last fetch. Git does not record a reliable per-mirror
+ fetch timestamp, so doctor reports the update time as `NOT RECORDED`.
+ 
++Doctor does not require configured push coverage for Etude metadata. Missing or
++partial `remote.<name>.push` mappings are valid because `etude sync` supplies an
++explicit `refs/etude/*:refs/etude/*` mapping. Doctor still rejects malformed
++configured mappings and warns when remote mirror-push mode could delete refs
++that exist only on the remote.
++
+ That staleness matters: an absent mirrored ref may already exist remotely, a
+ matching ref may since have changed, and a differing ref may now have another
+ relationship. Doctor states those limits in each comparison. Its `etude sync`
+diff --git a/docs/init.md b/docs/init.md
+index 329df0e..8e31ffb 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -2,16 +2,13 @@
+ 
+ ## Overview
+ 
+-`etude init` scaffolds the `.etude/` configuration directory in the current
+-repository and registers the `refs/etude/*` **push** refspec on the named git
+-remote. Transferring the namespace is the job of [`etude sync`](sync.md), which
+-passes its own refspecs on the command line and works whether or not `init`
+-configured the remote.
++`etude init` scaffolds the `.etude/` configuration directory and configures
++safe fetching of Etude metadata from one Git remote. It does not install a push
++refspec. Ordinary `git push` therefore continues to follow the repository's
++existing `push.default`, upstream, branch, and remote policy.
+ 
+-`init` registers a *fetch* refspec that mirrors the remote's etude refs into a
+-separate, disposable namespace — never into your local one — and removes any
+-older refspec that pointed at the local namespace directly. See
+-[Local refs and remote mirrors](#local-refs-and-remote-mirrors).
++Publish and reconcile `refs/etude/*` with [`etude sync`](sync.md). Sync supplies
++its own explicit refspecs, independently of configured Git push policy.
+ 
+ ## What it creates
+ 
+@@ -29,18 +26,18 @@ All files are written to the working tree for normal review and commit on main.
+ 
+ ## Refspec configuration
+ 
+-By default init configures `origin` with:
++By default init configures these fetch mappings on `origin`:
+ 
+ ```
+-remote.origin.push  =  refs/etude/*:refs/etude/*
+ remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*
+ remote.origin.fetch = +refs/etude/retros/*:refs/etude-mirror/origin/retros/*
+ remote.origin.fetch = +refs/etude/evals/*:refs/etude-mirror/origin/evals/*
+ ```
+ 
+-The push refspec is non-forced: a non-fast-forward push fails loudly rather
+-than silently overwriting a remote ref. The fetch refspecs ARE forced, which is
+-safe precisely because their destination is the mirror — see below.
++The fetch refspecs are forced because their destinations are disposable mirror
++refs. Init does not create `remote.origin.push`. If that key is absent, normal
++Git rules decide what `git push` sends. If it contains user mappings, they remain
++in effect.
+ 
+ If `origin` does not exist, the refspec step is skipped and init still succeeds
+ (useful when initializing a repo before the remote is added). Use `--remote` to
+@@ -64,17 +61,17 @@ the only refs it can reach are mirror refs, which are re-created by the next
+ fetch. A run you have produced and not yet pushed is not reachable by prune at
+ all.
+ 
+-The mirror is a **sibling** of `refs/etude/`, not nested inside it. That is
+-deliberate: `refs/etude/*:refs/etude/*` — the push refspec — would match a nested
+-mirror and upload this clone's copy of the remote back to the remote. As a
+-sibling it cannot match, so no push refspec, present or future, can carry it.
++The mirror is a **sibling** of `refs/etude/`, not nested inside it. Etude's
++explicit `refs/etude/*:refs/etude/*` sync mapping therefore cannot match the
++mirror and upload this clone's copy back to the remote. A user-authored broader
++mapping can have different semantics and remains the user's policy.
+ 
+ Two consequences worth knowing:
+ 
+-- **Nothing reads the mirror yet.** It is populated by `git fetch` and pruned by
+-  `git fetch --prune`, and that is all. `etude run show`, `etude log`, `etude gc`
+-  and the index all read your local namespace only. Reporting what a remote has
+-  that you do not — and detecting divergence — is a separate, later change.
++- **Doctor reads the mirror as a snapshot.** `etude doctor` compares local refs
++  with the last-fetched mirror while reporting that the remote may since have
++  changed. `etude run show`, `etude log`, `etude gc`, and the index continue to
++  read the authoritative local namespace only.
+ - **Mirror refs pin objects.** A plain `git fetch` now downloads the remote's
+   etude objects and the mirror refs keep them reachable, so they are not
+   reclaimed by `git gc`. There is no expiry for the mirror yet, including after a
+@@ -109,24 +106,22 @@ The fix is not to go without a fetch refspec — it is to point it somewhere
+ disposable. A refspec whose destination is `refs/etude-mirror/<remote>/…` gives
+ prune nothing of yours to delete, which is what `init` now configures.
+ 
+-The push refspec is **not** affected and must stay: it is what makes
+-`git push origin` carry run refs at all. Pushing cannot delete a local ref.
++Push and fetch solve different problems. Init keeps configured fetch pruning
++away from authoritative local refs. `etude sync` performs a non-forced explicit
++metadata transfer. Ordinary branch pushing remains under normal Git policy.
+ 
+-Note the corollary: `refs/etude/` now means "everything here is pushed to the
+-remote". A future local-only ref — a cache, an index, a cursor — must NOT be
+-placed under `refs/etude/`, or the broad push refspec will upload it.
++### Migrating an existing repository
+ 
+-One user-authored spelling can reach the mirror: a refspec written as
+-`refs/etude*` (no trailing slash) matches `refs/etude-mirror/…` as well as
+-`refs/etude/…`. Everything etude writes anchors on `refs/etude/` with the slash,
+-so this cannot arise from `etude init` — but if you hand-write refspecs, keep the
+-slash.
++Older Etude versions installed two mappings that current init migrates:
+ 
+-### Migrating an existing repository
++```text
+++refs/etude/*:refs/etude/*  # fetch into the authoritative local namespace
++ refs/etude/*:refs/etude/*  # push only metadata on ordinary git push
++```
+ 
+-Any repository initialised by an older `etude init` still carries the dangerous
+-refspec and will not fix itself. Re-run init — it removes that refspec and
+-installs the mirrored ones in its place, on both the normal and `--force` paths:
++Re-run init against the same remote. Normal init removes both legacy mappings
++and installs safe per-kind mirrors. `--force` also removes both mappings but
++retains its existing behavior of not adding mirror mappings:
+ 
+ ```bash
+ etude init                      # repairs the DEFAULT remote (origin)
+@@ -145,28 +140,31 @@ for r in $(git remote); do
+ done
+ ```
+ 
+-Any entry whose part *after* the colon begins with `refs/etude/` is the hazard.
++Any fetch entry whose part *after* the colon begins with `refs/etude/` is the
++prune hazard.
+ (An entry with no colon at all is harmless — git fetches it to `FETCH_HEAD`
+ without creating a local ref, so there is nothing for `--prune` to delete.)
+ 
+-Or fix it by hand, without running init. List the fetch refspecs, then unset the
+-one whose destination is inside `refs/etude/`:
++To inspect the local migration state directly:
+ 
+ ```bash
+ git config --local --get-all remote.origin.fetch
+-git config --local --unset-all remote.origin.fetch '^\+refs/etude/\*:refs/etude/\*$'
+-git config --local --get-all remote.origin.fetch   # verify: no refs/etude entry
+-git config --local --get-all remote.origin.push    # verify: still present
++git config --local --get-all remote.origin.push
+ ```
+ 
+-The value is a POSIX regex, so the `+` and `*` are escaped and the pattern is
+-anchored — that removes exactly that entry and cannot touch your `refs/heads/*`
+-refspec. Adjust the pattern if your entry is spelled differently (for example
+-without the leading `+`); `git config --local --get-all remote.origin.fetch`
+-above shows you the exact value to escape.
++Push migration is deliberately exact and local. Init removes every local value
++equal byte-for-byte to `refs/etude/*:refs/etude/*`, including duplicates. It
++preserves the order and bytes of every other value: custom branch mappings,
++forced or name-changing Etude mappings, colonless mappings, surrounding
++whitespace, and multiline values. The literal is an ownership heuristic, not
++proof; if you intentionally configured that exact local value, init removes it
++as part of this migration.
+ 
+-Unset only the **fetch** refspec. Unsetting the push refspec too would stop run
+-refs reaching the remote, which loses the same data by another route.
++System, global, and included configuration is never edited. An inherited
++`refs/etude/*:refs/etude/*` mapping can therefore remain effective and continue
++to affect ordinary pushes. Init does not manufacture a branch refspec to
++counter it. Inspect effective policy with `git config --show-origin --get-all
++remote.origin.push` and edit its owning configuration if needed.
+ 
+ ### Safety warnings
+ 
+@@ -175,9 +173,7 @@ state, and prints a `warning:` line when it is not. `init` configures one
+ remote, so these catch what it cannot fix itself:
+ 
+ - an etude-registered fetch refspec still present on the target remote;
+-- the target remote not carrying the canonical `refs/etude/*:refs/etude/*` push
+-  refspec, so run refs never reach it;
+-- the target remote not existing at all, so run refs stay local-only;
++- the target remote not existing, so `etude sync` cannot publish metadata there;
+ - an etude-registered fetch refspec on **any other remote**. init configures the
+   one remote it was pointed at, so a hazardous entry on a sibling remote survives
+   the run, and `git fetch --prune <that remote>` deletes unpushed run refs just
+@@ -204,9 +200,10 @@ preserves ref names — those need a full model of refspec semantics, and
+ answering them confidently but wrongly is worse than not answering. That is the
+ job of [`etude doctor`](doctor.md); `init` does not guess.
+ 
+-In particular a refspec broader than `refs/etude/*` **is** dangerous and init
+-neither removes nor reports it. It is also your own configuration — deleting it
+-would break your branch fetching — so it is not a setup command's call to make.
++In particular a fetch refspec broader than `refs/etude/*` can be dangerous and
++init neither removes nor reports it. It is user configuration, so deleting it
++could break branch fetching. [`etude doctor`](doctor.md) performs the semantic
++check.
+ 
+ ## Idempotency
+ 
+@@ -214,58 +211,39 @@ Running `etude init` twice is safe:
+ 
+ - Existing files are skipped (reported as `skipped <path>`). Use `--force` to
+   regenerate them from the canonical default.
+-- The push refspec is added at most once. Running init twice results in exactly
+-  one entry for the key.
+-- Removing a fetch refspec into `refs/etude/*` is idempotent: the second run
+-  finds none and says nothing.
+-
+-Refspec idempotency is byte-exact: init compares the full refspec string
+-character-for-character against every existing value for the config key. If
+-exactly one canonical entry already exists, init leaves it alone and prints
+-`already configured <key> = <value>`.
+-
+-Otherwise it writes with `git config --replace-all` against a pattern matching
+-exactly the canonical value. That has two consequences worth knowing:
+-
+-- **Concurrent runs converge.** Two `etude init` processes racing on the same
+-  repository — normal when linked worktrees share one `.git/config` — cannot
+-  leave duplicate entries, because `--replace-all` collapses every matching line
+-  to one and adds when none match.
+-- **Pre-existing duplicates are collapsed.** A repository carrying two identical
+-  canonical entries, left by an older version of this command, ends up with one.
+-
+-A refspec hand-edited to a *non-identical* variant (e.g. without the forced-fetch
+-`+` prefix, or with a trailing space) is a different value: init adds the
+-canonical one alongside it rather than rewriting your edit. Init does not attempt
+-to detect or merge semantically equivalent refspecs — see `etude doctor`.
++- Removing legacy fetch and push mappings is idempotent: the next run finds none.
++- Safe mirror fetch mappings are present exactly once after normal init.
++- Git config writes use Git's lock and retry briefly when linked worktrees run
++  init concurrently.
+ 
+ ## Plan → apply pipeline
+ 
+-`etude init` runs a plan → apply pipeline. `plan` derives an ordered action
+-list (read-only: no writes, no git config queries). `apply` executes each
+-action and is the sole site that prints output and tallies counts.
++`etude init` runs an ordered plan and apply pipeline. Fetch-hazard cleanup comes
++first, push migration comes second, and normal init adds safe mirrors last. An
++error or interruption during a later addition therefore cannot leave the old
++hazardous fetch mapping in place.
+ 
+ After all actions run, a summary line is printed:
+ 
+ ```
+-init: 4 created, 0 skipped, 1 configured
++init: 4 created, 0 skipped, 3 configured
+ ```
+ 
+-The `configured` count covers freshly configured, already-configured, and
+-removed refspecs. A second `init` run on a repo that needed no removal reports
+-`1 configured` (idempotent, already-configured entries fall into the same
+-bucket). `warning:` lines are not counted.
++The `configured` count covers configured, already-configured, and removed
++refspec values. Fresh and repeated normal init each count the three safe mirror
++mappings. Each removed duplicate is also counted. Informational and `warning:`
++lines are not counted.
+ 
+ ## --dry-run
+ 
+ `--dry-run` previews the planned actions without writing any files or modifying
+-git config. It prints `plan: create <path>` / `plan: skip <path>` lines for the
+-scaffold, `plan: configure push refspec on <remote>` for the push refspec, and
+-`plan: remove <key> = <value>` for any fetch refspec into `refs/etude/*` it
+-would remove, followed by a summary:
++git config. It prints `plan: create <path>` / `plan: skip <path>` for the
++scaffold; `plan: configure` or `plan: keep` for safe mirror mappings; and one
++`plan: remove <key> = <value>` per legacy fetch or exact local legacy push value.
++It then prints a summary such as:
+ 
+ ```
+-dry-run: 4 to create, 0 to skip, 1 to configure
++dry-run: 4 to create, 0 to skip, 3 to configure
+ ```
+ 
+ Dry-run behavior:
+@@ -275,8 +253,8 @@ Dry-run behavior:
+   "bad name"`) errors immediately, before any reads.
+ - **Workflow self-check still runs.** The YAML round-trip validation runs during
+   plan (read-only) and can error under dry-run.
+-- **`--force --dry-run`** previews 0 to configure, *except* for a fetch refspec
+-  removal, which is previewed on the force path too.
++- **`--force --dry-run`** does not preview mirror additions. It does preview
++  legacy fetch and push removals because real `--force` performs both.
+ - **Safety warnings are printed under `--dry-run`** — the check is read-only and
+   runs on every path. Its *output* is not identical between a preview and a real
+   run, and cannot be: a real run removes the hazardous fetch refspec before the
+@@ -289,7 +267,7 @@ Dry-run behavior:
+ | Flag | Default | Description |
+ |------|---------|-------------|
+ | `--dry-run` | false | Preview the planned actions without writing files or modifying git config. |
+-| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Silent on refspec configuration, with one exception: it still removes a fetch refspec into `refs/etude/*`, because leaving a known data-loss setting in place is never the right outcome of a setup command. It does **not** add the push refspec — if it is missing, `--force` reports it and a plain `etude init` adds it. |
++| `--force` | false | Overwrite existing scaffolded files. It still removes legacy fetch and exact local legacy push mappings, but does not add mirror mappings. |
+ | `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error (even under `--force`). |
+ 
+ ## Example
+@@ -301,8 +279,12 @@ etude init
+ # Inspect what was created:
+ cat .etude/workflow.yaml
+ git config --local --get-all remote.origin.push
+-# Should print no refs/etude entry:
++# A fresh init prints nothing here. Existing user policy may still appear.
+ git config --local --get-all remote.origin.fetch
++# Safe Etude entries point only at refs/etude-mirror/origin/.
++
++# Publish metadata explicitly:
++etude sync
+ 
+ # Regenerate config files after editing workflow.go upstream:
+ etude init --force
+diff --git a/docs/plans/dogfood/phase0-critical-path.md b/docs/plans/dogfood/phase0-critical-path.md
+index 67ca915..32cc91c 100644
+--- a/docs/plans/dogfood/phase0-critical-path.md
++++ b/docs/plans/dogfood/phase0-critical-path.md
+@@ -20,7 +20,8 @@ Phase 0 aims to create a minimal, git-native capture loop:
+ - Workflow schema: parse + validate `.etude/workflow.yaml` with read+write
+   (`internal/workflow`: `ParseYAML`, `Validate`, `YAML`, `Default`).
+ - `etude init` command: scaffolds `.etude/workflow.yaml` + eval rubric
+-  placeholders and registers `refs/etude/*` fetch/push refspecs on a git remote.
++  placeholders and configures safe per-remote metadata mirrors without changing
++  branch push policy.
+ - `etude run list` / `etude run show` commands: inspect stored runs by walking
+   `refs/etude/runs/*` directly (no query index yet).
+ - `etude sync` command: non-forced porcelain push/fetch of the `refs/etude/*`
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index 5fae850..99d8fd8 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -197,10 +197,11 @@ across runs.
+ **The cost — and it is real — is that custom refs do not sync with
+ `git push`/`fetch` by default.** This is the same issue that kept `git notes`
+ obscure. The mitigation, following DVC, is to make sync a **first-class CLI
+-concern**: `etude init` writes the fetch refspec
+-(`+refs/etude/*:refs/etude/*`) into the repo's git config, and
+-`etude sync` does explicit push/fetch of the namespace. Discoverability
+-is the tool's job, never assumed of the user.
++concern**: `etude init` writes safe per-kind fetch mappings into the sibling
++`refs/etude-mirror/<remote>/` namespace, and `etude sync` does explicit
++push/fetch of the authoritative namespace. The original direct fetch mapping
++described here was superseded because pruning it could delete unpushed local
++run refs. Discoverability is the tool's job, never assumed of the user.
+ 
+ Cloudflare Artifacts (2025, closed beta) is sometimes cited as prior art, but
+ on inspection it is a *hosted, proprietary* service for provisioning
+@@ -389,7 +390,7 @@ absolute quality over time and surfacing *why*.
+ ## 5. CLI surface
+ 
+ ```
+-etude init      # scaffold workflow.yaml, register refs/etude/* refspec
++etude init      # scaffold workflow.yaml, configure safe metadata mirrors
+ etude capture <stage> --run <id> --input ... --output ...
+ etude run list [--cohort ...]
+ etude run show <run-id>
+diff --git a/docs/plans/product/V1-SCOPE.md b/docs/plans/product/V1-SCOPE.md
+index 2d67e60..f7d1357 100644
+--- a/docs/plans/product/V1-SCOPE.md
++++ b/docs/plans/product/V1-SCOPE.md
+@@ -14,7 +14,7 @@
+ 
+ | Command | Notes |
+ |---|---|
+-| `etude init` | Scaffold `workflow.yaml`; register `refs/etude/*` refspec. |
++| `etude init` | Scaffold configuration; configure safe metadata mirrors without changing branch push policy. |
+ | `etude capture` | Record a stage artifact for the current run. |
+ | `etude capture-gate` | Record a gate decision artifact. |
+ | `etude capture-run` | Record a full run manifest. |
+diff --git a/docs/sync.md b/docs/sync.md
+index 0141a47..bbfd41b 100644
+--- a/docs/sync.md
++++ b/docs/sync.md
+@@ -142,10 +142,13 @@ etude sync --remote upstream
+ ## Relationship to etude init
+ 
+ `etude init` writes per-kind fetch refspecs that map remote
+-`refs/etude/<kind>/*` into `refs/etude-mirror/<remote>/<kind>/*`, plus
+-name-preserving push refspecs for the authoritative local namespace. `etude
+-sync` passes its own refspecs explicitly and does not rely on those config
+-entries, so it works independently of whether init was run.
++`refs/etude/<kind>/*` into `refs/etude-mirror/<remote>/<kind>/*`. Init does not
++install a push refspec, so ordinary branch pushes keep following the user's Git
++policy. It also removes the exact local metadata-only push mapping installed by
++older Etude versions. `etude sync` passes its own non-forced refspecs explicitly
++and does not rely on configured push mappings, so it works independently of
++whether init was run. Its `refs/etude/*` source excludes the sibling
++`refs/etude-mirror/*` namespace.
+ 
+ See [Init](init.md) for the init command.
+ 
+diff --git a/internal/cli/doctor.go b/internal/cli/doctor.go
+index 762824c..a89326d 100644
+--- a/internal/cli/doctor.go
++++ b/internal/cli/doctor.go
+@@ -391,51 +391,29 @@ func (r doctorRunner) checkRemoteRefspecs(ctx context.Context, state doctorRemot
+ 		*findings = append(*findings, doctorFinding{doctorOK, "fetch-refspec[" + remote + "]", "no fetch refspec can prune authoritative refs/etude refs", ""})
+ 	}
+ 
+-	validPush := make([]doctorRefspec, 0, len(pushEntries))
++	invalidPush := 0
+ 	for _, entry := range pushEntries {
+-		rs, err := r.git.parseRefspec(ctx, entry.value, false)
++		_, err := r.git.parseRefspec(ctx, entry.value, false)
+ 		if err != nil {
++			invalidPush++
+ 			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("invalid push refspec %q: %v", entry.value, err), doctorConfigUnsetRemediation(r.git.root, pushKey, entry)})
+ 			continue
+ 		}
+-		validPush = append(validPush, rs)
+ 	}
+ 	mirrorPush := false
++	invalidMirror := false
+ 	if entries, err := r.git.configEntries(ctx, "remote."+remote+".mirror"); err == nil && len(entries) > 0 {
+ 		last := entries[len(entries)-1]
+ 		mirrorPush, err = r.git.configBool(ctx, "remote."+remote+".mirror")
+ 		if err != nil {
++			invalidMirror = true
+ 			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("remote.%s.mirror has invalid boolean value %q", remote, last.value), doctorConfigUnsetRemediation(r.git.root, "remote."+remote+".mirror", last)})
+ 		}
+ 	}
+-	missingKinds := make([]string, 0, len(refstore.Kinds))
+-	for _, kind := range refstore.Kinds {
+-		if mirrorPush {
+-			continue
+-		}
+-		prefix := "refs/etude/" + kind + "/"
+-		covered := false
+-		for _, rs := range validPush {
+-			if doctorRefspecMapsPrefix(rs, prefix, prefix) {
+-				covered = true
+-				break
+-			}
+-		}
+-		if !covered {
+-			missingKinds = append(missingKinds, kind)
+-		}
+-	}
+-	if len(missingKinds) > 0 {
+-		shapes := doctorMisleadingPushShapes(validPush)
+-		message := "no name-preserving push coverage for refs/etude/" + strings.Join(missingKinds, ", refs/etude/")
+-		if len(shapes) > 0 {
+-			message += "; observed " + strings.Join(shapes, ", ")
+-		}
+-		*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", message, "etude init --remote " + doctorShellQuote(remote)})
+-	} else if mirrorPush {
+-		*findings = append(*findings, doctorFinding{doctorWarn, "push-refspec[" + remote + "]", "remote mirror-push semantics cover every refs/etude kind but can delete remote-only refs", doctorHuman("replace mirror-push semantics with explicit name-preserving refs/etude push mappings if remote-only refs must be preserved")})
+-	} else {
+-		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "name-preserving push mappings cover every refs/etude kind", ""})
++	if mirrorPush {
++		*findings = append(*findings, doctorFinding{doctorWarn, "push-refspec[" + remote + "]", "remote mirror-push semantics can delete remote-only refs", doctorHuman("disable remote mirror-push semantics unless deleting remote refs absent locally is intended")})
++	} else if invalidPush == 0 && !invalidMirror {
++		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "configured Git push mappings are syntactically valid; etude sync publishes refs/etude metadata explicitly", ""})
+ 	}
+ 
+ 	missingMirrors := make([]string, 0, len(refstore.Kinds))
+@@ -1049,51 +1027,6 @@ func doctorPatternMatches(pattern, ref string) bool {
+ 	return strings.HasPrefix(ref, pre) && strings.HasSuffix(ref, post) && len(ref) >= len(pre)+len(post)
+ }
+ 
+-func doctorMisleadingPushShapes(refspecs []doctorRefspec) []string {
+-	shapes := make(map[string]bool)
+-	for _, rs := range refspecs {
+-		switch {
+-		case rs.src == "" && strings.HasPrefix(rs.dst, "refs/etude/"):
+-			shapes["empty-source delete mapping"] = true
+-		case !strings.Contains(rs.src, "*") && strings.HasPrefix(rs.src, "refs/etude/"):
+-			shapes["single-ref mapping"] = true
+-		case strings.Contains(rs.src, "*") && doctorPatternIntersectsPrefix(rs.src, "refs/etude/"):
+-			probe := "refs/etude/runs/__doctor_probe__"
+-			if dst, ok := doctorMapRefspec(rs, probe); ok && dst != probe {
+-				shapes["name-changing mapping"] = true
+-			}
+-		}
+-	}
+-	result := make([]string, 0, len(shapes))
+-	for shape := range shapes {
+-		result = append(result, shape)
+-	}
+-	sort.Strings(result)
+-	return result
+-}
+-
+-func doctorMapRefspec(rs doctorRefspec, ref string) (string, bool) {
+-	if rs.negative || rs.src == "" {
+-		return "", false
+-	}
+-	dstPattern := rs.dst
+-	if !rs.hasDst {
+-		dstPattern = rs.src
+-	}
+-	if !strings.Contains(rs.src, "*") {
+-		if rs.src != ref {
+-			return "", false
+-		}
+-		return dstPattern, true
+-	}
+-	pre, post, _ := strings.Cut(rs.src, "*")
+-	if !strings.HasPrefix(ref, pre) || !strings.HasSuffix(ref, post) || len(ref) < len(pre)+len(post) {
+-		return "", false
+-	}
+-	capture := ref[len(pre) : len(ref)-len(post)]
+-	return strings.Replace(dstPattern, "*", capture, 1), true
+-}
+-
+ // doctorRefspecMapsPrefix proves that every ref below sourcePrefix maps to the
+ // same suffix below destinationPrefix. A single sentinel cannot establish this:
+ // an exact refspec for that sentinel would otherwise look like namespace-wide
+diff --git a/internal/cli/doctor_test.go b/internal/cli/doctor_test.go
+index 07bd067..6592a78 100644
+--- a/internal/cli/doctor_test.go
++++ b/internal/cli/doctor_test.go
+@@ -73,17 +73,16 @@ func TestDoctorDangerousFetchFailsWithExactScopedRemediation(t *testing.T) {
+ 	}
+ }
+ 
+-func TestDoctorMissingPushRefspecFailsWithInitRemediation(t *testing.T) {
++func TestDoctorMissingPushRefspecUsesExplicitSync(t *testing.T) {
+ 	repo, _ := doctorRepo(t)
+-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
+ 	chdir(t, repo)
+ 
+ 	stdout, _, err := execute("doctor")
+-	if err == nil {
+-		t.Fatalf("doctor succeeded without push mappings:\n%s", stdout)
++	if err != nil {
++		t.Fatalf("doctor failed without push mappings: %v\n%s", err, stdout)
+ 	}
+-	if !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, "remedy: etude init --remote 'origin'") {
+-		t.Fatalf("missing push finding/remediation absent:\n%s", stdout)
++	if !strings.Contains(stdout, "OK push-refspec[origin]") || !strings.Contains(stdout, "etude sync publishes refs/etude metadata explicitly") {
++		t.Fatalf("explicit sync guidance absent:\n%s", stdout)
+ 	}
+ }
+ 
+@@ -467,7 +466,7 @@ func TestDoctorMissingRunnerScriptFails(t *testing.T) {
+ 	}
+ }
+ 
+-func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
++func TestDoctorAcceptsPartialUserPushMappings(t *testing.T) {
+ 	for name, value := range map[string]string{
+ 		"delete":        ":refs/etude/runs/x",
+ 		"single":        "refs/etude/runs/x:refs/etude/runs/x",
+@@ -475,12 +474,11 @@ func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
+ 	} {
+ 		t.Run(name, func(t *testing.T) {
+ 			repo, _ := doctorRepo(t)
+-			gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
+ 			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", value)
+ 			chdir(t, repo)
+ 			stdout, _, err := execute("doctor")
+-			if err == nil || !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, name) {
+-				t.Fatalf("shape %q was not diagnosed: err=%v\n%s", name, err, stdout)
++			if err != nil || !strings.Contains(stdout, "OK push-refspec[origin]") {
++				t.Fatalf("valid partial mapping %q was rejected: err=%v\n%s", name, err, stdout)
+ 			}
+ 		})
+ 	}
+@@ -488,11 +486,10 @@ func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
+ 
+ func TestDoctorMirrorPushBooleanProvidesCoverage(t *testing.T) {
+ 	repo, _ := doctorRepo(t)
+-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
+ 	gitCapture(t, repo, "config", "--local", "remote.origin.mirror", "yes")
+ 	chdir(t, repo)
+ 	stdout, _, err := execute("doctor")
+-	if err != nil || !strings.Contains(stdout, "mirror-push semantics cover") {
++	if err != nil || !strings.Contains(stdout, "mirror-push semantics can delete remote-only refs") {
+ 		t.Fatalf("mirror push was not accepted: err=%v\n%s", err, stdout)
+ 	}
+ }
+@@ -543,17 +540,16 @@ func TestDoctorRubricDirectoryFails(t *testing.T) {
+ 	}
+ }
+ 
+-func TestDoctorExactSentinelsDoNotCountAsNamespaceCoverage(t *testing.T) {
++func TestDoctorExactSentinelsAreValidUserPushPolicy(t *testing.T) {
+ 	repo, _ := doctorRepo(t)
+-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
+ 	for _, kind := range []string{"runs", "retros", "evals"} {
+ 		ref := "refs/etude/" + kind + "/__doctor_probe__"
+ 		gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", ref+":"+ref)
+ 	}
+ 	chdir(t, repo)
+ 	stdout, _, err := execute("doctor")
+-	if err == nil || !strings.Contains(stdout, "FAIL push-refspec[origin]") {
+-		t.Fatalf("exact sentinel mappings counted as full coverage: err=%v\n%s", err, stdout)
++	if err != nil || !strings.Contains(stdout, "OK push-refspec[origin]") {
++		t.Fatalf("valid exact sentinel mappings rejected: err=%v\n%s", err, stdout)
+ 	}
+ }
+ 
+@@ -883,7 +879,7 @@ func TestDoctorMirrorPushNeverRecommendsSync(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("mirror-push hazard should warn, not fail: %v\n%s", err, stdout)
+ 	}
+-	if strings.Contains(stdout, "remedy: etude sync") || !strings.Contains(stdout, "replace mirror-push semantics") {
++	if strings.Contains(stdout, "remedy: etude sync") || !strings.Contains(stdout, "disable remote mirror-push semantics") {
+ 		t.Fatalf("mirror-push emitted unsafe sync advice:\n%s", stdout)
+ 	}
+ }
+@@ -905,7 +901,6 @@ func TestDoctorInvalidMirrorNeverRecommendsSync(t *testing.T) {
+ 
+ func TestDoctorRefspecWhitespaceIsNotTrimmed(t *testing.T) {
+ 	repo, _ := doctorRepo(t)
+-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
+ 	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "+refs/etude/*:refs/etude/* ")
+ 	chdir(t, repo)
+ 	stdout, _, err := execute("doctor")
+diff --git a/internal/cli/init.go b/internal/cli/init.go
+index 1067c89..08a6e9c 100644
+--- a/internal/cli/init.go
++++ b/internal/cli/init.go
+@@ -9,6 +9,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"regexp"
++	"sort"
+ 	"strings"
+ 	"time"
+ 	"unicode"
+@@ -43,6 +44,7 @@ const (
+ 	fmtAlreadyConfigured = "already configured %s = %s"
+ 	fmtRemoteNotFound    = "remote %s not found, skipping refspec configuration"
+ 	fmtRemovedFetch      = "removed %s = %s (a fetch refspec into refs/etude/* makes any 'git fetch --prune' delete run refs not yet pushed)"
++	fmtRemovedPush       = "removed %s = %s (etude sync publishes metadata explicitly; leaving this mapping would suppress ordinary branch pushes)"
+ 
+ 	// Warnings state the CONDITION and point at the docs. They deliberately do
+ 	// NOT embed a runnable shell command any more.
+@@ -65,19 +67,18 @@ const (
+ 	// commands it cannot guarantee.
+ 	fmtWarnFetchRemains    = "warning: %s still has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. See the migration section of docs/init.md."
+ 	fmtWarnFetchRemainsDry = "warning: %s has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. This is a preview; a real run of this command on remote %q removes it."
+-	fmtWarnNoPush          = "warning: remote %q has no %s push refspec, so run refs never reach it and stay local-only. See docs/init.md."
+-	fmtWarnNoRemote        = "warning: remote %q not found, so no refs/etude/* push refspec is configured and run refs stay local-only. Add the remote, then re-run etude init against it. See docs/init.md."
++	fmtWarnNoRemote        = "warning: remote %q not found, so etude sync cannot publish refs/etude/* there. Add the remote, then re-run etude init against it. See docs/init.md."
+ 	fmtWarnOtherRemote     = "warning: remote %q also has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' against it will delete run refs not yet pushed. This run only configured the remote it was pointed at; re-run etude init with --remote %q to repair that one. See docs/init.md."
++	fmtMetadataSync        = "metadata publication for remote %q is handled by etude sync, which supplies its own refs/etude/* refspec"
+ )
+ 
+ // etudeRefPrefix is the ref namespace this tool owns.
+ const etudeRefPrefix = "refs/etude/"
+ 
+-// canonicalPushRefspec is the one push refspec etude registers and checks for.
+-// init compares against it EXACTLY. Deciding whether some other refspec happens
+-// to be equivalent needs a full model of refspec semantics — glob matching, name
+-// preservation, grammar — which belongs in `etude doctor` (bead etude-ldf), not
+-// in a setup command that would only be guessing.
++// canonicalPushRefspec is the legacy push refspec older etude versions
++// registered. Init removes only byte-exact local instances of this value. It is
++// an ownership heuristic rather than proof: custom, forced, whitespace-bearing,
++// name-changing and colonless variants remain user policy.
+ const canonicalPushRefspec = "refs/etude/*:refs/etude/*"
+ 
+ type actionLine struct {
+@@ -96,7 +97,7 @@ func newInitCommand(out, errOut io.Writer) *cobra.Command {
+ 
+ 	cmd := &cobra.Command{
+ 		Use:           "init",
+-		Short:         "Scaffold .etude/ config and register refs/etude/* refspecs",
++		Short:         "Scaffold .etude/ config and configure safe metadata fetching",
+ 		SilenceUsage:  true,
+ 		SilenceErrors: true,
+ 		RunE: func(cmd *cobra.Command, args []string) error {
+@@ -111,7 +112,7 @@ func newInitCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd.SetOut(out)
+ 	cmd.SetErr(errOut)
+ 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing scaffolded files with fresh generated content")
+-	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote to configure refspecs on (default: origin)")
++	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote whose metadata mirrors to configure (default: origin)")
+ 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the planned actions without writing files or modifying git config")
+ 	return cmd
+ }
+@@ -241,18 +242,18 @@ func writeAction(path string, content []byte) initAction {
+ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool) initAction {
+ 	return initAction{
+ 		run: func(force, dryRun bool) ([]actionLine, error) {
+-			// No FETCH refspec is registered. One whose destination is inside
+-			// refs/etude/* makes every local run ref a remote-tracking ref, so
+-			// any `git fetch --prune` deletes every run ref not yet pushed. Any
+-			// left by an older etude init is removed instead. `etude sync`
+-			// passes the refspec explicitly, so nothing needs it in config.
++			// A FETCH refspec whose destination is inside refs/etude/* makes
++			// every local run ref a remote-tracking ref, so any `git fetch
++			// --prune` deletes every run ref not yet pushed. Any left by an older
++			// etude init is removed instead.
+ 			//
+-			// The PUSH refspec stays: it is what makes `git push` carry run refs
+-			// at all, and pushing cannot delete a local ref. Removing both would
+-			// lose the same data by another route.
++			// Older etude versions also installed a sole PUSH refspec for the
++			// metadata namespace. That changes ordinary `git push` from its
++			// branch/upstream behavior into a metadata-only push. Remove only the
++			// byte-exact local legacy value; `etude sync` publishes metadata with
++			// an explicit command-line refspec.
+ 			fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
+ 			pushKey := fmt.Sprintf("remote.%s.push", remote)
+-			pushVal := canonicalPushRefspec
+ 
+ 			// Dry-run is always read-only and NEVER errors on a missing remote,
+ 			// even under --force with an explicit missing remote. Check dryRun
+@@ -279,11 +280,37 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 				for _, v := range stale {
+ 					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: remove %s = %s", fetchKey, v)})
+ 				}
++				legacyPush, err := findLegacyPushRefspecs(ctx, root, pushKey)
++				if err != nil {
++					return nil, err
++				}
++				for range legacyPush {
++					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: remove %s = %s", pushKey, canonicalPushRefspec)})
++				}
+ 				if force {
+-					// force + present → silent except for the removal.
++					// Force does not add mirror mappings, but both legacy
++					// cleanups are still previewed.
+ 					return lines, nil
+ 				}
+-				return append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: configure push refspec on %s", remote)}), nil
++				for _, kind := range refstore.Kinds {
++					value := mirroredFetchRefspec(remote, kind)
++					existing, err := gitGetAll(ctx, root, fetchKey)
++					if err != nil {
++						return nil, err
++					}
++					matches := 0
++					for _, configured := range existing {
++						if configured == value {
++							matches++
++						}
++					}
++					verb := "configure"
++					if matches == 1 {
++						verb = "keep"
++					}
++					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: %s %s = %s", verb, fetchKey, value)})
++				}
++				return lines, nil
+ 			}
+ 
+ 			// Normal (non-dry-run) run.
+@@ -297,10 +324,15 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 				if !remoteExists(ctx, root, remote) {
+ 					return nil, nil
+ 				}
+-				// Force is silent on refspecs EXCEPT for removing a hazardous
+-				// fetch refspec — a known data-loss setting is never left in
+-				// place just because the caller passed --force.
+-				return removeEtudeFetchRefspecs(ctx, root, fetchKey)
++				// Force does not install mirror mappings, but known legacy
++				// settings are never left in place just because the caller passed
++				// --force. Fetch cleanup remains first for prune safety.
++				lines, err := removeEtudeFetchRefspecs(ctx, root, fetchKey)
++				if err != nil {
++					return nil, err
++				}
++				pushLines, err := removeLegacyPushRefspecs(ctx, root, pushKey)
++				return append(lines, pushLines...), err
+ 			}
+ 
+ 			// Non-force normal run.
+@@ -328,7 +360,7 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+-			pushLines, err := addRefspecIfAbsent(ctx, root, pushKey, pushVal)
++			pushLines, err := removeLegacyPushRefspecs(ctx, root, pushKey)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -448,7 +480,10 @@ func addRefspecIfAbsent(ctx context.Context, root, key, value string) ([]actionL
+ func gitGetAll(ctx context.Context, root, key string) ([]string, error) {
+ 	// Directive A: use --local explicitly.
+ 	// Directive G (see addRefspecIfAbsent): git -C <root> for robustness.
+-	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--get-all", key)
++	// --no-includes makes the migration boundary explicit, and --null preserves
++	// embedded newlines so a custom multiline value cannot be mistaken for the
++	// legacy canonical value.
++	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--no-includes", "--null", "--get-all", key)
+ 	out, err := cmd.Output()
+ 	if err != nil {
+ 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+@@ -457,11 +492,49 @@ func gitGetAll(ctx context.Context, root, key string) ([]string, error) {
+ 		}
+ 		return nil, err
+ 	}
+-	raw := strings.TrimRight(string(out), "\n")
+-	if raw == "" {
+-		return nil, nil
++	parts := strings.Split(string(out), "\x00")
++	if len(parts) > 0 && parts[len(parts)-1] == "" {
++		parts = parts[:len(parts)-1]
+ 	}
+-	return strings.Split(raw, "\n"), nil
++	return parts, nil
++}
++
++// findLegacyPushRefspecs returns byte-exact local instances of the one push
++// refspec older etude versions installed. Inherited values and included config
++// are intentionally outside this migration.
++func findLegacyPushRefspecs(ctx context.Context, root, key string) ([]string, error) {
++	existing, err := gitGetAll(ctx, root, key)
++	if err != nil {
++		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
++	}
++	var legacy []string
++	for _, value := range existing {
++		if value == canonicalPushRefspec {
++			legacy = append(legacy, value)
++		}
++	}
++	return legacy, nil
++}
++
++// removeLegacyPushRefspecs removes all exact local legacy values in one locked
++// Git config rewrite. Every other value remains in its original order.
++func removeLegacyPushRefspecs(ctx context.Context, root, key string) ([]actionLine, error) {
++	legacy, err := findLegacyPushRefspecs(ctx, root, key)
++	if err != nil || len(legacy) == 0 {
++		return nil, err
++	}
++	pattern := "^" + regexp.QuoteMeta(canonicalPushRefspec) + "$"
++	if err := runGitConfigWithLockRetry(ctx, root, "--unset-all", key, pattern); err != nil {
++		if errors.Is(err, errNothingToUnset) {
++			return nil, nil
++		}
++		return nil, err
++	}
++	lines := make([]actionLine, 0, len(legacy))
++	for range legacy {
++		lines = append(lines, actionLine{statusConfigured, fmt.Sprintf(fmtRemovedPush, key, canonicalPushRefspec)})
++	}
++	return lines, nil
+ }
+ 
+ // repoRoot resolves the repository root via git rev-parse --show-toplevel.
+@@ -488,9 +561,12 @@ func remoteNotFoundErr(name string) error {
+ 
+ // remoteExists returns true if the named remote is configured in the repo.
+ func remoteExists(ctx context.Context, root, remote string) bool {
+-	// Directive G: git -C <root> for consistency.
+-	cmd := exec.CommandContext(ctx, "git", "-C", root, "remote", "get-url", remote)
+-	return cmd.Run() == nil
++	// Read the URL key directly. `git remote get-url` parses configured push
++	// refspecs first and can reject a user value that init must preserve, making
++	// an existing remote look absent before migration gets a chance to run.
++	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--null", "--get-all", "remote."+remote+".url")
++	out, err := cmd.Output()
++	return err == nil && len(out) > 0
+ }
+ 
+ // validateRemoteName rejects empty or git-invalid remote names before the value
+@@ -656,9 +732,8 @@ func removeEtudeFetchRefspecs(ctx context.Context, root, key string) ([]actionLi
+ // init was pointed at ended up in the safe state. Exiting quietly on an exposed
+ // repo is how the original bug went unnoticed across two incidents.
+ //
+-// Deliberately narrow: it checks only the TARGET remote, and only by exact
+-// comparison — "is an etude-registered fetch refspec still present" and "is the
+-// canonical push refspec present". A general audit (other remotes, refspecs
++// Deliberately narrow: it checks whether an etude-registered fetch refspec is
++// still present. A general audit (other remotes, refspecs
+ // broader than the namespace, mappings that do not preserve names, invalid
+ // grammar) requires a full refspec-semantics model and is `etude doctor`'s job,
+ // tracked as bead etude-ldf. A setup command that guessed at those would report
+@@ -683,6 +758,8 @@ func refspecSafetyAction(ctx context.Context, root, remote string) initAction {
+ 			targetExists := remoteExists(ctx, root, remote)
+ 			if !targetExists {
+ 				lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoRemote, remote)})
++			} else {
++				lines = append(lines, actionLine{statusNote, fmt.Sprintf(fmtMetadataSync, remote)})
+ 			}
+ 
+ 			// Target-remote checks only make sense when it exists; the
+@@ -705,21 +782,6 @@ func refspecSafetyAction(ctx context.Context, root, remote string) initAction {
+ 					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnFetchRemains, fetchKey, v)})
+ 				}
+ 
+-				pushKey := fmt.Sprintf("remote.%s.push", remote)
+-				push, err := gitGetAll(ctx, root, pushKey)
+-				if err != nil {
+-					return nil, err
+-				}
+-				found := false
+-				for _, v := range push {
+-					if v == canonicalPushRefspec {
+-						found = true
+-						break
+-					}
+-				}
+-				if !found {
+-					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoPush, remote, canonicalPushRefspec)})
+-				}
+ 			}
+ 
+ 			// Every OTHER remote is checked too, and only warned about. init
+@@ -814,16 +876,33 @@ func runGitConfigWithLockRetry(ctx context.Context, root string, args ...string)
+ 
+ // gitRemotes lists the repo's configured remotes.
+ func gitRemotes(ctx context.Context, root string) ([]string, error) {
+-	cmd := exec.CommandContext(ctx, "git", "-C", root, "remote")
++	const pattern = `^remote\..*\..*$`
++	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--no-includes", "--null", "--name-only", "--get-regexp", pattern)
+ 	out, err := cmd.Output()
+ 	if err != nil {
+-		return nil, fmt.Errorf("git remote: %w", err)
++		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
++			return nil, nil
++		}
++		return nil, fmt.Errorf("list local Git remote configuration: %w", err)
+ 	}
+-	raw := strings.TrimSpace(string(out))
+-	if raw == "" {
+-		return nil, nil
++	seen := make(map[string]bool)
++	for _, key := range strings.Split(string(out), "\x00") {
++		if key == "" {
++			continue
++		}
++		nameAndKey := strings.TrimPrefix(key, "remote.")
++		separator := strings.LastIndex(nameAndKey, ".")
++		if separator <= 0 {
++			return nil, fmt.Errorf("Git returned an invalid remote configuration key %q", key)
++		}
++		seen[nameAndKey[:separator]] = true
++	}
++	remotes := make([]string, 0, len(seen))
++	for remote := range seen {
++		remotes = append(remotes, remote)
+ 	}
+-	return strings.Split(raw, "\n"), nil
++	sort.Strings(remotes)
++	return remotes, nil
+ }
+ 
+ // mirroredFetchRefspec is the refspec that mirrors one kind from a remote:
+diff --git a/internal/cli/init_test.go b/internal/cli/init_test.go
+index bf0415d..c66f8aa 100644
+--- a/internal/cli/init_test.go
++++ b/internal/cli/init_test.go
+@@ -79,16 +79,16 @@ func TestInitCreatesScaffoldAndRefspecs(t *testing.T) {
+ 		}
+ 	}
+ 
+-	// The push refspec is configured; a FETCH refspec into refs/etude/* must
+-	// NOT be, because it would make every local run ref prunable by a bare
+-	// `git fetch --prune` (etude-i19).
++	// Safe mirror fetches are configured, while init leaves ordinary Git push
++	// policy alone. A fetch destination inside refs/etude/* would make local run
++	// refs prunable by a bare `git fetch --prune` (etude-i19).
+ 	fetchVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+ 	if strings.Contains(fetchVal, ":refs/etude/") {
+ 		t.Fatalf("init configured a fetch refspec into refs/etude/*: %q", fetchVal)
+ 	}
+-	pushVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+-	if !strings.Contains(pushVal, "refs/etude/*:refs/etude/*") {
+-		t.Fatalf("push refspec not configured: %q", pushVal)
++	pushVal, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
++	if len(pushVal) != 0 {
++		t.Fatalf("init unexpectedly configured push policy: %q", pushVal)
+ 	}
+ 
+ 	// Output must mention "created" lines.
+@@ -196,23 +196,17 @@ func TestInitIdempotency(t *testing.T) {
+ 		t.Fatalf("fetch refspec into refs/etude/* present after repeat init: %q", fetchOut)
+ 	}
+ 
+-	pushOut := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+-	etudePush := 0
+-	for _, line := range strings.Split(strings.TrimSpace(pushOut), "\n") {
+-		if strings.Contains(line, "refs/etude") {
+-			etudePush++
+-		}
+-	}
+-	if etudePush != 1 {
+-		t.Fatalf("push refspec duplicated: found %d etude entries in %q", etudePush, pushOut)
++	pushOut, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
++	if len(pushOut) != 0 {
++		t.Fatalf("repeat init unexpectedly configured push policy: %q", pushOut)
+ 	}
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// --force overwrites files but does NOT touch git config.
++// --force overwrites files but does not add or rewrite safe mirror mappings.
+ // ---------------------------------------------------------------------------
+ 
+-func TestInitForceOverwritesFilesNotConfig(t *testing.T) {
++func TestInitForceOverwritesFilesWithoutRewritingMirrors(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+ 	chdir(t, repo)
+@@ -253,10 +247,10 @@ func TestInitForceOverwritesFilesNotConfig(t *testing.T) {
+ 		t.Fatalf("--force stdout missing 'created': %q", stdout)
+ 	}
+ 
+-	// Git config must be unchanged: exactly same fetch entries as before.
++	// Existing safe fetch entries must be unchanged.
+ 	fetchAfter := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+ 	if fetchBefore != fetchAfter {
+-		t.Fatalf("--force modified git config: before=%q after=%q", fetchBefore, fetchAfter)
++		t.Fatalf("--force modified safe mirror config: before=%q after=%q", fetchBefore, fetchAfter)
+ 	}
+ }
+ 
+@@ -415,9 +409,9 @@ func TestInitAcceptsEmbeddedDashRemote(t *testing.T) {
+ 	if _, stderr, err := execute("init", "--remote", "my-origin"); err != nil {
+ 		t.Fatalf("init --remote my-origin errored: %v (stderr %q)", err, stderr)
+ 	}
+-	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.push")
+-	if !strings.Contains(got, "refs/etude/*:refs/etude/*") {
+-		t.Fatalf("push refspec not configured on my-origin: %q", got)
++	got, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.my-origin.push").Output()
++	if len(got) != 0 {
++		t.Fatalf("push policy unexpectedly configured on my-origin: %q", got)
+ 	}
+ 	fetchGot := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.fetch")
+ 	if strings.Contains(fetchGot, ":refs/etude/") {
+@@ -725,23 +719,22 @@ func TestInitSummaryCounts(t *testing.T) {
+ 	}
+ 	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
+ 
+-	// First run: all created + 4 configured — the push refspec plus one mirrored
+-	// fetch refspec per etude ref kind (runs, retros, evals).
++	// First run: all created + one mirrored fetch refspec per etude ref kind.
+ 	stdout, stderr, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
+ 	}
+-	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 4 configured", expectedCreated)
++	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 3 configured", expectedCreated)
+ 	if !strings.Contains(stdout, wantSummary1) {
+ 		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
+ 	}
+ 
+-	// Second run: all skipped + 4 configured (already-configured → same bucket).
++	// Second run: all skipped + 3 configured (already-configured → same bucket).
+ 	stdout2, stderr2, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
+ 	}
+-	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 4 configured", expectedCreated)
++	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 3 configured", expectedCreated)
+ 	if !strings.Contains(stdout2, wantSummary2) {
+ 		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
+ 	}
+@@ -791,6 +784,243 @@ func assertFileContains(t *testing.T, path, substr string) {
+ 	}
+ }
+ 
++func localConfigValues(t *testing.T, repo, key string) []string {
++	t.Helper()
++	cmd := exec.Command("git", "-C", repo, "config", "--local", "--no-includes", "--null", "--get-all", key)
++	out, err := cmd.Output()
++	if err != nil {
++		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
++			return nil
++		}
++		t.Fatalf("read local config %s: %v", key, err)
++	}
++	values := strings.Split(string(out), "\x00")
++	if len(values) > 0 && values[len(values)-1] == "" {
++		values = values[:len(values)-1]
++	}
++	return values
++}
++
++func TestInitPreservesOrdinaryBranchPush(t *testing.T) {
++	remote := t.TempDir()
++	gitCapture(t, remote, "init", "--bare")
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", remote)
++	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
++	chdir(t, repo)
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init: %v\nstderr: %s", err, stderr)
++	}
++	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
++		t.Fatalf("init installed push policy: %#v", got)
++	}
++	writeFile(t, repo, "after-init.txt", "ordinary branch push\n")
++	gitCapture(t, repo, "add", "after-init.txt")
++	gitCapture(t, repo, "commit", "-m", "advance main")
++	want := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "push")
++	if got := strings.TrimSpace(gitCapture(t, remote, "rev-parse", "refs/heads/main")); got != want {
++		t.Fatalf("ordinary git push left remote main at %s, want %s", got, want)
++	}
++}
++
++func TestInitMigratesLegacyOnlyConfigAndRestoresBranchPush(t *testing.T) {
++	remote := t.TempDir()
++	gitCapture(t, remote, "init", "--bare")
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", remote)
++	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++	chdir(t, repo)
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init: %v\nstderr: %s", err, stderr)
++	}
++	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
++		t.Fatalf("legacy-only push config survived: %#v", got)
++	}
++	writeFile(t, repo, "after-migration.txt", "branch push restored\n")
++	gitCapture(t, repo, "add", "after-migration.txt")
++	gitCapture(t, repo, "commit", "-m", "advance after migration")
++	want := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "push")
++	if got := strings.TrimSpace(gitCapture(t, remote, "rev-parse", "refs/heads/main")); got != want {
++		t.Fatalf("ordinary git push after migration left remote main at %s, want %s", got, want)
++	}
++}
++
++func TestInitRemovesOnlyExactLocalLegacyPushValues(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		args []string
++	}{
++		{name: "normal"},
++		{name: "force", args: []string{"--force"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := initCaptureRepo(t)
++			gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++			key := "remote.origin.push"
++			want := []string{
++				"HEAD:refs/heads/deploy",
++				"+refs/etude/*:refs/etude/*",
++				"refs/etude/*:refs/archive/*",
++				"refs/etude/*",
++				" refs/etude/*:refs/etude/*",
++				"refs/etude/*:refs/etude/* ",
++				"prefix\n" + canonicalPushRefspec + "\nsuffix",
++			}
++			gitCapture(t, repo, "config", "--local", "--add", key, want[0])
++			gitCapture(t, repo, "config", "--local", "--add", key, canonicalPushRefspec)
++			for _, value := range want[1:4] {
++				gitCapture(t, repo, "config", "--local", "--add", key, value)
++			}
++			gitCapture(t, repo, "config", "--local", "--add", key, canonicalPushRefspec)
++			for _, value := range want[4:] {
++				gitCapture(t, repo, "config", "--local", "--add", key, value)
++			}
++			chdir(t, repo)
++			stdout, stderr, err := execute(append([]string{"init"}, tc.args...)...)
++			if err != nil {
++				t.Fatalf("init %v: %v\nstderr: %s", tc.args, err, stderr)
++			}
++			if got := localConfigValues(t, repo, key); !reflect.DeepEqual(got, want) {
++				t.Fatalf("remaining push values changed\ngot:  %#v\nwant: %#v", got, want)
++			}
++			if count := strings.Count(stdout, "removed remote.origin.push"); count != 2 {
++				t.Fatalf("reported %d removals, want 2:\n%s", count, stdout)
++			}
++		})
++	}
++}
++
++func TestInitSelectedRemoteLeavesOtherRemotePushConfigUntouched(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
++	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/backup.git")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++	gitCapture(t, repo, "config", "--local", "--add", "remote.backup.push", canonicalPushRefspec)
++	chdir(t, repo)
++
++	if _, stderr, err := execute("init", "--remote", "backup"); err != nil {
++		t.Fatalf("init --remote backup: %v\nstderr: %s", err, stderr)
++	}
++	if got := localConfigValues(t, repo, "remote.backup.push"); len(got) != 0 {
++		t.Fatalf("selected remote legacy value survived: %#v", got)
++	}
++	if got := localConfigValues(t, repo, "remote.origin.push"); !reflect.DeepEqual(got, []string{canonicalPushRefspec}) {
++		t.Fatalf("unselected remote push config changed: %#v", got)
++	}
++}
++
++func TestInitPreservesInheritedAndIncludedPushPolicies(t *testing.T) {
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++
++	systemPath := filepath.Join(t.TempDir(), "system.gitconfig")
++	globalPath := filepath.Join(t.TempDir(), "global.gitconfig")
++	includePath := filepath.Join(t.TempDir(), "included.gitconfig")
++	localIncludePath := filepath.Join(t.TempDir(), "local-included.gitconfig")
++	systemBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
++	includeBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
++	localIncludeBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
++	globalBytes := []byte("[include]\n\tpath = " + includePath + "\n[remote \"origin\"]\n\tpush = HEAD:refs/heads/global-backup\n")
++	for path, data := range map[string][]byte{systemPath: systemBytes, globalPath: globalBytes, includePath: includeBytes, localIncludePath: localIncludeBytes} {
++		if err := os.WriteFile(path, data, 0o644); err != nil {
++			t.Fatal(err)
++		}
++	}
++	gitCapture(t, repo, "config", "--local", "--add", "include.path", localIncludePath)
++	t.Setenv("GIT_CONFIG_SYSTEM", systemPath)
++	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
++	chdir(t, repo)
++
++	preview, previewErr, err := execute("init", "--dry-run")
++	if err != nil {
++		t.Fatalf("init --dry-run: %v\nstderr: %s", err, previewErr)
++	}
++	if count := strings.Count(preview, "plan: remove remote.origin.push"); count != 1 {
++		t.Fatalf("dry-run included inherited/include values in local migration: got %d removals\n%s", count, preview)
++	}
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init: %v\nstderr: %s", err, stderr)
++	}
++	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
++		t.Fatalf("local legacy value survived: %#v", got)
++	}
++	for path, want := range map[string][]byte{systemPath: systemBytes, globalPath: globalBytes, includePath: includeBytes, localIncludePath: localIncludeBytes} {
++		got, err := os.ReadFile(path)
++		if err != nil || !reflect.DeepEqual(got, want) {
++			t.Fatalf("inherited config %s changed: err=%v\ngot:  %q\nwant: %q", path, err, got, want)
++		}
++	}
++	effective := gitCapture(t, repo, "config", "--get-all", "remote.origin.push")
++	if strings.Count(effective, canonicalPushRefspec) != 3 || !strings.Contains(effective, "HEAD:refs/heads/global-backup") {
++		t.Fatalf("inherited push policy no longer effective:\n%s", effective)
++	}
++}
++
++func TestInitPreservesPushDefaultNothing(t *testing.T) {
++	remote := t.TempDir()
++	gitCapture(t, remote, "init", "--bare")
++	repo := initCaptureRepo(t)
++	gitCapture(t, repo, "remote", "add", "origin", remote)
++	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
++	gitCapture(t, repo, "config", "--local", "push.default", "nothing")
++	chdir(t, repo)
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init: %v\nstderr: %s", err, stderr)
++	}
++	if got := strings.TrimSpace(gitCapture(t, repo, "config", "--local", "push.default")); got != "nothing" {
++		t.Fatalf("push.default changed to %q", got)
++	}
++	cmd := exec.Command("git", "-C", repo, "push")
++	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), `push.default is "nothing"`) {
++		t.Fatalf("deliberate push.default=nothing policy not effective: err=%v\n%s", err, output)
++	}
++}
++
++func TestInitDryRunPreviewsLegacyPushRemovalWithoutWrites(t *testing.T) {
++	for _, force := range []bool{false, true} {
++		name := "normal"
++		args := []string{"init", "--dry-run"}
++		if force {
++			name = "force"
++			args = append(args, "--force")
++		}
++		t.Run(name, func(t *testing.T) {
++			repo := initCaptureRepo(t)
++			gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
++			chdir(t, repo)
++			if _, stderr, err := execute("init"); err != nil {
++				t.Fatalf("seed init: %v\nstderr: %s", err, stderr)
++			}
++			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
++			configPath := filepath.Join(repo, ".git", "config")
++			workflowPath := filepath.Join(repo, ".etude", "workflow.yaml")
++			configBefore, _ := os.ReadFile(configPath)
++			workflowBefore, _ := os.ReadFile(workflowPath)
++
++			stdout, stderr, err := execute(args...)
++			if err != nil {
++				t.Fatalf("%v: %v\nstderr: %s", args, err, stderr)
++			}
++			if count := strings.Count(stdout, "plan: remove remote.origin.push"); count != 2 {
++				t.Fatalf("preview reported %d push removals, want 2:\n%s", count, stdout)
++			}
++			configAfter, _ := os.ReadFile(configPath)
++			workflowAfter, _ := os.ReadFile(workflowPath)
++			if !reflect.DeepEqual(configAfter, configBefore) || !reflect.DeepEqual(workflowAfter, workflowBefore) {
++				t.Fatal("dry-run changed config or scaffold bytes")
++			}
++		})
++	}
++}
++
+ // ---------------------------------------------------------------------------
+ // etude-i19: a fetch refspec whose destination is refs/etude/* makes every
+ // local run ref a remote-tracking ref, so any `git fetch --prune` deletes every
+@@ -826,9 +1056,9 @@ func TestInitRemovesPreexistingEtudeFetchRefspec(t *testing.T) {
+ 	if !strings.Contains(stdout, "removed remote.origin.fetch") {
+ 		t.Fatalf("init did not report the removal: %q", stdout)
+ 	}
+-	// Push is still configured — pushing cannot delete a local ref.
+-	if push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(push, "refs/etude/*:refs/etude/*") {
+-		t.Fatalf("push refspec not configured: %q", push)
++	// Init does not install push policy; metadata publication is explicit sync.
++	if push, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output(); len(push) != 0 {
++		t.Fatalf("init unexpectedly configured push policy: %q", push)
+ 	}
+ }
+ 
+@@ -902,11 +1132,9 @@ func TestInitLeavesRunRefsSafeFromFetchPrune(t *testing.T) {
+ 	}
+ }
+ 
+-// TestInitKeepsPushRefspecWhenRemovingFetchRefspec pins the distinction the fix
+-// turns on. Only the FETCH refspec is dangerous: it makes local run refs
+-// prunable. The PUSH refspec is what carries run refs to the remote at all, so
+-// removing both would be the same data loss by another route.
+-func TestInitKeepsPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
++// Older init versions installed both legacy settings. One rerun removes both;
++// explicit etude sync publishes metadata afterward.
++func TestInitRemovesLegacyPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	chdir(t, repo)
+ 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+@@ -920,13 +1148,9 @@ func TestInitKeepsPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
+ 	if fetch := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(fetch, ":refs/etude/") {
+ 		t.Fatalf("fetch refspec into refs/etude/* survived: %q", fetch)
+ 	}
+-	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+-	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
+-		t.Fatalf("init removed the etude PUSH refspec; run refs could no longer be pushed: %q", push)
+-	}
+-	// Exactly one push entry — removal must not have dropped-and-re-added a dup.
+-	if n := strings.Count(push, "refs/etude/*:refs/etude/*"); n != 1 {
+-		t.Fatalf("etude push refspec count = %d, want 1: %q", n, push)
++	push, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
++	if len(push) != 0 {
++		t.Fatalf("legacy push refspec survived init: %q", push)
+ 	}
+ }
+ 
+@@ -966,11 +1190,9 @@ func TestInitEmitsNoWarningsWhenSafe(t *testing.T) {
+ 	}
+ }
+ 
+-// A push refspec with an EMPTY source (":refs/etude/runs/foo") is git's syntax
+-// for DELETING that ref on the remote. It mentions the namespace but uploads
+-// nothing, so it must not be mistaken for "push is configured" — otherwise the
+-// warning is suppressed on a repo whose run refs never leave the machine.
+-func TestInitWarnsWhenPushRefspecDeletesInsteadOfUploading(t *testing.T) {
++// A delete refspec is user policy. It is not byte-equal to the legacy mapping,
++// so init preserves it and does not require configured metadata coverage.
++func TestInitPreservesDeletePushRefspec(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	chdir(t, repo)
+ 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+@@ -980,8 +1202,12 @@ func TestInitWarnsWhenPushRefspecDeletesInsteadOfUploading(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("init --force errored: %v\nstderr: %s", err, stderr)
+ 	}
+-	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
+-		t.Fatalf("delete-only push refspec was accepted as configured: %q", stdout)
++	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if push != ":refs/etude/runs/foo\n" {
++		t.Fatalf("delete-only user push refspec changed: %q", push)
++	}
++	if strings.Contains(stdout, "has no") && strings.Contains(stdout, "push refspec") {
++		t.Fatalf("init still requires metadata push coverage: %q", stdout)
+ 	}
+ }
+ 
+@@ -1248,17 +1474,14 @@ func TestInitWarnsAboutOtherRemotesEvenWhenTargetRemoteMissing(t *testing.T) {
+ 	}
+ }
+ 
+-// --force removes a hazardous fetch refspec (a data-loss setting is never left
+-// in place) but is silent on the PUSH refspec by long-standing design. So a
+-// --force-only operator stays without the push refspec — which is reported on
+-// every run, because the safety phase ignores --force, and repaired by one
+-// non-force init. Pinned because a gate seat correctly caught the declaration
+-// claiming any re-run repairs it.
+-func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
++// --force still performs both legacy cleanups, while continuing not to install
++// the safe mirror mappings it normally leaves alone.
++func TestInitForceRemovesLegacyPushRefspec(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	chdir(t, repo)
+ 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+ 	seedHazardousFetchRefspec(t, repo, "origin")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+ 
+ 	stdout, stderr, err := execute("init", "--force")
+ 	if err != nil {
+@@ -1268,23 +1491,13 @@ func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
+ 	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(got, ":refs/etude/") {
+ 		t.Fatalf("--force left the hazardous fetch refspec: %q", got)
+ 	}
+-	// The push refspec is NOT added under --force, and that is reported. git
+-	// exits 1 when the key is absent entirely, which is the expected state here,
+-	// so read it tolerantly rather than through the fail-on-error helper.
++	// The exact legacy push refspec is removed and is not re-added.
+ 	pushOut, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
+ 	if strings.Contains(string(pushOut), canonicalPushRefspec) {
+-		t.Fatalf("--force added the push refspec, contrary to its documented silence: %q", pushOut)
+-	}
+-	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
+-		t.Fatalf("--force did not report the missing push refspec: %q", stdout)
+-	}
+-
+-	// One non-force run repairs it.
+-	if _, stderr, err := execute("init"); err != nil {
+-		t.Fatalf("non-force init errored: %v\nstderr: %s", err, stderr)
++		t.Fatalf("--force left the legacy push refspec in place: %q", pushOut)
+ 	}
+-	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(got, canonicalPushRefspec) {
+-		t.Fatalf("non-force init did not repair the push refspec: %q", got)
++	if !strings.Contains(stdout, "removed remote.origin.push") {
++		t.Fatalf("--force did not report the legacy push removal: %q", stdout)
+ 	}
+ }
+ 
+@@ -1326,10 +1539,8 @@ func TestInitRegistersMirroredFetchRefspecs(t *testing.T) {
+ 	}
+ }
+ 
+-// The push refspec is deliberately left alone: it spans exactly the local
+-// namespaces, which is correct, and it cannot match a sibling mirror. Narrowing
+-// it would need a migration whose predicate would also delete a user's own
+-// deliberate variant.
++// Non-exact push values remain user policy. Init removes only the literal value
++// its older versions installed.
+ func TestInitLeavesPushRefspecUntouched(t *testing.T) {
+ 	repo := initCaptureRepo(t)
+ 	chdir(t, repo)
+@@ -1343,14 +1554,8 @@ func TestInitLeavesPushRefspecUntouched(t *testing.T) {
+ 	if !strings.Contains(push, "refs/etude/*:refs/archive/etude/*") {
+ 		t.Fatalf("init deleted the user's own push refspec: %q", push)
+ 	}
+-	if !strings.Contains(push, canonicalPushRefspec) {
+-		t.Fatalf("canonical push refspec missing: %q", push)
+-	}
+-	// Count, not just survival: --replace-all with a mis-anchored or
+-	// metacharacter-naive value pattern could eat the user's variant while
+-	// leaving the canonical one, which a Contains check cannot detect.
+-	if n := len(strings.Fields(strings.TrimSpace(push))); n != 2 {
+-		t.Fatalf("push refspec line count = %d, want 2 (canonical + the user's own):\n%s", n, push)
++	if n := len(strings.Split(strings.TrimSuffix(push, "\n"), "\n")); n != 1 {
++		t.Fatalf("push refspec line count = %d, want the one user value:\n%s", n, push)
+ 	}
+ }
+ 
+@@ -1521,8 +1726,8 @@ func TestFetchPruneOnlyDeletesFromMirror(t *testing.T) {
+ 	}
+ }
+ 
+-// TestBroadPushRefspecDoesNotCarryMirrorToRemote settles by DEMONSTRATION, not
+-// assertion, the question of whether the broad push refspec must be narrowed.
++// TestBroadPushRefspecDoesNotCarryMirrorToRemote demonstrates that a
++// user-authored forced variant remains intact and cannot carry sibling mirrors.
+ //
+ // Under the rejected NESTED layout (refs/etude/remotes/<remote>/…) it must be:
+ // refs/etude/*:refs/etude/* matches a nested mirror, so a push uploads this
+@@ -1539,14 +1744,16 @@ func TestBroadPushRefspecDoesNotCarryMirrorToRemote(t *testing.T) {
+ 	gitCapture(t, repo, "remote", "add", "origin", origin)
+ 	gitCapture(t, repo, "push", "origin", "HEAD:main")
+ 	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "+refs/etude/*:refs/etude/*")
+ 
+ 	if _, stderr, err := execute("init"); err != nil {
+ 		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+ 	}
+-	// The broad push refspec is deliberately left in place by this bead.
++	// The forced variant is user policy because it is not byte-equal to the
++	// legacy value init owns.
+ 	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+-	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
+-		t.Fatalf("precondition: expected the broad push refspec to still be configured, got %q", push)
++	if !strings.Contains(push, "+refs/etude/*:refs/etude/*") {
++		t.Fatalf("user-authored forced push refspec was removed: %q", push)
+ 	}
+ 
+ 	// A local run (should travel) and a mirror ref (must NOT).
+diff --git a/internal/cli/sync_test.go b/internal/cli/sync_test.go
+index 9b2820f..b287c75 100644
+--- a/internal/cli/sync_test.go
++++ b/internal/cli/sync_test.go
+@@ -166,6 +166,29 @@ func TestSyncPushRoundTrip(t *testing.T) {
+ 	}
+ }
+ 
++func TestSyncUsesExplicitMetadataRefspecAndExcludesMirrors(t *testing.T) {
++	repo := initCaptureRepo(t)
++	bare := setupBareRemote(t, repo)
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "HEAD:refs/heads/custom-backup")
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/explicit-sync", head)
++	gitCapture(t, repo, "update-ref", "refs/etude-mirror/origin/runs/remote-copy", head)
++	chdir(t, repo)
++
++	if _, stderr, err := execute("sync"); err != nil {
++		t.Fatalf("sync with custom branch push mapping: %v\nstderr: %s", err, stderr)
++	}
++	if !refExists(t, bare, "refs/etude/runs/explicit-sync") {
++		t.Fatal("explicit sync did not publish the authoritative run ref")
++	}
++	if refExists(t, bare, "refs/etude-mirror/origin/runs/remote-copy") {
++		t.Fatal("explicit sync uploaded the sibling mirror namespace")
++	}
++	if refExists(t, bare, "refs/heads/custom-backup") {
++		t.Fatal("sync unexpectedly applied the remote's configured branch push mapping")
++	}
++}
++
+ // TestSyncFetchIntoClone: capture in A, sync A→bare, clone B, sync B → ref resolves in B.
+ func TestSyncFetchIntoClone(t *testing.T) {
+ 	repoA := initCaptureRepo(t)
