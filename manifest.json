@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-21z",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,89 @@
         "size": 2798
       },
       "timestamp": "2026-05-26T11:10:54.138398Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.133.0"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "equivalence Verify used non-existent 'run show --json'; also media_type not preserved on staged arg files"
+          ],
+          "timestamp": "2026-05-26T11:10:54Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "block",
+          "required": [
+            "equivalence normalization omits refs.bead so the diff falsely fails on throwaway ids"
+          ],
+          "timestamp": "2026-05-26T11:11:04Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "'run show --json' does not exist (ExactArgs(1), no flags); diff the raw manifest.json blob instead"
+          ],
+          "timestamp": "2026-05-26T11:11:14Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "x"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen/qwen3.6-35b-a3b"
+          },
+          "verdict": "disregarded",
+          "failure_note": "0-CPU client hang all session; known artifact, seat skipped",
+          "timestamp": "2026-05-26T11:11:24Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms 0-CPU hang all session; active seats reviewed"
+      },
+      "timestamp": "2026-05-26T11:11:39Z"
     }
   ]
 }
