@@ -1,0 +1,28 @@
+## Plan
+
+**Approach:** Add ONE new hand-written guide `docs/gates.md` ("Gate reviewer records") that documents the now-shipped gate-capture + gate-display behavior, plus three small linking edits (index + two one-line cross-links). A new guide is the cleanest fit: gates are a distinct concept (a review axis orthogonal to stage producers) that spans BOTH `capture-gate` (write) and `run show` (read), so folding half into `capture.md` and half into `run.md` would split one concept across two guides and bury it. A dedicated guide mirrors the existing one-topic-per-file pattern (init/capture/run/bench/gc/reindex) and gives a single place to draw the producer-vs-reviewer distinction. The guide SUMMARIZES the schema and seat conventions and LINKS the planning docs for full detail; it does not duplicate them. Examples are copied verbatim from the real built binary and the real DTO, never hand-invented.
+
+**Files:**
+- docs/gates.md - NEW hand-written guide. Sections:
+  1. Intro: what a gate record is (a structured review-gate ATTEMPT appended to a run; manifest_version bumps to 3 when gates are present).
+  2. "Producer vs reviewer identity" — the load-bearing distinction (AC#2): stage `produced_by`/`harness`/`model` answer WHO PRODUCED an artifact; a gate's seats answer WHO REVIEWED it. Gates are top-level, not nested under a stage, and are NOT producers (a gate may review several stages, e.g. implement.r1 reviews both `diff` and `verify`). Cite both as different axes.
+  3. "Capture a gate attempt" — `etude capture-gate --run <id> --gate-file <path|->`; a real minimal gate-file JSON skeleton using the actual DTO field names from internal/cli/capture.go gateInputJSON (gate_id/phase/round/tier/status/reviewed_stages/seats[seat,harness{name,version},provider{name,model},verdict,required,optional,failure_note,raw_output{role,path,media_type},timestamp]/decision{escalation_reason,degraded_reason,deferred_beads}); note raw_output is a FILE PATH resolved into the content-addressed store; one gate per existing run (must attach to an existing run).
+  4. "Provider, model, and harness fields" (AC#3) — the per-seat conventions table mirrored from the runbook, INCLUDING the pilms row (seat=pilms, harness=pi, provider.name=lmstudio, provider.model=qwen/qwen3.6-35b-a3b) alongside opus/gemini/codex; one sentence on the six verdicts (go/block/failed/empty/malfunction/disregarded) with a link to the schema for full semantics; note failure_note is required for non-go/block verdicts.
+  5. "Inspect gate attempts" — `etude run show <id>` renders each gate after the stages; paste a REAL excerpt copied verbatim from `./bin/etude run show etude-roadmap.2.4` (plan.r1 BLOCK->rerun with the pilms disregarded/degraded line, then plan.r2 pass), showing gate/phase/round/tier/status/reviewed/degraded and per-seat provider/harness/verdict/required/optional/note.
+  6. "Reference & further reading" — link the generated per-command pages docs/cli/etude_capture-gate.md and docs/cli/etude_run_show.md (flags only; generated, do not edit), the schema spec docs/plans/product/gate-reviewer-record-schema.md (full field semantics), and the dogfood runbook docs/plans/dogfood/review-gate-runbook.md (the process for producing these records while dogfooding).
+- docs/README.md - add one "Sections" list entry linking gates.md, placed after Runs (e.g. "[Gates](gates.md) - capture and inspect review-gate reviewer records on a run.").
+- docs/run.md - add one cross-link line in the "Show a run" area pointing to gates.md for the gate section that `run show` now renders.
+- docs/capture.md - add one cross-link line noting `etude capture-gate` records reviewer gate attempts, see gates.md.
+
+**Tests (docs correctness verification):**
+- Build etude (`make build`) and copy the `run show` excerpt and the gate-file field names VERBATIM from `./bin/etude run show etude-roadmap.2.4` and internal/cli/capture.go so the documented output and JSON shape match real CLI behavior exactly (no hand-invented fields).
+- Verify all in-doc relative links resolve (gates.md -> cli/*, plans/*; README/run/capture -> gates.md).
+- Confirm `make docs-check` is unaffected: it regenerates and diffs ONLY docs/cli/ (DOCS_DIR=docs/cli); a hand-written docs/gates.md and the README/run/capture edits are outside that tree, and this bead changes no CLI flag/help/synopsis, so no generated-doc regeneration is needed. Run `make docs-check` to confirm it still passes (no generated drift introduced).
+
+**Docs:** This bead IS the docs deliverable. User-facing guide docs/gates.md plus index/cross-link wiring. No generated docs/cli/* change (no CLI surface change). No planning-doc churn — the schema and runbook are referenced, not edited (behavior is already shipped; nothing to move).
+
+**Risks:** Low. Pure additive docs, no Go code. Main risk is example drift if the rendered format or DTO changes later, mitigated by copying examples verbatim from the built binary and the real DTO at write time and citing a real run id (etude-roadmap.2.4).
+
+**Capture:**
+- inputs: bead etude-roadmap.2.6 description/acceptance; docs/README.md, docs/run.md, docs/capture.md; docs/cli/etude_capture-gate.md, docs/cli/etude_run_show.md; docs/plans/product/gate-reviewer-record-schema.md; docs/plans/dogfood/review-gate-runbook.md ("Structured capture"); internal/cli/capture.go (gateInputJSON DTO + runGate); internal/cli/run.go (printGate); Makefile (docs-check/DOCS_DIR); real output of `./bin/etude run show etude-roadmap.2.4`.
+- output: bead --design field (this plan)
