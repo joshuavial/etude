@@ -1,0 +1,128 @@
+# Implement — etude-9uf.4: Shrink the completeness audit
+
+## What shipped
+
+8 files, **+314 / −2404**. Net −2090.
+
+| File | Before | After |
+|---|---|---|
+| `scripts/dogfood-completeness-audit.sh` | 902 | **148** |
+| `scripts/dogfood-completeness-audit_test.sh` | 1579 | **226** |
+| total | 2481 | 374 |
+
+Exact counts by `grep -c ''`, as the plan required rather than "about 60". The
+acceptance's original "~60 lines" was written for two ratchets; this ships four
+checks plus a bypass report, and roughly 40 of the 148 are the header explaining
+why (a) and (b) survive — which is the record of a premise the plan gate
+overturned, so it earns its lines.
+
+## The checks
+
+| Check | Severity | What it catches |
+|---|---|---|
+| (a) run ref present | hard | a bead closed with no run at all |
+| (b) run has gates | hard | a run captured but never gated |
+| (d) refs pushed | hard | a local ref absent from or diverged from origin |
+| (c) retro cadence | **WARN** | 3+ active beads uncovered by a cadence retro |
+
+Dropped: (e) docs drift (duplicates `make docs-check` / `make docs-reality`,
+which the verify gate already runs as deterministic checks), (f) cadence-sidecar,
+(g) retro subject consistency, and the `--bead` / `--since` / `--json` /
+`--quiet` flags. Verified before dropping: no non-test caller of any of the four
+flags exists; `--bead`'s only caller was `scripts/dogfood-close.sh`, deleted in
+bead `.3`.
+
+**(a) and (b) survive against the bead as originally filed.** The bead said they
+"become structurally true once `etude gate` is the only way to advance a phase".
+Nothing makes `etude gate` the only way — no hook, CLI path or `bd close` guard
+requires a run ref or a gate. Both plan-gate seats upheld that, and the bead text
+and acceptance were updated in this bead accordingly.
+
+**The allowlist stays**, against the bead's "it goes with the checks it served".
+It also feeds check (c)'s denominator. Measured during planning: emptying it
+moves (c)'s uncovered count from 1 to exactly its threshold of 3. The one-line
+bypass report stays with it, because the allowlist header promises exemptions
+"remain visible + auditable" — dropping the report would have made 3 of 9
+in-scope beads exempt AND invisible, and turned that header into a claim about
+behavior that no longer exists.
+
+## The contract the pre-push hook depends on
+
+Preserved exactly: `0` clean, `1` hard gaps, `2` usage/environment error. The
+hook fails CLOSED on 2, and `scripts/pre-push_test.sh` (extracted in `.3`) drives
+that path — B9 covers a missing audit script, B10 covers audit-exit-2. **20/20
+still green.** `--last <N>` still works; both the hook and `make dogfood-audit`
+pass `--last 9`.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `make dogfood-audit` | **exit 0, clean** — it exited non-zero before this bead, on 2 `cadence-sidecar` gaps that check (f) raised |
+| `make dogfood-audit-test` | GREEN — 22 passed, 0 failed |
+| `make pre-push-test` | GREEN — 20 passed, 0 failed |
+| `make retro-index-test` | GREEN |
+| `make shell-test` | GREEN (all four suites) |
+| `make test` / `make lint` | GREEN |
+| `make docs-check` / `make docs-reality` | GREEN |
+| `bash -n` on every edited shell file | clean |
+
+### Negative controls
+
+Chosen so each one's failure is observable, after `.3` taught that a control
+targeting a masked branch proves nothing. All run and reverted:
+
+| Control | Result |
+|---|---|
+| plant a local `refs/etude/runs/*` absent from origin | exit 1, `[unpushed-ref]` names it |
+| same tree with no gap | exit 0 — so the control above is attributable, not a script that always fails |
+| closed bead with no run ref (isolated fixture) | exit 1, `[missing-run]` |
+| run ref whose manifest has zero gates | exit 1, `[gateless-run]` — **the case the first draft of the plan would have made undetectable** |
+| 3 uncovered beads, hard checks clean | **exit 0** with `WARN [cadence-overdue]` — pins that (c) warns and never fails |
+| unknown flag | exit 2, so the hook's fail-closed branch still receives 2 |
+
+All six are also encoded as cases in the new test, so they are permanent rather
+than one-off.
+
+## The sweep
+
+Inventory: `git ls-files -z | xargs -0 grep -nE
+'completeness-audit|completeness-allow|check \([a-g]\)|cadence-sidecar'`.
+
+Edited, because each described behavior that no longer exists:
+
+- **`docs/plans/dogfood/review-gate-runbook.md:1039`** — the source of the bead's
+  wrong premise. It stated verbatim that the run-ref and gates-non-empty checks
+  "become structurally true once a phase can only advance through `etude gate`",
+  and advertised the `--bead` mode. Now says plainly that nothing forces gating,
+  which is why both checks survive.
+- `review-gate-runbook.md:967` — a retro lesson citing check (f) in the present
+  tense; now marks it as since-removed while keeping the lesson.
+- `docs/retro.md` (4 sites) — said the 7-key sidecar convention is "enforced by
+  check (f)". **Nothing enforces it now.** The Enforcement section says so
+  outright, names `retro-meta-index.sh` as the consumer that silently loses
+  coverage, points at bead `etude-k47`, and keeps the rules as the convention
+  worth following.
+- `docs/plans/dogfood/retro-capture.md:32` — described check (g) as a live guard.
+- `scripts/retro-meta-cadence.example.json:17` — "schema enforced by … check (f)".
+- `scripts/retro-meta-index.sh:65,96-97` — comments citing the replaced file by
+  LINE NUMBER (`audit:380-395`, `audit:413-414`, `audit:519`). Line citations
+  into a rewritten file are dead pointers; they now name the pattern.
+- `scripts/retro-meta-index_test.sh:97,199` — "Mirrors `seed_*` from
+  dogfood-completeness-audit_test.sh", helpers that no longer exist.
+
+Deliberate no-ops, verified rather than assumed:
+
+- `.beads/hooks/pre-push:44,50` and `Makefile:54,56,58` — name the script and
+  `--last 9`; both still correct.
+- `docs/plans/dogfood/README.md:67` — "Audit whether closed beads have their run
+  refs, gate records, and pushed refs". That is exactly (a), (b) and (d), so it
+  became MORE accurate, not less.
+- `scripts/dogfood-completeness-allow.txt` header — says entries are exempt from
+  the run-ref/gates checks and are reported. Both still true, because the report
+  was kept.
+- `docs/plans/dogfood/retro-ledger.md` (many) and `docs/retro.md:148`,
+  `retro-meta-cadence.example.json:22` — historical records ("check (f) added"),
+  and the ledger's own note at line 11 already says this bead owns its sweep.
+- `.etude/retros/…-retro-3.md:63` — a retro observing that the audit does not
+  detect missing gate records. Still true.
