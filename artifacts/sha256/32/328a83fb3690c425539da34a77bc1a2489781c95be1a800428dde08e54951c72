@@ -1,0 +1,1446 @@
+commit 1611c69564cb0f406f62da74208eba2390aa9cb8
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 22:13:31 2026 +0800
+
+    add etude reindex command building a derived sqlite query index
+
+diff --git a/docs/README.md b/docs/README.md
+index 860455f..2adb4e1 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -11,6 +11,7 @@ This directory holds user-facing documentation for implemented behavior.
+ - [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
+ - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.
+ - [GC](gc.md) - report artifact storage and explicitly prune named run refs.
++- [Reindex](reindex.md) - build the derived SQLite query index from all run and eval refs.
+ - [Plans](plans/README.md) - notes on planned components that do not exist yet.
+ 
+ The current implemented state is summarized in the top-level
+diff --git a/docs/reindex.md b/docs/reindex.md
+new file mode 100644
+index 0000000..44606fb
+--- /dev/null
++++ b/docs/reindex.md
+@@ -0,0 +1,75 @@
++# Reindex
++
++`etude reindex` builds a derived SQLite cache of all run and eval refs, stored
++at `.git/etude-index.db`. The index is a full rebuild every time; there is no
++incremental update in v1.
++
++```bash
++etude reindex
++```
++
++## What it does
++
++`etude reindex` walks all `refs/etude/runs/*` and `refs/etude/evals/*` refs,
++parses each manifest and eval result, and writes the extracted data into a
++single SQLite database. The output is a summary line:
++
++```
++reindexed N runs, M evals into /path/to/.git/etude-index.db
++```
++
++If any manifest or eval result is malformed, the command fails and names the
++offending ref. A pre-existing valid index at `.git/etude-index.db` is left
++untouched on failure — the new index is built in a temp file first and only
++atomically replaces the old one on success.
++
++## Database location
++
++The default path is `<absolute-git-dir>/etude-index.db`, resolved via
++`git rev-parse --absolute-git-dir`. This correctly handles:
++
++- Normal repos (`.git/etude-index.db`)
++- Linked worktrees (`.git` is a file; resolves to the shared git dir)
++- Bare repos
++
++The database lives inside `.git/` and is never committed. `*.db` is in
++`.gitignore`.
++
++## Schema version
++
++The index carries a `meta.schema_version` integer. Opening a database whose
++`schema_version` differs from the current expected version (1) returns an error
++with a message directing you to run `etude reindex`. There is no migration
++machinery in v1 — reindex whenever the schema changes.
++
++## Driver
++
++The index uses `modernc.org/sqlite` (pure-Go, cgo-free). No C toolchain is
++required; `go install` works on any platform without extra setup.
++
++## Status: index not yet consumed
++
++The index is additive-only in v1. No existing command (`run list`, `gc`, `bench`)
++reads from it yet. Consumer beads will rewire those commands in a follow-up.
++`etude reindex` is safe to run at any time; it has no side effects beyond
++writing `.git/etude-index.db`.
++
++## Flags
++
++| Flag | Description |
++|------|-------------|
++| (none) | Resolve git dir automatically from cwd. |
++
++The hidden `--db-path` flag overrides the database path and is intended for
++tests only.
++
++## Examples
++
++```bash
++# Build (or rebuild) the index in the current repo.
++etude reindex
++
++# Inspect the schema after a reindex.
++sqlite3 .git/etude-index.db ".tables"
++sqlite3 .git/etude-index.db "SELECT run_id, workflow, created FROM runs LIMIT 5"
++```
+diff --git a/docs/run.md b/docs/run.md
+index cdf330e..b16359c 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -29,7 +29,8 @@ Columns:
+ When there are no runs, the command prints `no runs found` and exits 0.
+ 
+ `run list` takes no arguments or flags. It walks `refs/etude/runs/*` directly;
+-there is no query index.
++there is no query index. (A SQLite index exists at `.git/etude-index.db` and can
++be built with `etude reindex`, but `run list` does not yet consume it.)
+ 
+ If any run's `manifest.json` is missing or cannot be parsed, the command fails
+ with a non-zero exit code, names the offending run id in an error written to
+diff --git a/go.mod b/go.mod
+index 282a921..1cde036 100644
+--- a/go.mod
++++ b/go.mod
+@@ -5,9 +5,19 @@ go 1.26
+ require (
+ 	github.com/spf13/cobra v1.10.2
+ 	gopkg.in/yaml.v3 v3.0.1
++	modernc.org/sqlite v1.50.1
+ )
+ 
+ require (
++	github.com/dustin/go-humanize v1.0.1 // indirect
++	github.com/google/uuid v1.6.0 // indirect
+ 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
++	github.com/mattn/go-isatty v0.0.20 // indirect
++	github.com/ncruces/go-strftime v1.0.0 // indirect
++	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+ 	github.com/spf13/pflag v1.0.9 // indirect
++	golang.org/x/sys v0.42.0 // indirect
++	modernc.org/libc v1.72.3 // indirect
++	modernc.org/mathutil v1.7.1 // indirect
++	modernc.org/memory v1.11.0 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index 47edb24..6969445 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,13 +1,64 @@
+ github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
++github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
++github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
++github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=
++github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e/go.mod h1:boTsfXsheKC2y+lKOCMpSfarhxDeIzfZG1jqGcPl3cA=
++github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
++github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
++github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
++github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
+ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
+ github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
++github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
++github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
++github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
++github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
++github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
++github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+ github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
+ github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
+ github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
+ github.com/spf13/pflag v1.0.9 h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY=
+ github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+ go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
++golang.org/x/mod v0.33.0 h1:tHFzIWbBifEmbwtGz65eaWyGiGZatSrT9prnU8DbVL8=
++golang.org/x/mod v0.33.0/go.mod h1:swjeQEj+6r7fODbD2cqrnje9PnziFuw4bmLbBZFrQ5w=
++golang.org/x/sync v0.20.0 h1:e0PTpb7pjO8GAtTs2dQ6jYa5BWYlMuX047Dco/pItO4=
++golang.org/x/sync v0.20.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
++golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
++golang.org/x/sys v0.42.0 h1:omrd2nAlyT5ESRdCLYdm3+fMfNFE/+Rf4bDIQImRJeo=
++golang.org/x/sys v0.42.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/tools v0.42.0 h1:uNgphsn75Tdz5Ji2q36v/nsFSfR/9BRFvqhGBaJGd5k=
++golang.org/x/tools v0.42.0/go.mod h1:Ma6lCIwGZvHK6XtgbswSoWroEkhugApmsXyrUmBhfr0=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+ gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
++modernc.org/cc/v4 v4.28.2 h1:3tQ0lf2ADtoby2EtSP+J7IE2SHwEJdP8ioR59wx7XpY=
++modernc.org/cc/v4 v4.28.2/go.mod h1:OnovgIhbbMXMu1aISnJ0wvVD1KnW+cAUJkIrAWh+kVI=
++modernc.org/ccgo/v4 v4.34.0 h1:yRLPFZieg532OT4rp4JFNIVcquwalMX26G95WQDqwCQ=
++modernc.org/ccgo/v4 v4.34.0/go.mod h1:AS5WYMyBakQ+fhsHhtP8mWB82KTGPkNNJDGfGQCe0/A=
++modernc.org/fileutil v1.4.0 h1:j6ZzNTftVS054gi281TyLjHPp6CPHr2KCxEXjEbD6SM=
++modernc.org/fileutil v1.4.0/go.mod h1:EqdKFDxiByqxLk8ozOxObDSfcVOv/54xDs/DUHdvCUU=
++modernc.org/gc/v2 v2.6.5 h1:nyqdV8q46KvTpZlsw66kWqwXRHdjIlJOhG6kxiV/9xI=
++modernc.org/gc/v2 v2.6.5/go.mod h1:YgIahr1ypgfe7chRuJi2gD7DBQiKSLMPgBQe9oIiito=
++modernc.org/gc/v3 v3.1.2 h1:ZtDCnhonXSZexk/AYsegNRV1lJGgaNZJuKjJSWKyEqo=
++modernc.org/gc/v3 v3.1.2/go.mod h1:HFK/6AGESC7Ex+EZJhJ2Gni6cTaYpSMmU/cT9RmlfYY=
++modernc.org/goabi0 v0.2.0 h1:HvEowk7LxcPd0eq6mVOAEMai46V+i7Jrj13t4AzuNks=
++modernc.org/goabi0 v0.2.0/go.mod h1:CEFRnnJhKvWT1c1JTI3Avm+tgOWbkOu5oPA8eH8LnMI=
++modernc.org/libc v1.72.3 h1:ZnDF4tXn4NBXFutMMQC4vtbTFSXhhKzR73fv0beZEAU=
++modernc.org/libc v1.72.3/go.mod h1:dn0dZNnnn1clLyvRxLxYExxiKRZIRENOfqQ8XEeg4Qs=
++modernc.org/mathutil v1.7.1 h1:GCZVGXdaN8gTqB1Mf/usp1Y/hSqgI2vAGGP4jZMCxOU=
++modernc.org/mathutil v1.7.1/go.mod h1:4p5IwJITfppl0G4sUEDtCr4DthTaT47/N3aT6MhfgJg=
++modernc.org/memory v1.11.0 h1:o4QC8aMQzmcwCK3t3Ux/ZHmwFPzE6hf2Y5LbkRs+hbI=
++modernc.org/memory v1.11.0/go.mod h1:/JP4VbVC+K5sU2wZi9bHoq2MAkCnrt2r98UGeSK7Mjw=
++modernc.org/opt v0.2.0 h1:tGyef5ApycA7FSEOMraay9SaTk5zmbx7Tu+cJs4QKZg=
++modernc.org/opt v0.2.0/go.mod h1:03fq9lsNfvkYSfxrfUhZCWPk1lm4cq4N+Bh//bEtgns=
++modernc.org/sortutil v1.2.1 h1:+xyoGf15mM3NMlPDnFqrteY07klSFxLElE2PVuWIJ7w=
++modernc.org/sortutil v1.2.1/go.mod h1:7ZI3a3REbai7gzCLcotuw9AC4VZVpYMjDzETGsSMqJE=
++modernc.org/sqlite v1.50.1 h1:l+cQvn0sd0zJJtfygGHuQJ5AjlrwXmWPw4KP3ZMwr9w=
++modernc.org/sqlite v1.50.1/go.mod h1:tcNzv5p84E0skkmJn038y+hWJbLQXQqEnQfeh5r2JLM=
++modernc.org/strutil v1.2.1 h1:UneZBkQA+DX2Rp35KcM69cSsNES9ly8mQWD71HKlOA0=
++modernc.org/strutil v1.2.1/go.mod h1:EHkiggD70koQxjVdSBM3JKM7k6L0FbGE5eymy9i3B9A=
++modernc.org/token v1.1.0 h1:Xl7Ap9dKaEs5kLoOQeQmPWevfnk/DM5qcLcYlA8ys6Y=
++modernc.org/token v1.1.0/go.mod h1:UGzOrNV1mAFSEB63lOFHIpNRUVMvYTc6yu1SMY/XTDM=
+diff --git a/internal/cli/reindex.go b/internal/cli/reindex.go
+new file mode 100644
+index 0000000..3070e91
+--- /dev/null
++++ b/internal/cli/reindex.go
+@@ -0,0 +1,92 @@
++package cli
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"os/exec"
++	"path/filepath"
++	"strings"
++
++	"github.com/joshuavial/etude/internal/index"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/spf13/cobra"
++)
++
++func newReindexCommand(out, errOut io.Writer) *cobra.Command {
++	runner := &reindexRunner{
++		store:  refstore.New(""),
++		stdout: out,
++	}
++	return buildReindexCommand(out, errOut, runner)
++}
++
++type reindexRunner struct {
++	store  refstore.Store
++	dbPath string // empty = resolve from git dir at run time
++	stdout io.Writer
++}
++
++func buildReindexCommand(out, errOut io.Writer, runner *reindexRunner) *cobra.Command {
++	var dbPathOverride string
++
++	cmd := &cobra.Command{
++		Use:           "reindex",
++		Short:         "Rebuild the SQLite query index from all run and eval refs",
++		Args:          cobra.NoArgs,
++		SilenceUsage:  true,
++		SilenceErrors: true,
++		RunE: func(cmd *cobra.Command, args []string) error {
++			ctx := cmd.Context()
++			dbPath := runner.dbPath
++			if dbPath == "" {
++				dbPath = dbPathOverride
++			}
++			if dbPath == "" {
++				resolved, err := resolveIndexPath(ctx, runner.store.RepoDir)
++				if err != nil {
++					return err
++				}
++				dbPath = resolved
++			}
++			return runner.run(ctx, dbPath)
++		},
++	}
++
++	cmd.SetOut(out)
++	cmd.SetErr(errOut)
++
++	// Hidden flag for test overrides — not shown in --help output.
++	cmd.Flags().StringVar(&dbPathOverride, "db-path", "", "override the index database path (for testing)")
++	if err := cmd.Flags().MarkHidden("db-path"); err != nil {
++		panic(fmt.Sprintf("mark db-path hidden: %v", err))
++	}
++
++	return cmd
++}
++
++func (r *reindexRunner) run(ctx context.Context, dbPath string) error {
++	result, err := index.Reindex(ctx, r.store, dbPath)
++	if err != nil {
++		return err
++	}
++	fmt.Fprintf(r.stdout, "reindexed %d runs, %d evals into %s\n",
++		result.Runs, result.Evals, dbPath)
++	return nil
++}
++
++// resolveIndexPath shells out to git to resolve the absolute git dir (handles
++// linked worktrees where .git is a file, and bare repos), then appends
++// "etude-index.db". repoDir may be empty for cwd.
++func resolveIndexPath(ctx context.Context, repoDir string) (string, error) {
++	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--absolute-git-dir")
++	if repoDir != "" {
++		cmd.Dir = repoDir
++	}
++	out, err := cmd.Output()
++	if err != nil {
++		return "", fmt.Errorf("resolve git dir: %w", err)
++	}
++	gitDir := strings.TrimSpace(string(out))
++	return filepath.Join(gitDir, "etude-index.db"), nil
++}
+diff --git a/internal/cli/reindex_test.go b/internal/cli/reindex_test.go
+new file mode 100644
+index 0000000..cdafbf5
+--- /dev/null
++++ b/internal/cli/reindex_test.go
+@@ -0,0 +1,180 @@
++package cli
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/index"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Helpers (reindex-specific; avoid polluting the shared test namespace)
++// ---------------------------------------------------------------------------
++
++func riContentRef(role string, content []byte) (runmanifest.ArtifactRef, []byte) {
++	sum := sha256.Sum256(content)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/sha256/" + sha[:2] + "/" + sha
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StorageContent,
++		Size:      int64(len(content)),
++	}, content
++}
++
++func riMakeStage(name string, output runmanifest.ArtifactRef) runmanifest.Stage {
++	return runmanifest.Stage{
++		Name:       name,
++		ProducedBy: "test-agent",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Output:     output,
++	}
++}
++
++func riWriteRun(t *testing.T, store refstore.Store, runID, stageName string, content []byte) {
++	t.Helper()
++	outRef, outBytes := riContentRef("output", content)
++	stage := riMakeStage(stageName, outRef)
++	m := runmanifest.Manifest{
++		RunID:           runID,
++		Workflow:        "test-workflow",
++		WorkflowVersion: "v1",
++		Created:         time.Now().UTC(),
++		Refs:            map[string]string{"pr": "1"},
++		Stages:          []runmanifest.Stage{stage},
++	}
++	w := runmanifest.Writer{Store: store}
++	if _, err := w.Write(context.Background(), m, map[string][]byte{outRef.Path: outBytes}, runmanifest.WriteOptions{}); err != nil {
++		t.Fatalf("riWriteRun %s: %v", runID, err)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Registration and --help
++// ---------------------------------------------------------------------------
++
++func TestReindexCommandIsRegistered(t *testing.T) {
++	stdout, stderr, err := execute("reindex", "--help")
++	if err != nil {
++		t.Fatalf("reindex --help returned error: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "reindex") {
++		t.Fatalf("reindex --help output does not mention 'reindex':\n%s", stdout)
++	}
++}
++
++func TestReindexHelpDoesNotShowDbPath(t *testing.T) {
++	stdout, _, err := execute("reindex", "--help")
++	if err != nil {
++		t.Fatalf("reindex --help: %v", err)
++	}
++	// --db-path is hidden and must not appear in help output.
++	if strings.Contains(stdout, "--db-path") {
++		t.Fatalf("hidden --db-path appeared in help:\n%s", stdout)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// End-to-end: --db-path override
++// ---------------------------------------------------------------------------
++
++func TestReindexEndToEndWithDbPath(t *testing.T) {
++	repo := initCaptureRepo(t)
++	store := refstore.New(repo)
++	chdir(t, repo)
++
++	riWriteRun(t, store, "run-e2e", "gen", []byte("end-to-end content"))
++
++	dbPath := filepath.Join(t.TempDir(), "idx.db")
++
++	stdout, stderr, err := execute("reindex", "--db-path", dbPath)
++	if err != nil {
++		t.Fatalf("reindex --db-path: %v\nstderr: %s", err, stderr)
++	}
++
++	if !strings.Contains(stdout, "reindexed 1 runs") {
++		t.Fatalf("expected 'reindexed 1 runs' in output:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, dbPath) {
++		t.Fatalf("expected db path in output:\n%s", stdout)
++	}
++	if _, err := os.Stat(dbPath); err != nil {
++		t.Fatalf("db file should exist after reindex: %v", err)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open after reindex: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns: %v", err)
++	}
++	if len(runs) != 1 || runs[0].RunID != "run-e2e" {
++		t.Fatalf("expected run-e2e in index; got %v", runs)
++	}
++}
++
++func TestReindexPositionalArgError(t *testing.T) {
++	// Running reindex with positional args should fail (NoArgs).
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	dbPath := filepath.Join(t.TempDir(), "idx.db")
++
++	_, _, err := execute("reindex", "--db-path", dbPath, "unexpected-arg")
++	if err == nil {
++		t.Fatal("reindex with positional arg should return error")
++	}
++}
++
++func TestReindexWritesToGitDir(t *testing.T) {
++	// Verify the default (no --db-path) resolves to .git/etude-index.db.
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++
++	store := refstore.New(repo)
++	riWriteRun(t, store, "run-gitdir", "gen", []byte("git dir test"))
++
++	stdout, stderr, err := execute("reindex")
++	if err != nil {
++		t.Fatalf("reindex (no --db-path): %v\nstderr: %s", err, stderr)
++	}
++
++	expectedDB := filepath.Join(repo, ".git", "etude-index.db")
++	if _, statErr := os.Stat(expectedDB); statErr != nil {
++		t.Fatalf(".git/etude-index.db should exist: %v", statErr)
++	}
++	if !strings.Contains(stdout, "etude-index.db") {
++		t.Fatalf("expected 'etude-index.db' in output:\n%s", stdout)
++	}
++}
++
++func TestReindexEmptyRepoViaDbPath(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	dbPath := filepath.Join(t.TempDir(), "empty.db")
++
++	stdout, stderr, err := execute("reindex", "--db-path", dbPath)
++	if err != nil {
++		t.Fatalf("reindex empty: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "reindexed 0 runs, 0 evals") {
++		t.Fatalf("expected zero counts; got:\n%s", stdout)
++	}
++}
+diff --git a/internal/cli/root.go b/internal/cli/root.go
+index 5930e53..2268ef8 100644
+--- a/internal/cli/root.go
++++ b/internal/cli/root.go
+@@ -37,6 +37,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd.AddCommand(newCaptureCommand(out, errOut))
+ 	cmd.AddCommand(newGCCommand(out, errOut))
+ 	cmd.AddCommand(newInitCommand(out, errOut))
++	cmd.AddCommand(newReindexCommand(out, errOut))
+ 	cmd.AddCommand(newReplayCommand(out, errOut))
+ 	cmd.AddCommand(newRunCommand(out, errOut))
+ 	cmd.AddCommand(newSyncCommand(out, errOut))
+diff --git a/internal/index/index.go b/internal/index/index.go
+new file mode 100644
+index 0000000..8b43657
+--- /dev/null
++++ b/internal/index/index.go
+@@ -0,0 +1,420 @@
++// Package index builds and queries a derived SQLite cache of etude run and
++// eval refs. The cache lives at .git/etude-index.db and is a disposable,
++// full-rebuild-only index (v1). It accelerates queries that would otherwise
++// walk all refs via git for-each-ref.
++//
++// The index is purely additive: no existing command reads it yet. Consumer
++// beads will rewire run list / bench / gc to query it.
++package index
++
++import (
++	"context"
++	"database/sql"
++	"errors"
++	"fmt"
++	"math/rand/v2"
++	"os"
++	"path/filepath"
++	"time"
++
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++	_ "modernc.org/sqlite"
++)
++
++const (
++	SchemaVersion = 1
++
++	runsPrefix  = "refs/etude/runs"
++	evalsPrefix = "refs/etude/evals"
++)
++
++var ErrSchemaMismatch = errors.New("index schema version mismatch")
++
++// DB wraps a read-only connection to an etude index database and exposes
++// typed query helpers. Open validates the schema version on creation.
++type DB struct {
++	db *sql.DB
++}
++
++// ReindexResult holds the counts returned by Reindex.
++type ReindexResult struct {
++	Runs  int
++	Evals int
++}
++
++// Open opens an existing index database at dbPath and validates the schema
++// version. Returns ErrSchemaMismatch if the stored schema_version does not
++// match SchemaVersion so callers can detect a stale index and reindex.
++func Open(dbPath string) (*DB, error) {
++	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
++	if err != nil {
++		return nil, fmt.Errorf("open index %s: %w", dbPath, err)
++	}
++	var version int
++	if err := db.QueryRow("SELECT schema_version FROM meta LIMIT 1").Scan(&version); err != nil {
++		db.Close()
++		return nil, fmt.Errorf("read schema version: %w", err)
++	}
++	if version != SchemaVersion {
++		db.Close()
++		return nil, fmt.Errorf("%w: db has version %d, want %d (run etude reindex)", ErrSchemaMismatch, version, SchemaVersion)
++	}
++	return &DB{db: db}, nil
++}
++
++// Close releases the database connection.
++func (d *DB) Close() error {
++	return d.db.Close()
++}
++
++// RunRow holds one row from the runs table.
++type RunRow struct {
++	RunID           string
++	Workflow        string
++	WorkflowVersion string
++	Created         time.Time
++	Commit          string
++}
++
++// LastRuns returns up to n run rows ordered by created descending.
++func (d *DB) LastRuns(n int) ([]RunRow, error) {
++	rows, err := d.db.Query(
++		`SELECT run_id, workflow, workflow_version, created, "commit"
++		 FROM runs ORDER BY created DESC LIMIT ?`, n)
++	if err != nil {
++		return nil, fmt.Errorf("LastRuns: %w", err)
++	}
++	defer rows.Close()
++	return scanRunRows(rows)
++}
++
++// RunsWithStage returns runs that have at least one stage with the given name.
++func (d *DB) RunsWithStage(stageName string) ([]RunRow, error) {
++	rows, err := d.db.Query(
++		`SELECT r.run_id, r.workflow, r.workflow_version, r.created, r."commit"
++		 FROM runs r
++		 JOIN stages s ON s.run_id = r.run_id
++		 WHERE s.name = ?
++		 ORDER BY r.created DESC`, stageName)
++	if err != nil {
++		return nil, fmt.Errorf("RunsWithStage: %w", err)
++	}
++	defer rows.Close()
++	return scanRunRows(rows)
++}
++
++func scanRunRows(rows *sql.Rows) ([]RunRow, error) {
++	var result []RunRow
++	for rows.Next() {
++		var r RunRow
++		var createdStr string
++		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &createdStr, &r.Commit); err != nil {
++			return nil, err
++		}
++		t, err := time.Parse(time.RFC3339Nano, createdStr)
++		if err != nil {
++			t, err = time.Parse(time.RFC3339, createdStr)
++			if err != nil {
++				return nil, fmt.Errorf("parse created %q: %w", createdStr, err)
++			}
++		}
++		r.Created = t.UTC()
++		result = append(result, r)
++	}
++	return result, rows.Err()
++}
++
++// Reindex builds a fresh SQLite index at dbPath by walking all run and eval
++// refs in store. It creates a temp file in the same directory as dbPath, builds
++// the full schema and data inside a single transaction, then atomically renames
++// the temp file to dbPath. On any error, the temp file is removed and the
++// existing dbPath (if any) is left untouched.
++func Reindex(ctx context.Context, store refstore.Store, dbPath string) (ReindexResult, error) {
++	tmpPath := filepath.Join(
++		filepath.Dir(dbPath),
++		fmt.Sprintf(".etude-index-tmp-%x.db", rand.Uint64()),
++	)
++
++	// Ensure temp file is removed on any failure path.
++	cleanup := true
++	defer func() {
++		if cleanup {
++			os.Remove(tmpPath)
++		}
++	}()
++
++	db, err := sql.Open("sqlite", tmpPath)
++	if err != nil {
++		return ReindexResult{}, fmt.Errorf("open temp db: %w", err)
++	}
++	defer db.Close()
++
++	// Build schema, data, and meta in ONE transaction so the temp db is never
++	// observed (or installed) in a partially-built state. SQLite supports
++	// transactional DDL, so the CREATE statements roll back with the rest on any
++	// error. The atomic install is still the final os.Rename.
++	tx, err := db.BeginTx(ctx, nil)
++	if err != nil {
++		return ReindexResult{}, fmt.Errorf("begin transaction: %w", err)
++	}
++	defer tx.Rollback()
++
++	if err := createSchema(ctx, tx); err != nil {
++		return ReindexResult{}, err
++	}
++
++	result, err := populateIndex(ctx, store, tx)
++	if err != nil {
++		return ReindexResult{}, err
++	}
++
++	if _, err := tx.ExecContext(ctx,
++		`INSERT INTO meta(schema_version, built_at) VALUES (?, ?)`,
++		SchemaVersion, time.Now().UTC().Format(time.RFC3339),
++	); err != nil {
++		return ReindexResult{}, fmt.Errorf("write meta: %w", err)
++	}
++
++	if err := tx.Commit(); err != nil {
++		return ReindexResult{}, fmt.Errorf("commit: %w", err)
++	}
++	if err := db.Close(); err != nil {
++		return ReindexResult{}, fmt.Errorf("close temp db: %w", err)
++	}
++
++	if err := os.Rename(tmpPath, dbPath); err != nil {
++		return ReindexResult{}, fmt.Errorf("install index: %w", err)
++	}
++
++	cleanup = false
++	return result, nil
++}
++
++func createSchema(ctx context.Context, tx *sql.Tx) error {
++	_, err := tx.ExecContext(ctx, schema)
++	if err != nil {
++		return fmt.Errorf("create schema: %w", err)
++	}
++	return nil
++}
++
++func populateIndex(ctx context.Context, store refstore.Store, tx *sql.Tx) (ReindexResult, error) {
++	runRefs, err := store.List(ctx, runsPrefix)
++	if err != nil {
++		return ReindexResult{}, fmt.Errorf("list run refs: %w", err)
++	}
++
++	for _, ref := range runRefs {
++		commit, err := store.Resolve(ctx, ref)
++		if err != nil {
++			return ReindexResult{}, fmt.Errorf("resolve commit for %s: %w", ref, err)
++		}
++		manifestBytes, err := store.ReadFile(ctx, ref, "manifest.json")
++		if err != nil {
++			return ReindexResult{}, fmt.Errorf("read manifest for %s: %w", ref, err)
++		}
++		manifest, err := runmanifest.ParseJSON(manifestBytes)
++		if err != nil {
++			return ReindexResult{}, fmt.Errorf("parse manifest for %s: %w", ref, err)
++		}
++		if err := insertRun(ctx, tx, manifest, commit); err != nil {
++			return ReindexResult{}, fmt.Errorf("insert run from %s: %w", ref, err)
++		}
++	}
++
++	evalRefs, err := store.List(ctx, evalsPrefix)
++	if err != nil {
++		return ReindexResult{}, fmt.Errorf("list eval refs: %w", err)
++	}
++
++	for _, ref := range evalRefs {
++		evalBytes, err := store.ReadFile(ctx, ref, "eval_result.json")
++		if err != nil {
++			return ReindexResult{}, fmt.Errorf("read eval_result.json for %s: %w", ref, err)
++		}
++		result, err := eval.ParseJSON(evalBytes)
++		if err != nil {
++			return ReindexResult{}, fmt.Errorf("parse eval_result.json for %s: %w", ref, err)
++		}
++		if err := insertEval(ctx, tx, result); err != nil {
++			return ReindexResult{}, fmt.Errorf("insert eval from %s: %w", ref, err)
++		}
++	}
++
++	return ReindexResult{Runs: len(runRefs), Evals: len(evalRefs)}, nil
++}
++
++func insertRun(ctx context.Context, tx *sql.Tx, m runmanifest.Manifest, commit string) error {
++	if _, err := tx.ExecContext(ctx,
++		`INSERT INTO runs(run_id, workflow, workflow_version, created, "commit")
++		 VALUES (?, ?, ?, ?, ?)`,
++		m.RunID,
++		m.Workflow,
++		m.WorkflowVersion,
++		m.Created.UTC().Format(time.RFC3339Nano),
++		commit,
++	); err != nil {
++		return fmt.Errorf("insert run %s: %w", m.RunID, err)
++	}
++
++	for _, stage := range m.Stages {
++		var replayOfRunID *string
++		if stage.ReplayOf != nil {
++			replayOfRunID = &stage.ReplayOf.RunID
++		}
++		if _, err := tx.ExecContext(ctx,
++			`INSERT INTO stages(run_id, name, produced_by, git_sha,
++			  skill_id, skill_repo, skill_version, model,
++			  harness_name, harness_version, replay_of_run_id)
++			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++			m.RunID,
++			stage.Name,
++			stage.ProducedBy,
++			stage.GitSHA,
++			stage.Producer.Skill.ID,
++			stage.Producer.Skill.Repo,
++			stage.Producer.Skill.Version,
++			stage.Producer.Model,
++			stage.Producer.Harness.Name,
++			stage.Producer.Harness.Version,
++			replayOfRunID,
++		); err != nil {
++			return fmt.Errorf("insert stage %s/%s: %w", m.RunID, stage.Name, err)
++		}
++
++		// Insert output artifact.
++		if err := insertArtifact(ctx, tx, m.RunID, stage.Name, stage.Output); err != nil {
++			return err
++		}
++		// Insert input artifacts.
++		for _, inp := range stage.Inputs {
++			if err := insertArtifact(ctx, tx, m.RunID, stage.Name, inp); err != nil {
++				return err
++			}
++		}
++	}
++
++	return nil
++}
++
++func insertArtifact(ctx context.Context, tx *sql.Tx, runID, stageName string, a runmanifest.ArtifactRef) error {
++	if _, err := tx.ExecContext(ctx,
++		`INSERT INTO artifacts(run_id, stage, role, sha256, size, storage)
++		 VALUES (?, ?, ?, ?, ?, ?)`,
++		runID,
++		stageName,
++		a.Role,
++		a.Artifact,
++		a.Size,
++		string(a.Storage),
++	); err != nil {
++		return fmt.Errorf("insert artifact %s/%s/%s: %w", runID, stageName, a.Role, err)
++	}
++	return nil
++}
++
++func insertEval(ctx context.Context, tx *sql.Tx, r eval.EvalResult) error {
++	if _, err := tx.ExecContext(ctx,
++		`INSERT INTO evals(eval_id, method, created)
++		 VALUES (?, ?, ?)`,
++		r.EvalID,
++		r.Method,
++		r.Created.UTC().Format(time.RFC3339Nano),
++	); err != nil {
++		return fmt.Errorf("insert eval %s: %w", r.EvalID, err)
++	}
++
++	for i, src := range r.Targets {
++		if err := insertEvalSource(ctx, tx, r.EvalID, "target", i, src); err != nil {
++			return err
++		}
++	}
++	for i, src := range r.Context {
++		if err := insertEvalSource(ctx, tx, r.EvalID, "context", i, src); err != nil {
++			return err
++		}
++	}
++
++	return nil
++}
++
++func insertEvalSource(ctx context.Context, tx *sql.Tx, evalID, kind string, idx int, src eval.ArtifactSource) error {
++	if _, err := tx.ExecContext(ctx,
++		`INSERT INTO eval_sources(eval_id, kind, idx, run_id, stage, "commit", artifact)
++		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
++		evalID,
++		kind,
++		idx,
++		src.RunID,
++		src.Stage,
++		src.Commit,
++		src.Artifact,
++	); err != nil {
++		return fmt.Errorf("insert eval_source %s/%s[%d]: %w", evalID, kind, idx, err)
++	}
++	return nil
++}
++
++// schema is the DDL executed on every fresh index build.
++const schema = `
++CREATE TABLE runs (
++	run_id           TEXT NOT NULL PRIMARY KEY,
++	workflow         TEXT NOT NULL,
++	workflow_version TEXT NOT NULL,
++	created          TEXT NOT NULL,
++	"commit"         TEXT NOT NULL
++);
++
++CREATE TABLE stages (
++	run_id              TEXT NOT NULL,
++	name                TEXT NOT NULL,
++	produced_by         TEXT NOT NULL,
++	git_sha             TEXT NOT NULL,
++	skill_id            TEXT NOT NULL,
++	skill_repo          TEXT NOT NULL,
++	skill_version       TEXT NOT NULL,
++	model               TEXT NOT NULL DEFAULT '',
++	harness_name        TEXT NOT NULL DEFAULT '',
++	harness_version     TEXT NOT NULL DEFAULT '',
++	replay_of_run_id    TEXT,
++	PRIMARY KEY (run_id, name)
++);
++
++CREATE TABLE artifacts (
++	run_id  TEXT NOT NULL,
++	stage   TEXT NOT NULL,
++	role    TEXT NOT NULL,
++	sha256  TEXT NOT NULL,
++	size    INTEGER NOT NULL,
++	storage TEXT NOT NULL
++);
++
++CREATE TABLE evals (
++	eval_id TEXT NOT NULL PRIMARY KEY,
++	method  TEXT NOT NULL,
++	created TEXT NOT NULL
++);
++
++CREATE TABLE eval_sources (
++	eval_id  TEXT NOT NULL,
++	kind     TEXT NOT NULL,
++	idx      INTEGER NOT NULL,
++	run_id   TEXT NOT NULL,
++	stage    TEXT NOT NULL,
++	"commit" TEXT NOT NULL,
++	artifact TEXT NOT NULL,
++	PRIMARY KEY (eval_id, kind, idx)
++);
++
++CREATE TABLE meta (
++	schema_version INTEGER NOT NULL,
++	built_at       TEXT NOT NULL
++);
++
++CREATE INDEX idx_stages_name    ON stages(name);
++CREATE INDEX idx_stages_skill   ON stages(skill_id);
++CREATE INDEX idx_artifacts_sha  ON artifacts(sha256);
++CREATE INDEX idx_eval_src_run   ON eval_sources(run_id);
++`
+diff --git a/internal/index/index_test.go b/internal/index/index_test.go
+new file mode 100644
+index 0000000..242c140
+--- /dev/null
++++ b/internal/index/index_test.go
+@@ -0,0 +1,512 @@
++package index_test
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"database/sql"
++	"encoding/hex"
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/eval"
++	"github.com/joshuavial/etude/internal/index"
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++	_ "modernc.org/sqlite"
++)
++
++// ---------------------------------------------------------------------------
++// Test helpers
++// ---------------------------------------------------------------------------
++
++func initRepo(t *testing.T) (string, refstore.Store) {
++	t.Helper()
++	dir := t.TempDir()
++	gitRun(t, dir, "init")
++	gitRun(t, dir, "config", "user.name", "Test User")
++	gitRun(t, dir, "config", "user.email", "test@example.invalid")
++	writeFile(t, dir, "README.md", "test\n")
++	gitRun(t, dir, "add", "README.md")
++	gitRun(t, dir, "commit", "-m", "initial")
++	return dir, refstore.New(dir)
++}
++
++func gitRun(t *testing.T, dir string, args ...string) string {
++	t.Helper()
++	cmd := exec.Command("git", args...)
++	cmd.Dir = dir
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	out, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
++	}
++	return strings.TrimSpace(string(out))
++}
++
++func writeFile(t *testing.T, dir, name, content string) {
++	t.Helper()
++	path := filepath.Join(dir, name)
++	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
++		t.Fatalf("mkdir: %v", err)
++	}
++	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
++		t.Fatalf("write %s: %v", name, err)
++	}
++}
++
++func contentRef(t *testing.T, role string, content []byte) (runmanifest.ArtifactRef, []byte) {
++	t.Helper()
++	sum := sha256.Sum256(content)
++	sha := hex.EncodeToString(sum[:])
++	path := "artifacts/sha256/" + sha[:2] + "/" + sha
++	return runmanifest.ArtifactRef{
++		Role:      role,
++		Artifact:  sha,
++		Path:      path,
++		MediaType: "application/octet-stream",
++		Storage:   artifactstore.StorageContent,
++		Size:      int64(len(content)),
++	}, content
++}
++
++func makeStage(t *testing.T, name string, output runmanifest.ArtifactRef, inputs []runmanifest.ArtifactRef) runmanifest.Stage {
++	t.Helper()
++	return runmanifest.Stage{
++		Name:       name,
++		ProducedBy: "test-agent",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Producer: runmanifest.Producer{
++			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++			Model:   "test-model",
++			Harness: runmanifest.Harness{Name: "test-harness", Version: "v0"},
++		},
++		Timestamp: time.Now().UTC(),
++		Inputs:    inputs,
++		Output:    output,
++	}
++}
++
++func makeManifest(runID string, stages []runmanifest.Stage) runmanifest.Manifest {
++	return runmanifest.Manifest{
++		RunID:           runID,
++		Workflow:        "test-workflow",
++		WorkflowVersion: "v1",
++		Created:         time.Now().UTC(),
++		Refs:            map[string]string{"pr": "1"},
++		Stages:          stages,
++	}
++}
++
++func writeRun(t *testing.T, store refstore.Store, manifest runmanifest.Manifest, files map[string][]byte) {
++	t.Helper()
++	w := runmanifest.Writer{Store: store}
++	if _, err := w.Write(context.Background(), manifest, files, runmanifest.WriteOptions{}); err != nil {
++		t.Fatalf("writeRun %s: %v", manifest.RunID, err)
++	}
++}
++
++func writeEval(t *testing.T, store refstore.Store, result eval.EvalResult) {
++	t.Helper()
++	w := eval.Writer{Store: store}
++	if _, err := w.Write(context.Background(), result, eval.WriteOptions{}); err != nil {
++		t.Fatalf("writeEval %s: %v", result.EvalID, err)
++	}
++}
++
++func rubricEval(evalID, targetRunID, targetStage string, targetArtifact runmanifest.ArtifactRef, contextRunID string, contextArtifact runmanifest.ArtifactRef) eval.EvalResult {
++	val := 8.0
++	max := 10.0
++	var ctxSources []eval.ArtifactSource
++	if contextRunID != "" {
++		ctxSources = []eval.ArtifactSource{{
++			RunID:    contextRunID,
++			Stage:    "gen",
++			Commit:   strings.Repeat("c", 40),
++			Artifact: contextArtifact.Artifact,
++		}}
++	}
++	return eval.EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            evalID,
++		Method:            "rubric",
++		Score:             eval.Score{Kind: "rubric", Value: &val, Max: &max},
++		Rubric:            &eval.RubricRef{Path: "rubric.md", Version: "v1"},
++		Targets: []eval.ArtifactSource{{
++			RunID:    targetRunID,
++			Stage:    targetStage,
++			Commit:   strings.Repeat("b", 40),
++			Artifact: targetArtifact.Artifact,
++		}},
++		Context: ctxSources,
++		Created: time.Now().UTC(),
++	}
++}
++
++// tamperSchemaVersion directly updates the meta table to simulate a stale db.
++func tamperSchemaVersion(t *testing.T, dbPath string, newVersion int) {
++	t.Helper()
++	db, err := sql.Open("sqlite", dbPath)
++	if err != nil {
++		t.Fatalf("tamper open: %v", err)
++	}
++	defer db.Close()
++	if _, err := db.Exec("UPDATE meta SET schema_version = ?", newVersion); err != nil {
++		t.Fatalf("tamper update: %v", err)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Tests
++// ---------------------------------------------------------------------------
++
++func TestReindexEmptyStore(t *testing.T) {
++	_, store := initRepo(t)
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++
++	result, err := index.Reindex(context.Background(), store, dbPath)
++	if err != nil {
++		t.Fatalf("Reindex empty store: %v", err)
++	}
++	if result.Runs != 0 || result.Evals != 0 {
++		t.Fatalf("want 0 runs, 0 evals; got %d runs, %d evals", result.Runs, result.Evals)
++	}
++	if _, err := os.Stat(dbPath); err != nil {
++		t.Fatalf("db file should exist: %v", err)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open after empty reindex: %v", err)
++	}
++	defer db.Close()
++
++	rows, err := db.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns: %v", err)
++	}
++	if len(rows) != 0 {
++		t.Fatalf("want 0 rows; got %d", len(rows))
++	}
++}
++
++func TestReindexRowCounts(t *testing.T) {
++	_, store := initRepo(t)
++
++	outRef1, outBytes1 := contentRef(t, "output", []byte("run1 output"))
++	inRef1, inBytes1 := contentRef(t, "input", []byte("run1 input"))
++	stage1 := makeStage(t, "gen", outRef1, []runmanifest.ArtifactRef{inRef1})
++	writeRun(t, store, makeManifest("run-1", []runmanifest.Stage{stage1}),
++		map[string][]byte{outRef1.Path: outBytes1, inRef1.Path: inBytes1})
++
++	outRef2, outBytes2 := contentRef(t, "output", []byte("run2 stage1 output"))
++	stage2a := makeStage(t, "gen", outRef2, nil)
++	outRef2b, outBytes2b := contentRef(t, "output", []byte("run2 stage2 output"))
++	stage2b := makeStage(t, "review", outRef2b, []runmanifest.ArtifactRef{outRef2})
++	writeRun(t, store, makeManifest("run-2", []runmanifest.Stage{stage2a, stage2b}),
++		map[string][]byte{outRef2.Path: outBytes2, outRef2b.Path: outBytes2b})
++
++	writeEval(t, store, rubricEval("eval-1", "run-1", "gen", outRef1, "", runmanifest.ArtifactRef{}))
++	writeEval(t, store, rubricEval("eval-2", "run-2", "review", outRef2b, "run-1", outRef1))
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++	result, err := index.Reindex(context.Background(), store, dbPath)
++	if err != nil {
++		t.Fatalf("Reindex: %v", err)
++	}
++
++	if result.Runs != 2 {
++		t.Fatalf("want 2 runs; got %d", result.Runs)
++	}
++	if result.Evals != 2 {
++		t.Fatalf("want 2 evals; got %d", result.Evals)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns: %v", err)
++	}
++	if len(runs) != 2 {
++		t.Fatalf("want 2 run rows; got %d", len(runs))
++	}
++
++	genRuns, err := db.RunsWithStage("gen")
++	if err != nil {
++		t.Fatalf("RunsWithStage gen: %v", err)
++	}
++	if len(genRuns) != 2 {
++		t.Fatalf("want 2 runs with stage 'gen'; got %d", len(genRuns))
++	}
++
++	reviewRuns, err := db.RunsWithStage("review")
++	if err != nil {
++		t.Fatalf("RunsWithStage review: %v", err)
++	}
++	if len(reviewRuns) != 1 {
++		t.Fatalf("want 1 run with stage 'review'; got %d", len(reviewRuns))
++	}
++	if reviewRuns[0].RunID != "run-2" {
++		t.Fatalf("want run-2 with stage review; got %s", reviewRuns[0].RunID)
++	}
++}
++
++func TestReindexRunCommitMatchesResolve(t *testing.T) {
++	_, store := initRepo(t)
++
++	outRef, outBytes := contentRef(t, "output", []byte("content for commit check"))
++	stage := makeStage(t, "gen", outRef, nil)
++	writeRun(t, store, makeManifest("run-commit", []runmanifest.Stage{stage}),
++		map[string][]byte{outRef.Path: outBytes})
++
++	expectedCommit, err := store.Resolve(context.Background(), "refs/etude/runs/run-commit")
++	if err != nil {
++		t.Fatalf("Resolve: %v", err)
++	}
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("Reindex: %v", err)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(1)
++	if err != nil {
++		t.Fatalf("LastRuns: %v", err)
++	}
++	if len(runs) != 1 {
++		t.Fatalf("want 1 run; got %d", len(runs))
++	}
++	if runs[0].Commit != expectedCommit {
++		t.Fatalf("run commit = %q, want %q", runs[0].Commit, expectedCommit)
++	}
++}
++
++func TestReindexIdempotent(t *testing.T) {
++	_, store := initRepo(t)
++
++	outRef, outBytes := contentRef(t, "output", []byte("idempotent content"))
++	stage := makeStage(t, "gen", outRef, nil)
++	writeRun(t, store, makeManifest("run-idem", []runmanifest.Stage{stage}),
++		map[string][]byte{outRef.Path: outBytes})
++
++	writeEval(t, store, rubricEval("eval-idem", "run-idem", "gen", outRef, "", runmanifest.ArtifactRef{}))
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("first Reindex: %v", err)
++	}
++
++	db1, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open after first reindex: %v", err)
++	}
++	runs1, err := db1.LastRuns(10)
++	db1.Close()
++	if err != nil {
++		t.Fatalf("LastRuns first: %v", err)
++	}
++
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("second Reindex: %v", err)
++	}
++
++	db2, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open after second reindex: %v", err)
++	}
++	defer db2.Close()
++
++	runs2, err := db2.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns second: %v", err)
++	}
++
++	if len(runs1) != len(runs2) {
++		t.Fatalf("run count changed between reindexes: %d vs %d", len(runs1), len(runs2))
++	}
++	for i := range runs1 {
++		if runs1[i].RunID != runs2[i].RunID {
++			t.Fatalf("run[%d] run_id: %q vs %q", i, runs1[i].RunID, runs2[i].RunID)
++		}
++		if runs1[i].Commit != runs2[i].Commit {
++			t.Fatalf("run[%d] commit: %q vs %q", i, runs1[i].Commit, runs2[i].Commit)
++		}
++	}
++}
++
++func TestReindexMalformedManifestLeavesOldDbIntact(t *testing.T) {
++	_, store := initRepo(t)
++
++	// Write a good run first and build the initial index.
++	outRef, outBytes := contentRef(t, "output", []byte("good content"))
++	stage := makeStage(t, "gen", outRef, nil)
++	writeRun(t, store, makeManifest("run-good", []runmanifest.Stage{stage}),
++		map[string][]byte{outRef.Path: outBytes})
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("first Reindex: %v", err)
++	}
++
++	dbStat, err := os.Stat(dbPath)
++	if err != nil {
++		t.Fatalf("stat good db: %v", err)
++	}
++	goodModTime := dbStat.ModTime()
++
++	// Inject a malformed manifest directly into the store.
++	bad := []byte(`{not valid json at all`)
++	if _, err := store.WriteCommit(context.Background(),
++		"refs/etude/runs/bad-run",
++		map[string][]byte{"manifest.json": bad},
++		refstore.WriteOptions{},
++	); err != nil {
++		t.Fatalf("WriteCommit bad manifest: %v", err)
++	}
++
++	// Reindex should fail and name the bad ref.
++	_, reindexErr := index.Reindex(context.Background(), store, dbPath)
++	if reindexErr == nil {
++		t.Fatal("Reindex with malformed manifest should fail")
++	}
++	if !strings.Contains(reindexErr.Error(), "bad-run") {
++		t.Fatalf("error should name bad ref, got: %v", reindexErr)
++	}
++
++	// The old db must be untouched (same mod time, still readable).
++	newStat, err := os.Stat(dbPath)
++	if err != nil {
++		t.Fatalf("stat db after failed reindex: %v", err)
++	}
++	if !newStat.ModTime().Equal(goodModTime) {
++		t.Fatalf("db was modified by failed reindex: old=%v new=%v", goodModTime, newStat.ModTime())
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open old db: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns old db: %v", err)
++	}
++	if len(runs) != 1 || runs[0].RunID != "run-good" {
++		t.Fatalf("old db should still have run-good, got %v", runs)
++	}
++}
++
++func TestReindexEvalSources(t *testing.T) {
++	_, store := initRepo(t)
++
++	outRef1, outBytes1 := contentRef(t, "output", []byte("eval target content"))
++	outRef2, outBytes2 := contentRef(t, "output", []byte("eval context content"))
++	stage1 := makeStage(t, "gen", outRef1, nil)
++	stage2 := makeStage(t, "gen", outRef2, nil)
++	writeRun(t, store, makeManifest("run-target", []runmanifest.Stage{stage1}),
++		map[string][]byte{outRef1.Path: outBytes1})
++	writeRun(t, store, makeManifest("run-context", []runmanifest.Stage{stage2}),
++		map[string][]byte{outRef2.Path: outBytes2})
++
++	writeEval(t, store, rubricEval("eval-sources", "run-target", "gen", outRef1, "run-context", outRef2))
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++	result, err := index.Reindex(context.Background(), store, dbPath)
++	if err != nil {
++		t.Fatalf("Reindex: %v", err)
++	}
++	if result.Evals != 1 {
++		t.Fatalf("want 1 eval; got %d", result.Evals)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(10)
++	if err != nil {
++		t.Fatalf("LastRuns: %v", err)
++	}
++	if len(runs) != 2 {
++		t.Fatalf("want 2 runs; got %d", len(runs))
++	}
++}
++
++func TestOpenSchemaMismatch(t *testing.T) {
++	_, store := initRepo(t)
++	outRef, outBytes := contentRef(t, "output", []byte("schema check"))
++	stage := makeStage(t, "gen", outRef, nil)
++	writeRun(t, store, makeManifest("run-schema", []runmanifest.Stage{stage}),
++		map[string][]byte{outRef.Path: outBytes})
++
++	dbPath := filepath.Join(t.TempDir(), "stale.db")
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("Reindex: %v", err)
++	}
++
++	tamperSchemaVersion(t, dbPath, 999)
++
++	_, err := index.Open(dbPath)
++	if err == nil {
++		t.Fatal("Open with wrong schema version should fail")
++	}
++	if !errors.Is(err, index.ErrSchemaMismatch) {
++		t.Fatalf("want ErrSchemaMismatch; got %v", err)
++	}
++}
++
++func TestLastRunsLimit(t *testing.T) {
++	_, store := initRepo(t)
++
++	for i := 0; i < 5; i++ {
++		id := "run-limit-" + string(rune('a'+i))
++		outRef, outBytes := contentRef(t, "output", []byte("content "+id))
++		stage := makeStage(t, "gen", outRef, nil)
++		// Stagger created times so ordering is deterministic.
++		m := makeManifest(id, []runmanifest.Stage{stage})
++		m.Created = time.Now().UTC().Add(time.Duration(i) * time.Second)
++		writeRun(t, store, m, map[string][]byte{outRef.Path: outBytes})
++	}
++
++	dbPath := filepath.Join(t.TempDir(), "test.db")
++	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
++		t.Fatalf("Reindex: %v", err)
++	}
++
++	db, err := index.Open(dbPath)
++	if err != nil {
++		t.Fatalf("Open: %v", err)
++	}
++	defer db.Close()
++
++	runs, err := db.LastRuns(3)
++	if err != nil {
++		t.Fatalf("LastRuns(3): %v", err)
++	}
++	if len(runs) != 3 {
++		t.Fatalf("want 3 rows from LastRuns(3); got %d", len(runs))
++	}
++}
