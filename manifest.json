@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5f6",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -59,6 +59,53 @@
         "size": 7863
       },
       "timestamp": "2026-08-15T07:58:46.777927Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:58:46Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:58:46Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. Seven follow-ups between them, all folded or filed. The two that mattered: BOTH seats independently caught that stopping the ladder at an in-harness candidate makes the agy rung unreachable (rule changed to skip-not-stop, since etude cannot know whether its caller can spawn a sub-agent); and the opus seat caught that SeatMeta must be recomputed per candidate because requiresSessionEvidence depends on the harness, and that an exhausted ladder leaving Harness.Name empty would be REJECTED by runmanifest validation — turning a recorded outage into no record at all. It also established that this bead does not by itself make a Claude Code supervisor gate pass; verdict injection is filed as etude-4ed."
+      },
+      "timestamp": "2026-08-15T07:58:46Z"
     }
   ]
 }
