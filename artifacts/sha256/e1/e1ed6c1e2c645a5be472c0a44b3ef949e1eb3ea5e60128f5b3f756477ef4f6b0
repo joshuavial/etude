@@ -1,0 +1,31 @@
+commit 260ae54cb4062907453163b8ab930fabf2447171
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 14:13:57 2026 +0800
+
+    remove dead exported runmanifest artifact-helper wrappers
+
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 8411102..69af445 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -598,20 +598,6 @@ func validateArtifactRef(artifact ArtifactRef) error {
+ 	return nil
+ }
+ 
+-// VerifyArtifactFile is the exported form of verifyArtifactFile, used by
+-// packages (e.g. internal/retro) that reuse the runmanifest schema but write
+-// to a different namespace. Keeping the unexported original avoids touching
+-// callers inside this package.
+-func VerifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes map[string]string) error {
+-	return verifyArtifactFile(artifact, files, hashes)
+-}
+-
+-// ReferencedArtifactPaths is the exported form of referencedArtifactPaths,
+-// used by packages that write their own namespace but reuse the same schema.
+-func ReferencedArtifactPaths(manifest Manifest) map[string]struct{} {
+-	return referencedArtifactPaths(manifest)
+-}
+-
+ func verifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes map[string]string) error {
+ 	content, ok := files[artifact.Path]
+ 	if !ok {
