@@ -1,0 +1,117 @@
+✓ etude-replay-command · Implement etude replay   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: etude replay <run> <stage>: composes resolve-inputs + worktree-checkout + runner end-to-end, emits output (stdout/--output); --runner flag/etude.runner config; friendly error taxonomy; emit-not-persist (recording is phase2.5); Plan 4/4 + Implement 4/4 (mutation-verified) + Docs 2/2 + Final 4/4 + built-binary manual test; 9525495
+
+DESCRIPTION
+Wire the full etude replay command: parse args, drive the pipeline -- reconstruct inputs (etude-phase2.1), check out the recorded git_sha worktree (etude-phase2.2), invoke the selected skill runner (etude-phase2.4 via the etude-phase2.3 interface), and hand off the produced output for recording (etude-phase2.5). This bead is the user-facing command that composes the pieces; it owns CLI surface, flag parsing, orchestration, and error reporting, not the underlying capabilities. Why: a thin orchestration command keeps each capability independently testable while giving users one entry point.
+
+DESIGN
+## Plan
+
+**Approach:** Add a thin user-facing `etude replay <run-id> <stage>` cobra command in a new internal/cli/replay.go that composes the four already-built Phase 2 primitives end-to-end and EMITS the produced output. It follows the run.go/capture.go command patterns exactly: newReplayCommand(out, errOut) registered in root.go, SilenceUsage/SilenceErrors, refstore.New(""), a struct runner with injected deps for tests. Orchestration order: (1) replay.ResolveInputs(ctx, store, runID, stage) -> ResolvedStage; (2) materialize each ResolvedInput.ReadContent into a replay.RunInput{Role, MediaType, Content}; (3) resolve repo root via repoRoot(ctx) (reused from init.go) and worktree.Checkout(ctx, root, stage.GitSHA), deferring wt.Close(); (4) create an EXTERNAL scratch dir via os.MkdirTemp (NOT inside the worktree) deferred-removed; (5) build the chosen Runner and call Run(ctx, RunRequest{WorktreeDir: wt.Dir, ScratchDir: scratch, Inputs, OutputRole: stage.Output.Role, OutputMediaType: stage.Output.MediaType, Producer: stage.Producer}); (6) emit RunResult.Output to --output file or stdout. Does NOT persist a replay stage — that is etude-phase2.5 (which this blocks). Scope per acceptance is run-pipeline-and-EMIT only.
+
+**TRICKIEST DECISION — runner selection + producer (flag for gate to scrutinize):**
+- RUNNER SELECTION: resolve a command spec HERE (explicitly deferred from phase2.4). Precedence: (a) --runner \"<cmd ...>\" flag, split on whitespace into []string -> replay.ExecRunner{Command}; (b) if --runner absent, fall back to git config key etude.runner via `git config --get etude.runner` (mirrors how init.go reads/writes git config with git -C <root>), also whitespace-split into ExecRunner; (c) if neither present, return a clear error \"no runner configured: pass --runner or set git config etude.runner\" (do NOT silently default to a stub in production — real runners shell out; StubRunner is test-only and injected via the runner struct field in tests, never selectable from the CLI). Whitespace-split is intentionally simple (documented limitation; quoting/`sh -c` deferred). Justification: ExecRunner.Run already returns ErrRunnerNotConfigured for empty Command, but we want the friendly CLI error BEFORE worktree/scratch setup so we fail fast and cheap.
+- PRODUCER: this command ECHOES the source stage's Producer (RunRequest.Producer = stage.Producer); StubRunner/ExecRunner already echo req.Producer into RunResult.Producer. Constructing a NEW producer for the replayed (possibly newer) skill version is explicitly phase2.5's concern (record + link). For THIS bead we will NOT add --skill-version/--model override flags (keeps surface minimal and avoids implying persistence that does not happen). RunResult.Producer is computed but, since we only emit Output, it is not surfaced beyond an optional stderr note. Document this boundary in the help text and docs.
+
+**Orchestration flow + exact error taxonomy (all surfaced via returned error -> root.go prints to stderr, non-zero exit):**
+- run-id validation: reuse validateCLIIdentifier(\"run id\", id) + validateRunIDExtra(id) from run.go BEFORE any git call (works outside a repo). ResolveInputs also validates internally (ErrInvalidRunID) as defense-in-depth.
+- unknown run: ResolveInputs returns replay.ErrRunNotFound -> wrap as `run \"<id>\" not found` (match run show wording).
+- unknown stage: replay.ErrStageNotFound (already lists available names) -> surface verbatim. Also handle replay.ErrAmbiguousStage.
+- missing/invalid git_sha: stage.GitSHA empty/non-OID -> worktree.Checkout returns worktree.ErrInvalidSHA; nonexistent OID -> worktree.ErrSHANotFound. Surface both with the sha. (Manifest validation guarantees GitSHA non-empty, but a short/branch-like sha is still rejected by Checkout — surface cleanly.)
+- pointer input: ResolvedInput.ReadContent returns replay.ErrPointerNotMaterialized -> surface as a clear \"input %s is a pointer artifact, not materialized\" error.
+- runner failure: ExecRunner returns ErrRunnerFailed (incl. command, exit, stderr) / ErrOutputMissing / ErrRunnerNotConfigured / ErrInvalidScratchDir — surface verbatim (the runner's own error). StubRunner.Err is returned unchanged in tests.
+- ALWAYS cleanup: defer wt.Close() and defer os.RemoveAll(scratch) registered immediately after each is created, so any later error still cleans up. ScratchDir is os.MkdirTemp(\"\", \"etude-replay-scratch-*\") in the system temp area — guaranteed a sibling of the worktree (also temp), satisfying ExecRunner's at-or-under-worktree rejection.
+
+**Inputs flow (materialization confirmed):** ResolveInputs returns ResolvedStage.ResolvedInputs []ResolvedInput, each with Role, ArtifactRef (MediaType), and a ReadContent(ctx) closure bound to the resolved commit OID (snapshot-consistent, content bytes for StorageContent, ErrPointerNotMaterialized for pointers). We call ReadContent up front to get fully-materialized []byte and build []replay.RunInput{Role, MediaType: ArtifactRef.MediaType, Content}. ExecRunner then writes these to <scratch>/inputs/NN-role. Note role must satisfy IsValidIdentifier and == filepath.Base(role) (ExecRunner validates), which manifest validation already guarantees.
+
+**Files:**
+- internal/cli/replay.go - new; newReplayCommand + replayRunner{store, stdout, repoRoot func, newRunner func(spec []string) replay.Runner} with injectable runner for tests; flags --runner (string) and --output (string, default stdout).
+- internal/cli/root.go:35-38 - register cmd.AddCommand(newReplayCommand(out, errOut)).
+- internal/cli/root_test.go:80-102 - UPDATE TestFutureCommandNamesAreRejected: remove the {\"replay\"} case (replay is now real) — leaving only {\"bench\"}. CRITICAL: registering replay WILL break this existing test if not updated.
+- internal/cli/replay_test.go - new; end-to-end StubRunner tests + error cases.
+
+**Tests (acceptance = end-to-end with StubRunner):**
+- Build a real run with capture (capture a stage into a temp repo via initCaptureRepo/execute + writeFile, exactly like run_test.go), recording the repo HEAD as git_sha so worktree.Checkout succeeds.
+- Happy path: inject StubRunner{Concat:true} (or CannedOutput) via replayRunner.newRunner; run `replay <run> <stage>`; assert emitted Output to stdout (and to --output file in a second case) equals the expected concat/canned bytes. Assert worktree + scratch are cleaned up (no leftover temp dirs / `git worktree list` clean).
+- Error cases: unknown run -> contains \"not found\"; unknown stage -> ErrStageNotFound message lists available names; missing/short git_sha -> ErrInvalidSHA/ErrSHANotFound surfaced; runner failure via StubRunner{Err: ...} -> error surfaced; no --runner & no config -> friendly \"no runner configured\" error.
+- Run-id validation reuse: invalid run id rejected before git (assert wording matches run show).
+- Registration smoke test: `replay --help` mentions replay/runner/output (replaces the removed reject case).
+- Use injected StubRunner so tests never shell out; an ExecRunner integration path can use a tiny `cat`/`sh` echo script writing \\$ETUDE_OUTPUT_FILE if a non-stub case is wanted, but the acceptance criterion is satisfied by StubRunner alone.
+
+**Docs (Docs phase, after Verify):**
+- docs/replay.md - NEW user-facing doc: command synopsis, runner selection (--runner / git config etude.runner / error when absent), --output behavior, error taxonomy, and the explicit boundary that replay EMITS output and does NOT yet record a replay stage (phase2.5).
+- docs/README.md:6-11 - add `[Replay](replay.md)` to the Sections index.
+- README.md (top-level) - update status line if it claims replay is unimplemented.
+
+**Risks:**
+- root_test.go TestFutureCommandNamesAreRejected WILL fail unless updated — flagged above; must edit in the same change.
+- Whitespace-only --runner splitting cannot handle quoted args / shell pipelines; documented limitation, acceptable for this bead.
+- worktree.Checkout requires the recorded git_sha to exist as a commit in the current repo; replaying a run whose sha is not present locally yields ErrSHANotFound (expected, surfaced clearly).
+- Tier 1 (user-facing CLI orchestration composing storage + worktree + exec). A built-binary manual test IS required in Verify: build the binary, capture a stage in a scratch repo, run `etude replay <run> <stage> --runner \"sh -c 'cat \\$ETUDE_INPUTS_DIR/* > \\$ETUDE_OUTPUT_FILE'\"` (or a stub-equivalent script), and confirm emitted output + clean error messages for unknown run/stage and missing runner.
+
+**Capture:**
+- inputs: bead etude-replay-command (desc + acceptance + scope boundary), internal/replay/resolve.go (ResolveInputs signature + ResolvedInput.ReadContent), internal/worktree/worktree.go (Checkout/Cleanup/Close + ErrInvalidSHA/ErrSHANotFound), internal/replay/runner.go (Runner, RunRequest, RunResult, RunInput, StubRunner), internal/replay/exec_runner.go (ExecRunner + scratch-not-under-worktree rule + sentinel errors), internal/runmanifest/manifest.go (Stage/Producer/ArtifactRef shapes, ParseJSON, IsValidRunID), internal/refstore/store.go (Store, Resolve/ReadFile/ReadCommitFile, RepoDir=cwd), internal/cli/run.go (validateRunIDExtra, command pattern), internal/cli/capture.go (newXCommand + flag pattern, currentHEAD), internal/cli/init.go (repoRoot + git config read pattern), internal/cli/root.go + root_test.go (registration + the replay-rejection test that must change), docs/README.md + docs/run.md (doc patterns).
+- output: bead --design field
+
+NOTES
+PLAN GATE (Tier 1): 4/4 GO (Opus, Gemini, pilms, codex). Implement-time refinements to fold in (all from GO seats):
+- ResolveInputs(ctx, refstore.New(""), runID, stage) does the manifest load internally; pass runID+stage straight through (no pre-load). REUSE its returned errors via errors.Is: ErrInvalidRunID / ErrRunNotFound / ErrStageNotFound (already lists available names) / ErrAmbiguousStage — do NOT re-validate.
+- Handle ErrPointerNotMaterialized from ResolvedInput.ReadContent with a friendly message (input is a pointer artifact, can't replay yet).
+- RunInput.MediaType must come from ResolvedInput.ArtifactRef.MediaType (not re-inferred).
+- Explicit `if stage.GitSHA == ""` check BEFORE worktree.Checkout (Checkout shells to rev-parse without an emptiness guard).
+- Check repoRoot(ctx) EARLY (before scratch creation) + the no-runner-configured error EARLY, so a repo/runner error doesn't create+delete temp dirs.
+- Cleanup: defer wt.Close() (idempotent) + defer os.RemoveAll(scratch), registered immediately after creation (LIFO); use a background context for cleanup so cancellation can't leak the worktree.
+- root.go: update rootLong (currently 'Replay and bench commands are planned but not implemented yet') to stop claiming replay is unimplemented; root_test.go TestFutureCommandNamesAreRejected drop the 'replay' case (keep 'bench'); also scan docs/capture.md / docs for any 'replay not implemented' claim.
+- --runner whitespace-split (strings.Fields) is an accepted v1 limitation — document it (no shell quoting).
+- Tests: add pointer-input -> friendly error, and ambiguous-stage cases, in addition to the end-to-end StubRunner + error taxonomy.
+Proceeding to Implement.
+IMPLEMENT GATE (Tier 1): 4/4 GO (Opus, Gemini, pilms, codex). Opus mutation-verified the StubRunner test seam discriminates + confirmed all field shapes vs real ResolvedStage/Worktree types.
+VERIFY: go test ./... GREEN (11 replay tests). BUILT-BINARY MANUAL TEST passed against real run etude-roadmap.1.4: replay plan/implement checked out the recorded sha into a throwaway worktree (cwd=worktree), materialized recorded inputs at scratch/inputs/<NN>-<role>, ran a shell runner, emitted to stdout and to --output FILE; worktree+scratch cleaned up (git worktree list clean); error cases verified live (unknown run, unknown stage w/ available list, no-runner, runner non-zero exit w/ stderr).
+DEFERRED optional improvements (non-blocking, all 4 GO): (a) codex — isolate TestReplayNoRunnerConfigured from a globally-set `git config etude.runner` (latent flakiness on machines that set it); (b) pilms — os.MkdirAll parent of --output path / clearer error; (c) Opus — tighten TestReplaySHANotInRepo to assert the friendly 'not found in repository' phrasing (currently passes on the sentinel substring); (d) shell-style --runner parsing if quoted args needed. Can be folded into phase2.5 or a follow-up.
+STALE DOC found by dev-coder: docs/capture.md ~L82 lists 'replay, eval, and import commands' under 'Not implemented yet' — the replay entry is now stale (eval/import still accurate). Fix in Docs phase.
+Proceeding to Docs (new docs/replay.md + index + capture.md fix).
+## Docs
+
+Changed: yes
+Files:
+- docs/replay.md (created)
+- docs/README.md (updated)
+- docs/capture.md (updated)
+- README.md (updated)
+
+Rationale:
+- Created docs/replay.md: new user-facing doc for `etude replay <run-id> <stage>` following the exact style/structure of docs/run.md and docs/capture.md (title, short intro, usage block, flags section, behavior sections, errors table, current limits).
+- Added [Replay](replay.md) line to docs/README.md Sections list after Sync.
+- Removed 'replay' from the 'Not implemented yet' list in docs/capture.md (kept eval and import); adjusted wording to 'eval and import commands'.
+- Added `etude replay` to README.md Status line, Implemented list, CLI surface sentence, CLI examples block, and See-also links.
+
+Policy check:
+- policy applied: inferred from existing docs/run.md and docs/capture.md style; no explicit repo docs policy file found
+- shipped docs describe implemented behavior only (emit-not-persist boundary explicitly stated; pointer input limit called out)
+- planning material remains under docs/plans/
+- no generated references apply; all docs are hand-written
+- generated output: not applicable
+
+Capture:
+- inputs: Verify artifact, internal/cli/replay.go, internal/replay/exec_runner.go, docs/run.md, docs/capture.md, docs/README.md, README.md
+- output: docs diff (4 files)
+DOCS GATE (lightened 2-seat): 2/2 GO (Opus, Codex). New docs/replay.md (runner I/O contract verified against exec_runner.go: cwd=worktree, env PATH+ETUDE_INPUTS_DIR+ETUDE_OUTPUT_FILE, <NN>-<role> files; emit-not-persist boundary; --runner whitespace-split + etude.runner fallback; error taxonomy). docs/README index + README.md updated; docs/capture.md dropped only 'replay' from not-implemented. Folded in both seats' completeness ask: added error rows for ambiguous-stage, invalid recorded git sha, output-not-regular + tightened the stage-not-found row to its literal format. Proceeding to Final Review.
+
+ACCEPTANCE CRITERIA
+etude replay <run> <stage> runs the pipeline end to end against a recorded run and emits a replay output. Surfaces clear errors for unknown run/stage, missing sha, and runner failure. Exercised end to end with the stub runner in tests.
+
+LABELS: phase:docs, phase:plan
+
+PARENT
+  ↑ ○ etude-phase2: (EPIC) Phase 2: replay stages through a skill runner ● P2
+
+DEPENDS ON
+  → ✓ etude-phase2.4: Implement exec-command skill runner ● P2
+  → ✓ etude-run-show-list: Implement run list and run show ● P2
+
+BLOCKS
+  ← ○ etude-bench-command: Implement etude bench ● P1
+  ← ○ etude-phase2.5: Record replay output and link to source run ● P2
+
