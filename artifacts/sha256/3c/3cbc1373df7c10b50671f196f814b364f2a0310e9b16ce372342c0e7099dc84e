@@ -1,0 +1,249 @@
+commit e16b9b63a41e8639959a903066071d85482c623b
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 01:55:31 2026 +0800
+
+    refresh dogfood docs for shipped etude features
+
+diff --git a/README.md b/README.md
+index fea196d..2a2dc56 100644
+--- a/README.md
++++ b/README.md
+@@ -2,8 +2,10 @@
+ 
+ ## Status
+ 
+-Current implementation: `etude init`, manual capture, run inspection, sync, and replay CLIs
+-plus internal storage, manifest, and workflow-schema packages.
++Current implementation: `etude init`, manual capture (`etude capture` and
++`etude capture-gate`), run inspection, sync, replay, bench, gc, and reindex CLIs
++plus internal storage, manifest, workflow-schema, replay, eval, bench, gc, and
++index packages.
+ 
+ Implemented:
+ 
+@@ -12,10 +14,14 @@ Implemented:
+ - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
+   and configure `refs/etude/*` fetch/push refspecs on a git remote.
+ - Manual `etude capture` command for local file artifacts.
++- `etude capture-gate` to append structured review-gate reviewer records to a run.
+ - `etude run list` to list all stored runs.
+-- `etude run show <run-id>` to inspect the detail of one run.
++- `etude run show <run-id>` to inspect the detail of one run (including gates).
+ - `etude sync` to push and fetch `refs/etude/*` with a git remote.
+ - `etude replay <run-id> <stage>` to re-execute a recorded stage end-to-end and emit its output.
++- `etude bench <stage>` to replay a cohort and report replay-vs-original win rates.
++- `etude gc` to report artifact storage and explicitly prune named run refs.
++- `etude reindex` to rebuild the derived SQLite query index from run and eval refs.
+ - Internal `refs/etude/*` Git storage package for run and eval refs.
+ - Internal content-addressed artifact storage package for run-tree files,
+   external pointer records, and manifest-ready metadata.
+@@ -24,10 +30,12 @@ Implemented:
+ - Internal workflow schema package for parsing and validating `.etude/workflow.yaml`.
+ - Local build, test, lint, and clean commands.
+ 
+-The storage, manifest, and workflow-schema packages are Go APIs internal to
+-this module. The implemented CLI surface is `etude init`, `etude capture`,
+-`etude run list`, `etude run show`, `etude sync`, `etude replay`, and the root
+-help and version output.
++The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
++packages are Go APIs internal to this module. The implemented CLI surface is
++`etude init`, `etude capture`, `etude capture-gate`, `etude run list`,
++`etude run show`, `etude sync`, `etude replay`, `etude bench`, `etude gc`,
++`etude reindex`, and the root help and version output. (The `eval` package is a
++library used by `etude bench`; there is no standalone `etude eval` CLI yet.)
+ 
+ The full design is in
+ [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
+@@ -59,13 +67,22 @@ make clean
+ ./bin/etude sync --remote upstream
+ ./bin/etude replay run-1 plan --runner ./run.sh
+ ./bin/etude replay run-1 plan --runner ./run.sh --output result.md
++./bin/etude capture-gate --run run-1 --gate-file gate.json
++./bin/etude bench plan --last 10 --runner ./run.sh --judge ./judge.sh
++./bin/etude gc
++./bin/etude reindex
+ ```
+ 
+ See [Init](docs/init.md) for the init command.
+ See [Manual Capture](docs/capture.md) for the capture command.
++See [Gate reviewer records](docs/gates.md) for `etude capture-gate` and gate inspection.
+ See [Runs](docs/run.md) for the run list and run show commands.
+ See [Sync](docs/sync.md) for the sync command.
+ See [Replay](docs/replay.md) for the replay command.
++See [Bench](docs/bench.md) for the bench command.
++See [GC](docs/gc.md) for the gc command.
++See [Reindex](docs/reindex.md) for the reindex command.
++See [CLI reference](docs/cli/etude.md) for the generated per-command reference.
+ 
+ For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
+ [examples/summarize/README.md](examples/summarize/README.md).
+diff --git a/docs/README.md b/docs/README.md
+index 5d94f9c..bcdc460 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -7,7 +7,7 @@ This directory holds user-facing documentation for implemented behavior.
+ - [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
+ - [Manual Capture](capture.md) - record local file artifacts into a run ref.
+ - [Runs](run.md) - list and inspect stored runs.
+-- [Gate reviewer records](gates.md) - capture and inspect review-gate attempts (reviewer seats, verdicts, provider/model/harness).
++- [Gate reviewer records](gates.md) - capture (`etude capture-gate`) and inspect review-gate attempts (reviewer seats, verdicts, provider/model/harness).
+ - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.
+ - [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
+ - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.
+diff --git a/docs/plans/dogfood/README.md b/docs/plans/dogfood/README.md
+index f2df165..0c20692 100644
+--- a/docs/plans/dogfood/README.md
++++ b/docs/plans/dogfood/README.md
+@@ -9,13 +9,16 @@ After a context clear or when starting a new ticket, boot into productive state:
+ 
+ 1. Run `bd prime`.
+ 2. Run `bd ready` and pick the next unblocked bead.
+-3. Read this index.
+-4. Read [Review gate runbook](review-gate-runbook.md).
+-5. For workflow shape, read [Verify phase design](verify-phase-design.md).
+-6. Work the bead through `plan -> implement -> verify -> docs -> final review`.
+-7. Before advancing any phase gate, run the four-reviewer process from
++3. Inspect recent dogfood runs with `etude run list` and `etude run show <run-id>`
++   (recent closed beads are captured as `refs/etude/runs/*`, including their gate
++   reviewer records) to recover what shipped and how it was reviewed — not only `bd`.
++4. Read this index.
++5. Read [Review gate runbook](review-gate-runbook.md).
++6. For workflow shape, read [Verify phase design](verify-phase-design.md).
++7. Work the bead through `plan -> implement -> verify -> docs -> final review`.
++8. Before advancing any phase gate, run the four-reviewer process from
+    [Review gate process](review-gate-process.md).
+-8. After a gate passes and optional improvements are handled or deferred,
++9. After a gate passes and optional improvements are handled or deferred,
+    continue to the next workflow step without waiting for another prompt unless
+    blocked.
+ 
+diff --git a/docs/plans/dogfood/backlog-operating-model.md b/docs/plans/dogfood/backlog-operating-model.md
+index 4983dbc..533ebd6 100644
+--- a/docs/plans/dogfood/backlog-operating-model.md
++++ b/docs/plans/dogfood/backlog-operating-model.md
+@@ -18,15 +18,15 @@ the current beads backlog while building `etude`.
+ 
+ ### Product Path
+ 
+-These beads move Phase 0 toward a usable capture loop. Prefer these when
+-choosing "next" work:
+-
+-- `etude-run-manifest`
+-- `etude-workflow-schema`
+-- `etude-init-command`
+-- `etude-capture-manual`
+-- `etude-run-show-list`
+-- `etude-sync-command`
++Product-path beads move the shipped CLI surface forward. Prefer these when
++choosing "next" work. The Phase 0 capture-loop foundation has SHIPPED
++(`etude-run-manifest`, `etude-workflow-schema`, `etude-init-command`,
++`etude-capture-manual`, `etude-run-show-list`, `etude-sync-command` — all
++closed), and since then so have replay, the eval library + `etude bench`,
++`etude gc`, `etude reindex`, and gate-reviewer visibility (`etude capture-gate`
+++ run-show gates). The current product frontier is the post-Phase-0 roadmap:
++retros as a first-class artifact (`etude-14r`) and Phase 1 (xenota capture
++adapter + GitHub import), plus the dogfood-workflow prep beads.
+ 
+ ### Hardening
+ 
+@@ -58,18 +58,17 @@ When the user says "next", use this order:
+ 4. Consider hardening only when it protects the next product-path bead.
+ 5. Ignore ready epics unless the user asks for planning or roadmap work.
+ 
+-## Current Phase 0 Bias
+-
+-The Phase 0 product path is COMPLETE. `etude-run-manifest`,
+-`etude-capture-manual`, `etude-workflow-schema`, `etude-init-command`,
+-`etude-run-show-list`, and `etude-sync-command` are all closed, alongside the
+-refstore and artifact-store foundations — the minimal git-native capture loop
+-(declare workflow, capture, inspect runs, sync `refs/etude/*`) now exists end to
+-end.
+-
+-There is no remaining ready product-path leaf. The default next work is now
+-polish taken opportunistically — `etude-cr2` (typed artifact discriminator),
+-`etude-88o` — plus the deferred follow-ups `etude-dpz` (shared run-id
+-validation) and `etude-zcq` (sync fetchBangAbort coverage). `etude-ccj`
+-(refstore edge cases) has landed. Net-new product scope belongs to Phase 1; pick
+-a polish bead by priority unless the user opens Phase 1 planning.
++## Current Frontier
++
++Phase 0 (the minimal git-native capture loop) is COMPLETE and several phases
++beyond it have shipped: replay, the eval library + `etude bench`, `etude gc`,
++`etude reindex`, generated CLI docs + the example workflow (Phase 3/4), and the
++gate-reviewer-visibility epic (`etude-roadmap.2`: `etude capture-gate`, run-show
++gates, the dogfood gate-capture script, backfill, and `docs/gates.md`).
++
++The current frontier is the dogfood-workflow prep epic (`etude-phase-prep`:
++retro ledger, docs refresh, degraded-gate policy, docs-reality guard) and the
++post-Phase-0 roadmap: retros as a first-class artifact (`etude-14r`) and Phase 1
++(xenota capture adapter + GitHub import), which is USER-BLOCKED pending external
++context. Choose the highest-priority ready non-epic bead; net-new product scope
++beyond the prep epic belongs to Phase 1.
+diff --git a/docs/plans/dogfood/capture-protocol.md b/docs/plans/dogfood/capture-protocol.md
+index a6f7694..e4835a3 100644
+--- a/docs/plans/dogfood/capture-protocol.md
++++ b/docs/plans/dogfood/capture-protocol.md
+@@ -1,16 +1,22 @@
+ # Dogfood Capture Protocol
+ 
+-Status: planning note. This defines the temporary manual capture protocol for
+-dogfooding `etude` while the product capture commands are not implemented.
++Status: dogfood process note. The capture commands are SHIPPED — `etude capture`
++records stage artifacts and `etude capture-gate` records review-gate reviewer
++records — so each closed bead is captured as a real `refs/etude/runs/*` run
++(manifest_version 2/3, producer + gate metadata). This defines the protocol the
++dogfood workflow follows.
+ 
+ ## Decision
+ 
+-Use one bead as one provisional `etude` run.
++Use one bead as one `etude` run.
+ 
+-Until `etude capture` exists, the bead, git history, and dogfood planning docs
+-are the capture store. Each workflow phase records a first-draft artifact, a
+-provenance envelope, and review-gate results in stable locations that can later
+-be imported into `etude` as run and stage records.
++`scripts/dogfood-capture.sh` captures the bead's plan/implement/verify/review
++stages into `refs/etude/runs/<bead>`; `scripts/dogfood-gate-capture.sh` appends
++each review-gate attempt as a structured `GateAttempt`. The bead, git history,
++and these dogfood planning docs remain the human-readable mirror. Each workflow
++phase records a first-draft artifact, a provenance envelope, and review-gate
++results; remaining capture gaps (retros as first-class artifacts, batch capture,
++and external import) are still planned, not yet shipped.
+ 
+ Captured phase artifacts are append-only after review starts. If a phase fails
+ review or must be redone, create a new attempt entry instead of editing the
+diff --git a/docs/plans/dogfood/phase0-critical-path.md b/docs/plans/dogfood/phase0-critical-path.md
+index de0d447..67ca915 100644
+--- a/docs/plans/dogfood/phase0-critical-path.md
++++ b/docs/plans/dogfood/phase0-critical-path.md
+@@ -70,7 +70,11 @@ not interrupt the Phase 0 path.
+ 
+ ## Out Of Scope For Phase 0
+ 
+-- Replay and skill-runner integration.
+-- Eval and bench.
+-- Documentation site.
+-- Garbage collection and query index polish.
++These were deferred past Phase 0 and have since SHIPPED (Phase 3/4) — listed
++here only for the historical Phase-0 scope boundary:
++
++- Replay and skill-runner integration. (shipped: `etude replay`)
++- Eval and bench. (shipped: the `internal/eval` library + `etude bench`; a
++  standalone `etude eval` CLI remains future work)
++- Documentation site. (shipped: generated `docs/cli/` reference)
++- Garbage collection and query index polish. (shipped: `etude gc`, `etude reindex`)
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index 02faf88..b86e096 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -348,7 +348,8 @@ With `--record`, the output is also persisted as a **new linked run**:
+   different producer identity (skill, model, and/or harness) for bench; unset
+   fields inherit from the source.
+ 
+-Eval (`etude eval`) and bench (`etude bench`) are future work (Phase 3).
++Bench (`etude bench`) has shipped, backed by the `internal/eval` evaluator
++library. A standalone `etude eval` CLI remains future work.
+ 
+ ### 4.8 Eval
+ 
