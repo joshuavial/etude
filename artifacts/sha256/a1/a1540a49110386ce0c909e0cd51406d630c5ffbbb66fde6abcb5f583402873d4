@@ -1,0 +1,31 @@
+# Final Review — etude-8hq.5 (capstone of phase etude-8hq)
+
+## Gate summary
+PLAN gate — tier 1 (codex/gemini/opus + pilms-down): **unanimous GO**. Confirmed the
+supersession-awareness design (superseded-set skip in c/f/g), the coverage invariant,
+the 7-workflow re-tag, the B16 ordering dependency, and exact-id membership.
+
+IMPLEMENT gate — tier 1:
+- r1: **codex BLOCK** / gemini GO / opus GO. codex found a real Tier-1 masking hole:
+  the superseded-skip fired BEFORE validation, so a POST-cutoff cadence retro missing
+  a sidecar (a HARD gap) could be hidden by superseding it with a non-validating ref
+  (`trigger=manual`). Verified-true; per the not-a-vote-count rule (P3), adopted the
+  fix: in check (f), the superseded-skip applies ONLY to PRE-cutoff refs; post-cutoff
+  cadence refs are always validated. Added the `f-mask-guard` regression test
+  (codex's exact input → still hard-GAPs).
+- r2: **codex GO** — masking hole closed.
+
+## Scope
+CODE: 1 commit (e47c56e) — `dogfood-completeness-audit.sh` (superseded-set + pre-cutoff-
+gated skip in c/f/g + B16 allowlist removal), its test (+supersession +f-mask-guard,
+75 pass), `docs/retro.md`. DATA: 17 supersede re-captures (10 cohort+sidecar, 7
+workflow re-tag) pushed to refs/etude/retros/*. No etude-core change (dogfood-layer +
+data only; preserves 8hq.3's schema-agnostic posture). 9ey only UNBLOCKED, not built.
+
+## Phase complete
+This is the 8th and final etude-8hq bead. With it, `make dogfood-audit` is fully clean
+(0 warnings) and dogfood completeness is mechanically enforced end-to-end (close
+wrapper + pre-push hook + the full check suite). The cross-bead lesson (cutoff×supersede
+masking) is captured as runbook P4-adjacent + the f-mask-guard test.
+
+## Verdict: GO — ready to close.

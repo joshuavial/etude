@@ -1,0 +1,246 @@
+✓ etude-8hq.5 · Backfill structured metadata for migrated retros   [● P2 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+After the cadence retro-meta schema is defined, backfill sidecars for the migrated retros so cross-retro analysis can query failure modes, root causes, follow-up beads, and process changes without reparsing markdown bodies.
+
+DESIGN
+## Plan
+
+**Premise-check (verified against the live corpus, not the brief):** Enumerating every
+`refs/etude/retros/*` (via `git for-each-ref` + `git cat-file -p <ref>:manifest.json`)
+the audit's check (f) WARN currently lists **exactly 17** pre-cutoff cadence retros
+(confirmed by running `scripts/dogfood-completeness-audit.sh --last 9`). They split into:
+- **10 cohort cadence retros** (`scope=cohort`, `trigger=cadence-retro`, real
+  `subject_run.*`/`bead.*`, META=N): 094, 0rt, 2ku, 6j8 (=B16), 8hq.4, ojz, q87, quk,
+  shd, x0r. (`retro-cohort-etude-8hq.3-...` already has META=Y → already PASS, exclude.)
+- **7 MIS-TAGGED workflow retros** (`scope=workflow`, NO subjects, `trigger=cadence-retro`,
+  META=N): 215653/215654/215655/215657/215658/215659/215701. Their bodies are short
+  loop/process retros (e.g. "### B1. Loop retro (2026-05-24)"), NOT cohort cadence retros.
+  Their 3 correctly-tagged siblings (215650/215651/215702) already carry
+  `trigger=process-retro` and check (f) ignores them — proving `process-retro` is the
+  intended trigger for this family.
+
+All 17 are immutable and currently PUSHED to origin (21 retro refs on origin). The retro
+artifact is append-only/supersede (docs/plans/product/etude-retro-command.md:141-145);
+`--supersedes` writes `refs.supersedes` in the new manifest (retro.go:439, :658-660;
+rendered by retro show at retro.go:302-304). **Scratch-verified end-to-end** in a throwaway
+repo: `etude retro capture cohort --file body --meta-file meta.json --subject-run etude-6j8
+--subject-run etude-kig --bead etude-nm6 --trigger cadence-retro --supersedes <old>
+--occurred-at 2026-05-26T21:59:42Z --decision superseded` produces a NEW ref with
+`refs.supersedes=<old>`, `bead.1=etude-nm6`, `occurred_at` set, and a `retro-meta` stage
+(META=Y). The new ref is captured NOW → POST-cutoff → check (f) PASSES with a valid sidecar.
+
+**THE CORE PROBLEM (load-bearing):** superseding adds a NEW ref but the OLD sidecar-less
+ref REMAINS in `refs/etude/retros/*`, and checks (f)/(g)/(c) iterate ALL refs
+(audit.sh:403, :535, :689). Without a change, the 10 old cohort refs would STILL show in
+the pre-cutoff WARN forever. So the audit must become SUPERSESSION-AWARE.
+
+**Approach (3 parts: 1 Tier-1 code change + 2 data backfills):**
+
+### Part 1 — Supersession-awareness in the audit (Tier-1 risk; feeds the live pre-push gate)
+Add ONE preliminary pass over `git for-each-ref refs/etude/retros` collecting every
+`refs.supersedes` value into a "superseded set" (mirror the existing `git cat-file -p
+<ref>:manifest.json | python3 -c "...print(m.get('refs',{}).get('supersedes',''))"` pattern
+already used at audit.sh:375-379). Compute it ONCE near the top of the batch section (after
+the `local_sha`/`origin_sha` maps, before check (c)), keyed by the bare retro-id
+(`refs/etude/retros/<id>` minus prefix, matching `supersedes` value format).
+Then in checks **(c)**, **(f)**, and **(g)** — each of which loops
+`while IFS= read -r retro_ref; do ...; done < <(git for-each-ref refs/etude/retros ...)` —
+add an early `retro_short="${retro_ref#refs/etude/retros/}"; superseded set contains
+$retro_short → continue` skip immediately after reading the manifest.
+- **(f)** (audit.sh:440-535): skipping superseded refs means the 10 old cohort refs +
+  (after re-tag, see Part 2) the 7 workflow refs no longer reach the pre-cutoff WARN; the
+  NEW superseding refs are post-cutoff with valid sidecars → PASS. WARN cleared.
+- **(g)** (audit.sh:576-689): skip superseded refs so the OLD B16 ref (which the inline
+  `SUBJECT_CONSISTENCY_ALLOW` currently exempts) is no longer evaluated; the NEW B16 ref
+  carries `bead.1=etude-nm6` so its title `(6j8/kig/nm6)` matches subject_values
+  (audit.sh:664-668 already collects `bead.*`) → PASS without the allowlist.
+- **(c)** (audit.sh:373-419): skip superseded refs when collecting `covered_file`.
+  COVERAGE IS PRESERVED because each NEW superseding ref carries the SAME `subject_run.*`
+  (e.g. 6j8/kig) — so the covered-id set is unchanged and `uncovered_count` does not move.
+  This is the one correctness invariant to assert in tests (no double-count, no
+  vanish-as-coverage). Confirmed: superseding ref subjects == old ref subjects.
+- Keep the inline `SUBJECT_CONSISTENCY_ALLOW` array mechanism in place but REMOVE the
+  `retro-cohort-etude-6j8-20260526T215942Z` entry (audit.sh:571) — its proper repair is
+  this bead (the comment at :566-570 explicitly defers it here).
+- The `bypass report` / allowlist FILE (`dogfood-completeness-allow.txt`) is unrelated to
+  retro supersession; leave it untouched (the `etude-nm6` bypass there is for the bead's
+  missing RUN ref, not the retro — keep it).
+
+### Part 2 — Re-tag the 7 mis-tagged workflow retros (data; via supersede)
+Each is a workflow-scope process retro wrongly tagged `cadence-retro`. Re-capture each via
+`etude retro capture workflow --file <recovered-body> --trigger process-retro
+--supersedes <old-id> --decision superseded --occurred-at <old created> [--message ...]`.
+- **Recover each body faithfully** (no fabrication): `git cat-file -p <old-ref>:manifest.json`
+  → find the `output.role=="retro"` stage's `output.path` → `git cat-file -p <old-ref>:<path>`
+  → feed that verbatim as `--file -`.
+- **No 7-key sidecar** for these. Rationale + acceptance's "explicit reason for body-only":
+  they are NOT cadence retros (the 7-key sidecar is the *cadence* convention, docs/retro.md:106,
+  retro-meta.example `retro_type:"cadence"`); re-tagged to `process-retro` they fall outside
+  check (f) entirely (which only inspects `trigger==cadence-retro`). The body-only reason is
+  recorded in the supersede `--message` ("re-tag: workflow process-retro, not cadence; was
+  mis-tagged cadence-retro in original backfill"). The supersede + corrected trigger BOTH
+  remove them from check (f); supersession-skip removes the old refs.
+
+### Part 3 — Backfill 7-key sidecars for the 10 cohort cadence retros (data; via supersede)
+For each of the 10 (094, 0rt, 2ku, 6j8/B16, 8hq.4, ojz, q87, quk, shd, x0r):
+- Recover the body verbatim (same `git cat-file` body-recovery path as Part 2).
+- **Author the 7-key sidecar FAITHFULLY FROM THE BODY** (the live B16 body already labels
+  Trigger/Finding/Changes/What-worked/Landed/Remaining — these map directly):
+  `retro_type:"cadence"`; `original_event_date` = the old ref's `created` date (e.g.
+  `2026-05-26`); `failure_modes`/`root_causes`/`follow_up_beads`/`decisions`/
+  `durable_changes` extracted from the body's existing Finding/root-cause/Changes/Remaining
+  sections. Arrays may be empty where the body genuinely has nothing — NEVER invent content.
+  Validate each against `scripts/retro-meta-cadence.example.json` shape (7 keys, correct types).
+- Re-capture: `etude retro capture cohort --file <body> --meta-file <sidecar.json>
+  --subject-run <each old subject> [--bead <each old bead>] --trigger cadence-retro
+  --supersedes <old-id> --decision superseded --occurred-at <old created RFC3339>`.
+  Pass the SAME `subject_run.*` (and any `bead.*`) the old ref had so check (c) coverage is
+  preserved and check (g) still passes.
+- **B16 specifically** (`retro-cohort-etude-6j8-20260526T215942Z`): its old subjects are
+  `subject_run.1=etude-6j8, subject_run.2=etude-kig` but its body title claims `(6j8/kig/nm6)`
+  — nm6 is missing from the manifest (the reason for the check (g) allowlist). Re-capture
+  ADDING `--bead etude-nm6` so the new manifest contains nm6 → title matches → check (g)
+  PASSES; then remove B16 from the inline `SUBJECT_CONSISTENCY_ALLOW` (Part 1).
+
+### occurred_at decision (etude-8hq.2): YES, set it on every backfilled supersede
+The superseding ref is CAPTURED now but the retro OCCURRED on 2026-05-26 (the old ref's
+`created`). Set `--occurred-at <old ref created, RFC3339>` so `etude log` places it at its
+real event time (docs/retro.md:84-87 explicitly says the backfill bead "should set both"
+`--occurred-at` and `--meta-file`). The sidecar's `original_event_date` MUST mirror
+`occurred_at`'s date (docs/retro.md:73-87). For the 7 workflow re-tags, set `--occurred-at`
+too (no sidecar; just the core field) for consistent log ordering.
+
+### Push
+After all supersedes, push the new refs: `git push origin 'refs/etude/*:refs/etude/*'`
+(matches how dogfood-capture pushes; the pre-push hook EXEMPTS pure refs/etude/* pushes,
+so no recursion — .beads/hooks/pre-push:38-46). Check (d) sweeps all refs/etude/* for
+push parity; new refs must be on origin or (d) hard-fails. (Old superseded refs stay on
+origin; that's fine — (d) only checks parity, and they're already pushed.)
+
+**Files:**
+- `scripts/dogfood-completeness-audit.sh` — add superseded-set scan (one `git for-each-ref`
+  pass collecting `refs.supersedes`); add the `superseded → continue` skip to checks (c)
+  (~:373), (f) (~:440), (g) (~:576); remove the `retro-cohort-etude-6j8-20260526T215942Z`
+  entry from `SUBJECT_CONSISTENCY_ALLOW` (:571) and update the explanatory comment (:563-570).
+  [Tier-1 risk — feeds the live `.beads/hooks/pre-push` gate.]
+- `scripts/dogfood-completeness-audit_test.sh` — add a `seed_superseding_retro` helper (or
+  extend `seed_cadence_retro`/`seed_cadence_retro_with_meta` to accept a `supersedes` value;
+  current helpers at :165, :204 build the refs map) and new tests (see Tests).
+- `docs/retro.md` — extend the check (f) Enforcement note (:147-153) to state superseded
+  refs are SKIPPED (the canonical clear-the-worklist mechanism); note re-capture-with-sidecar
+  is how a pre-convention retro joins the convention.
+- **Data (no source files): 17 new retro refs** under `refs/etude/retros/*` (10 cohort
+  supersedes WITH sidecars; 7 workflow re-tag supersedes WITHOUT sidecars) + their push.
+
+**Tests** (mirror existing harness in `dogfood-completeness-audit_test.sh`):
+- (f)-supersession: seed an OLD pre-cutoff cadence retro with NO sidecar + a NEW post-cutoff
+  retro WITH a valid 7-key sidecar and `refs.supersedes=<old>` → the OLD ref is SKIPPED (no
+  pre-cutoff WARN line for it) and the NEW ref PASSES; exit 0.
+- (g)-supersession + nm6: seed an OLD cadence retro whose body title claims an id absent from
+  its manifest (current B16 shape) + a NEW superseding retro carrying that id as `bead.1` →
+  OLD skipped, NEW passes, no `subject-consistency` WARN; assert it works WITHOUT any
+  `SUBJECT_CONSISTENCY_ALLOW` entry.
+- (c)-coverage-preserved: seed OLD + NEW(supersedes) covering the SAME subject runs; assert
+  `uncovered_count`/cadence-overdue is identical to the non-superseded baseline (subjects
+  neither double-counted nor lost).
+- workflow re-tag: seed an OLD `scope=workflow trigger=cadence-retro` retro + a NEW
+  `trigger=process-retro` supersede → OLD skipped, NEW ignored by (f) (non-cadence trigger);
+  no WARN; exit 0.
+- regression: existing TEST 1 (complete fixture) and the (f.1)-(f.5) post-cutoff cases must
+  still pass unchanged (no supersedes present → superseded set empty → no behavior change).
+- Edge: a retro that supersedes a NON-EXISTENT id (dangling supersedes) must not crash the
+  scan (collect the value regardless; skip is keyed on presence in the set).
+
+**Docs:**
+- Update `docs/retro.md` check (f) Enforcement note (:147-153) to document supersession-skip.
+- No generated CLI reference change (no new flags/commands — capture/supersedes/occurred-at
+  all already shipped in 8hq.2/8hq.3; etude core is untouched, preserving the schema-agnostic
+  posture from 8hq.3 / etude-2ku).
+
+**Verification (acceptance):**
+- `make dogfood-audit` (`--last 9`): the pre-cutoff cadence-sidecar WARN is GONE (all 10
+  cohort refs superseded-with-sidecar + skipped; all 7 workflow refs re-tagged + skipped);
+  check (g) clean with NO `SUBJECT_CONSISTENCY_ALLOW` entry for B16; check (d) green (new
+  refs pushed); exit 0.
+- `make dogfood-audit-test` green (new supersession tests + unchanged regressions).
+- `etude retro list` shows META=Y for the 10 backfilled cohort retros; the new B16 shows
+  nm6 among subjects (`etude retro show <new-B16>`).
+- `etude log` places the backfilled retros at their 2026-05-26 occurred_at, not capture time.
+- etude-9ey (cross-retro failure-mode index) is unblocked — 10 real 7-key sidecars exist.
+
+**Risks:**
+- **Tier-1: the audit feeds the live pre-push gate.** A bug in the superseded-set scan (e.g.
+  over-broad skip) could mask a genuine missing-sidecar gap. Mitigation: skip ONLY on exact
+  membership in the superseded set; cover with the regression + dangling-supersedes tests;
+  run `make dogfood-audit-test` and a full `make dogfood-audit` before any push.
+- **Faithfulness of the 10 sidecars** — must be extracted from each body, never fabricated;
+  empty arrays where the body says nothing. Reviewable because each sidecar is diff-able
+  against its source body via `etude retro show`.
+- **Immutability/visibility** — old refs persist (by design); the audit hides them via the
+  superseded set, but they remain in `etude log`/`retro list`. Acceptable: supersede is the
+  canonical model (docs/plans/product/etude-retro-command.md:141-145).
+- **Out of scope:** etude-9ey itself; other beads; the `dogfood-completeness-allow.txt`
+  file-level allowlist (its `etude-nm6` entry is a run-ref bypass, not a retro concern).
+
+**Capture:**
+- inputs: bead etude-8hq.5 (desc/acceptance); parent etude-8hq + sibling designs
+  (8hq.2 occurred_at, 8hq.3 7-key schema, 8hq.8 B16 deferral); files read —
+  scripts/dogfood-completeness-audit.sh, scripts/dogfood-completeness-audit_test.sh,
+  scripts/dogfood-completeness-allow.txt, scripts/retro-meta-cadence.example.json,
+  internal/cli/retro.go, docs/retro.md, .beads/hooks/pre-push, Makefile; live corpus
+  (`git for-each-ref refs/etude/retros` + manifests), a live `make dogfood-audit` run
+  (17-ref WARN), and a scratch `etude retro capture --supersedes/--bead/--occurred-at/
+  --meta-file` end-to-end verification.
+- output: bead --design field
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added superseded-set build pass in `scripts/dogfood-completeness-audit.sh` (after `origin_sha` map, before check (c)): iterates all `refs/etude/retros/*`, reads `refs.supersedes` from each manifest, adds non-empty bare ids to a bash associative array `superseded_set`. Empty/absent values are not added; dangling supersedes are collected without crashing.
+- Added supersession skip (`retro_short=${retro_ref#refs/etude/retros/}; [[ -v superseded_set[$retro_short] ]] && continue`) consistently at the top of the main iterator loop in checks (c), (f), and (g).
+- Removed `retro-cohort-etude-6j8-20260526T215942Z` from `SUBJECT_CONSISTENCY_ALLOW`; updated comment to explain B16 is now handled by supersession, not allowlist. Array is now empty.
+- Updated header-comment check descriptions for (c), (f), (g) to state 'skips superseded refs'.
+- Added `seed_superseding_retro` helper to `scripts/dogfood-completeness-audit_test.sh`.
+- Updated test (g.7) from allowlist-based skip to supersession-based skip (B16 shape).
+- Added 11 new supersession test assertions covering: bare-id assertion, (f) supersede clears WARN, (g) supersede clears subject mismatch, (c) coverage preserved, empty-supersedes edge case, dangling-supersedes edge case, regression-no-supersedes.
+- Extended `docs/retro.md` check (f) enforcement note to document supersession skip and the canonical clear-worklist mechanism.
+
+**Checks run:**
+- `bash -n scripts/dogfood-completeness-audit.sh`: PASS (syntax OK)
+- `make dogfood-audit-test`: 73 passed, 0 failed
+- `make dogfood-audit`: exit 0; transient WARNs observed (expected, data backfill not yet done):
+  - [cadence-sidecar] pre-cutoff — 17 pre-convention cadence retros lack sidecar (the 10 cohort + 7 workflow retros the orchestrator will re-capture)
+  - [subject-consistency] retro-cohort-etude-6j8-20260526T215942Z — nm6 absent from manifest (B16 not yet re-captured with --bead etude-nm6)
+- `make docs-reality`: OK
+
+**Changed files:**
+- scripts/dogfood-completeness-audit.sh
+- scripts/dogfood-completeness-audit_test.sh
+- docs/retro.md
+
+**Plan deviations:** None — implementation exactly matches the approved plan.
+
+**Capture:**
+- inputs: approved plan (etude-8hq.5 --design field) and prior Plan gate notes
+- output: working tree diff (3 files) and bead notes
+
+ACCEPTANCE CRITERIA
+Existing migrated retros have META=Y or an explicit reason for remaining body-only; sidecars use the canonical schema; retro list/show confirm sidecars; etude-9ey can be revisited with real sidecar data.
+
+LABELS: backfill, dogfood, phase, phase:implement, retro, retro-meta
+
+PARENT
+  ↑ ✓ etude-8hq: Phase: enforce dogfood completeness ● P0
+
+DEPENDS ON
+  → ✓ etude-8hq.3: Define and require cadence retro-meta sidecars ● P1
+
+BLOCKS
+  ← ❄ etude-9ey: Cross-retro failure-mode / root-cause index ● P3
+

@@ -1,0 +1,31 @@
+# Verify — etude-8hq.5 (backfill structured retro-meta sidecars; supersession-aware audit)
+
+## Code (committed e47c56e)
+- `make dogfood-audit-test` → **75 passed, 0 failed** (incl. supersession cases + the
+  `f-mask-guard` regression for the implement-gate codex BLOCK).
+- `bash -n` clean. The audit is now SUPERSESSION-AWARE: checks (c)/(f)/(g) skip refs
+  named in some live ref's `refs.supersedes`. **check (f) skips ONLY pre-cutoff
+  superseded refs** — post-cutoff cadence refs are ALWAYS validated, so a missing
+  post-cutoff sidecar can never be masked by superseding with a non-validating ref
+  (the codex BLOCK fix). B16 removed from `SUBJECT_CONSISTENCY_ALLOW`.
+
+## Data (17 supersede re-captures, pushed)
+- 10 COHORT cadence retros re-captured WITH faithful 7-key sidecars (META=Y),
+  `--occurred-at` = original 2026-05-26 created (so `etude log` places them at event
+  time, not re-capture time). 6j8 (B16) added `--bead etude-nm6`; 8hq.4 (B17)
+  preserved it. Sidecar arrays extracted FROM each body (empty where the body had
+  none — no fabrication).
+- 7 WORKFLOW retros re-captured re-tagged `--trigger process-retro` (no sidecar —
+  they were mis-tagged cadence; the acceptance's "explicit reason for body-only").
+- Old refs left immutable; superseded → skipped by the audit.
+
+## Final state (independently verified)
+- `make dogfood-audit` → **0 warnings, exit 0**. The `[cadence-sidecar] pre-cutoff`
+  WARN and the B16 `[subject-consistency]` WARN are GONE; no hard gaps.
+- `etude retro list`: the 10 cohort re-captures show **META=Y**; the 7 workflow
+  re-tags show trigger=process-retro / META=N.
+- The new 6j8 ref lists subjects `etude-nm6,etude-6j8,etude-kig` (nm6 now recorded).
+
+## Result: PASS
+etude-9ey (cross-retro index) is now unblocked — real sidecar data exists. The whole
+dogfood-completeness corpus is consistent (audit fully clean).
