@@ -1,0 +1,27 @@
+# Final review: PR #23 at e519a12, rebased onto fc86fbc
+
+Recommendation: ready to update PR #23 after all gates pass.
+
+## Scope and composition
+
+The four-commit branch remains scoped to GitHub issue #17 plus the post-rebase integration bead. It preserves producer session identity and transcripts, stores bounded successful stage logs, and gives actual RERUN stage invocations digest-bound evidence for killed prior attempts.
+
+The integration commit composes this behavior with the two newly merged checkout features:
+
+- Gate seats with `read_checkout: true` still receive the same declared gate prompt input in their per-seat isolated input directory.
+- Every seat receives a distinct cleaned pinned checkout; prior-attempt inputs are independent of that checkout factory.
+- Pinned checkouts now rely on the shared recursive submodule population/validation path from GH #14 rather than rejecting gitlinks before checkout.
+- Reviewed-stage resolution binds both the stage name and output artifact digest, avoiding ambiguous duplicate-name history.
+
+## Required correctness evidence
+
+- `TestGateAC3_RerunWithFeedback` exercises an actual check-blocked r1 and passing r2 with `read_checkout: true`, captures `req.Inputs` inside the real r2 producer invocation, asserts the exact delivered prior-attempt bytes, and verifies four distinct cleaned seat checkout paths.
+- Built-binary run `qa-rebased-rerun-read-checkout-005` independently proves r2 consumed `02-prior-attempts` containing session `rerun-session-001`, transcript/log/output digests, and the killing verdict.
+- Built-binary run `qa-rebased-no-sidecar-004` records a nil producer session without error.
+- The reserved role collision fails during workflow load, and the direct engine-entry test proves programmatic workflows fail before any runner resolution.
+- Replay recording preserves valid absolute transcript aliases while rejecting a symlink introduced below the accepted root.
+- Manifest v4 carries stage logs while explicit compatibility tests keep older manifest policy deliberate.
+
+## Verification
+
+`make test`, `make lint`, `make docs-check`, `go test -race ./internal/liverun`, `make shell-test`, and `make docs-reality` pass on the rebased implementation. A verify-gate timing flake was hardened without changing product code and the final delta passed its own L3 Opus/Codex gate. Documentation describes the shipped behavior and names the accepted risk that stage logs are not secret-scanned even though transcripts are.
