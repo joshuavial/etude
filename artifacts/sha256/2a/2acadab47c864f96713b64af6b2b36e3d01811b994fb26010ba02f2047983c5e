@@ -1,0 +1,33 @@
+# Final Review — etude-rubric-eval (combined Implement+Final four-seat gate)
+
+Result: PASS — unanimous GO under the autonomous-loop tooling-outage fallback.
+
+## Gate attempt 1
+- in-harness Opus: GO (mutation-verified)
+- gemini-3.1-pro: GO
+- pi/pilms: GO
+- fresh GPT-5.5 (codex, xhigh): BLOCK — 4 items:
+  1. validateJudgeOutput silently passed non-"rubric" methods (no default arm).
+  2. missing test for unsupported-method rejection.
+  3. RubricEvaluator.Evaluate could nil-panic if Judge unset.
+  4. loadRubric absolute-path handling misresolved (Join("/a","/a/b")="/a/a/b").
+  (+ two test/hardening folds: real-file-outside escape test; filepath.Base(role) materialization.)
+
+## Incorporation
+All 6 items fixed (default-reject + test; nil-Judge guard + test; loadRubric rejects absolute paths + clean relative containment; filepath.Base(role); real-file escape test).
+
+## Gate attempt 2
+- in-harness Opus: GO — verified all fixes; mutation-checked the path-escape test has teeth; sanity-checked JudgeResponse→Evaluation mapping, strict JSON, ctx precedence, Lstat-safe output.
+- gemini-3.1-pro: GO (x2 independent runs).
+- fresh GPT-5.5 (codex, xhigh): BLOCK — ONE new item: loadRubric did lexical-only containment; an in-root symlink component could escape root (os.ReadFile follows it).
+- pi/pilms: tooling outage — reproducible client-side hang at 0 CPU across 2 rerolls (tool-mode and inline-mode); LM Studio backend confirmed healthy (model loaded, /v1/models 200). Per review-gate-runbook, a reviewer tooling failure is not a GO and triggers the documented autonomous-loop fallback (≥2 empty/hung rerolls + 3 substantive GO).
+
+## Incorporation (attempt 2b)
+loadRubric now resolves symlinks (filepath.EvalSymlinks on both root and joined path) and re-checks containment before reading; reads via the resolved path. Added TestLoadRubric_SymlinkEscape. codex re-confirmed GO (escape closed; no over-rejection incl. macOS /tmp→/private/tmp).
+
+## Final tally
+codex GO, Opus GO, gemini GO (x2). pilms tooling outage (documented). Proceeded per fallback.
+
+Docs: NO-DOCS — internal library plumbing (internal/eval), no CLI/user-facing surface; user docs land with the future eval/bench CLI command bead.
+
+Committed: 9554390 "add rubric evaluator and judge runner".
