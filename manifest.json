@@ -231,6 +231,64 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T08:10:10Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "block",
+          "required": [
+            "Provenance.Round = hint.Rounds (attempt count) contradicts its doc (highest round number); surface latest.Round and assign it"
+          ],
+          "optional": [
+            "avoid double manifest read (CohortRun could carry parsed gates)",
+            "use a shared manifest.json constant",
+            "comment the equal-round tie-break"
+          ],
+          "timestamp": "2026-06-07T08:18:22Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "set Provenance.Round to the highest GateAttempt.Round, not the count"
+          ],
+          "optional": [
+            "harvest gates by cr.Stage.Name not sel.Stage/phase",
+            "add a non-contiguous/duplicate-round test proving Round=highest while Rounds=count"
+          ],
+          "timestamp": "2026-06-07T08:18:22Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T08:18:22Z"
     }
   ]
 }
