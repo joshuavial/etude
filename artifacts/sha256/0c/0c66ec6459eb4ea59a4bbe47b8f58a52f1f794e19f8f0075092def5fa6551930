@@ -1,0 +1,10 @@
+## Docs — etude-88o (Changed: no)
+
+No shipped docs needed. The reserved-produces guard is internal schema-validation
+in internal/workflow.Validate with no CLI surface yet (workflow-config loading is
+deferred to Phase 1). Grep of shipped docs (README.md, docs/*.md, excluding
+docs/plans/**) found no enumeration of workflow.yaml produces/validation/special-role
+rules — only high-level "parsing and validating .etude/workflow.yaml" mentions that
+do not go stale. .etude/workflow.yaml produces plan/diff/verify/docs-diff/review
+(none reserved) so it stays valid. Forward note: document the rule when the Phase 1
+workflow-config CLI surface ships.
