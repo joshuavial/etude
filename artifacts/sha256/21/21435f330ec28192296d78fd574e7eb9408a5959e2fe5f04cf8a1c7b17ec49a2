@@ -1,0 +1,318 @@
+=== exit-code contract ===
+--- TEST: clean run exits 0
+    PASS: clean run exits 0
+--- TEST: clean run says so
+    PASS: clean run says so
+--- TEST: unknown flag is a usage error (exit 2, NOT a gap)
+    PASS: unknown flag is a usage error (exit 2, NOT a gap)
+--- TEST: --last 0 is rejected (exit 2), not treated as an empty window
+    PASS: --last 0 is rejected (exit 2), not treated as an empty window
+--- TEST: --last with a non-numeric value exits 2
+    PASS: --last with a non-numeric value exits 2
+--- TEST: the no-args default audits a window rather than erroring
+    PASS: the no-args default audits a window rather than erroring
+--- TEST: --help exits 0 and prints the exit-code contract
+    PASS: --help exits 0 and prints the exit-code contract
+--- TEST: an allowlist with comments and blank lines still runs to a verdict
+    PASS: an allowlist with comments and blank lines still runs to a verdict
+--- TEST: and the real allowlist entry still applies
+    PASS: and the real allowlist entry still applies
+--- TEST: no closed beads exits 2, not 0
+    PASS: no closed beads exits 2, not 0
+
+=== (a) run ref present ===
+--- TEST: missing run ref is a hard gap (exit 1)
+    PASS: missing run ref is a hard gap (exit 1)
+--- TEST: missing run ref names the bead
+    PASS: missing run ref names the bead
+
+=== (b) run has gates ===
+--- TEST: run ref with zero gates is a hard gap
+    PASS: run ref with zero gates is a hard gap
+--- TEST: zero-gate gap is reported as gateless-run, not missing-run
+    PASS: zero-gate gap is reported as gateless-run, not missing-run
+--- TEST: a run ref with NO manifest.json is a hard gap, not a clean pass
+    PASS: a run ref with NO manifest.json is a hard gap, not a clean pass
+--- TEST: missing manifest is reported as bad-manifest
+    PASS: missing manifest is reported as bad-manifest
+--- TEST: a manifest that is not valid JSON is also a hard gap
+    PASS: a manifest that is not valid JSON is also a hard gap
+--- TEST: a manifest whose 'gates' is not a list is a hard gap
+    PASS: a manifest whose 'gates' is not a list is a hard gap
+--- TEST: malformed bd output is an environment error (exit 2), not a short clean window
+    PASS: malformed bd output is an environment error (exit 2), not a short clean window
+--- TEST: a gated run does not trip (b)
+    PASS: a gated run does not trip (b)
+--- TEST: and that run is clean overall
+    PASS: and that run is clean overall
+--- TEST: a for-each-ref failure is an environment error, not a vacuous pass
+    PASS: a for-each-ref failure is an environment error, not a vacuous pass
+--- TEST: the for-each-ref failure does not report refs as clean
+    PASS: the for-each-ref failure does not report refs as clean
+--- TEST: a python3 failure makes the gate count a gap, not an assumed pass
+    PASS: a python3 failure makes the gate count a gap, not an assumed pass
+--- TEST: the python3 failure is reported as bad-manifest
+    PASS: the python3 failure is reported as bad-manifest
+
+=== (d) refs pushed ===
+--- TEST: a local ref absent from origin is a hard gap
+    PASS: a local ref absent from origin is a hard gap
+--- TEST: unpushed gap names the ref
+    PASS: unpushed gap names the ref
+--- TEST: a ref that diverged from origin is a hard gap
+    PASS: a ref that diverged from origin is a hard gap
+--- TEST: divergence is reported with both shas and the right remedy
+    PASS: divergence is reported with both shas and the right remedy
+--- TEST: an unreachable origin is an environment error (exit 2), not a pile of gaps
+    PASS: an unreachable origin is an environment error (exit 2), not a pile of gaps
+--- TEST: the origin failure is not reported as unpushed refs
+    PASS: the origin failure is not reported as unpushed refs
+--- TEST: a ref behind origin is reported as stale-ref, not unpushed-ref
+    PASS: a ref behind origin is reported as stale-ref, not unpushed-ref
+--- TEST: a behind-origin ref is still a hard gap
+    PASS: a behind-origin ref is still a hard gap
+--- TEST: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+    PASS: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+--- TEST: the unpushed retro ref is named
+    PASS: the unpushed retro ref is named
+--- TEST: a pushed retro ref does not gap
+    PASS: a pushed retro ref does not gap
+--- TEST: an unexpected gate-count value is a hard gap, not a silent pass
+    PASS: an unexpected gate-count value is a hard gap, not a silent pass
+--- TEST: running from another git repo still audits the script's own repo
+    PASS: running from another git repo still audits the script's own repo
+--- TEST: the other repo's refs are not audited
+    PASS: the other repo's refs are not audited
+--- TEST: an undecidable divergence is reported as diverged-ref, not a push instruction
+    PASS: an undecidable divergence is reported as diverged-ref, not a push instruction
+--- TEST: an undecidable divergence does not tell the operator to push
+    PASS: an undecidable divergence does not tell the operator to push
+
+=== (c) retro cadence is WARN only ===
+--- TEST: 3 uncovered beads with clean hard checks still exits 0
+    PASS: 3 uncovered beads with clean hard checks still exits 0
+--- TEST: cadence overdue is reported as WARN
+    PASS: cadence overdue is reported as WARN
+--- TEST: cadence overdue is NOT counted as a hard gap
+    PASS: cadence overdue is NOT counted as a hard gap
+--- TEST: under the threshold, cadence reports ok
+    PASS: under the threshold, cadence reports ok
+
+=== allowlist ===
+--- TEST: an allowlisted bead with no run ref does not gap
+    PASS: an allowlisted bead with no run ref does not gap
+--- TEST: the exemption is REPORTED, not silent
+    PASS: the exemption is REPORTED, not silent
+--- TEST: allowlisted beads leave the active count lower
+    PASS: allowlisted beads leave the active count lower
+--- TEST: allowlisting does NOT exempt a ref from the pushed check
+    PASS: allowlisting does NOT exempt a ref from the pushed check
+--- TEST: explicit named workflow run satisfies bead evidence
+    PASS: explicit named workflow run satisfies bead evidence
+--- TEST: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+--- TEST: duplicate mappings fail closed
+    PASS: duplicate mappings fail closed
+--- TEST: malformed mapping fails closed
+    PASS: malformed mapping fails closed
+--- TEST: recent window uses all closed beads before sorting by closure
+    PASS: recent window uses all closed beads before sorting by closure
+    PASS: recent window uses all closed beads before sorting by closure
+--- TEST: actual newest closure is included in the audited window
+    PASS: actual newest closure is included in the audited window
+    PASS: actual newest closure is included in the audited window
+
+===========================================
+Test results: 58 passed, 0 failed
+===========================================
+
+=== Section B: pre-push hook tests ===
+--- TEST: B1: etude-only push is exempt (exit 0, no audit)
+    PASS: B1: etude-only push is exempt (exit 0, no audit)
+--- TEST: B1: audit not called for etude-only push
+    PASS: B1: audit not called for etude-only push
+--- TEST: B2: code push with clean audit passes (exit 0)
+    PASS: B2: code push with clean audit passes (exit 0)
+--- TEST: B2: audit was called for code push
+    PASS: B2: audit was called for code push
+--- TEST: B3: code push with gap is blocked (exit 1)
+    PASS: B3: code push with gap is blocked (exit 1)
+--- TEST: B3: blocked message points at the current capture/gate/sync flow
+    PASS: B3: blocked message points at the current capture/gate/sync flow
+--- TEST: B3: blocked message no longer names the retired close script
+    PASS: B3: blocked message no longer names the retired close script
+--- TEST: B4: mixed etude+heads push calls the audit
+    PASS: B4: mixed etude+heads push calls the audit
+--- TEST: B5: deletion-only push is exempt (exit 0, no audit)
+    PASS: B5: deletion-only push is exempt (exit 0, no audit)
+--- TEST: B5: audit not called for deletion-only push
+    PASS: B5: audit not called for deletion-only push
+--- TEST: B6: tag push is exempt (exit 0, no audit)
+    PASS: B6: tag push is exempt (exit 0, no audit)
+--- TEST: B6: audit not called for tag push
+    PASS: B6: audit not called for tag push
+--- TEST: B7: empty stdin is exempt (exit 0, no audit)
+    PASS: B7: empty stdin is exempt (exit 0, no audit)
+--- TEST: B7: audit not called for empty stdin
+    PASS: B7: audit not called for empty stdin
+--- TEST: B8: unknown-ref-only push does not trigger audit (exit 0)
+    PASS: B8: unknown-ref-only push does not trigger audit (exit 0)
+--- TEST: B8: audit not called for unknown-ref-only push
+    PASS: B8: audit not called for unknown-ref-only push
+--- TEST: B9: missing audit script exits 0 (no break outside etude repo)
+    PASS: B9: missing audit script exits 0 (no break outside etude repo)
+--- TEST: B10: audit exit 2 on code push fails closed (exit 1)
+    PASS: B10: audit exit 2 on code push fails closed (exit 1)
+
+=== Section C: bd stdin coexistence ===
+--- TEST: C1: bd block and dogfood classifier coexist (stdin not consumed by bd)
+    PASS: C1: bd block and dogfood classifier coexist (stdin not consumed by bd)
+--- TEST: C1: dogfood classifier fired (audit was called after bd block)
+    PASS: C1: dogfood classifier fired (audit was called after bd block)
+
+===========================================
+Test results: 20 passed, 0 failed
+===========================================
+
+Pre-fix regression failed as intended:
+=== exit-code contract ===
+--- TEST: clean run exits 0
+    PASS: clean run exits 0
+--- TEST: clean run says so
+    PASS: clean run says so
+--- TEST: unknown flag is a usage error (exit 2, NOT a gap)
+    PASS: unknown flag is a usage error (exit 2, NOT a gap)
+--- TEST: --last 0 is rejected (exit 2), not treated as an empty window
+    PASS: --last 0 is rejected (exit 2), not treated as an empty window
+--- TEST: --last with a non-numeric value exits 2
+    PASS: --last with a non-numeric value exits 2
+--- TEST: the no-args default audits a window rather than erroring
+    PASS: the no-args default audits a window rather than erroring
+--- TEST: --help exits 0 and prints the exit-code contract
+    PASS: --help exits 0 and prints the exit-code contract
+--- TEST: an allowlist with comments and blank lines still runs to a verdict
+    PASS: an allowlist with comments and blank lines still runs to a verdict
+--- TEST: and the real allowlist entry still applies
+    PASS: and the real allowlist entry still applies
+--- TEST: no closed beads exits 2, not 0
+    PASS: no closed beads exits 2, not 0
+
+=== (a) run ref present ===
+--- TEST: missing run ref is a hard gap (exit 1)
+    PASS: missing run ref is a hard gap (exit 1)
+--- TEST: missing run ref names the bead
+    PASS: missing run ref names the bead
+
+=== (b) run has gates ===
+--- TEST: run ref with zero gates is a hard gap
+    PASS: run ref with zero gates is a hard gap
+--- TEST: zero-gate gap is reported as gateless-run, not missing-run
+    PASS: zero-gate gap is reported as gateless-run, not missing-run
+--- TEST: a run ref with NO manifest.json is a hard gap, not a clean pass
+    PASS: a run ref with NO manifest.json is a hard gap, not a clean pass
+--- TEST: missing manifest is reported as bad-manifest
+    PASS: missing manifest is reported as bad-manifest
+--- TEST: a manifest that is not valid JSON is also a hard gap
+    PASS: a manifest that is not valid JSON is also a hard gap
+--- TEST: a manifest whose 'gates' is not a list is a hard gap
+    PASS: a manifest whose 'gates' is not a list is a hard gap
+--- TEST: malformed bd output is an environment error (exit 2), not a short clean window
+    PASS: malformed bd output is an environment error (exit 2), not a short clean window
+--- TEST: a gated run does not trip (b)
+    PASS: a gated run does not trip (b)
+--- TEST: and that run is clean overall
+    PASS: and that run is clean overall
+--- TEST: a for-each-ref failure is an environment error, not a vacuous pass
+    PASS: a for-each-ref failure is an environment error, not a vacuous pass
+--- TEST: the for-each-ref failure does not report refs as clean
+    PASS: the for-each-ref failure does not report refs as clean
+--- TEST: a python3 failure makes the gate count a gap, not an assumed pass
+    PASS: a python3 failure makes the gate count a gap, not an assumed pass
+--- TEST: the python3 failure is reported as bad-manifest
+    PASS: the python3 failure is reported as bad-manifest
+
+=== (d) refs pushed ===
+--- TEST: a local ref absent from origin is a hard gap
+    PASS: a local ref absent from origin is a hard gap
+--- TEST: unpushed gap names the ref
+    PASS: unpushed gap names the ref
+--- TEST: a ref that diverged from origin is a hard gap
+    PASS: a ref that diverged from origin is a hard gap
+--- TEST: divergence is reported with both shas and the right remedy
+    PASS: divergence is reported with both shas and the right remedy
+--- TEST: an unreachable origin is an environment error (exit 2), not a pile of gaps
+    PASS: an unreachable origin is an environment error (exit 2), not a pile of gaps
+--- TEST: the origin failure is not reported as unpushed refs
+    PASS: the origin failure is not reported as unpushed refs
+--- TEST: a ref behind origin is reported as stale-ref, not unpushed-ref
+    PASS: a ref behind origin is reported as stale-ref, not unpushed-ref
+--- TEST: a behind-origin ref is still a hard gap
+    PASS: a behind-origin ref is still a hard gap
+--- TEST: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+    PASS: an unpushed RETRO ref is a hard gap, not just an unpushed run ref
+--- TEST: the unpushed retro ref is named
+    PASS: the unpushed retro ref is named
+--- TEST: a pushed retro ref does not gap
+    PASS: a pushed retro ref does not gap
+--- TEST: an unexpected gate-count value is a hard gap, not a silent pass
+    PASS: an unexpected gate-count value is a hard gap, not a silent pass
+--- TEST: running from another git repo still audits the script's own repo
+    PASS: running from another git repo still audits the script's own repo
+--- TEST: the other repo's refs are not audited
+    PASS: the other repo's refs are not audited
+--- TEST: an undecidable divergence is reported as diverged-ref, not a push instruction
+    PASS: an undecidable divergence is reported as diverged-ref, not a push instruction
+--- TEST: an undecidable divergence does not tell the operator to push
+    PASS: an undecidable divergence does not tell the operator to push
+
+=== (c) retro cadence is WARN only ===
+--- TEST: 3 uncovered beads with clean hard checks still exits 0
+    PASS: 3 uncovered beads with clean hard checks still exits 0
+--- TEST: cadence overdue is reported as WARN
+    PASS: cadence overdue is reported as WARN
+--- TEST: cadence overdue is NOT counted as a hard gap
+    PASS: cadence overdue is NOT counted as a hard gap
+--- TEST: under the threshold, cadence reports ok
+    PASS: under the threshold, cadence reports ok
+
+=== allowlist ===
+--- TEST: an allowlisted bead with no run ref does not gap
+    PASS: an allowlisted bead with no run ref does not gap
+--- TEST: the exemption is REPORTED, not silent
+    PASS: the exemption is REPORTED, not silent
+--- TEST: allowlisted beads leave the active count lower
+    PASS: allowlisted beads leave the active count lower
+--- TEST: allowlisting does NOT exempt a ref from the pushed check
+    PASS: allowlisting does NOT exempt a ref from the pushed check
+--- TEST: explicit named workflow run satisfies bead evidence
+    PASS: explicit named workflow run satisfies bead evidence
+--- TEST: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+    PASS: mapped run missing does not fall back to old bead run
+--- TEST: duplicate mappings fail closed
+    PASS: duplicate mappings fail closed
+--- TEST: malformed mapping fails closed
+    PASS: malformed mapping fails closed
+--- TEST: recent window uses all closed beads before sorting by closure
+    FAIL: recent window uses all closed beads before sorting by closure — expected exit 0, got 1 (dogfood-audit: 9 closed bead(s) in window, 9 active
+  GAP  [missing-run] old0 — no refs/etude/runs/old0
+  GAP  [missing-run] old1 — no refs/etude/runs/old1
+  GAP  [missing-run] old2 — no refs/etude/runs/old2
+  GAP  [missing-run] old3 — no refs/etude/runs/old3
+  GAP  [missing-run] old4 — no refs/etude/runs/old4
+  GAP  [missing-run] old5 — no refs/etude/runs/old5
+  GAP  [missing-run] old6 — no refs/etude/runs/old6
+  GAP  [missing-run] old7 — no refs/etude/runs/old7
+  GAP  [missing-run] old8 — no refs/etude/runs/old8
+  WARN [cadence-overdue] 9 active bead(s) not covered by a cadence retro (rule: every 3)
+dogfood-audit: 9 hard gap(s).)
+    FAIL: recent window uses all closed beads before sorting by closure — pattern 'old[0-9]' present but should not be
+--- TEST: actual newest closure is included in the audited window
+    PASS: actual newest closure is included in the audited window
+    FAIL: actual newest closure is included in the audited window — expected pattern 'missing-run.*recent9' in output
+
+===========================================
+Test results: 55 passed, 3 failed
+===========================================
+make: *** [dogfood-audit-test] Error 1
