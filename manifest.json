@@ -235,6 +235,77 @@
         "degraded_reason": "pilms down (0 CPU). 1 BLOCK (codex) / 2 GO. codex BLOCK verified-true (log render hid capture time); adopted its fix per the not-a-vote-count rule. Backward-compat + sidecar overlap GO across seats."
       },
       "timestamp": "2026-05-27T07:22:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T07:35:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T07:35:30Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T07:36:00Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T07:36:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down. codex re-confirmed GO: TIMESTAMP=Created + EVENT column + sort-by-effectiveTime resolves the capture-time-loss defect. gemini+opus r1 GO carried (fix is additive)."
+      },
+      "timestamp": "2026-05-27T07:37:00Z"
     }
   ]
 }
