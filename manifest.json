@@ -606,6 +606,41 @@
         "degraded_reason": "GO on the worker lane's docs. L4 is single-seat and that seat has no subprocess path (bead etude-8li), so etude gate recorded docs.r1 escalated and the verdict was produced in-harness; this attempt records it, appended before it was acted on. The seat checked the documented strings and both failure paths against the source in the lane rather than trusting the artifact, and confirmed all four owed items are covered - including that the shipped stdout line is 'retro markdown <path>' where the approved plan's contract table had said 'wrote <path>'. Five optionals returned. The most useful is not a docs error at all but a gap the docs phase exposed: supervisor-runbook.md step 6 still tells a supervisor to hand-write a retro and commit it, with no pointer to 'etude retro capture' - so the practice fix landed in retro-ledger.md while the document supervisors actually follow was left describing the old two-step habit. That is the same shape as this bead's own subject. Also returned: a stale 'two extra metadata keys' count above a block that now lists three; an artifact claim to have checked every long-lived docs path that omits four; CHANGELOG debt flagged only inside a gate artifact nobody cutting a release will read; and an in-place path described as recorded 'as-is' when the code normalises it to a repo-relative slash path."
       },
       "timestamp": "2026-08-15T17:20:50Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "2376a942f30e5155810288e0b81ed665747a4d87b7c6cee4b2efe720ffa8593e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/lane-3xt/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T17:30:33.944869Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 1",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T17:30:33.944879Z"
     }
   ]
 }
