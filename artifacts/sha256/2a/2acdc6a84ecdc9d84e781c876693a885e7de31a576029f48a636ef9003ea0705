@@ -1,0 +1,26 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-26",
+  "failure_modes": [
+    "etude-4n7 used syscall.O_NOFOLLOW directly in cross-platform files; built + passed the whole suite on darwin (plan even mis-asserted \"Windows = 0/no-op\") but GOOS=windows go build failed `undefined: syscall.O_NOFOLLOW` — a regression (HEAD compiled for windows)",
+    "the darwin-only empirical Opus seat (full suite + exploit probes) MISSED the windows break",
+    "shd: cmd.WaitDelay pipe-drain hang + LimitReader TOCTOU (codex plan catch); 4n7: read TOCTOU (unanimous plan BLOCK)"
+  ],
+  "root_causes": [
+    "platform-specific API usage must be build-tagged AND verified with a CROSS-COMPILE; the native dev build + `go test ./...` do not catch a symbol undefined on another GOOS",
+    "the test-passing/host seat misses real concurrency/security defects the multi-seat gate catches"
+  ],
+  "follow_up_beads": [
+    "etude-x0r docs-plans refresh",
+    "etude-5ft manifest-load helper",
+    "etude-kig retro preamble",
+    "etude-8b7 dead pointer chain",
+    "etude-6j8 inferMediaType move + cleanups",
+    "etude-0ew gate-input validation"
+  ],
+  "decisions": [],
+  "durable_changes": [
+    "review-gate-runbook.md new \"Recurring Defect Classes\" item 7: platform-specific API usage must be build-tagged AND cross-compile-verified; fix was build-tagged nofollowFlag (unix->syscall.O_NOFOLLOW, !unix->0)",
+    "seed the gate BRIEF with explicit scrutiny points (pre-load the gate brief with the specific risks suspected) — a cheap force-multiplier"
+  ]
+}
