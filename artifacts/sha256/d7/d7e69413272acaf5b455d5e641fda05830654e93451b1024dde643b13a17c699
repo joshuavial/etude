@@ -1,0 +1,173 @@
+diff --git a/docs/run.md b/docs/run.md
+index ab7050e..0087bde 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -54,9 +54,21 @@ refs:
+ stage: plan
+   produced_by: original
+   git sha:     a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+-  skill id:    plan
+-  skill repo:  manual
+-  skill ver:   manual
++  skill:       plan@manual (manual)
++  input:  role=context path=artifacts/sha256/abc123... size=1024 storage=content media-type=text/plain; charset=utf-8
++  output: role=output path=artifacts/sha256/def456... size=2048 storage=content media-type=text/markdown; charset=utf-8
++```
++
++When a stage was captured by a known harness and model, two additional lines
++appear before `skill:`:
++
++```
++stage: plan
++  produced_by: agent-run
++  git sha:     a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
++  harness:     dev-workflow 1.2.0
++  model:       claude-sonnet-4-6
++  skill:       plan@1.0.0 (github.com/example/skills)
+   input:  role=context path=artifacts/sha256/abc123... size=1024 storage=content media-type=text/plain; charset=utf-8
+   output: role=output path=artifacts/sha256/def456... size=2048 storage=content media-type=text/markdown; charset=utf-8
+ ```
+@@ -67,7 +79,9 @@ printed in sorted order.
+ Per stage, the detail view shows:
+ 
+ - `produced_by`, `git sha`
+-- `skill id`, `skill repo`, `skill ver`
++- `harness` — harness name and optional version; omitted for manual/legacy captures that did not record a harness
++- `model` — model name; omitted for manual/legacy captures that did not record a model
++- `skill` — always printed as `id@version (repo)`
+ - Each input as `role=… path=… size=… storage=… media-type=…`
+ - The output in the same format
+ 
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 4fa674e..e35ec74 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -166,9 +166,17 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
+ 		fmt.Fprintf(out, "\nstage: %s\n", stage.Name)
+ 		fmt.Fprintf(out, "  produced_by: %s\n", stage.ProducedBy)
+ 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
+-		fmt.Fprintf(out, "  skill id:    %s\n", stage.Skill.ID)
+-		fmt.Fprintf(out, "  skill repo:  %s\n", stage.Skill.Repo)
+-		fmt.Fprintf(out, "  skill ver:   %s\n", stage.Skill.Version)
++		if stage.Producer.Harness.Name != "" {
++			if stage.Producer.Harness.Version != "" {
++				fmt.Fprintf(out, "  harness:     %s %s\n", stage.Producer.Harness.Name, stage.Producer.Harness.Version)
++			} else {
++				fmt.Fprintf(out, "  harness:     %s\n", stage.Producer.Harness.Name)
++			}
++		}
++		if stage.Producer.Model != "" {
++			fmt.Fprintf(out, "  model:       %s\n", stage.Producer.Model)
++		}
++		fmt.Fprintf(out, "  skill:       %s@%s (%s)\n", stage.Producer.Skill.ID, stage.Producer.Skill.Version, stage.Producer.Skill.Repo)
+ 		for _, input := range stage.Inputs {
+ 			fmt.Fprintf(out, "  input:  role=%s path=%s size=%d storage=%s media-type=%s\n",
+ 				input.Role, input.Path, input.Size, input.Storage, input.MediaType)
+diff --git a/internal/cli/run_test.go b/internal/cli/run_test.go
+index 3d69922..c652a87 100644
+--- a/internal/cli/run_test.go
++++ b/internal/cli/run_test.go
+@@ -253,11 +253,15 @@ func TestRunShowExistingRun(t *testing.T) {
+ 	if !strings.Contains(stdout, "produced_by: original") {
+ 		t.Fatalf("expected 'produced_by: original' in output:\n%s", stdout)
+ 	}
+-	if !strings.Contains(stdout, "skill id:    plan") {
+-		t.Fatalf("expected 'skill id:    plan' in output:\n%s", stdout)
++	if !strings.Contains(stdout, "skill:       plan@manual (manual)") {
++		t.Fatalf("expected 'skill:       plan@manual (manual)' in output:\n%s", stdout)
+ 	}
+-	if !strings.Contains(stdout, "skill repo:  manual") {
+-		t.Fatalf("expected 'skill repo:  manual' in output:\n%s", stdout)
++	// Legacy capture (no --harness/--model) must not print harness or model lines.
++	if strings.Contains(stdout, "harness:") {
++		t.Fatalf("did not expect 'harness:' line in output for legacy capture:\n%s", stdout)
++	}
++	if strings.Contains(stdout, "  model:") {
++		t.Fatalf("did not expect 'model:' line in output for legacy capture:\n%s", stdout)
+ 	}
+ 
+ 	// Input line: role + exact path + size + storage + media-type all in one substring.
+@@ -363,6 +367,83 @@ func TestRunShowInvalidRunIDBeforeGit(t *testing.T) {
+ 	}
+ }
+ 
++func TestRunShowFullProducer(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output content")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "full-producer-run",
++		"--output", "output=out.md",
++		"--harness", "claude-code",
++		"--harness-version", "2.1.150",
++		"--model", "claude-opus-4-7",
++		"--skill-id", "dev-planner",
++		"--skill-repo", "codewithjv-agent-skills",
++		"--skill-version", "v3",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	stdout, stderr, err := execute("run", "show", "full-producer-run")
++	if err != nil {
++		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	if !strings.Contains(stdout, "harness:     claude-code 2.1.150") {
++		t.Fatalf("expected 'harness:     claude-code 2.1.150' in output:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, "model:       claude-opus-4-7") {
++		t.Fatalf("expected 'model:       claude-opus-4-7' in output:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, "skill:       dev-planner@v3 (codewithjv-agent-skills)") {
++		t.Fatalf("expected 'skill:       dev-planner@v3 (codewithjv-agent-skills)' in output:\n%s", stdout)
++	}
++
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++}
++
++func TestRunShowPartialProducer(t *testing.T) {
++	repo := initCaptureRepo(t)
++	writeFile(t, repo, "out.md", "output content")
++	chdir(t, repo)
++
++	_, stderr, err := execute("capture", "plan",
++		"--run", "partial-producer-run",
++		"--output", "output=out.md",
++		"--harness", "claude-code",
++		"--harness-version", "1.0",
++		"--skill-id", "dev-planner",
++		"--skill-repo", "codewithjv-agent-skills",
++		"--skill-version", "v2",
++	)
++	if err != nil {
++		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	stdout, stderr, err := execute("run", "show", "partial-producer-run")
++	if err != nil {
++		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
++	}
++
++	if !strings.Contains(stdout, "harness:     claude-code 1.0") {
++		t.Fatalf("expected 'harness:     claude-code 1.0' in output:\n%s", stdout)
++	}
++	if strings.Contains(stdout, "  model:") {
++		t.Fatalf("did not expect 'model:' line when --model not provided:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, "skill:       dev-planner@v2 (codewithjv-agent-skills)") {
++		t.Fatalf("expected 'skill:       dev-planner@v2 (codewithjv-agent-skills)' in output:\n%s", stdout)
++	}
++
++	if stderr != "" {
++		t.Fatalf("stderr not empty: %q", stderr)
++	}
++}
++
+ // ---------------------------------------------------------------------------
+ // helpers
+ // ---------------------------------------------------------------------------
