@@ -336,6 +336,95 @@
       ],
       "decision": {},
       "timestamp": "2026-09-07T03:06:57.251457Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "f6e839ca368aa7cf068dbe20b04002aa3ad2df65708ab37a0559194a8dfef9bb"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "astra",
+            "artifact": "2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "path": "artifacts/sha256/29/2958cede083ba7973010ae7c16ee3d676d269ae86460531bc0ca3d34e005925d",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 145
+          },
+          "session": {
+            "session_id": "astra-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T03:57:14.543321Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Once the first SIGINT cancels the root context, subcommands that never consult ctx (pure git/gh work, no managed command) keep running until a second signal; consider documenting or having such long paths check ctx. 2. The pgid-reuse window after Wait is most plausible under concurrent seats where a sibling `subproc.Run` child becomes a group leader with the reused pid; already accepted by the ticket, but worth a sentence in the subproc package doc. 3. Off Unix, `configure` sets no Cancel, so a cmd built with plain `exec.Command` runs silently rather than failing at Start; align the package-doc \"MUST use CommandContext\" wording with that platform difference. 4. Follow-on for the pre-existing ~22% flaky `TestReviewerEnvironmentDoesNotReachChecksOrStages` (same warm-up fix pattern applies)."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "b3cdb1fa24b17f320bb17723bb4a3ef4cc62d65b78a1fd9bb3cf220c9baac1a5",
+            "path": "artifacts/sha256/b3/b3cdb1fa24b17f320bb17723bb4a3ef4cc62d65b78a1fd9bb3cf220c9baac1a5",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 951
+          },
+          "session": {
+            "session_id": "fable-2cccba338cb91be9",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "2cccba338cb91be93222766a7b88a00914013a49064c6d6815bfa396685688e4",
+              "path": "artifacts/sha256/2c/2cccba338cb91be93222766a7b88a00914013a49064c6d6815bfa396685688e4",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 857
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T03:58:05.099972Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T03:58:05.101572Z"
     }
   ]
 }
