@@ -231,6 +231,59 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:33:04Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "45269ca099a11bb9e378d153df544635a34d999e4bac091ca62b68867efdae57"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Clarify that Git-control checks cover accidental inspection-surface drift while deliberate Git forgery remains outside the trust boundary.",
+            "Keep manifest byte-compatibility assertions independently pinned rather than serializer-derived.",
+            "packet path .etude/tmp/etude-5dr.3/plan-gate-r2.md sha256 ea05bb96779c2e28524a8a23e84d04df7dfd53a8e3c9746cead2a7ee8aebc169"
+          ],
+          "timestamp": "2026-08-16T01:37:13Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Keep manifest byte-compatibility assertions independently pinned rather than serializer-derived.",
+            "packet path .etude/tmp/etude-5dr.3/plan-gate-r2.md sha256 ea05bb96779c2e28524a8a23e84d04df7dfd53a8e3c9746cead2a7ee8aebc169"
+          ],
+          "timestamp": "2026-08-16T01:37:13Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:37:13Z"
     }
   ]
 }
