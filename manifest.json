@@ -925,6 +925,39 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T10:04:33.014309Z"
+    },
+    {
+      "gate_id": "docs.r3",
+      "phase": "docs",
+      "round": 3,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r3",
+          "role": "docs-diff",
+          "artifact": "4107f079723743da939b9bfefa59b6749fbb18b68ae34b5b29778c4f0ffcdb3a"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T10:30:20Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "L4 is a single-seat tier, and that seat has no working subprocess path, so 'etude gate' escalated docs.r1 with the seat failed. The seat was run in-harness per the documented registry exception; this record carries its real verdict. The docs gate BLOCKED twice, and both findings were the same defect wearing different clothes: a replacement pointer inferred rather than verified. r1 - the rewritten runbook section attributed 'stage not found in manifest' to 'etude gate', which never takes reviewed_stages[].stage and cannot emit it; its failure is ErrNoReviewableStage. r2 - the hook's exemption comment was rewritten to say 'etude capture, etude gate ... push their refs', but neither pushes anything; the ORIGINAL text named two scripts that genuinely did push, so a stale-but-TRUE pointer had been replaced with a plausible-but-FALSE one, in the file whose whole job is telling a blocked operator what to do. That is this bead's own target defect reproduced by the removal itself. r3 therefore audited all eight command references the diff introduces against the source rather than patching the two named, and the operational gap r2 exposed was closed: the BLOCKED message now names the push step (an operator who captures and gates but never pushes stays blocked by this very hook on unpushed-ref), the test pins all three commands, and the supervisor runbook's close checklist names 'etude sync' so the loop the hook message opens is closed where it points. Six r3 optionals folded, including a narrower-than-behavior description of what sync pushes and two enumeration errors in the artifacts' own no-op tables."
+      },
+      "timestamp": "2026-08-15T10:30:20Z"
     }
   ]
 }
