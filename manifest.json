@@ -159,6 +159,51 @@
         "degraded_reason": "opus seat unreachable this round; the gate did NOT pass, so no degraded pass was taken"
       },
       "timestamp": "2026-08-15T05:20:55Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:20:55Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:20:55Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute after the in-harness seat returned no verdict across r1, r2, a packet-inlined retry and a direct ping. Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. It returned PASS_WITH_FOLLOWUPS; both follow-ups were FOLDED into the plan (record-shape parity requirement on bead .1; inline deferral note in the retro-ledger edit), not deferred."
+      },
+      "timestamp": "2026-08-15T05:20:55Z"
     }
   ]
 }
