@@ -1,0 +1,51 @@
+--- a/internal/cli/doctor.go
++++ b/internal/cli/doctor.go
+@@ -1679,13 +1679,22 @@
+ }
+ 
+ func doctorVersionSuffix(suffix string) bool {
+-	if suffix == "" {
++	if suffix == "" || suffix[0] == '.' || suffix[len(suffix)-1] == '.' {
+ 		return false
+ 	}
++	previousDot := false
+ 	for _, r := range suffix {
+-		if r != '.' && (r < '0' || r > '9') {
++		if r == '.' {
++			if previousDot {
++				return false
++			}
++			previousDot = true
++			continue
++		}
++		if r < '0' || r > '9' {
+ 			return false
+ 		}
++		previousDot = false
+ 	}
+ 	return true
+ }
+--- a/internal/cli/doctor_test.go
++++ b/internal/cli/doctor_test.go
+@@ -272,7 +272,7 @@
+ 
+ func TestDoctorDoesNotCaseFoldEnvOrGuessReviewerFlags(t *testing.T) {
+ 	dir := t.TempDir()
+-	for _, name := range []string{"ENV", "codex", "python3", "python3.12"} {
++	for _, name := range []string{"ENV", "codex", "python3", "python3.12", "python.", "python3.", "python3..12"} {
+ 		writeExecutable(t, filepath.Join(dir, name))
+ 	}
+ 	base := map[string]string{"PATH": dir}
+@@ -291,6 +291,12 @@
+ 	versionedPython := doctorResolveCommand("python3.12 -I -c 'import missing_reviewer'", dir, base)
+ 	if versionedPython.err != "" || !versionedPython.opaqueWrapper {
+ 		t.Fatalf("versioned Python interpreter was claimed as reviewer: %+v", versionedPython)
++	}
++	for _, name := range []string{"python.", "python3.", "python3..12"} {
++		malformed := doctorResolveCommand(name+" -c script", dir, base)
++		if malformed.err != "" || malformed.opaqueWrapper {
++			t.Fatalf("ordinary executable %q was classified as a versioned interpreter: %+v", name, malformed)
++		}
+ 	}
+ }
+ 
