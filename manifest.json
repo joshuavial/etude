@@ -682,6 +682,51 @@
         "degraded_reason": "Gate did NOT pass. codex GO, opus BLOCK on a false-outage regression introduced by the round-6 fix — the third appearance of the same last-wins/echo-tolerance family, this time in the GO direction. The round-6 opus seat had independently flagged the identical regression as a follow-up, so two opus seats converged on it. Both also flagged that the working tree DRIFTED mid-gate, which is why round 8 is run against a frozen tree with no edits between packet build and both verdicts."
       },
       "timestamp": "2026-08-15T07:11:07Z"
+    },
+    {
+      "gate_id": "implement.r8",
+      "phase": "implement",
+      "round": 8,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r7",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:15:36Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:15:36Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "PASS on a FROZEN tree: the adapter sha256 was recorded in the packet and verified unchanged between packet build and both verdicts, after rounds 6 and 7 were each reviewed against code that shifted mid-review (both opus seats flagged that as a process defect). The opus seat ran as an in-harness sub-agent, which .etude/registry.yaml now encodes as the first invocation_fallbacks entry — a real seat, not a substitute, so no degradation applies. Four non-blocking follow-ups raised; all four folded before commit with a confirmation re-gate."
+      },
+      "timestamp": "2026-08-15T07:15:36Z"
     }
   ]
 }
