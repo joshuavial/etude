@@ -985,6 +985,42 @@
         "degraded_reason": "L4 is a single-seat tier, and that seat has no working subprocess path, so 'etude gate' escalated docs.r1 with the seat failed. The seat was run in-harness per the documented registry exception; this record carries its real verdict. The docs gate BLOCKED twice, and both findings were the same defect wearing different clothes: a replacement pointer inferred rather than verified. r1 - the rewritten runbook section attributed 'stage not found in manifest' to 'etude gate', which never takes reviewed_stages[].stage and cannot emit it; its failure is ErrNoReviewableStage. r2 - the hook's exemption comment was rewritten to say 'etude capture, etude gate ... push their refs', but neither pushes anything; the ORIGINAL text named two scripts that genuinely did push, so a stale-but-TRUE pointer had been replaced with a plausible-but-FALSE one, in the file whose whole job is telling a blocked operator what to do. That is this bead's own target defect reproduced by the removal itself. r3 therefore audited all eight command references the diff introduces against the source rather than patching the two named, and the operational gap r2 exposed was closed: the BLOCKED message now names the push step (an operator who captures and gates but never pushes stays blocked by this very hook on unpushed-ref), the test pins all three commands, and the supervisor runbook's close checklist names 'etude sync' so the loop the hook message opens is closed where it points. Six r3 optionals folded, including a narrower-than-behavior description of what sync pushes and two enumeration errors in the artifacts' own no-op tables."
       },
       "timestamp": "2026-08-15T10:30:20Z"
+    },
+    {
+      "gate_id": "verify.r6",
+      "phase": "verify",
+      "round": 6,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "8b1382a76dd1cda1d0e1e530ee83ccdb40b8154f261e02536ec8627f7c5f8188"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. The claim that the edited .beads/hooks/pre-push had been 'exercised for real' by every push since the edit is false. git config --show-origin core.hooksPath resolves to the MAIN checkout's .beads/hooks, whose pre-push is still the UNEDITED version, and there is no extensions.worktreeConfig override - so no push has run the edited hook. The artifact also contradicted scripts/pre-push_test.sh shipped in the same diff, which already said core.hooksPath points at the main checkout."
+          ],
+          "timestamp": "2026-08-15T10:39:37Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, filed at the final review gate, which found it missing. This is the in-harness opus verdict on the FIRST verify artifact (sha 8b1382a7, stage 'verify') - the revision verify.r1 reviewed. verify.r1 recorded that seat as 'failed' because 'etude gate' could not invoke it as a subprocess; the seat was then run in-harness per the documented registry exception and returned this BLOCK, but the verdict was never appended, so a real BLOCK that changed the work left no durable record. The round number is the next free attempt counter, not the chronological position: reviewed_stages names the artifact actually reviewed, which is what identifies the revision. Recording it after verify.r5 passed does not reopen the phase; the pass stands on artifact 114d7907, a later revision. A gate whose findings live only in a transcript is the exact defect this epic exists to remove, so the gap is closed rather than disclosed."
+      },
+      "timestamp": "2026-08-15T10:39:37Z"
     }
   ]
 }
