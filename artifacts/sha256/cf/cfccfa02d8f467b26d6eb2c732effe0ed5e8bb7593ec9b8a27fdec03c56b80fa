@@ -1,0 +1,1633 @@
+diff --git a/internal/cli/doctor.go b/internal/cli/doctor.go
+new file mode 100644
+index 0000000..c7672dc
+--- /dev/null
++++ b/internal/cli/doctor.go
+@@ -0,0 +1,1179 @@
++package cli
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"sort"
++	"strings"
++	"time"
++
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/registry"
++	"github.com/joshuavial/etude/internal/workflow"
++	"github.com/spf13/cobra"
++)
++
++const doctorRemoteTimeout = 15 * time.Second
++
++var errDoctorFailed = errors.New("etude doctor found failures")
++
++type doctorStatus string
++
++const (
++	doctorOK    doctorStatus = "OK"
++	doctorWarn  doctorStatus = "WARN"
++	doctorFail  doctorStatus = "FAIL"
++	doctorProxy doctorStatus = "PROXY"
++)
++
++type doctorFinding struct {
++	status      doctorStatus
++	check       string
++	message     string
++	remediation string
++}
++
++type doctorRunner struct {
++	stdout io.Writer
++	git    doctorGit
++}
++
++type doctorGit struct {
++	root string
++}
++
++type doctorConfigEntry struct {
++	scope  string
++	origin string
++	value  string
++}
++
++type doctorRemoteState struct {
++	name         string
++	url          string
++	remoteRefs   map[string]string
++	atRiskRefs   map[string]bool
++	configBefore string
++	readErr      error
++}
++
++type doctorRefspec struct {
++	raw      string
++	force    bool
++	negative bool
++	src      string
++	dst      string
++	hasDst   bool
++}
++
++type doctorCommandResolution struct {
++	program     string
++	resolved    string
++	cwd         string
++	env         map[string]string
++	inHarness   bool
++	adapter     string
++	adapterErr  string
++	missingPath string
++	err         string
++}
++
++func newDoctorCommand(out, errOut io.Writer) *cobra.Command {
++	cmd := &cobra.Command{
++		Use:           "doctor",
++		Short:         "Check whether this repository's etude setup is safe and working",
++		Args:          cobra.NoArgs,
++		SilenceUsage:  true,
++		SilenceErrors: true,
++		RunE: func(cmd *cobra.Command, _ []string) error {
++			r := doctorRunner{stdout: out}
++			return r.run(cmd.Context())
++		},
++	}
++	cmd.SetOut(out)
++	cmd.SetErr(errOut)
++	return cmd
++}
++
++func (r doctorRunner) run(ctx context.Context) error {
++	root, err := doctorRepoRoot(ctx)
++	if err != nil {
++		return err
++	}
++	r.git.root = root
++
++	findings := make([]doctorFinding, 0, 32)
++	wf, reg := r.checkConfig(root, &findings)
++	remotes, err := r.git.remotes(ctx)
++	if err != nil {
++		findings = append(findings, doctorFinding{doctorFail, "remotes", err.Error(), doctorHuman("repair Git repository access, then rerun etude doctor")})
++	}
++	if len(remotes) == 0 && err == nil {
++		findings = append(findings, doctorFinding{doctorFail, "remotes", "no Git remote is configured, so run refs cannot be checked or synchronized", doctorHuman("add the intended Git remote URL, then run etude init --remote with that remote name")})
++	}
++
++	remoteStates := make([]doctorRemoteState, 0, len(remotes))
++	for _, remote := range remotes {
++		state := doctorRemoteState{name: remote, remoteRefs: map[string]string{}}
++		state.configBefore, err = r.git.remoteConfigSnapshot(ctx, remote)
++		if err != nil {
++			state.readErr = err
++			findings = append(findings, doctorFinding{doctorFail, "run-refs[" + remote + "]", fmt.Sprintf("cannot read remote %q configuration: %v", remote, err), doctorHuman("repair Git configuration access, then rerun etude doctor")})
++			remoteStates = append(remoteStates, state)
++			continue
++		}
++		urlEntries, urlErr := r.git.configEntries(ctx, "remote."+remote+".pushurl")
++		usingPushURLs := len(urlEntries) > 0
++		if urlErr == nil && !usingPushURLs {
++			urlEntries, urlErr = r.git.configEntries(ctx, "remote."+remote+".url")
++			if len(urlEntries) > 1 {
++				urlEntries = urlEntries[:1]
++			}
++		}
++		if urlErr != nil || len(urlEntries) == 0 {
++			state.readErr = fmt.Errorf("remote %q has no readable URL", remote)
++		} else {
++			first := true
++			for endpoint, entry := range urlEntries {
++				state.url = strings.TrimSpace(entry.value)
++				if state.url == "" {
++					state.readErr = fmt.Errorf("remote %q has an empty push URL", remote)
++					break
++				}
++				refs, readErr := r.git.remoteEtudeRefs(ctx, state.url)
++				if readErr != nil {
++					state.readErr = fmt.Errorf("push endpoint %d: %w", endpoint+1, readErr)
++					break
++				}
++				if first {
++					state.remoteRefs = refs
++					first = false
++					continue
++				}
++				for ref, oid := range state.remoteRefs {
++					if refs[ref] != oid {
++						delete(state.remoteRefs, ref)
++					}
++				}
++			}
++		}
++		if state.readErr != nil {
++			findings = append(findings, doctorFinding{
++				doctorFail,
++				"run-refs[" + remote + "]",
++				fmt.Sprintf("cannot read refs/etude/* from remote %q: %v", remote, state.readErr),
++				doctorHuman("repair this remote's URL, authentication, or supported transport; the remote-ref check requires network access"),
++			})
++		}
++		remoteStates = append(remoteStates, state)
++	}
++
++	// Remote-first ordering is deliberate: a ref created while doctor is
++	// running can produce a conservative warning, but cannot be missed as pushed.
++	localRefs, localErr := r.git.localEtudeRefs(ctx)
++	if localErr != nil {
++		findings = append(findings, doctorFinding{doctorFail, "run-refs", localErr.Error(), doctorHuman("repair local Git ref access, then rerun etude doctor")})
++		localRefs = map[string]string{}
++	}
++	for i := range remoteStates {
++		state := &remoteStates[i]
++		if state.readErr == nil && localErr == nil {
++			state.atRiskRefs = r.checkUnpushedRefs(ctx, state.name, localRefs, state.remoteRefs, &findings)
++		}
++		after, snapshotErr := r.git.remoteConfigSnapshot(ctx, state.name)
++		if snapshotErr != nil || after != state.configBefore {
++			findings = append(findings, doctorFinding{doctorWarn, "concurrency[" + state.name + "]", "repository remote configuration changed during doctor; this diagnosis is a non-transactional snapshot", "etude doctor"})
++		}
++	}
++	findings = append(findings, doctorFinding{doctorProxy, "snapshot", "ordered read-only observations are conservative, not transactional; concurrent ABA or later changes require a rerun", ""})
++
++	for _, state := range remoteStates {
++		r.checkRemoteRefspecs(ctx, state, &findings)
++	}
++
++	if wf != nil && reg != nil {
++		r.checkReferencedPathsAndCommands(root, *wf, *reg, &findings)
++	}
++
++	sort.SliceStable(findings, func(i, j int) bool {
++		if findings[i].check != findings[j].check {
++			return findings[i].check < findings[j].check
++		}
++		if findings[i].status != findings[j].status {
++			return findings[i].status < findings[j].status
++		}
++		return findings[i].message < findings[j].message
++	})
++
++	failures := 0
++	for _, f := range findings {
++		fmt.Fprintf(r.stdout, "%s %-24s %s\n", f.status, f.check, f.message)
++		if f.remediation != "" {
++			fmt.Fprintf(r.stdout, "  remedy: %s\n", f.remediation)
++		}
++		if f.status == doctorFail {
++			failures++
++		}
++	}
++	if failures > 0 {
++		return fmt.Errorf("%w: %d", errDoctorFailed, failures)
++	}
++	return nil
++}
++
++func (r doctorRunner) checkConfig(root string, findings *[]doctorFinding) (*workflow.Workflow, *registry.Registry) {
++	wfPath := filepath.Join(root, ".etude", "workflow.yaml")
++	regPath := filepath.Join(root, ".etude", "registry.yaml")
++	wfBytes, wfErr := os.ReadFile(wfPath)
++	regBytes, regErr := os.ReadFile(regPath)
++	if wfErr != nil || regErr != nil {
++		switch {
++		case errors.Is(wfErr, os.ErrNotExist) && errors.Is(regErr, os.ErrNotExist):
++			*findings = append(*findings, doctorFinding{doctorFail, "config", ".etude/workflow.yaml and .etude/registry.yaml are missing", "etude init"})
++		default:
++			missing := make([]string, 0, 2)
++			if wfErr != nil {
++				missing = append(missing, fmt.Sprintf("workflow.yaml (%v)", wfErr))
++			}
++			if regErr != nil {
++				missing = append(missing, fmt.Sprintf("registry.yaml (%v)", regErr))
++			}
++			*findings = append(*findings, doctorFinding{doctorFail, "config", strings.Join(missing, "; "), doctorHuman("restore the missing authored config without overwriting the surviving file")})
++		}
++		return nil, nil
++	}
++	wf, err := workflow.ParseYAML(wfBytes)
++	if err != nil {
++		*findings = append(*findings, doctorFinding{doctorFail, "config", fmt.Sprintf("workflow.yaml does not parse: %v", err), doctorHuman("edit .etude/workflow.yaml so it satisfies the workflow schema")})
++		return nil, nil
++	}
++	reg, err := registry.ParseYAML(regBytes)
++	if err != nil {
++		*findings = append(*findings, doctorFinding{doctorFail, "config", fmt.Sprintf("registry.yaml does not parse: %v", err), doctorHuman("edit .etude/registry.yaml so it satisfies the registry schema")})
++		return nil, nil
++	}
++
++	broken := 0
++	checkRunner := func(where string, runner *workflow.Runner) {
++		if runner == nil || runner.Name == "" {
++			return
++		}
++		if _, ok := reg.Seats[runner.Name]; !ok {
++			broken++
++			*findings = append(*findings, doctorFinding{doctorFail, "config", fmt.Sprintf("%s references undefined registry seat %q", where, runner.Name), doctorHuman("define that seat in .etude/registry.yaml or change the runner reference")})
++		}
++	}
++	checkRunner("default_runner", wf.DefaultRunner)
++	for _, stage := range wf.Stages {
++		checkRunner("stage "+stage.Name+" runner", stage.Runner)
++		if stage.Gate == nil {
++			continue
++		}
++		if stage.Gate.Tier != "" {
++			if _, ok := reg.Tiers[stage.Gate.Tier]; !ok {
++				broken++
++				*findings = append(*findings, doctorFinding{doctorFail, "config", fmt.Sprintf("stage %q gate references undefined tier %q", stage.Name, stage.Gate.Tier), doctorHuman("define that tier in .etude/registry.yaml or change the stage gate tier")})
++			}
++		}
++		for _, seat := range stage.Gate.Seats {
++			if _, ok := reg.Seats[seat]; !ok {
++				broken++
++				*findings = append(*findings, doctorFinding{doctorFail, "config", fmt.Sprintf("stage %q gate references undefined seat %q", stage.Name, seat), doctorHuman("define that seat in .etude/registry.yaml or change the inline gate seat")})
++			}
++		}
++		for i := range stage.Gate.Checks {
++			checkRunner(fmt.Sprintf("stage %s gate check %d", stage.Name, i), &stage.Gate.Checks[i])
++		}
++	}
++	if broken == 0 {
++		*findings = append(*findings, doctorFinding{doctorOK, "config", "workflow.yaml and registry.yaml parse and cross-resolve", ""})
++	}
++	return &wf, &reg
++}
++
++func (r doctorRunner) checkRemoteRefspecs(ctx context.Context, state doctorRemoteState, findings *[]doctorFinding) {
++	remote := state.name
++	fetchKey := "remote." + remote + ".fetch"
++	pushKey := "remote." + remote + ".push"
++	fetchEntries, fetchErr := r.git.configEntries(ctx, fetchKey)
++	pushEntries, pushErr := r.git.configEntries(ctx, pushKey)
++	if fetchErr != nil {
++		*findings = append(*findings, doctorFinding{doctorFail, "fetch-refspec[" + remote + "]", fetchErr.Error(), doctorHuman("repair Git config access and rerun etude doctor")})
++		return
++	}
++	if pushErr != nil {
++		*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", pushErr.Error(), doctorHuman("repair Git config access and rerun etude doctor")})
++		return
++	}
++
++	dangerous := 0
++	broad := 0
++	validFetch := make([]doctorRefspec, 0, len(fetchEntries))
++	for _, entry := range fetchEntries {
++		rs, err := r.git.parseRefspec(ctx, entry.value, true)
++		if err != nil {
++			*findings = append(*findings, doctorFinding{doctorFail, "fetch-refspec[" + remote + "]", fmt.Sprintf("invalid fetch refspec %q: %v", entry.value, err), doctorConfigUnsetRemediation(r.git.root, fetchKey, entry)})
++			continue
++		}
++		validFetch = append(validFetch, rs)
++		if rs.negative || !rs.hasDst {
++			continue
++		}
++		intersects := false
++		for _, kind := range refstore.Kinds {
++			if doctorPatternIntersectsPrefix(rs.dst, "refs/etude/"+kind+"/") {
++				intersects = true
++				break
++			}
++		}
++		if !intersects {
++			continue
++		}
++		if doctorPatternEtudeScoped(rs.dst) {
++			dangerous++
++			*findings = append(*findings, doctorFinding{doctorFail, "fetch-refspec[" + remote + "]", fmt.Sprintf("%q writes fetched refs into the authoritative refs/etude namespace and makes them prunable", entry.value), doctorConfigUnsetRemediation(r.git.root, fetchKey, entry)})
++		} else {
++			broad++
++			status := doctorWarn
++			if doctorAnyPatternMatch(rs.dst, state.atRiskRefs) {
++				status = doctorFail
++			}
++			*findings = append(*findings, doctorFinding{status, "fetch-refspec[" + remote + "]", fmt.Sprintf("user-owned broad fetch refspec %q intersects refs/etude; it is not safe to delete automatically", entry.value), doctorHuman("narrow this fetch mapping so its destination cannot match refs/etude/{runs,retros,evals}/*")})
++		}
++	}
++	if dangerous == 0 && broad == 0 {
++		*findings = append(*findings, doctorFinding{doctorOK, "fetch-refspec[" + remote + "]", "no fetch refspec can prune authoritative refs/etude refs", ""})
++	}
++
++	validPush := make([]doctorRefspec, 0, len(pushEntries))
++	for _, entry := range pushEntries {
++		rs, err := r.git.parseRefspec(ctx, entry.value, false)
++		if err != nil {
++			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("invalid push refspec %q: %v", entry.value, err), doctorConfigUnsetRemediation(r.git.root, pushKey, entry)})
++			continue
++		}
++		validPush = append(validPush, rs)
++	}
++	mirrorPush := false
++	if entries, err := r.git.configEntries(ctx, "remote."+remote+".mirror"); err == nil && len(entries) > 0 {
++		last := entries[len(entries)-1]
++		mirrorPush, err = doctorParseGitBool(last.value)
++		if err != nil {
++			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("remote.%s.mirror has invalid boolean value %q", remote, last.value), doctorConfigUnsetRemediation(r.git.root, "remote."+remote+".mirror", last)})
++		}
++	}
++	missingKinds := make([]string, 0, len(refstore.Kinds))
++	for _, kind := range refstore.Kinds {
++		if mirrorPush {
++			continue
++		}
++		probe := "refs/etude/" + kind + "/__doctor_probe__"
++		covered := false
++		for _, rs := range validPush {
++			if dst, ok := doctorMapRefspec(rs, probe); ok && dst == probe {
++				covered = true
++				break
++			}
++		}
++		if !covered {
++			missingKinds = append(missingKinds, kind)
++		}
++	}
++	if len(missingKinds) > 0 {
++		shapes := doctorMisleadingPushShapes(validPush)
++		message := "no name-preserving push coverage for refs/etude/" + strings.Join(missingKinds, ", refs/etude/")
++		if len(shapes) > 0 {
++			message += "; observed " + strings.Join(shapes, ", ")
++		}
++		*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", message, "etude init --remote " + doctorShellQuote(remote)})
++	} else if mirrorPush {
++		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "remote mirror-push semantics cover every refs/etude kind", ""})
++	} else {
++		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "name-preserving push mappings cover every refs/etude kind", ""})
++	}
++
++	missingMirrors := make([]string, 0, len(refstore.Kinds))
++	for _, kind := range refstore.Kinds {
++		probe := "refs/etude/" + kind + "/__doctor_probe__"
++		wantA := refstore.MirrorPrefix(remote, kind) + "__doctor_probe__"
++		wantB := "refs/etude/remotes/" + remote + "/" + kind + "/__doctor_probe__"
++		covered := false
++		for _, rs := range validFetch {
++			if dst, ok := doctorMapRefspec(rs, probe); ok && (dst == wantA || dst == wantB) {
++				covered = true
++				break
++			}
++		}
++		if !covered {
++			missingMirrors = append(missingMirrors, kind)
++		}
++	}
++	if len(missingMirrors) > 0 {
++		*findings = append(*findings, doctorFinding{doctorWarn, "fetch-mirror[" + remote + "]", "safe fetch mirroring is missing for " + strings.Join(missingMirrors, ", "), "etude init --remote " + doctorShellQuote(remote)})
++	} else {
++		*findings = append(*findings, doctorFinding{doctorOK, "fetch-mirror[" + remote + "]", "safe per-kind mirror fetch mappings are configured", ""})
++	}
++}
++
++func (r doctorRunner) checkUnpushedRefs(ctx context.Context, remote string, local, advertised map[string]string, findings *[]doctorFinding) map[string]bool {
++	refs := make([]string, 0, len(local))
++	for ref := range local {
++		refs = append(refs, ref)
++	}
++	sort.Strings(refs)
++	if len(refs) == 0 {
++		*findings = append(*findings, doctorFinding{doctorOK, "run-refs[" + remote + "]", "no local refs/etude run records need synchronization", ""})
++		return map[string]bool{}
++	}
++	atRisk := make(map[string]bool)
++	for _, ref := range refs {
++		localOID := local[ref]
++		remoteOID, ok := advertised[ref]
++		if !ok {
++			atRisk[ref] = true
++			*findings = append(*findings, doctorFinding{doctorWarn, "run-refs[" + remote + "]", fmt.Sprintf("%s is absent from remote %q", ref, remote), "etude sync --remote " + doctorShellQuote(remote)})
++			continue
++		}
++		if localOID == remoteOID {
++			continue
++		}
++		if r.git.isShallow() || !r.git.objectExists(ctx, remoteOID) {
++			atRisk[ref] = true
++			*findings = append(*findings, doctorFinding{doctorWarn, "run-refs[" + remote + "]", fmt.Sprintf("%s differs (local %s, remote %s); direction UNKNOWN", ref, localOID, remoteOID), doctorHuman("fetch and compare this ref before deciding whether to push")})
++			continue
++		}
++		localBehind, errA := r.git.isAncestor(ctx, localOID, remoteOID)
++		remoteBehind, errB := r.git.isAncestor(ctx, remoteOID, localOID)
++		switch {
++		case errA != nil || errB != nil || (!localBehind && !remoteBehind):
++			atRisk[ref] = true
++			*findings = append(*findings, doctorFinding{doctorWarn, "run-refs[" + remote + "]", fmt.Sprintf("%s differs (local %s, remote %s); direction UNKNOWN", ref, localOID, remoteOID), doctorHuman("fetch and compare this ref before deciding whether to push")})
++		case localBehind:
++			*findings = append(*findings, doctorFinding{doctorWarn, "run-refs[" + remote + "]", fmt.Sprintf("%s is behind remote %q; do not push", ref, remote), doctorHuman("fetch this remote's etude refs and compare before changing the local ref")})
++		case remoteBehind:
++			atRisk[ref] = true
++			*findings = append(*findings, doctorFinding{doctorWarn, "run-refs[" + remote + "]", fmt.Sprintf("%s is ahead of remote %q", ref, remote), "etude sync --remote " + doctorShellQuote(remote)})
++		}
++	}
++	if len(atRisk) == 0 {
++		matched := true
++		for _, ref := range refs {
++			if advertised[ref] != local[ref] {
++				matched = false
++				break
++			}
++		}
++		if matched {
++			*findings = append(*findings, doctorFinding{doctorOK, "run-refs[" + remote + "]", "all local refs/etude run records match the remote", ""})
++		}
++	}
++	return atRisk
++}
++
++func (r doctorRunner) checkReferencedPathsAndCommands(root string, wf workflow.Workflow, reg registry.Registry, findings *[]doctorFinding) {
++	pathFailures := 0
++	etudeRoot := filepath.Join(root, ".etude")
++	for _, stage := range wf.Stages {
++		if stage.Eval == nil || stage.Eval.Method != "rubric" {
++			continue
++		}
++		path := filepath.Join(etudeRoot, filepath.FromSlash(stage.Eval.Rubric))
++		if err := doctorReadableRegularWithin(etudeRoot, path); err != nil {
++			pathFailures++
++			*findings = append(*findings, doctorFinding{doctorFail, "path[rubric]", fmt.Sprintf("stage %q rubric %q resolves from .etude/ to %q: %v", stage.Name, stage.Eval.Rubric, path, err), doctorHuman("create a readable regular rubric file containing the evaluation criteria for stage " + doctorShellQuote(stage.Name))})
++		}
++	}
++	if pathFailures == 0 {
++		*findings = append(*findings, doctorFinding{doctorOK, "paths", "all configured rubric files are readable regular files under .etude", ""})
++	}
++
++	type commandSpec struct{ where, invoke string }
++	commands := make([]commandSpec, 0, len(reg.Seats)*2+len(wf.Stages))
++	for name, seat := range reg.Seats {
++		commands = append(commands, commandSpec{"seat " + name + " primary", seat.Invoke})
++		for i, fb := range seat.InvocationFallbacks {
++			commands = append(commands, commandSpec{fmt.Sprintf("seat %s fallback %d", name, i+1), fb.Invoke})
++		}
++	}
++	appendRunner := func(where string, runner *workflow.Runner) {
++		if runner != nil && runner.Command != "" {
++			commands = append(commands, commandSpec{where, runner.Command})
++		}
++	}
++	appendRunner("workflow default runner", wf.DefaultRunner)
++	for _, stage := range wf.Stages {
++		appendRunner("stage "+stage.Name+" runner", stage.Runner)
++		if stage.Gate != nil {
++			for i := range stage.Gate.Checks {
++				appendRunner(fmt.Sprintf("stage %s gate check %d", stage.Name, i+1), &stage.Gate.Checks[i])
++			}
++		}
++	}
++	sort.Slice(commands, func(i, j int) bool { return commands[i].where < commands[j].where })
++	for _, spec := range commands {
++		res := doctorResolveCommand(spec.invoke, root, doctorBaseEnv())
++		check := "command[" + spec.where + "]"
++		switch {
++		case res.inHarness:
++			*findings = append(*findings, doctorFinding{doctorProxy, check, "host-provided in-harness invocation; PATH/authentication not probed", ""})
++		case res.err != "":
++			status := doctorWarn
++			instruction := "install executable " + doctorShellQuote(res.program) + " and make it reachable under this invocation's effective PATH/cwd"
++			if res.missingPath != "" {
++				status = doctorFail
++				instruction = "provide a regular executable runner script at " + doctorShellQuote(res.missingPath)
++			}
++			*findings = append(*findings, doctorFinding{status, check, res.err, doctorHuman(instruction)})
++		case res.adapterErr != "":
++			*findings = append(*findings, doctorFinding{doctorWarn, check, res.adapterErr, doctorHuman("restore a regular executable seat adapter at the resolved path")})
++		default:
++			msg := fmt.Sprintf("binary present at %s; this does not prove authentication, quota, or tier eligibility", res.resolved)
++			if res.adapter != "" {
++				msg = fmt.Sprintf("adapter %s and reviewer binary %s are present; this does not prove authentication, quota, or tier eligibility", res.adapter, res.resolved)
++			}
++			*findings = append(*findings, doctorFinding{doctorProxy, check, msg, ""})
++		}
++	}
++}
++
++func (g doctorGit) remotes(ctx context.Context) ([]string, error) {
++	out, err := g.run(ctx, g.root, "remote")
++	if err != nil {
++		return nil, fmt.Errorf("git remote: %w", err)
++	}
++	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
++	if len(lines) == 1 && lines[0] == "" {
++		return nil, nil
++	}
++	sort.Strings(lines)
++	return lines, nil
++}
++
++func (g doctorGit) remoteConfigSnapshot(ctx context.Context, remote string) (string, error) {
++	keys := []string{
++		"remote." + remote + ".url",
++		"remote." + remote + ".pushurl",
++		"remote." + remote + ".fetch",
++		"remote." + remote + ".push",
++		"remote." + remote + ".mirror",
++	}
++	var snapshot strings.Builder
++	for _, key := range keys {
++		entries, err := g.configEntries(ctx, key)
++		if err != nil {
++			return "", err
++		}
++		for _, entry := range entries {
++			fmt.Fprintf(&snapshot, "%s\x00%s\x00%s\x00%s\x00", key, entry.scope, entry.origin, entry.value)
++		}
++	}
++	return snapshot.String(), nil
++}
++
++func (g doctorGit) configEntries(ctx context.Context, key string) ([]doctorConfigEntry, error) {
++	out, err := g.runExitOneOK(ctx, g.root, "config", "--null", "--show-origin", "--show-scope", "--get-all", key)
++	if err != nil {
++		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
++	}
++	if len(out) == 0 {
++		return nil, nil
++	}
++	parts := bytes.Split(out, []byte{0})
++	if len(parts) > 0 && len(parts[len(parts)-1]) == 0 {
++		parts = parts[:len(parts)-1]
++	}
++	if len(parts)%3 != 0 {
++		return nil, fmt.Errorf("unexpected git config origin/scope output for %s", key)
++	}
++	entries := make([]doctorConfigEntry, 0, len(parts)/3)
++	for i := 0; i < len(parts); i += 3 {
++		entries = append(entries, doctorConfigEntry{string(parts[i]), string(parts[i+1]), string(parts[i+2])})
++	}
++	return entries, nil
++}
++
++func (g doctorGit) localEtudeRefs(ctx context.Context) (map[string]string, error) {
++	out, err := g.run(ctx, g.root, "for-each-ref", "--format=%(objectname) %(refname)", "refs/etude/runs/", "refs/etude/retros/", "refs/etude/evals/")
++	if err != nil {
++		return nil, fmt.Errorf("git for-each-ref refs/etude: %w", err)
++	}
++	refs := make(map[string]string)
++	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
++		if line == "" {
++			continue
++		}
++		fields := strings.Fields(line)
++		if len(fields) != 2 {
++			return nil, fmt.Errorf("unexpected ref output line %q", line)
++		}
++		refs[fields[1]] = fields[0]
++	}
++	return refs, nil
++}
++
++func (g doctorGit) remoteEtudeRefs(ctx context.Context, remoteURL string) (map[string]string, error) {
++	if doctorCustomRemoteHelper.MatchString(strings.TrimSpace(remoteURL)) {
++		return nil, fmt.Errorf("custom remote-helper transport is not executed by read-only doctor")
++	}
++	remoteCtx, cancel := context.WithTimeout(ctx, doctorRemoteTimeout)
++	defer cancel()
++	cmd := exec.CommandContext(remoteCtx, "git", "ls-remote", "--end-of-options", remoteURL, "refs/etude/*")
++	cmd.Dir = doctorNeutralDir(g.root)
++	cmd.Env = doctorNeutralRemoteEnv()
++	out, err := cmd.Output()
++	if remoteCtx.Err() != nil {
++		return nil, fmt.Errorf("timed out after %s", doctorRemoteTimeout)
++	}
++	if err != nil {
++		return nil, err
++	}
++	refs := make(map[string]string)
++	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
++		fields := strings.Fields(line)
++		if len(fields) == 2 {
++			refs[fields[1]] = fields[0]
++		}
++	}
++	return refs, nil
++}
++
++func (g doctorGit) objectExists(ctx context.Context, oid string) bool {
++	_, err := g.run(ctx, g.root, "cat-file", "-e", oid+"^{commit}")
++	return err == nil
++}
++
++func (g doctorGit) isAncestor(ctx context.Context, older, newer string) (bool, error) {
++	_, err := g.run(ctx, g.root, "merge-base", "--is-ancestor", older, newer)
++	if err == nil {
++		return true, nil
++	}
++	var exitErr *exec.ExitError
++	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
++		return false, nil
++	}
++	return false, err
++}
++
++func (g doctorGit) isShallow() bool {
++	common, err := filepath.EvalSymlinks(filepath.Join(g.root, ".git"))
++	if err == nil {
++		_, err = os.Stat(filepath.Join(common, "shallow"))
++		return err == nil
++	}
++	cmd := exec.Command("git", "-C", g.root, "rev-parse", "--git-common-dir")
++	cmd.Env = doctorGitEnv()
++	out, err := cmd.Output()
++	if err != nil {
++		return false
++	}
++	path := strings.TrimSpace(string(out))
++	if !filepath.IsAbs(path) {
++		path = filepath.Join(g.root, path)
++	}
++	_, err = os.Stat(filepath.Join(path, "shallow"))
++	return err == nil
++}
++
++func (g doctorGit) parseRefspec(ctx context.Context, value string, fetch bool) (doctorRefspec, error) {
++	rs := doctorRefspec{raw: value}
++	s := strings.TrimSpace(value)
++	if strings.HasPrefix(s, "+") {
++		rs.force = true
++		s = strings.TrimPrefix(s, "+")
++	}
++	if strings.HasPrefix(s, "^") {
++		if !fetch {
++			return rs, fmt.Errorf("negative refspec is only valid for fetch")
++		}
++		rs.negative = true
++		s = strings.TrimPrefix(s, "^")
++		if s == "" || strings.Contains(s, ":") {
++			return rs, fmt.Errorf("negative fetch refspec requires one source and no destination")
++		}
++		rs.src = s
++		if err := g.validateRefspecSide(ctx, s); err != nil {
++			return rs, err
++		}
++		return rs, nil
++	}
++	if strings.Count(s, ":") > 1 {
++		return rs, fmt.Errorf("more than one ':' separator")
++	}
++	src, dst, hasDst := strings.Cut(s, ":")
++	rs.src, rs.dst, rs.hasDst = src, dst, hasDst
++	if src == "" {
++		if fetch {
++			return rs, fmt.Errorf("fetch refspec source is empty")
++		}
++		if !hasDst || dst == "" {
++			return rs, fmt.Errorf("empty-source push refspec requires a destination")
++		}
++	} else if err := g.validateRefspecSide(ctx, src); err != nil {
++		return rs, fmt.Errorf("source: %w", err)
++	}
++	if hasDst {
++		if dst == "" {
++			return rs, fmt.Errorf("destination is empty")
++		}
++		if err := g.validateRefspecSide(ctx, dst); err != nil {
++			return rs, fmt.Errorf("destination: %w", err)
++		}
++	}
++	if hasDst && (strings.Count(src, "*") != strings.Count(dst, "*")) {
++		return rs, fmt.Errorf("source and destination wildcard counts differ")
++	}
++	return rs, nil
++}
++
++func (g doctorGit) validateRefspecSide(ctx context.Context, side string) error {
++	if strings.Count(side, "*") > 1 {
++		return fmt.Errorf("more than one wildcard")
++	}
++	args := []string{"check-ref-format"}
++	if strings.Contains(side, "*") {
++		args = append(args, "--refspec-pattern")
++	}
++	args = append(args, side)
++	if _, err := g.run(ctx, g.root, args...); err != nil {
++		return fmt.Errorf("invalid ref pattern %q", side)
++	}
++	return nil
++}
++
++func (g doctorGit) run(ctx context.Context, dir string, args ...string) ([]byte, error) {
++	if err := doctorValidateGitArgs(args); err != nil {
++		return nil, err
++	}
++	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
++	cmd.Env = doctorGitEnv()
++	return cmd.Output()
++}
++
++func (g doctorGit) runExitOneOK(ctx context.Context, dir string, args ...string) ([]byte, error) {
++	out, err := g.run(ctx, dir, args...)
++	if err == nil {
++		return out, nil
++	}
++	var exitErr *exec.ExitError
++	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
++		return nil, nil
++	}
++	return nil, err
++}
++
++func doctorValidateGitArgs(args []string) error {
++	if len(args) == 0 {
++		return fmt.Errorf("doctor Git call has no subcommand")
++	}
++	switch args[0] {
++	case "remote":
++		if len(args) == 1 {
++			return nil
++		}
++	case "config":
++		if len(args) == 7 && args[1] == "--null" && args[2] == "--show-origin" && args[3] == "--show-scope" && args[4] == "--get-all" {
++			return nil
++		}
++		// Current argv has six entries; keep the explicit form below readable.
++		if len(args) == 6 && args[1] == "--null" && args[2] == "--show-origin" && args[3] == "--show-scope" && args[4] == "--get-all" {
++			return nil
++		}
++	case "for-each-ref":
++		if len(args) >= 3 && strings.HasPrefix(args[1], "--format=") {
++			return nil
++		}
++	case "cat-file":
++		if len(args) == 3 && args[1] == "-e" {
++			return nil
++		}
++	case "merge-base":
++		if len(args) == 4 && args[1] == "--is-ancestor" {
++			return nil
++		}
++	case "check-ref-format":
++		if len(args) == 2 || (len(args) == 3 && args[1] == "--refspec-pattern") {
++			return nil
++		}
++	}
++	return fmt.Errorf("doctor refused write-capable or unexpected Git argv: %q", args)
++}
++
++func doctorPatternIntersectsPrefix(pattern, prefix string) bool {
++	if !strings.Contains(pattern, "*") {
++		return strings.HasPrefix(pattern, prefix)
++	}
++	pre, _, _ := strings.Cut(pattern, "*")
++	return strings.HasPrefix(pre, prefix) || strings.HasPrefix(prefix, pre)
++}
++
++func doctorPatternEtudeScoped(pattern string) bool {
++	pre, _, _ := strings.Cut(pattern, "*")
++	return strings.HasPrefix(pre, "refs/etude/")
++}
++
++func doctorAnyPatternMatch(pattern string, refs map[string]bool) bool {
++	for ref := range refs {
++		if doctorPatternMatches(pattern, ref) {
++			return true
++		}
++	}
++	return false
++}
++
++func doctorPatternMatches(pattern, ref string) bool {
++	if !strings.Contains(pattern, "*") {
++		return pattern == ref
++	}
++	pre, post, _ := strings.Cut(pattern, "*")
++	return strings.HasPrefix(ref, pre) && strings.HasSuffix(ref, post) && len(ref) >= len(pre)+len(post)
++}
++
++func doctorMisleadingPushShapes(refspecs []doctorRefspec) []string {
++	shapes := make(map[string]bool)
++	for _, rs := range refspecs {
++		switch {
++		case rs.src == "" && strings.HasPrefix(rs.dst, "refs/etude/"):
++			shapes["empty-source delete mapping"] = true
++		case !strings.Contains(rs.src, "*") && strings.HasPrefix(rs.src, "refs/etude/"):
++			shapes["single-ref mapping"] = true
++		case strings.Contains(rs.src, "*") && doctorPatternIntersectsPrefix(rs.src, "refs/etude/"):
++			probe := "refs/etude/runs/__doctor_probe__"
++			if dst, ok := doctorMapRefspec(rs, probe); ok && dst != probe {
++				shapes["name-changing mapping"] = true
++			}
++		}
++	}
++	result := make([]string, 0, len(shapes))
++	for shape := range shapes {
++		result = append(result, shape)
++	}
++	sort.Strings(result)
++	return result
++}
++
++func doctorMapRefspec(rs doctorRefspec, ref string) (string, bool) {
++	if rs.negative || rs.src == "" {
++		return "", false
++	}
++	dstPattern := rs.dst
++	if !rs.hasDst {
++		dstPattern = rs.src
++	}
++	if !strings.Contains(rs.src, "*") {
++		if rs.src != ref {
++			return "", false
++		}
++		return dstPattern, true
++	}
++	pre, post, _ := strings.Cut(rs.src, "*")
++	if !strings.HasPrefix(ref, pre) || !strings.HasSuffix(ref, post) || len(ref) < len(pre)+len(post) {
++		return "", false
++	}
++	capture := ref[len(pre) : len(ref)-len(post)]
++	return strings.Replace(dstPattern, "*", capture, 1), true
++}
++
++func doctorConfigUnsetRemediation(repoRoot, key string, entry doctorConfigEntry) string {
++	origin := strings.TrimPrefix(entry.origin, "file:")
++	if origin == "" || entry.origin == "command line:" || entry.origin == "standard input:" {
++		return doctorHuman("remove this exact value from its reported config origin " + entry.origin)
++	}
++	if !filepath.IsAbs(origin) {
++		origin = filepath.Join(repoRoot, origin)
++	}
++	pattern := "^" + regexp.QuoteMeta(entry.value) + "$"
++	return "git config --file " + doctorShellQuote(origin) + " --unset-all " + doctorShellQuote(key) + " " + doctorShellQuote(pattern)
++}
++
++func doctorShellQuote(value string) string {
++	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
++}
++
++func doctorHuman(instruction string) string {
++	return "HUMAN AUTHORSHIP REQUIRED: " + instruction
++}
++
++func doctorParseGitBool(value string) (bool, error) {
++	switch strings.ToLower(strings.TrimSpace(value)) {
++	case "", "1", "true", "yes", "on":
++		return true, nil
++	case "0", "false", "no", "off":
++		return false, nil
++	default:
++		return false, fmt.Errorf("invalid Git boolean")
++	}
++}
++
++var doctorCustomRemoteHelper = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+.-]*::`)
++
++func doctorRepoRoot(ctx context.Context) (string, error) {
++	cwd, err := os.Getwd()
++	if err != nil {
++		return "", fmt.Errorf("getwd: %w", err)
++	}
++	cmd := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel")
++	cmd.Env = doctorGitEnv()
++	out, err := cmd.Output()
++	if err != nil {
++		return "", fmt.Errorf("not a git repository (or any parent up to root %s)", cwd)
++	}
++	return strings.TrimSpace(string(out)), nil
++}
++
++func doctorReadableRegularWithin(base, path string) error {
++	baseAbs, err := filepath.Abs(base)
++	if err != nil {
++		return err
++	}
++	pathAbs, err := filepath.Abs(path)
++	if err != nil {
++		return err
++	}
++	rel, err := filepath.Rel(baseAbs, pathAbs)
++	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++		return fmt.Errorf("path escapes %s", base)
++	}
++	info, err := os.Stat(pathAbs)
++	if err != nil {
++		return err
++	}
++	if !info.Mode().IsRegular() {
++		return fmt.Errorf("not a regular file")
++	}
++	f, err := os.Open(pathAbs)
++	if err != nil {
++		return fmt.Errorf("not readable: %w", err)
++	}
++	return f.Close()
++}
++
++func doctorBaseEnv() map[string]string {
++	env := make(map[string]string)
++	for _, item := range os.Environ() {
++		key, value, ok := strings.Cut(item, "=")
++		if ok {
++			env[key] = value
++		}
++	}
++	return env
++}
++
++func doctorResolveCommand(invoke, root string, baseEnv map[string]string) doctorCommandResolution {
++	fields := strings.Fields(invoke)
++	res := doctorCommandResolution{cwd: root, env: cloneDoctorEnv(baseEnv)}
++	if len(fields) == 0 {
++		res.err = "invocation is empty"
++		return res
++	}
++	if strings.HasPrefix(fields[0], "in-harness:") {
++		res.inHarness = true
++		return res
++	}
++	idx := 0
++	if filepath.Base(fields[0]) == "env" {
++		idx = 1
++		for idx < len(fields) {
++			token := fields[idx]
++			switch {
++			case token == "--":
++				idx++
++				goto command
++			case token == "-i" || token == "--ignore-environment":
++				res.env = make(map[string]string)
++				idx++
++			case token == "-u" && idx+1 < len(fields):
++				delete(res.env, fields[idx+1])
++				idx += 2
++			case strings.HasPrefix(token, "--unset="):
++				delete(res.env, strings.TrimPrefix(token, "--unset="))
++				idx++
++			case (token == "-C" || token == "--chdir") && idx+1 < len(fields):
++				res.cwd = doctorResolveCWD(res.cwd, fields[idx+1])
++				idx += 2
++			case strings.HasPrefix(token, "--chdir="):
++				res.cwd = doctorResolveCWD(res.cwd, strings.TrimPrefix(token, "--chdir="))
++				idx++
++			case doctorEnvAssignment(token):
++				key, value, _ := strings.Cut(token, "=")
++				res.env[key] = value
++				idx++
++			case strings.HasPrefix(token, "-"):
++				res.err = fmt.Sprintf("unsupported env option %q prevents faithful reachability probing", token)
++				return res
++			default:
++				goto command
++			}
++		}
++	}
++
++command:
++	if idx >= len(fields) {
++		res.err = "invocation has no executable after env prefix"
++		return res
++	}
++	program := fields[idx]
++	resolved, err := doctorLookPath(program, res.cwd, res.env)
++	if err != nil {
++		res.program = program
++		if strings.ContainsRune(program, filepath.Separator) {
++			res.missingPath = program
++			if !filepath.IsAbs(res.missingPath) {
++				res.missingPath = filepath.Clean(filepath.Join(res.cwd, res.missingPath))
++			}
++		}
++		res.err = fmt.Sprintf("real executable %q is not reachable under the invocation's effective PATH/cwd", program)
++		return res
++	}
++	if filepath.Base(resolved) == "seat-adapter.sh" {
++		if err := doctorRegularExecutable(resolved); err != nil {
++			res.adapterErr = fmt.Sprintf("seat adapter %q is unusable: %v", resolved, err)
++			return res
++		}
++		res.adapter = resolved
++		if idx+2 >= len(fields) {
++			res.err = "seat adapter invocation has no reviewer executable after its seat name"
++			return res
++		}
++		nested := doctorResolveCommand(strings.Join(fields[idx+2:], " "), res.cwd, res.env)
++		nested.adapter = res.adapter
++		return nested
++	}
++	if err := doctorRegularExecutable(resolved); err != nil {
++		res.err = fmt.Sprintf("resolved executable %q is unusable: %v", resolved, err)
++		return res
++	}
++	res.program = program
++	res.resolved = resolved
++	return res
++}
++
++func doctorResolveCWD(current, next string) string {
++	if filepath.IsAbs(next) {
++		return filepath.Clean(next)
++	}
++	return filepath.Join(current, next)
++}
++
++func doctorEnvAssignment(token string) bool {
++	key, _, ok := strings.Cut(token, "=")
++	if !ok || key == "" {
++		return false
++	}
++	for i, r := range key {
++		if !(r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9') {
++			return false
++		}
++	}
++	return true
++}
++
++func doctorLookPath(program, cwd string, env map[string]string) (string, error) {
++	if strings.ContainsRune(program, filepath.Separator) {
++		path := program
++		if !filepath.IsAbs(path) {
++			path = filepath.Join(cwd, path)
++		}
++		if err := doctorRegularExecutable(path); err != nil {
++			return "", err
++		}
++		return filepath.Clean(path), nil
++	}
++	pathValue, ok := env["PATH"]
++	if !ok || pathValue == "" {
++		return "", exec.ErrNotFound
++	}
++	for _, dir := range filepath.SplitList(pathValue) {
++		if dir == "" {
++			dir = cwd
++		} else if !filepath.IsAbs(dir) {
++			dir = filepath.Join(cwd, dir)
++		}
++		candidate := filepath.Join(dir, program)
++		if doctorRegularExecutable(candidate) == nil {
++			return candidate, nil
++		}
++	}
++	return "", exec.ErrNotFound
++}
++
++func doctorRegularExecutable(path string) error {
++	info, err := os.Stat(path)
++	if err != nil {
++		return err
++	}
++	if !info.Mode().IsRegular() {
++		return fmt.Errorf("not a regular file")
++	}
++	if info.Mode().Perm()&0o111 == 0 {
++		return fmt.Errorf("not executable")
++	}
++	return nil
++}
++
++func cloneDoctorEnv(in map[string]string) map[string]string {
++	out := make(map[string]string, len(in))
++	for key, value := range in {
++		out[key] = value
++	}
++	return out
++}
++
++func doctorGitEnv() []string {
++	keep := map[string]bool{"PATH": true, "HOME": true, "XDG_CONFIG_HOME": true, "TMPDIR": true, "USER": true, "LOGNAME": true, "LANG": true, "LC_ALL": true, "SSH_AUTH_SOCK": true}
++	env := make([]string, 0, len(keep)+5)
++	for _, item := range os.Environ() {
++		key, _, _ := strings.Cut(item, "=")
++		if keep[key] {
++			env = append(env, item)
++		}
++	}
++	return append(env,
++		"GIT_OPTIONAL_LOCKS=0",
++		"GIT_NO_LAZY_FETCH=1",
++		"GIT_NO_REPLACE_OBJECTS=1",
++		"GIT_TERMINAL_PROMPT=0",
++	)
++}
++
++func doctorNeutralRemoteEnv() []string {
++	base := doctorGitEnv()
++	filtered := make([]string, 0, len(base)+8)
++	for _, item := range base {
++		key, _, _ := strings.Cut(item, "=")
++		if key == "HOME" || key == "XDG_CONFIG_HOME" {
++			continue
++		}
++		filtered = append(filtered, item)
++	}
++	return append(filtered,
++		"HOME=/nonexistent-etude-doctor",
++		"XDG_CONFIG_HOME=/nonexistent-etude-doctor",
++		"GIT_CONFIG_NOSYSTEM=1",
++		"GIT_CONFIG_GLOBAL=/dev/null",
++		"GIT_ASKPASS=/usr/bin/false",
++		"SSH_ASKPASS=/usr/bin/false",
++		"GIT_SSH_COMMAND=ssh -F /dev/null -o ProxyCommand=none -o BatchMode=yes -o ControlMaster=no",
++		"GIT_CONFIG_COUNT=3",
++		"GIT_CONFIG_KEY_0=credential.helper",
++		"GIT_CONFIG_VALUE_0=",
++		"GIT_CONFIG_KEY_1=protocol.ext.allow",
++		"GIT_CONFIG_VALUE_1=never",
++		"GIT_CONFIG_KEY_2=core.gitProxy",
++		"GIT_CONFIG_VALUE_2=none",
++	)
++}
++
++func doctorNeutralDir(repoRoot string) string {
++	volume := filepath.VolumeName(repoRoot)
++	if volume == "" {
++		return string(filepath.Separator)
++	}
++	return volume + string(filepath.Separator)
++}
+diff --git a/internal/cli/doctor_test.go b/internal/cli/doctor_test.go
+new file mode 100644
+index 0000000..3348bd1
+--- /dev/null
++++ b/internal/cli/doctor_test.go
+@@ -0,0 +1,430 @@
++package cli
++
++import (
++	"context"
++	"crypto/sha256"
++	"fmt"
++	"io/fs"
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++	"testing"
++)
++
++func TestDoctorIsRegisteredSubcommand(t *testing.T) {
++	stdout, stderr, err := execute("doctor", "--help")
++	if err != nil {
++		t.Fatalf("doctor --help: %v\nstderr: %s", err, stderr)
++	}
++	if !strings.Contains(stdout, "read-only") && !strings.Contains(stdout, "safe and working") {
++		t.Fatalf("doctor help does not describe the command: %s", stdout)
++	}
++}
++
++func TestDoctorHealthyInitConfiguration(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	chdir(t, repo)
++
++	stdout, stderr, err := execute("doctor")
++	if err != nil {
++		t.Fatalf("doctor: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
++	}
++	for _, want := range []string{
++		"OK config",
++		"OK fetch-refspec[origin]",
++		"OK fetch-mirror[origin]",
++		"OK push-refspec[origin]",
++	} {
++		if !strings.Contains(stdout, want) {
++			t.Errorf("healthy output missing %q:\n%s", want, stdout)
++		}
++	}
++	if strings.Contains(stdout, "FAIL") {
++		t.Fatalf("healthy doctor emitted FAIL:\n%s", stdout)
++	}
++}
++
++func TestDoctorDangerousFetchFailsWithExactScopedRemediation(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	danger := "+refs/etude/*:refs/etude/*"
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.fetch", danger)
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil {
++		t.Fatalf("doctor succeeded with dangerous fetch:\n%s", stdout)
++	}
++	realRepo, resolveErr := filepath.EvalSymlinks(repo)
++	if resolveErr != nil {
++		t.Fatal(resolveErr)
++	}
++	origin := filepath.Join(realRepo, ".git", "config")
++	want := "git config --file " + doctorShellQuote(origin) + " --unset-all 'remote.origin.fetch' '" + regexpLiteral(danger) + "'"
++	if !strings.Contains(stdout, "FAIL fetch-refspec[origin]") || !strings.Contains(stdout, want) {
++		t.Fatalf("dangerous finding/remediation missing\nwant: %s\ngot:\n%s", want, stdout)
++	}
++}
++
++func TestDoctorMissingPushRefspecFailsWithInitRemediation(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil {
++		t.Fatalf("doctor succeeded without push mappings:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, "remedy: etude init --remote 'origin'") {
++		t.Fatalf("missing push finding/remediation absent:\n%s", stdout)
++	}
++}
++
++func TestDoctorAcceptsNestedRemoteMirrorLayout(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	for _, value := range doctorConfigValues(t, repo, "remote.origin.fetch") {
++		if strings.Contains(value, "refs/etude-mirror/") {
++			gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.fetch", "^"+regexpLiteral(value)+"$")
++		}
++	}
++	for _, kind := range []string{"runs", "retros", "evals"} {
++		gitCapture(t, repo, "config", "--local", "--add", "remote.origin.fetch", "+refs/etude/"+kind+"/*:refs/etude/remotes/origin/"+kind+"/*")
++	}
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err != nil {
++		t.Fatalf("doctor rejected safe nested mirror layout: %v\n%s", err, stdout)
++	}
++	if !strings.Contains(stdout, "OK fetch-mirror[origin]") {
++		t.Fatalf("nested mirror not recognized:\n%s", stdout)
++	}
++}
++
++func TestDoctorOldSingleNamespaceLayoutFails(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.fetch", "+refs/etude/runs/*:refs/etude/runs/*")
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil || !strings.Contains(stdout, "FAIL fetch-refspec[origin]") {
++		t.Fatalf("old single namespace was not rejected: err=%v\n%s", err, stdout)
++	}
++}
++
++func TestDoctorMissingRubricRequiresHumanAuthorship(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	rubric := filepath.Join(repo, ".etude", "evals", "plan-rubric.md")
++	if err := os.Remove(rubric); err != nil {
++		t.Fatal(err)
++	}
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil {
++		t.Fatalf("doctor succeeded with missing rubric:\n%s", stdout)
++	}
++	if !strings.Contains(stdout, `stage "plan" rubric "evals/plan-rubric.md"`) || !strings.Contains(stdout, "HUMAN AUTHORSHIP REQUIRED") {
++		t.Fatalf("missing rubric is not precise/human-authored:\n%s", stdout)
++	}
++	if strings.Contains(stdout, "touch ") || strings.Contains(stdout, "mkdir ") {
++		t.Fatalf("doctor fabricated a rubric repair command:\n%s", stdout)
++	}
++}
++
++func TestDoctorConfigCrossResolutionFails(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	path := filepath.Join(repo, ".etude", "workflow.yaml")
++	data, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	updated := strings.Replace(string(data), "    skill: dev-planner\n", "    skill: dev-planner\n    runner:\n      name: absent-seat\n", 1)
++	if updated == string(data) {
++		t.Fatal("default workflow has no plan skill to augment")
++	}
++	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil || !strings.Contains(stdout, `references undefined registry seat "absent-seat"`) {
++		t.Fatalf("cross-resolution failure absent: err=%v\n%s", err, stdout)
++	}
++}
++
++func TestDoctorSeatResolutionLooksThroughAdapterAndEnv(t *testing.T) {
++	dir := t.TempDir()
++	adapter := filepath.Join(dir, "seat-adapter.sh")
++	writeExecutable(t, adapter)
++	base := map[string]string{"PATH": dir}
++
++	for _, invoke := range []string{
++		"seat-adapter.sh codex missing-reviewer exec --json",
++		"env -u TOKEN -- seat-adapter.sh opus missing-reviewer -p",
++	} {
++		res := doctorResolveCommand(invoke, dir, base)
++		if res.err == "" || !strings.Contains(res.err, `real executable "missing-reviewer"`) {
++			t.Fatalf("%q resolved the wrapper instead of rejecting missing reviewer: %+v", invoke, res)
++		}
++	}
++
++	reviewer := filepath.Join(dir, "reviewer")
++	writeExecutable(t, reviewer)
++	res := doctorResolveCommand("env -- seat-adapter.sh codex reviewer exec", dir, base)
++	if res.err != "" || res.adapter == "" || res.resolved != reviewer {
++		t.Fatalf("adapter/reviewer resolution = %+v", res)
++	}
++}
++
++func TestDoctorShellQuoteIsLiteral(t *testing.T) {
++	value := `+refs/etude/runs/o'hare/*:refs/etude/runs/o'hare/*`
++	entry := doctorConfigEntry{origin: "file:/tmp/config with ' quote", value: value}
++	command := doctorConfigUnsetRemediation("/repo", "remote.origin.fetch", entry)
++	for _, want := range []string{"git config --file", `'"'"'`, doctorShellQuote(regexpLiteral(value))} {
++		if !strings.Contains(command, want) {
++			t.Fatalf("quoted command missing %q: %s", want, command)
++		}
++	}
++}
++
++func TestDoctorDoesNotMutateRepository(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	before := snapshotDoctorRepo(t, repo)
++	chdir(t, repo)
++	if stdout, stderr, err := execute("doctor"); err != nil {
++		t.Fatalf("doctor: %v\n%s\n%s", err, stdout, stderr)
++	}
++	after := snapshotDoctorRepo(t, repo)
++	if before != after {
++		t.Fatalf("doctor mutated repository\nbefore %s\nafter  %s", before, after)
++	}
++}
++
++func TestDoctorReportsUnpushedRunRef(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/local-only", head)
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err != nil {
++		t.Fatalf("unpushed run ref is a warning, got %v:\n%s", err, stdout)
++	}
++	if !strings.Contains(stdout, "refs/etude/runs/local-only is absent") || !strings.Contains(stdout, "remedy: etude sync --remote 'origin'") {
++		t.Fatalf("unpushed ref/remedy absent:\n%s", stdout)
++	}
++}
++
++func TestDoctorBroadPartialGlobEscalatesOnlyForMatchingAtRiskRef(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	partial := "+refs/*/unpushed:refs/*/unpushed"
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.fetch", partial)
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err != nil || !strings.Contains(stdout, "WARN fetch-refspec[origin]") {
++		t.Fatalf("broad mapping without matching local exposure should warn: err=%v\n%s", err, stdout)
++	}
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/unpushed", head)
++	stdout, _, err = execute("doctor")
++	if err == nil || !strings.Contains(stdout, "FAIL fetch-refspec[origin]") {
++		t.Fatalf("matching unpushed ref did not escalate broad hazard: err=%v\n%s", err, stdout)
++	}
++	if !strings.Contains(stdout, "HUMAN AUTHORSHIP REQUIRED") {
++		t.Fatalf("broad user mapping received no human-only remediation:\n%s", stdout)
++	}
++}
++
++func TestDoctorMissingRunnerScriptFails(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	registryPath := filepath.Join(repo, ".etude", "registry.yaml")
++	data, err := os.ReadFile(registryPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	data = []byte(strings.Replace(string(data), "claude -p --model opus", "scripts/missing-runner.sh", 1))
++	if err := os.WriteFile(registryPath, data, 0o644); err != nil {
++		t.Fatal(err)
++	}
++	chdir(t, repo)
++
++	stdout, _, err := execute("doctor")
++	if err == nil || !strings.Contains(stdout, "FAIL command[seat") || !strings.Contains(stdout, "regular executable runner script") {
++		t.Fatalf("missing referenced runner script was not a failure: err=%v\n%s", err, stdout)
++	}
++}
++
++func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
++	for name, value := range map[string]string{
++		"delete":        ":refs/etude/runs/x",
++		"single":        "refs/etude/runs/x:refs/etude/runs/x",
++		"name-changing": "refs/etude/*:refs/archive/*",
++	} {
++		t.Run(name, func(t *testing.T) {
++			repo, _ := doctorRepo(t)
++			gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
++			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", value)
++			chdir(t, repo)
++			stdout, _, err := execute("doctor")
++			if err == nil || !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, name) {
++				t.Fatalf("shape %q was not diagnosed: err=%v\n%s", name, err, stdout)
++			}
++		})
++	}
++}
++
++func TestDoctorMirrorPushBooleanProvidesCoverage(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
++	gitCapture(t, repo, "config", "--local", "remote.origin.mirror", "yes")
++	chdir(t, repo)
++	stdout, _, err := execute("doctor")
++	if err != nil || !strings.Contains(stdout, "mirror-push semantics cover") {
++		t.Fatalf("mirror push was not accepted: err=%v\n%s", err, stdout)
++	}
++}
++
++func TestDoctorCommandResolutionHonorsEnvPathAndChdir(t *testing.T) {
++	root := t.TempDir()
++	bin := filepath.Join(root, "tools")
++	if err := os.MkdirAll(bin, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	writeExecutable(t, filepath.Join(bin, "reviewer"))
++	res := doctorResolveCommand("env -i --chdir tools PATH=. -- reviewer", root, map[string]string{"PATH": "/missing"})
++	if res.err != "" || res.resolved != filepath.Join(bin, "reviewer") {
++		t.Fatalf("effective env/cwd resolution = %+v", res)
++	}
++}
++
++func TestDoctorGitAllowlistRejectsWriteCapableCalls(t *testing.T) {
++	for _, args := range [][]string{{"fetch", "origin"}, {"update-ref", "refs/etude/runs/x", "HEAD"}, {"config", "--unset", "x"}} {
++		if err := doctorValidateGitArgs(args); err == nil {
++			t.Errorf("allowlist accepted %q", args)
++		}
++	}
++}
++
++func TestDoctorRejectsCustomRemoteHelperWithoutExecutingIt(t *testing.T) {
++	g := doctorGit{root: initCaptureRepo(t)}
++	if _, err := g.remoteEtudeRefs(context.Background(), "evil::payload"); err == nil || !strings.Contains(err.Error(), "not executed") {
++		t.Fatalf("custom helper rejection = %v", err)
++	}
++}
++
++func TestDoctorRubricDirectoryFails(t *testing.T) {
++	repo, _ := doctorRepo(t)
++	path := filepath.Join(repo, ".etude", "evals", "plan-rubric.md")
++	if err := os.Remove(path); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(path, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	chdir(t, repo)
++	stdout, _, err := execute("doctor")
++	if err == nil || !strings.Contains(stdout, "not a regular file") {
++		t.Fatalf("rubric directory accepted: err=%v\n%s", err, stdout)
++	}
++}
++
++func doctorRepo(t *testing.T) (string, string) {
++	t.Helper()
++	repo := initCaptureRepo(t)
++	remote := filepath.Join(t.TempDir(), "remote.git")
++	gitCapture(t, filepath.Dir(remote), "init", "--bare", remote)
++	gitCapture(t, repo, "remote", "add", "origin", remote)
++	chdir(t, repo)
++	if stdout, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init: %v\n%s\n%s", err, stdout, stderr)
++	}
++	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	writeExecutable(t, filepath.Join(repo, "scripts", "seat-adapter.sh"))
++	fakeBin := filepath.Join(repo, "test-bin")
++	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	writeExecutable(t, filepath.Join(fakeBin, "claude"))
++	writeExecutable(t, filepath.Join(fakeBin, "codex"))
++	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
++	return repo, remote
++}
++
++func doctorConfigValues(t *testing.T, repo, key string) []string {
++	t.Helper()
++	out := strings.TrimSpace(gitCapture(t, repo, "config", "--local", "--get-all", key))
++	if out == "" {
++		return nil
++	}
++	return strings.Split(out, "\n")
++}
++
++func regexpLiteral(value string) string {
++	replacer := strings.NewReplacer(`\`, `\\`, `.`, `\.`, `+`, `\+`, `*`, `\*`, `?`, `\?`, `(`, `\(`, `)`, `\)`, `[`, `\[`, `]`, `\]`, `{`, `\{`, `}`, `\}`, `^`, `\^`, `$`, `\$`, `|`, `\|`)
++	return "^" + replacer.Replace(value) + "$"
++}
++
++func writeExecutable(t *testing.T, path string) {
++	t.Helper()
++	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func snapshotDoctorRepo(t *testing.T, root string) string {
++	t.Helper()
++	entries := make([]string, 0, 64)
++	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
++		if err != nil {
++			return err
++		}
++		rel, err := filepath.Rel(root, path)
++		if err != nil {
++			return err
++		}
++		info, err := entry.Info()
++		if err != nil {
++			return err
++		}
++		metadata := fmt.Sprintf("%s:%s:%o:%d", rel, info.Mode().Type(), info.Mode().Perm(), info.ModTime().UnixNano())
++		if entry.Type()&os.ModeSymlink != 0 {
++			target, err := os.Readlink(path)
++			if err != nil {
++				return err
++			}
++			entries = append(entries, metadata+":"+target)
++			return nil
++		}
++		if entry.IsDir() {
++			entries = append(entries, metadata)
++			return nil
++		}
++		data, err := os.ReadFile(path)
++		if err != nil {
++			return err
++		}
++		sum := sha256.Sum256(data)
++		entries = append(entries, fmt.Sprintf("%s:%x", metadata, sum))
++		return nil
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	refs := gitCapture(t, root, "for-each-ref", "--format=%(refname) %(objectname)")
++	sort.Strings(entries)
++	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(entries, "\n")+"\n"+refs)))
++}
++
++func TestDoctorRefspecParserRejectsMalformedValues(t *testing.T) {
++	g := doctorGit{root: initCaptureRepo(t)}
++	for _, value := range []string{"refs/etude/*:refs/etude/runs/*:*", "refs/etude/*:refs/etude/runs", "^refs/etude/*:refs/x/*"} {
++		if _, err := g.parseRefspec(context.Background(), value, true); err == nil {
++			t.Errorf("parseRefspec(%q) succeeded", value)
++		}
++	}
++}
+diff --git a/internal/cli/root.go b/internal/cli/root.go
+index ad48fe0..fe06a6e 100644
+--- a/internal/cli/root.go
++++ b/internal/cli/root.go
+@@ -45,6 +45,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
+ 	cmd.AddCommand(newCaptureCommand(out, errOut))
+ 	cmd.AddCommand(newCaptureGateCommand(out, errOut))
+ 	cmd.AddCommand(newCaptureRunCommand(out, errOut))
++	cmd.AddCommand(newDoctorCommand(out, errOut))
+ 	cmd.AddCommand(newGCCommand(out, errOut))
+ 	cmd.AddCommand(newGateCommand(out, errOut))
+ 	cmd.AddCommand(newImportCommand(out, errOut))
