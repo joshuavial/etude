@@ -1,0 +1,21 @@
+### C1. Docs-reality-drift retro (2026-05-25)
+- **Trigger/date/scope:** a post-Phase-3/4 docs-vs-CLI audit. (The write-up was
+  authored mid-session but reverted as out-of-scope per the scope-fence rule; it
+  survives at `/tmp/docs-reality-drift-retro.md` and is captured here from the
+  bead trail.)
+- **Findings:** README omitted shipped `bench`/`gc`/`reindex`; BRIEF called
+  shipped `bench` "future work"; a stale local `./bin/etude` could misreport the
+  command surface; there was no mechanical source-built-CLI inventory check.
+- **Recommended changes / Landed:** a mechanical docs-reality guard
+  `[IMPLEMENTED]` → **etude-phase-prep.5** (commit 7851222:
+  `scripts/docs-reality-check.sh` + `make docs-reality` + a docs-checklist step);
+  the README/BRIEF/index refresh `[IMPLEMENTED]` → **etude-phase-prep.2** (commit
+  e16b9b6, which made the guard pass — a closed loop).
+- **Follow-up beads / Remaining:** etude-phase-prep.5 (closed), etude-phase-prep.2
+  (closed). An epic-close holistic docs/reality reconciliation: `[IMPLEMENTED]` →
+  **etude-4o0** (`make reconcile` target composing `make docs-reality` +
+  `make docs-check`; mandatory checklist gate in docs-checklist.md; Epic-Close Gate
+  section in review-gate-runbook.md; commit SHA: etude-4o0).
+
+---
+
