@@ -112,6 +112,98 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-17T09:42:42.496364Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "36e6a49ac6b8d7131ad5776e66ccba38c5fc23f4e6e8b5bc037d613050cc92bd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Acceptance evidence does not name a check that resume/replay/forward-replay/bench still resolve `ResolvedStage.RunGitSHA` to the original pre-caller checkout; the invariant is listed but only implicitly covered by `make test` — consider naming it as explicit evidence. 2. The v4 rule \"caller runs require `original_git_sha`, log-only v4 runs may omit it\" would be clearer as an explicit reader-side conditional-requirement assertion in the manifest round-trip tests, so a future writer cannot silently emit a caller run without it. 3. Worth stating whether the new integration test asserts the sidecar path stays in invocation scratch (not the caller worktree), since that is the half of invariant 1 most likely to drift during the rebase."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "d61bc4e4808fcfb882d4a0d8555085264934271e91605b6b8ed107d7146f2320",
+            "path": "artifacts/sha256/d6/d61bc4e4808fcfb882d4a0d8555085264934271e91605b6b8ed107d7146f2320",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 894
+          },
+          "session": {
+            "session_id": "opus-421d1570e42a8160",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "421d1570e42a8160ef0ebbb199e00865ab017251fd46cd786be4a2a4060a9e13",
+              "path": "artifacts/sha256/42/421d1570e42a8160ef0ebbb199e00865ab017251fd46cd786be4a2a4060a9e13",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 801
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:43:09.080444Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Add an explicit log-only v4 fixture without `OriginalGitSHA` to lock in the stated compatibility behavior."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "8c77e01ac7057abb0e0f40f4e80fce6391f0a254f51b1f9099ea97c978aae355",
+            "path": "artifacts/sha256/8c/8c77e01ac7057abb0e0f40f4e80fce6391f0a254f51b1f9099ea97c978aae355",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 256
+          },
+          "session": {
+            "session_id": "codex-f99f2871699da156",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "f99f2871699da1568bb2327744d8987e91b3af72dc05f2f9e0d6254d471d15f1",
+              "path": "artifacts/sha256/f9/f99f2871699da1568bb2327744d8987e91b3af72dc05f2f9e0d6254d471d15f1",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 164
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:43:29.577172Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:43:29.578539Z"
     }
   ]
 }
