@@ -1,0 +1,76 @@
+## Final Review
+
+Status: pass
+Recommendation: close bead after dogfood-close capture, scoped commit, and push
+
+Bead:
+- etude-aul.2 - bench-gate: model a phase gate as an Evaluator
+
+Scoped implementation files:
+- internal/eval/eval.go
+- internal/eval/judge.go
+- internal/eval/exec_judge.go
+- internal/eval/result.go
+- internal/eval/gateevaluator.go
+- internal/eval/rubricevaluator.go
+- internal/eval/pairwiseevaluator.go
+- internal/eval/gateevaluator_test.go
+- internal/eval/exec_judge_test.go
+- internal/eval/result_test.go
+- internal/eval/rubricevaluator_test.go
+- internal/eval/pairwiseevaluator_test.go
+
+Out-of-scope dirty files to avoid committing with this bead:
+- .gitignore
+- .claude/skills/etude-review/
+- .etude/gates.yaml
+- tmp/ scratch files except gate/capture artifacts used by dogfood-close
+
+Plan conformance:
+- pass. The implementation adds a first-class eval method "gate" and ScoreGate.
+- pass. Gate verdicts use Score.Passed, with true=GO and false=BLOCK.
+- pass. Gate scores and judge outputs reject value, max, winner, and confidence.
+- pass. JudgeResponse and ExecJudge wire output support the "passed" field for gate.
+- pass. Rubric and pairwise validation explicitly reject passed, preserving existing method contracts.
+- pass. GateEvaluator is judge-backed, requires exactly one target and one non-empty gate-prompt context, forwards additional context, and returns ScoreGate/Passed plus findings.
+- pass. No CLI wiring, labels/scoring, confusion matrix, prompt persistence, or shipped docs were added.
+
+Gate history:
+- plan.r1: rerun required, L2, Codex required explicit rejection of passed for rubric/pairwise and defensive evaluator checks
+- plan.r2: pass, L2
+- implement.r1: pass, L3, Opus substitute + Codex
+- verify.r1: pass, L2, Opus substitute + Codex + Grok direct retry
+- docs.r1: pass, L4 recorded as schema tier 3
+
+Verification:
+- go test -count=1 ./internal/eval/...: PASS
+- make build: PASS
+- make lint: PASS
+- make test: PASS
+- make docs-reality: PASS
+- make dogfood-audit: PASS
+
+Docs:
+- no shipped-doc changes required. This bead does not ship `etude bench --gate` CLI behavior.
+- shipped docs remain accurate for current `etude bench <stage>` behavior.
+- user-facing bench --gate docs remain deferred to the later CLI behavior bead.
+
+Optional reviewer improvements:
+- clarify the wrong-method sentinel in TestGateEvaluatorValidation: deferred as readability-only; tests are correct and all gates passed.
+
+Close readiness:
+- ready to run scripts/dogfood-close.sh after this final gate passes.
+- ready for scoped commit of only internal/eval files listed above.
+- unrelated dirty files remain excluded from the bead commit.
+
+Provenance:
+- final review artifact created at: 2026-06-07T09:40:35Z
+- runner: Codex
+- approval surface: local file tmp/gates-aul.2/final-review-artifact.md
+
+Review gate:
+- required: yes
+- phase: review
+- tier: L4
+- attempt: 1
+- result: pending

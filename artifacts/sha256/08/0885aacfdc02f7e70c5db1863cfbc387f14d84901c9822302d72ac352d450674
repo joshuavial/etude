@@ -1,0 +1,52 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Inputs:
+- bead: etude-aul.2 - bench-gate: model a phase gate as an Evaluator
+- implementation artifact: dirty working tree files under internal/eval for gate method/model/evaluator/tests
+- approved plan: bd design field for etude-aul.2
+- implement gate evidence: tmp/gates-aul.2/implement.r1.json
+- unrelated dirty state: .gitignore, .claude/skills/etude-review, .etude/gates.yaml, tmp
+
+Automated tests:
+- changes: new GateEvaluator tests, judge-output validation tests, EvalResult gate validation/round-trip tests, and defensive rubric/pairwise regression tests
+- state: dirty/uncommitted, scoped to this bead except unrelated files listed above
+- commands:
+  - gofmt -w internal/eval/judge.go internal/eval/gateevaluator_test.go: PASS
+  - go test -count=1 ./internal/eval/...: PASS
+  - make build: PASS
+  - make lint: PASS
+  - make test: PASS
+  - make docs-reality: PASS
+  - make dogfood-audit: PASS
+- result: pass; no verification failures observed
+
+Manual tests:
+- required: no
+- reason: this bead adds an internal eval method and evaluator only. It does not add or change a runnable CLI command or user-facing workflow. etude bench --gate CLI wiring is a later bead.
+- result: not applicable
+
+Docs:
+- changed: no user-facing docs
+- result: no docs change required for this internal API surface. User-facing bench --gate docs belong with the later CLI behavior bead.
+
+QA findings:
+- correctness: pass. The implementation adds method "gate", ScoreGate, JudgeResponse.Passed, gate judge-output validation, EvalResult gate validation, and a judge-backed GateEvaluator using exactly one non-empty gate-prompt context.
+- coverage: pass. Tests cover GO/BLOCK mapping, findings preservation, invalid GateEvaluator config, full JudgeRequest forwarding, incoherent gate responses, ExecJudge gate output, rubric/pairwise rejection of passed, and EvalResult gate coherence.
+- regressions: pass. Existing rubric and pairwise evaluators now defensively reject JudgeResponse.Passed, and validateJudgeOutput rejects passed for those methods.
+- code quality: pass. Gate is modeled as a small internal eval method without CLI, bench scoring, labels, or prompt persistence.
+- risks: no material risk blocks progress. Optional future cleanup: make the wrong-method test table sentinel in GateEvaluator validation clearer.
+
+Provenance:
+- verify artifact created at: 2026-06-07T09:34:07Z
+- runner: Codex
+- approval surface: local file tmp/gates-aul.2/verify-artifact.md
+
+Review gate:
+- required: yes
+- phase: verify
+- tier: L2
+- attempt: 1
+- result: pending

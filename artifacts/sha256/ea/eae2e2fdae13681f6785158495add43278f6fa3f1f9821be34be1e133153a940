@@ -1,0 +1,129 @@
+## Plan
+
+**Approach:**
+Model a phase gate as a first-class `eval` method named `gate`, implemented by a
+new judge-backed `GateEvaluator`. This keeps the abstraction inside the existing
+Evaluator/Judge pipeline: one recorded artifact is the target, the gate prompt
+variant is criteria/context, and the evaluator returns a verdict-shaped
+Evaluation. No bench CLI wiring, label scoring, confusion matrix, or corpus
+adapter work lands in this bead.
+
+1. Extend the eval score/model contract with method `gate`.
+   - Add `ScoreGate ScoreKind = "gate"`.
+   - Reuse `Score.Passed` as the verdict bit:
+     - `Passed=true` means the gate returned GO.
+     - `Passed=false` means the gate returned BLOCK.
+   - Keep `Value`, `Max`, `Winner`, and `Confidence` absent for gate scores.
+   - Add `"gate"` to EvalResult method validation.
+   - For persisted `EvalResult`, gate requires exactly one target and no Rubric or
+     Assertion config. Context may hold the prompt variant and any extra inputs.
+   - This is distinct from `assertion`: assertions are deterministic built-in
+     checks; gate is a judge-backed reviewer invocation.
+
+2. Extend Judge output shape for the gate method.
+   - Add `Passed *bool` to `JudgeResponse` and `judgeOutputJSON` with JSON key
+     `passed`.
+   - `validateJudgeOutput("gate", ...)` requires `passed` to be present and
+     rejects `value`, `max`, `winner`, and `confidence`.
+   - Preserve existing rubric/pairwise contracts: once `passed` is a known wire
+     field, `validateJudgeOutput("rubric", ...)` and
+     `validateJudgeOutput("pairwise", ...)` must explicitly reject it. This keeps
+     previously-invalid `{"passed":...}` judge output from becoming accepted for
+     existing methods.
+   - Findings remain the generic structured observation list. Required gate
+     changes can be represented as `severity:error`; optional observations can
+     be `warning` or `info`. This bead does not add a richer required/optional
+     schema; the later bench-gate CLI/reporting bead can choose presentation.
+
+3. Add `GateEvaluator` in `internal/eval/gateevaluator.go`.
+   - Shape:
+     `type GateEvaluator struct { Judge Judge }`
+   - Implements `Evaluator`.
+   - Validation:
+     - `req.Method == "gate"`;
+     - `req.Rubric == nil`;
+     - `req.Assertion == nil`;
+     - exactly one target artifact;
+     - `Judge` is non-nil;
+     - exactly one context input with role `gate-prompt` and non-empty content
+       (multiple prompt contexts are rejected so aul.4 gets a deterministic
+       handoff contract).
+   - It builds a `JudgeRequest{Method:"gate", Targets: one target, Context:
+     req.Context, Producer:req.Producer}` and calls `Judge`.
+   - It validates the judge response defensively, even for `StubJudge` paths:
+     `Passed` must be non-nil; method-incoherent value/max/winner/confidence are
+     rejected; findings use existing severity/message validation.
+   - It returns `Evaluation{Score: Score{Kind: ScoreGate, Passed:
+     resp.Passed}, Findings: resp.Findings}`.
+
+4. Use existing `EvalInput.Context` for prompt variants; do not add prompt
+   persistence yet.
+   - A prompt variant can be materialized as an `EvalInput` with
+     `Role:"gate-prompt"`.
+   - When the later CLI persists gate-bench results, that prompt input can be
+     included in `EvalResult.Context` if it has an artifact source.
+   - This avoids a new prompt schema before labels/scoring and CLI wiring are
+     designed.
+
+**Files:**
+- `internal/eval/eval.go` - add `ScoreGate`; document gate score coherence.
+- `internal/eval/judge.go` - add `Passed *bool` to `JudgeResponse` and document
+  gate method.
+- `internal/eval/exec_judge.go` - add `passed` to the wire type and gate output
+  validation, and reject `passed` for rubric/pairwise output.
+- `internal/eval/result.go` - allow method `gate`; validate gate score/config/
+  targets; JSON round-trip `score.passed` already exists.
+- `internal/eval/gateevaluator.go` - new evaluator implementation.
+- `internal/eval/rubricevaluator.go` and `internal/eval/pairwiseevaluator.go` -
+  reject `JudgeResponse.Passed` defensively in their response-coherence checks.
+- Tests in `internal/eval/*_test.go` for each changed contract.
+
+**Tests:**
+- `GateEvaluator`:
+  - compile-time interface assertion;
+  - GO response maps to `Score{Kind:gate, Passed:true}`;
+  - BLOCK response maps to `Passed:false` and preserves findings;
+  - rejects wrong method, Rubric/Assertion config, zero or two targets, missing
+    `gate-prompt` context, empty prompt content, multiple prompt contexts, nil
+    Judge, and missing `Passed` from a `StubJudge`.
+- `ExecJudge`:
+  - `validateJudgeOutput("gate", {passed:true})` and `{passed:false}` pass;
+  - missing `passed`, value, max, winner, confidence, bad finding severity, and
+    unknown methods reject with `ErrJudgeOutputInvalid`;
+  - rubric and pairwise judge outputs containing `passed` reject with
+    `ErrJudgeOutputInvalid`;
+  - an end-to-end script writing `{"passed":false,"findings":[...]}` returns
+    `JudgeResponse.Passed=false`.
+- `RubricEvaluator` / `PairwiseEvaluator`:
+  - stub judge responses with `Passed` set are rejected, preserving existing
+    method coherence after `Passed` is added to `JudgeResponse`.
+- `EvalResult`:
+  - a valid gate eval result with one target and `ScoreGate/Passed` validates and
+    JSON round-trips;
+  - gate rejects missing `Passed`, value/max/winner/confidence, Rubric/Assertion
+    config, and two targets.
+
+**Docs:**
+- No shipped docs in this bead. This adds an internal eval method and no CLI
+  behavior. User-facing `etude bench --gate` docs land with `etude-aul.4`.
+- Add comments in code documenting the gate method and the `gate-prompt` context
+  convention so future CLI wiring has a stable contract.
+
+**Risks:**
+- Schema compatibility: adding method `gate` changes the eval result schema
+  surface. Mitigate with focused validation and JSON round-trip tests.
+- Overloading `Passed`: `Passed` is already used by assertion. Mitigate by
+  method-specific validation and by documenting that gate uses the same boolean
+  shape for GO/BLOCK while remaining a distinct method.
+- Prompt persistence: this bead intentionally keeps prompts as context inputs
+  rather than adding a prompt-specific schema. The later CLI bead must persist
+  prompt artifacts in `EvalResult.Context` when it writes real gate-bench evals.
+- Circular label/scoring trap is out of scope here. This bead only produces a
+  verdict-shaped evaluation; labels and scoring are owned by `etude-aul.3`.
+
+**Capture:**
+- inputs: bead `etude-aul.2`; epic `etude-aul` design; `internal/eval/eval.go`,
+  `judge.go`, `exec_judge.go`, `result.go`, `rubricevaluator.go`,
+  `pairwiseevaluator.go`, `assertionevaluator.go`; `internal/bench/run.go`; and
+  closed `etude-aul.1` commit `f1d8f1a768282e74981a0eed442ae628a0b5b02b`.
+- output: bead design field.

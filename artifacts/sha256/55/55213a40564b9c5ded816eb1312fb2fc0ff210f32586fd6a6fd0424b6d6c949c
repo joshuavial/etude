@@ -1,0 +1,947 @@
+commit 8669531fb04844d0c312d8c6d3ee57e42341df87
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Jun 7 17:44:53 2026 +0800
+
+    add gate evaluator method
+
+diff --git a/internal/eval/eval.go b/internal/eval/eval.go
+index ff4fcbe..c157990 100644
+--- a/internal/eval/eval.go
++++ b/internal/eval/eval.go
+@@ -13,6 +13,7 @@ const (
+ 	ScoreRubric    ScoreKind = "rubric"
+ 	ScorePairwise  ScoreKind = "pairwise"
+ 	ScoreAssertion ScoreKind = "assertion"
++	ScoreGate      ScoreKind = "gate"
+ )
+ 
+ // Winner is the pairwise outcome enum. Empty for non-pairwise.
+@@ -84,6 +85,7 @@ type AssertionSpec struct {
+ //	pairwise:  Kind=pairwise; Winner in {A,B,tie}; Value=Max=Passed=nil.
+ //	rubric:    Kind=rubric; Value in [0,Max], Max>0 (non-nil); Winner=""; Passed=nil.
+ //	assertion: Kind=assertion; Passed set (non-nil); Value=Max=nil; Winner="".
++//	gate:      Kind=gate; Passed set (non-nil); Value=Max=nil; Winner="".
+ //
+ // bench win-rate over a pairwise cohort:
+ //
+@@ -95,7 +97,7 @@ type Score struct {
+ 	Value      *float64 // rubric only
+ 	Max        *float64 // rubric only
+ 	Winner     Winner   // pairwise only
+-	Passed     *bool    // assertion only
++	Passed     *bool    // assertion and gate only
+ 	Confidence *float64 // optional; pairwise only (omitempty)
+ }
+ 
+@@ -121,6 +123,8 @@ type Evaluation struct {
+ //   - Targets are the artifact(s) being scored: len 1 for rubric/assertion,
+ //     len 2 (A, B) for pairwise.
+ //   - Context are unscored inputs the evaluator may read (task/plan/diff); optional.
++//     Gate evaluations use a context input with Role "gate-prompt" as the prompt
++//     variant convention; additional context inputs may be forwarded to the judge.
+ //
+ // Method is explicit — never inferred from which config pointer is set.
+ type EvalRequest struct {
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+index f5c77ca..4ddef82 100644
+--- a/internal/eval/exec_judge.go
++++ b/internal/eval/exec_judge.go
+@@ -47,6 +47,7 @@ var ErrJudgeOutputTooLarge = errors.New("judge output too large")
+ //	Value      → "value"      (*float64, omitempty) — required for rubric method
+ //	Max        → "max"        (*float64, omitempty) — required for rubric method
+ //	Winner     → "winner"     (string,   omitempty) — required for pairwise method (future)
++//	Passed     → "passed"     (*bool,    omitempty) — required for gate method
+ //	Confidence → "confidence" (*float64, omitempty) — optional, pairwise only
+ //	Findings   → "findings"   ([]object, omitempty) — optional structured observations
+ //	  severity → "severity"   (string) — "info" | "warning" | "error"
+@@ -82,12 +83,14 @@ var _ Judge = (*ExecJudge)(nil)
+ //	Value      → "value"
+ //	Max        → "max"
+ //	Winner     → "winner"
++//	Passed     → "passed"
+ //	Confidence → "confidence"
+ //	Findings   → "findings"
+ type judgeOutputJSON struct {
+ 	Value      *float64      `json:"value,omitempty"`
+ 	Max        *float64      `json:"max,omitempty"`
+ 	Winner     string        `json:"winner,omitempty"`
++	Passed     *bool         `json:"passed,omitempty"`
+ 	Confidence *float64      `json:"confidence,omitempty"`
+ 	Findings   []findingWire `json:"findings,omitempty"`
+ }
+@@ -257,6 +260,7 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
+ 		Value:      wire.Value,
+ 		Max:        wire.Max,
+ 		Winner:     Winner(wire.Winner),
++		Passed:     wire.Passed,
+ 		Confidence: wire.Confidence,
+ 	}
+ 	if len(wire.Findings) > 0 {
+@@ -291,6 +295,9 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
+ 		if w.Winner != "" {
+ 			return fmt.Errorf("%w: rubric method must not set winner", ErrJudgeOutputInvalid)
+ 		}
++		if w.Passed != nil {
++			return fmt.Errorf("%w: rubric method must not set passed", ErrJudgeOutputInvalid)
++		}
+ 		if w.Confidence != nil {
+ 			return fmt.Errorf("%w: rubric method must not set confidence", ErrJudgeOutputInvalid)
+ 		}
+@@ -305,9 +312,28 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
+ 		if w.Max != nil {
+ 			return fmt.Errorf("%w: pairwise method must not set max", ErrJudgeOutputInvalid)
+ 		}
++		if w.Passed != nil {
++			return fmt.Errorf("%w: pairwise method must not set passed", ErrJudgeOutputInvalid)
++		}
+ 		if w.Confidence != nil && (*w.Confidence < 0 || *w.Confidence > 1) {
+ 			return fmt.Errorf("%w: pairwise confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *w.Confidence)
+ 		}
++	case "gate":
++		if w.Passed == nil {
++			return fmt.Errorf("%w: gate method requires passed", ErrJudgeOutputInvalid)
++		}
++		if w.Value != nil {
++			return fmt.Errorf("%w: gate method must not set value", ErrJudgeOutputInvalid)
++		}
++		if w.Max != nil {
++			return fmt.Errorf("%w: gate method must not set max", ErrJudgeOutputInvalid)
++		}
++		if w.Winner != "" {
++			return fmt.Errorf("%w: gate method must not set winner", ErrJudgeOutputInvalid)
++		}
++		if w.Confidence != nil {
++			return fmt.Errorf("%w: gate method must not set confidence", ErrJudgeOutputInvalid)
++		}
+ 	default:
+ 		return fmt.Errorf("%w: unsupported method %q", ErrJudgeOutputInvalid, method)
+ 	}
+diff --git a/internal/eval/exec_judge_test.go b/internal/eval/exec_judge_test.go
+index cac432e..764004c 100644
+--- a/internal/eval/exec_judge_test.go
++++ b/internal/eval/exec_judge_test.go
+@@ -564,6 +564,7 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
+ func TestValidateJudgeOutput_Pairwise(t *testing.T) {
+ 	conf05 := 0.5
+ 	conf15 := 1.5
++	passed := true
+ 
+ 	t.Run("valid winner A", func(t *testing.T) {
+ 		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A"})
+@@ -615,6 +616,12 @@ func TestValidateJudgeOutput_Pairwise(t *testing.T) {
+ 			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+ 		}
+ 	})
++	t.Run("reject passed set", func(t *testing.T) {
++		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Passed: &passed})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
+ 	t.Run("reject confidence out of range", func(t *testing.T) {
+ 		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf15})
+ 		if !errors.Is(err, ErrJudgeOutputInvalid) {
+@@ -623,6 +630,106 @@ func TestValidateJudgeOutput_Pairwise(t *testing.T) {
+ 	})
+ }
+ 
++func TestValidateJudgeOutput_RubricRejectsPassed(t *testing.T) {
++	v := 5.0
++	m := 10.0
++	passed := true
++
++	err := validateJudgeOutput("rubric", judgeOutputJSON{Value: &v, Max: &m, Passed: &passed})
++	if !errors.Is(err, ErrJudgeOutputInvalid) {
++		t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++	}
++}
++
++func TestValidateJudgeOutput_Gate(t *testing.T) {
++	passedTrue := true
++	passedFalse := false
++	v := 5.0
++	m := 10.0
++	conf := 0.5
++
++	t.Run("valid passed true", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue})
++		if err != nil {
++			t.Fatalf("want nil, got %v", err)
++		}
++	})
++	t.Run("valid passed false", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedFalse})
++		if err != nil {
++			t.Fatalf("want nil, got %v", err)
++		}
++	})
++	t.Run("missing passed", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject value", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Value: &v})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject max", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Max: &m})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject winner", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Winner: "A"})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject confidence", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Confidence: &conf})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++	t.Run("reject bad finding", func(t *testing.T) {
++		err := validateJudgeOutput("gate", judgeOutputJSON{
++			Passed: &passedTrue,
++			Findings: []findingWire{{
++				Severity: "bad",
++				Message:  "x",
++			}},
++		})
++		if !errors.Is(err, ErrJudgeOutputInvalid) {
++			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++		}
++	})
++}
++
++func TestExecJudge_GateOutput(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("POSIX sh tests skipped on Windows")
++	}
++
++	dir := t.TempDir()
++	script := filepath.Join(dir, "judge.sh")
++	writeJudgeScript(t, script, `printf '{"passed":false,"findings":[{"severity":"error","message":"required change"}]}' > "$ETUDE_OUTPUT_FILE"`)
++
++	j := &ExecJudge{Command: []string{script}}
++	resp, err := j.Judge(context.Background(), JudgeRequest{
++		Method:  "gate",
++		Targets: []JudgeInput{{Role: "artifact", Content: []byte("plan")}},
++		Context: []JudgeInput{{Role: GatePromptRole, Content: []byte("prompt")}},
++	})
++	if err != nil {
++		t.Fatalf("Judge: %v", err)
++	}
++	if resp.Passed == nil || *resp.Passed != false {
++		t.Fatalf("Passed = %v, want false", resp.Passed)
++	}
++	if len(resp.Findings) != 1 || resp.Findings[0].Message != "required change" {
++		t.Fatalf("Findings = %+v, want required change", resp.Findings)
++	}
++}
++
+ func TestExecJudge_RoleWithPathSeparator(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+ 		t.Skip("POSIX sh tests skipped on Windows")
+diff --git a/internal/eval/gateevaluator.go b/internal/eval/gateevaluator.go
+new file mode 100644
+index 0000000..c247e64
+--- /dev/null
++++ b/internal/eval/gateevaluator.go
+@@ -0,0 +1,131 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++)
++
++// ErrGateConfig is returned for invalid gate evaluator configuration.
++var ErrGateConfig = errors.New("invalid gate config")
++
++// GatePromptRole is the context role convention for the gate prompt variant.
++// GateEvaluator requires exactly one non-empty context input with this role and
++// forwards the full context slice to the Judge.
++const GatePromptRole = "gate-prompt"
++
++// GateEvaluator implements Evaluator by invoking a Judge as a phase-gate
++// reviewer over one recorded artifact.
++//
++// Method "gate" returns Score.Passed=true for GO and false for BLOCK. It is
++// judge-backed, unlike assertion checks, and uses Context to carry the
++// gate-prompt variant plus any additional unscored review inputs.
++type GateEvaluator struct {
++	Judge Judge
++}
++
++var _ Evaluator = (*GateEvaluator)(nil)
++
++// Evaluate scores one target artifact with a gate prompt carried in Context.
++func (g *GateEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	if req.Method != "gate" {
++		return Evaluation{}, fmt.Errorf("GateEvaluator requires method \"gate\", got %q", req.Method)
++	}
++	if req.Rubric != nil {
++		return Evaluation{}, fmt.Errorf("%w: gate method must not have rubric config", ErrGateConfig)
++	}
++	if req.Assertion != nil {
++		return Evaluation{}, fmt.Errorf("%w: gate method must not have assertion config", ErrGateConfig)
++	}
++	if len(req.Targets) != 1 {
++		return Evaluation{}, fmt.Errorf("%w: gate requires exactly 1 target, got %d", ErrGateConfig, len(req.Targets))
++	}
++	if g.Judge == nil {
++		return Evaluation{}, ErrJudgeNotConfigured
++	}
++	if err := validateGatePromptContext(req.Context); err != nil {
++		return Evaluation{}, err
++	}
++
++	targets := make([]JudgeInput, 0, len(req.Targets))
++	for _, t := range req.Targets {
++		targets = append(targets, JudgeInput{
++			Role:      t.Role,
++			MediaType: t.MediaType,
++			Content:   t.Content,
++			Source:    t.Source,
++		})
++	}
++	context_ := make([]JudgeInput, 0, len(req.Context))
++	for _, c := range req.Context {
++		context_ = append(context_, JudgeInput{
++			Role:      c.Role,
++			MediaType: c.MediaType,
++			Content:   c.Content,
++			Source:    c.Source,
++		})
++	}
++
++	resp, err := g.Judge.Judge(ctx, JudgeRequest{
++		Method:   "gate",
++		Targets:  targets,
++		Context:  context_,
++		Producer: req.Producer,
++	})
++	if err != nil {
++		return Evaluation{}, err
++	}
++	if err := checkGateResponseCoherence(resp); err != nil {
++		return Evaluation{}, err
++	}
++
++	return Evaluation{
++		Score: Score{
++			Kind:   ScoreGate,
++			Passed: resp.Passed,
++		},
++		Findings: resp.Findings,
++	}, nil
++}
++
++func validateGatePromptContext(context_ []EvalInput) error {
++	count := 0
++	for _, c := range context_ {
++		if c.Role != GatePromptRole {
++			continue
++		}
++		count++
++		if len(c.Content) == 0 || strings.TrimSpace(string(c.Content)) == "" {
++			return fmt.Errorf("%w: %s context must be non-empty", ErrGateConfig, GatePromptRole)
++		}
++	}
++	if count != 1 {
++		return fmt.Errorf("%w: gate requires exactly one %s context, got %d", ErrGateConfig, GatePromptRole, count)
++	}
++	return nil
++}
++
++func checkGateResponseCoherence(resp JudgeResponse) error {
++	if resp.Passed == nil {
++		return fmt.Errorf("%w: gate response missing passed", ErrJudgeOutputInvalid)
++	}
++	if resp.Value != nil {
++		return fmt.Errorf("%w: gate response must not set value", ErrJudgeOutputInvalid)
++	}
++	if resp.Max != nil {
++		return fmt.Errorf("%w: gate response must not set max", ErrJudgeOutputInvalid)
++	}
++	if resp.Winner != WinnerNone {
++		return fmt.Errorf("%w: gate response must not set winner", ErrJudgeOutputInvalid)
++	}
++	if resp.Confidence != nil {
++		return fmt.Errorf("%w: gate response must not set confidence", ErrJudgeOutputInvalid)
++	}
++	for i, f := range resp.Findings {
++		if err := validateFinding(i, f); err != nil {
++			return fmt.Errorf("%w: %v", ErrJudgeOutputInvalid, err)
++		}
++	}
++	return nil
++}
+diff --git a/internal/eval/gateevaluator_test.go b/internal/eval/gateevaluator_test.go
+new file mode 100644
+index 0000000..a7b61dc
+--- /dev/null
++++ b/internal/eval/gateevaluator_test.go
+@@ -0,0 +1,258 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"reflect"
++	"testing"
++)
++
++func TestGateEvaluatorGoResponse(t *testing.T) {
++	passed := true
++	ev := &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}}
++
++	got, err := ev.Evaluate(context.Background(), gateEvalRequest())
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if got.Score.Kind != ScoreGate {
++		t.Fatalf("Score.Kind = %q, want %q", got.Score.Kind, ScoreGate)
++	}
++	if got.Score.Passed == nil || *got.Score.Passed != true {
++		t.Fatalf("Score.Passed = %v, want true", got.Score.Passed)
++	}
++	if got.Score.Value != nil || got.Score.Max != nil || got.Score.Winner != WinnerNone || got.Score.Confidence != nil {
++		t.Fatalf("gate score has non-gate fields set: %+v", got.Score)
++	}
++}
++
++func TestGateEvaluatorBlockResponsePreservesFindings(t *testing.T) {
++	passed := false
++	ev := &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{
++		Passed: &passed,
++		Findings: []Finding{{
++			Severity: SeverityError,
++			Message:  "required change",
++			Pointer:  "plan",
++		}},
++	}}}
++
++	got, err := ev.Evaluate(context.Background(), gateEvalRequest())
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if got.Score.Passed == nil || *got.Score.Passed != false {
++		t.Fatalf("Score.Passed = %v, want false", got.Score.Passed)
++	}
++	if len(got.Findings) != 1 || got.Findings[0].Message != "required change" {
++		t.Fatalf("Findings = %+v, want required change", got.Findings)
++	}
++}
++
++func TestGateEvaluatorValidation(t *testing.T) {
++	passed := true
++	baseReq := gateEvalRequest()
++
++	cases := []struct {
++		name string
++		req  EvalRequest
++		ev   *GateEvaluator
++		want error
++	}{
++		{
++			name: "wrong method",
++			req:  withMethod(baseReq, "rubric"),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: nil,
++		},
++		{
++			name: "rubric config",
++			req:  withRubric(baseReq),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "assertion config",
++			req:  withAssertion(baseReq),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "zero targets",
++			req:  withTargets(baseReq, nil),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "two targets",
++			req:  withTargets(baseReq, append(baseReq.Targets, baseReq.Targets[0])),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "nil judge",
++			req:  baseReq,
++			ev:   &GateEvaluator{},
++			want: ErrJudgeNotConfigured,
++		},
++		{
++			name: "missing gate prompt",
++			req:  withContext(baseReq, []EvalInput{{Role: "extra", Content: []byte("x")}}),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "empty gate prompt",
++			req:  withContext(baseReq, []EvalInput{{Role: GatePromptRole, Content: []byte("   ")}}),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "multiple gate prompts",
++			req: withContext(baseReq, []EvalInput{
++				{Role: GatePromptRole, Content: []byte("prompt A")},
++				{Role: GatePromptRole, Content: []byte("prompt B")},
++			}),
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{Passed: &passed}}},
++			want: ErrGateConfig,
++		},
++		{
++			name: "missing passed response",
++			req:  baseReq,
++			ev:   &GateEvaluator{Judge: &StubJudge{Canned: JudgeResponse{}}},
++			want: ErrJudgeOutputInvalid,
++		},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			_, err := tc.ev.Evaluate(context.Background(), tc.req)
++			if tc.want == nil {
++				if err == nil {
++					t.Fatal("want error, got nil")
++				}
++				return
++			}
++			if !errors.Is(err, tc.want) {
++				t.Fatalf("want %v, got %v", tc.want, err)
++			}
++		})
++	}
++}
++
++func TestGateEvaluatorForwardsFullContext(t *testing.T) {
++	passed := true
++	judge := &recordingGateJudge{resp: JudgeResponse{Passed: &passed}}
++	ev := &GateEvaluator{Judge: judge}
++	req := gateEvalRequest()
++	req.Context = append(req.Context, EvalInput{Role: "extra", Content: []byte("extra context")})
++
++	if _, err := ev.Evaluate(context.Background(), req); err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if judge.req.Method != "gate" {
++		t.Fatalf("judge method = %q, want gate", judge.req.Method)
++	}
++	if len(judge.req.Targets) != 1 {
++		t.Fatalf("len(judge.req.Targets) = %d, want 1", len(judge.req.Targets))
++	}
++	if judge.req.Targets[0].Role != "artifact" || string(judge.req.Targets[0].Content) != "plan text" {
++		t.Fatalf("target = %+v, want artifact plan text", judge.req.Targets[0])
++	}
++	if len(judge.req.Context) != 2 {
++		t.Fatalf("len(judge.req.Context) = %d, want 2", len(judge.req.Context))
++	}
++	if judge.req.Context[0].Role != GatePromptRole || string(judge.req.Context[0].Content) != "gate prompt" {
++		t.Fatalf("first context = %+v, want gate prompt", judge.req.Context[0])
++	}
++	if judge.req.Context[1].Role != "extra" || string(judge.req.Context[1].Content) != "extra context" {
++		t.Fatalf("second context = %+v, want extra context", judge.req.Context[1])
++	}
++	if !reflect.DeepEqual(judge.req.Producer, req.Producer) {
++		t.Fatalf("producer = %+v, want %+v", judge.req.Producer, req.Producer)
++	}
++}
++
++func TestGateEvaluatorRejectsIncoherentResponses(t *testing.T) {
++	passed := true
++	value := 1.0
++	max := 2.0
++	conf := 0.5
++
++	cases := []struct {
++		name string
++		resp JudgeResponse
++	}{
++		{name: "value", resp: JudgeResponse{Passed: &passed, Value: &value}},
++		{name: "max", resp: JudgeResponse{Passed: &passed, Max: &max}},
++		{name: "winner", resp: JudgeResponse{Passed: &passed, Winner: WinnerA}},
++		{name: "confidence", resp: JudgeResponse{Passed: &passed, Confidence: &conf}},
++		{name: "bad finding", resp: JudgeResponse{Passed: &passed, Findings: []Finding{{Severity: "bad", Message: "x"}}}},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			ev := &GateEvaluator{Judge: &StubJudge{Canned: tc.resp}}
++			_, err := ev.Evaluate(context.Background(), gateEvalRequest())
++			if !errors.Is(err, ErrJudgeOutputInvalid) {
++				t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
++			}
++		})
++	}
++}
++
++type recordingGateJudge struct {
++	req  JudgeRequest
++	resp JudgeResponse
++	err  error
++}
++
++func (r *recordingGateJudge) Judge(_ context.Context, req JudgeRequest) (JudgeResponse, error) {
++	r.req = req
++	if r.err != nil {
++		return JudgeResponse{}, r.err
++	}
++	return r.resp, nil
++}
++
++func gateEvalRequest() EvalRequest {
++	return EvalRequest{
++		Method: "gate",
++		Targets: []EvalInput{{
++			Role:      "artifact",
++			MediaType: "text/markdown",
++			Content:   []byte("plan text"),
++		}},
++		Context: []EvalInput{{
++			Role:      GatePromptRole,
++			MediaType: "text/plain",
++			Content:   []byte("gate prompt"),
++		}},
++		Producer: testProducer(),
++	}
++}
++
++func withMethod(req EvalRequest, method string) EvalRequest {
++	req.Method = method
++	return req
++}
++
++func withRubric(req EvalRequest) EvalRequest {
++	req.Rubric = &RubricRef{Path: "rubric.md", Version: "abc"}
++	return req
++}
++
++func withAssertion(req EvalRequest) EvalRequest {
++	req.Assertion = &AssertionSpec{Checks: []AssertionCheck{{Kind: "check"}}}
++	return req
++}
++
++func withTargets(req EvalRequest, targets []EvalInput) EvalRequest {
++	req.Targets = targets
++	return req
++}
++
++func withContext(req EvalRequest, context []EvalInput) EvalRequest {
++	req.Context = context
++	return req
++}
+diff --git a/internal/eval/judge.go b/internal/eval/judge.go
+index a0dd4d0..e00f98a 100644
+--- a/internal/eval/judge.go
++++ b/internal/eval/judge.go
+@@ -41,18 +41,20 @@ type JudgeInput struct {
+ //	"rubric"   — Targets len 1; Rubric non-nil; judge must return Value+Max.
+ //	"pairwise" — Targets len 2 (A=Targets[0], B=Targets[1]); Rubric nil;
+ //	             judge must return Winner; Value/Max absent (future bead).
++//	"gate"     — Targets len 1; Context includes exactly one gate-prompt input;
++//	             judge must return Passed; Value/Max/Winner absent.
+ //
+ // Targets ordering is preserved: ExecJudge materialises them as
+ // 00-target-<role>, 01-target-<role>, … so pairwise judges see A before B.
+ // Context inputs are materialised similarly as 00-context-<role>, etc.
+ type JudgeRequest struct {
+-	// Method is the eval method ("rubric" | "pairwise"). Drives output validation.
++	// Method is the eval method ("rubric" | "pairwise" | "gate"). Drives output validation.
+ 	Method string
+-	// Targets are the ordered artifacts being judged. len 1 for rubric, len 2 for pairwise.
++	// Targets are the ordered artifacts being judged. len 1 for rubric/gate, len 2 for pairwise.
+ 	Targets []JudgeInput
+-	// Context are optional unscored inputs (task description, plan, diff, etc.).
++	// Context are optional unscored inputs. Gate requires exactly one gate-prompt context.
+ 	Context []JudgeInput
+-	// Rubric holds the rubric file bytes the judge scores against. Nil for pairwise.
++	// Rubric holds the rubric file bytes the judge scores against. Nil for pairwise/gate.
+ 	Rubric []byte
+ 	// Producer carries model/skill/harness identity for the judge invocation.
+ 	Producer runmanifest.Producer
+@@ -63,6 +65,9 @@ type JudgeRequest struct {
+ // Rubric judges set Value+Max (Winner="" / Confidence=nil).
+ // Pairwise judges (future bead) set Winner and optionally Confidence
+ // (Value/Max remain nil).
++// Gate judges set Passed (Value/Max/Winner/Confidence remain nil). Gate and
++// assertion both use a boolean result shape, but are distinguished by Method and
++// Score.Kind.
+ //
+ // Pointer fields distinguish "absent" from "zero" under JSON round-trips,
+ // mirroring eval.Score's per-Kind coherence.
+@@ -70,6 +75,7 @@ type JudgeResponse struct {
+ 	Value      *float64 // rubric only
+ 	Max        *float64 // rubric only
+ 	Winner     Winner   // pairwise only ('' | A | B | tie)
++	Passed     *bool    // gate only
+ 	Confidence *float64 // pairwise only, optional
+ 	Findings   []Finding
+ }
+diff --git a/internal/eval/pairwiseevaluator.go b/internal/eval/pairwiseevaluator.go
+index 3537145..7e565f1 100644
+--- a/internal/eval/pairwiseevaluator.go
++++ b/internal/eval/pairwiseevaluator.go
+@@ -246,6 +246,9 @@ func checkResponseCoherence(resp JudgeResponse) error {
+ 	if resp.Max != nil {
+ 		return fmt.Errorf("%w: pairwise response must not set max", ErrJudgeOutputInvalid)
+ 	}
++	if resp.Passed != nil {
++		return fmt.Errorf("%w: pairwise response must not set passed", ErrJudgeOutputInvalid)
++	}
+ 	if resp.Confidence != nil && (*resp.Confidence < 0 || *resp.Confidence > 1) {
+ 		return fmt.Errorf("%w: pairwise response confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *resp.Confidence)
+ 	}
+diff --git a/internal/eval/pairwiseevaluator_test.go b/internal/eval/pairwiseevaluator_test.go
+index cc5d84c..10be07b 100644
+--- a/internal/eval/pairwiseevaluator_test.go
++++ b/internal/eval/pairwiseevaluator_test.go
+@@ -390,6 +390,7 @@ func TestPairwiseEvaluator_MalformedResponse(t *testing.T) {
+ 	m := 10.0
+ 	conf15 := 1.5
+ 	conf_neg := -0.1
++	passed := true
+ 
+ 	cases := []struct {
+ 		name string
+@@ -399,6 +400,7 @@ func TestPairwiseEvaluator_MalformedResponse(t *testing.T) {
+ 		{"unknown winner C", JudgeResponse{Winner: "C"}},
+ 		{"value set", JudgeResponse{Winner: WinnerA, Value: &v}},
+ 		{"max set", JudgeResponse{Winner: WinnerA, Max: &m}},
++		{"passed set", JudgeResponse{Winner: WinnerA, Passed: &passed}},
+ 		{"confidence out of range high", JudgeResponse{Winner: WinnerA, Confidence: &conf15}},
+ 		{"confidence out of range low", JudgeResponse{Winner: WinnerA, Confidence: &conf_neg}},
+ 	}
+diff --git a/internal/eval/result.go b/internal/eval/result.go
+index d4c5c6c..540e70b 100644
+--- a/internal/eval/result.go
++++ b/internal/eval/result.go
+@@ -56,9 +56,9 @@ func (r EvalResult) Validate() error {
+ 	if err := validateEvalIdentifier("method", r.Method); err != nil {
+ 		return err
+ 	}
+-	validMethods := map[string]bool{"rubric": true, "pairwise": true, "assertion": true}
++	validMethods := map[string]bool{"rubric": true, "pairwise": true, "assertion": true, "gate": true}
+ 	if !validMethods[r.Method] {
+-		return fmt.Errorf("%w: method %q must be one of rubric, pairwise, assertion", ErrInvalidEvalResult, r.Method)
++		return fmt.Errorf("%w: method %q must be one of rubric, pairwise, assertion, gate", ErrInvalidEvalResult, r.Method)
+ 	}
+ 	if string(r.Score.Kind) != r.Method {
+ 		return fmt.Errorf("%w: score.kind %q must match method %q", ErrInvalidEvalResult, r.Score.Kind, r.Method)
+@@ -141,6 +141,22 @@ func validateScoreCoherence(method string, s Score) error {
+ 		if s.Confidence != nil {
+ 			return fmt.Errorf("%w: assertion score.confidence must be absent", ErrInvalidEvalResult)
+ 		}
++	case "gate":
++		if s.Passed == nil {
++			return fmt.Errorf("%w: gate score.passed required", ErrInvalidEvalResult)
++		}
++		if s.Value != nil {
++			return fmt.Errorf("%w: gate score.value must be absent", ErrInvalidEvalResult)
++		}
++		if s.Max != nil {
++			return fmt.Errorf("%w: gate score.max must be absent", ErrInvalidEvalResult)
++		}
++		if s.Winner != WinnerNone {
++			return fmt.Errorf("%w: gate score.winner must be absent", ErrInvalidEvalResult)
++		}
++		if s.Confidence != nil {
++			return fmt.Errorf("%w: gate score.confidence must be absent", ErrInvalidEvalResult)
++		}
+ 	}
+ 	return nil
+ }
+@@ -182,6 +198,13 @@ func validateMethodConfig(method string, rubric *RubricRef, assertion *Assertion
+ 		if assertion != nil {
+ 			return fmt.Errorf("%w: pairwise method must not have assertion config", ErrInvalidEvalResult)
+ 		}
++	case "gate":
++		if rubric != nil {
++			return fmt.Errorf("%w: gate method must not have rubric config", ErrInvalidEvalResult)
++		}
++		if assertion != nil {
++			return fmt.Errorf("%w: gate method must not have assertion config", ErrInvalidEvalResult)
++		}
+ 	}
+ 	return nil
+ }
+diff --git a/internal/eval/result_test.go b/internal/eval/result_test.go
+index 6891e2b..4452544 100644
+--- a/internal/eval/result_test.go
++++ b/internal/eval/result_test.go
+@@ -105,6 +105,33 @@ func validAssertionResult() EvalResult {
+ 	}
+ }
+ 
++func validGateResult() EvalResult {
++	ctxCommit := strings.Repeat("c", 40)
++	ctxArt := strings.Repeat("2", 64)
++	return EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            "gate-run-20260522-plan-20260522T120000Z",
++		Method:            "gate",
++		Score: Score{
++			Kind:   ScoreGate,
++			Passed: ptr(false),
++		},
++		Findings: []Finding{
++			{Severity: SeverityError, Message: "required change", Pointer: "plan"},
++		},
++		Targets: []ArtifactSource{
++			{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s},
++		},
++		Context: []ArtifactSource{
++			{RunID: validRunID, Stage: "gate-prompt", Commit: ctxCommit, Artifact: ctxArt},
++		},
++		Producer: runmanifest.Producer{
++			Model: "gpt-5.5",
++		},
++		Created: time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC),
++	}
++}
++
+ // ---- golden / deterministic JSON ----
+ 
+ func TestRubricJSONIsExactAndDeterministic(t *testing.T) {
+@@ -271,6 +298,28 @@ func TestAssertionJSONIsExactAndDeterministic(t *testing.T) {
+ 	}
+ }
+ 
++func TestGateJSONRoundTrip(t *testing.T) {
++	r := validGateResult()
++	raw, err := r.JSON()
++	if err != nil {
++		t.Fatalf("JSON: %v", err)
++	}
++	parsed, err := ParseJSON(raw)
++	if err != nil {
++		t.Fatalf("ParseJSON: %v", err)
++	}
++	raw2, err := parsed.JSON()
++	if err != nil {
++		t.Fatalf("JSON after round-trip: %v", err)
++	}
++	if string(raw) != string(raw2) {
++		t.Fatalf("gate JSON round-trip changed bytes\ngot:\n%s\nwant:\n%s", raw2, raw)
++	}
++	if parsed.Score.Kind != ScoreGate || parsed.Score.Passed == nil || *parsed.Score.Passed != false {
++		t.Fatalf("parsed gate score = %+v, want gate passed=false", parsed.Score)
++	}
++}
++
+ // ---- round-trips ----
+ 
+ func TestRubricRoundTrip(t *testing.T) {
+@@ -494,6 +543,27 @@ func TestValidateGuardMatrix(t *testing.T) {
+ 			r.Assertion = &AssertionSpec{Checks: []AssertionCheck{{Kind: "check"}}}
+ 			r.Targets = []ArtifactSource{{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s}}
+ 		}},
++		// gate coherence
++		{"gate_nil_passed", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Score.Passed = nil
++		}},
++		{"gate_has_value", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Score.Value = ptr(1.0)
++		}},
++		{"gate_has_max", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Score.Max = ptr(1.0)
++		}},
++		{"gate_has_winner", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Score.Winner = WinnerA
++		}},
++		{"gate_has_confidence", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Score.Confidence = ptr(0.9)
++		}},
+ 		// method<->config mismatches
+ 		{"rubric_method_no_rubric_config", func(r *EvalResult) { r.Rubric = nil }},
+ 		{"rubric_method_has_assertion_config", func(r *EvalResult) {
+@@ -549,6 +619,14 @@ func TestValidateGuardMatrix(t *testing.T) {
+ 				{RunID: "run-20260523", Stage: validStage, Commit: strings.Repeat("b", 40), Artifact: strings.Repeat("2", 64)},
+ 			}
+ 		}},
++		{"gate_method_has_rubric_config", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Rubric = &RubricRef{Path: "r.md", Version: "v1"}
++		}},
++		{"gate_method_has_assertion_config", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Assertion = &AssertionSpec{Checks: []AssertionCheck{{Kind: "check"}}}
++		}},
+ 		// target count
+ 		{"rubric_wrong_target_count_0", func(r *EvalResult) { r.Targets = nil }},
+ 		{"rubric_wrong_target_count_2", func(r *EvalResult) {
+@@ -566,6 +644,14 @@ func TestValidateGuardMatrix(t *testing.T) {
+ 				{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s},
+ 			}
+ 		}},
++		{"gate_wrong_target_count_0", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Targets = nil
++		}},
++		{"gate_wrong_target_count_2", func(r *EvalResult) {
++			*r = validGateResult()
++			r.Targets = append(r.Targets, ArtifactSource{RunID: "run-20260523", Stage: validStage, Commit: strings.Repeat("b", 40), Artifact: strings.Repeat("1", 64)})
++		}},
+ 		// bad target fields
+ 		{"target_bad_run_id", func(r *EvalResult) {
+ 			r.Targets[0].RunID = "bad:id"
+diff --git a/internal/eval/rubricevaluator.go b/internal/eval/rubricevaluator.go
+index 77e392d..8778b6d 100644
+--- a/internal/eval/rubricevaluator.go
++++ b/internal/eval/rubricevaluator.go
+@@ -137,6 +137,9 @@ func (r *RubricEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evalua
+ 	if resp.Winner != WinnerNone {
+ 		return Evaluation{}, fmt.Errorf("%w: rubric response must not set winner", ErrJudgeOutputInvalid)
+ 	}
++	if resp.Passed != nil {
++		return Evaluation{}, fmt.Errorf("%w: rubric response must not set passed", ErrJudgeOutputInvalid)
++	}
+ 	if resp.Confidence != nil {
+ 		return Evaluation{}, fmt.Errorf("%w: rubric response must not set confidence", ErrJudgeOutputInvalid)
+ 	}
+diff --git a/internal/eval/rubricevaluator_test.go b/internal/eval/rubricevaluator_test.go
+index ee3aa51..9ffbe2a 100644
+--- a/internal/eval/rubricevaluator_test.go
++++ b/internal/eval/rubricevaluator_test.go
+@@ -337,6 +337,7 @@ func TestRubricEvaluator_MalformedJudgeResponse_Matrix(t *testing.T) {
+ 	m := 10.0
+ 	winnerA := WinnerA
+ 	conf := 0.9
++	passed := true
+ 
+ 	tests := []struct {
+ 		name string
+@@ -362,6 +363,10 @@ func TestRubricEvaluator_MalformedJudgeResponse_Matrix(t *testing.T) {
+ 			name: "winner set for rubric",
+ 			resp: JudgeResponse{Value: &v, Max: &m, Winner: winnerA},
+ 		},
++		{
++			name: "passed set for rubric",
++			resp: JudgeResponse{Value: &v, Max: &m, Passed: &passed},
++		},
+ 		{
+ 			name: "confidence set for rubric",
+ 			resp: JudgeResponse{Value: &v, Max: &m, Confidence: &conf},
