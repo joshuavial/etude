@@ -1,0 +1,27 @@
+# Final Review — etude-roadmap.2.1 (Design gate reviewer record schema)
+
+## Verdict: CLOSE
+
+First bead of the etude-roadmap.2 epic ("Capture gate reviewer visibility"). Design bead; deliverable is the schema spec. The substantive four-seat review ran at the PLAN gate on the design text; Final Review is right-sized (a second full gate on the verbatim-extracted doc would be pure redundancy).
+
+## Plan gate — Tier 1 four-seat: PASS (3 substantive GO; pilms skipped per outage)
+### codex (GPT-5.5 xhigh) — BLOCK → GO
+Two concrete BLOCK items, both fixed:
+1. No uniqueness on `(phase, round)` or `gate_id` → conflicting duplicate records possible despite the "keyed by (phase,round)" claim. Fix: added `gate_id` uniqueness + `(phase, round)` tuple uniqueness validation (mirrors the existing duplicate-produces-role check).
+2. `reviewed_stages[].artifact` validated only as a sha256, not against the named stage's actual artifact → dangling sha possible. Fix: added referential integrity — when present, the artifact must equal the named stage's `Output.Artifact` or one of its `Inputs[].Artifact`.
+Reran codex on the fixes → GO.
+
+### gemini (3.1 Pro) — GO
+All 5 criteria met; v3-iff-gates compat sound; referential integrity + gc mechanics specified; `disregarded` solves the degraded-gate fallback.
+
+### Claude Opus (in-harness) — GO
+Verified against real code (manifest.go, manifest_test.go, gc.go, run.go, capture.go, runbook, dogfood-capture.sh). gc-safety claim correct (ArtifactPaths append carry-forward is the real data-loss path); golden/round-trip tests stay byte-identical; DisallowUnknownFields reasoning true + `{0,2,3}` allowlist a real new guard; provider `/` handling correct; run show feasible. Non-blocking optionals incorporated: dropped redundant `GateDecision.Status`; `tier` allows 0 for backfill; added gc size-accounting deferral note + intra-manifest constraint note.
+
+### pilms (qwen/lmstudio) — SKIPPED
+Documented 0-CPU client-hang outage all session; proceeded on 3 substantive GO per the review-gate-runbook degraded-gate policy.
+
+## Final verification
+Acceptance criteria 1-5 all met (see Verify); docs policy holds (planning doc under docs/plans/product/, indexed); no code changes; doc is a faithful extract of the gated design (header dropped, status line corrected, index entry added).
+
+## Outcome
+Committed e8d5efe "design gate reviewer record schema"; bead closed; pushed to origin + Dolt. Unblocks .2 (implement gate reviewer capture), .3 (surface in run show), .5 (backfill).
