@@ -1,0 +1,90 @@
+# Goal: etude-8u3 — populate run-worktree submodules and record their SHAs
+
+BUILD. The premise is confirmed in current source: `worktree.Checkout` stops after
+`git worktree add --detach`, the Go tree has no submodule population path, and live
+runs pass that empty checkout directly to stage and gate-check runners.
+
+## Design
+
+1. Extend `worktree.Checkout` to run `git submodule update --init --recursive --checkout`
+   in the detached run worktree before returning it. Linked worktrees use the
+   superproject's shared common `.git/modules` repositories, so subsequent runs reuse
+   fetched submodule objects rather than cloning a fresh object database per run. If
+   population or enumeration fails, remove the partially-created worktree and prune its
+   registration before returning a contextual error.
+2. Enumerate every populated submodule recursively after update, recording its Git
+   display path and resolved `HEAD` OID on the returned `Worktree`. Use NUL-delimited
+   output so spaces in paths are not ambiguous.
+3. Add an optional `submodules` path-to-OID map beside each stage's `git_sha` in the run
+   manifest wire format. Treat it as an additive leaf (legacy manifests omit it), copy
+   the checkout map into every live-run stage, preserve it through JSON round trips, and
+   validate that paths are clean relative Git paths and values are full lowercase 40- or
+   64-character OIDs.
+4. Thread the one checkout snapshot through fresh and resumed live-run execution. The
+   same immutable gitlink pins apply to every stage, so every stage records the same map.
+5. Update the shipped manifest documentation to explain that repo-state identity is the
+   superproject `git_sha` plus the optional recursive `submodules` map.
+
+## Files
+
+- `internal/worktree/worktree.go`
+- `internal/worktree/worktree_test.go`
+- `internal/runmanifest/manifest.go`
+- `internal/runmanifest/manifest_test.go`
+- `internal/liverun/engine.go`
+- `internal/liverun/engine_test.go`
+- `docs/plans/product/BRIEF.md`
+
+## Verification
+
+Planned regression: `TestCheckoutPopulatesPinnedSubmoduleAndReusesObjectStore` creates a
+real local submodule, advances its source after the superproject pins the first commit,
+checks out the superproject, reads the pinned content, verifies the resolved SHA, and
+confirms linked checkouts share the superproject module object store.
+
+Planned regression: `TestEngineRunCheckReadsPinnedSubmoduleAndManifestRecordsSHA` creates
+a throwaway superproject with a real submodule plus an executable gate check that prints
+and compares the file inside it. A live run must pass the real check, its recorded raw
+check output must equal the pinned content, and the stage manifest must map the submodule
+path to the pinned SHA rather than the newer source HEAD.
+
+Planned regression: manifest JSON round-trip and validation cases cover omission for
+legacy/no-submodule stages, preservation of multiple recursive entries, invalid paths,
+and invalid OIDs.
+
+Run `go test ./internal/worktree ./internal/runmanifest ./internal/liverun`, then
+`make test`, `make lint`, `make docs-reality`, and `make docs-check`. This is not a new
+CLI surface, so no installed-binary manual CLI matrix is required; the live engine test
+is the required behavioral proof.
+
+## Scope and safety
+
+ANCESTOR: etude-8u3 (P1) — fix the observed empty-submodule checkout defect and make
+repo-state reproducible; measurement is the reported 40/0 false-failure incident and the
+current zero Go-source submodule handling sites.
+
+BLAST RADIUS: the repository's shared Git module-object cache and disposable run
+worktrees only; no host packages, services, credentials, containers, or external writes.
+
+IRREVERSIBLE SEQUENCES: none
+
+TOPOLOGY: concurrent disposable linked worktrees share the superproject common Git dir
+and its module repositories; nested submodules are recursively populated and enumerated.
+
+DURABILITY CLASS: population is an idempotent at-least-once local cache fill; the durable
+stage manifest records the AUTHORITATIVE checked-out submodule HEAD values pinned by the
+superproject gitlinks.
+
+COMPLETENESS ENUMERATION: all worktree consumers use the one Checkout population point;
+all live-run manifest stages use the one runAndCaptureStage construction point; add,
+update, and enumeration failures all fail closed and clean the disposable checkout.
+
+TRUST BOUNDARY: repository-controlled `.gitmodules` and gitlinks are consumed by Git;
+paths are not interpolated into an authored shell command, Git verifies object identity,
+and the manifest rejects non-clean paths or non-full lowercase OIDs.
+
+Rejected alternative: record only the gitlink OIDs from the superproject tree without
+populating submodules. That would identify content checks still cannot read and fails the
+behavioral acceptance. Rejected alternative: clone each submodule into every temporary
+worktree with an isolated object store; linked-worktree Git already provides a shared
+common module store and avoids that repeated cost.
