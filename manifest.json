@@ -142,6 +142,52 @@
         "degraded_reason": "Both seats BLOCK and converge on both findings. First, substituting an in-session sub-agent for a real workmux lane is a requirement miss rather than a narrowing: workmux is installed and five lanes are live in this repo right now, so 'operator infrastructure' was a preference dressed as an infeasibility, and the substitution skips exactly what is unproven - a separate worktree with its own hooks and push path, and landing from a lane. Second, and the sharper one, the subject bead I picked defeats the one selection criterion the bead spells out: etude-k47's fix is shell-only, while the verify stage's checks are make test and make lint, and make test is go test ./... which reaches no shell suite - so both L2 checks would have gone green WITHOUT touching the change. Subject bead switched to etude-3xt, whose preferred fix is in Go (internal/cli/retro.go) and therefore actually exercised by those checks. The seats SPLIT on the remedy for the second premise challenge: codex said block or formally re-scope, opus upheld the premise on evidence and said measuring the gap is proportionate. Resolved toward opus, with codex's concern honoured by writing the restated acceptance onto the bead in bd BEFORE the run rather than leaving a redefinition that lives only in a scratch artifact. Three optionals folded: the opus-seat gap restated precisely (the in-harness seat IS a sanctioned real seat; the gap is that etude gate cannot CONSUME its verdict, which is etude-4ed), and a promised wall-clock measurement dropped because bootstrap-appended attempts carry author-supplied timestamps identical across seats, so the manifest cannot produce it."
       },
       "timestamp": "2026-08-15T15:41:15Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r3",
+          "role": "plan",
+          "artifact": "1551aa66735c97c6d250e07c422c2bc20b5f043839bb526557f9fcedb2ee7c9a"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T15:51:55Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T15:51:55Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. Round 1's two findings are folded and verified rather than gestured at: the run now uses a REAL workmux lane (workmux is installed and five lanes are live here, so the earlier sub-agent substitution was a preference dressed as an infeasibility), and the subject bead is etude-3xt whose preferred fix is Go in internal/cli/retro.go, which is what make test and make lint actually cover. The restated acceptance was written onto the bead in bd BEFORE this round, so codex's round-1 concern about advancing under a narrowed acceptance is answered on the tracked record rather than in a scratch artifact. codex's two r2 optionals were folded before opus reviewed: a blanket rename had corrupted the rejection table so the REJECTED bead appeared under the CHOSEN bead's id, and a stale wall-clock bullet contradicted its own correction three lines above. Five more folded now, the sharpest being a sequencing hazard neither I nor codex saw: audit check (d) is hard and repo-wide, and workmux lanes share this repo's refs, so MY unpushed supervisor-side run refs can block the LANE's code push - a supervisor action blocking a worker for reasons invisible to the worker. Also folded: the retro had no verification line despite being an acceptance clause; 'bootstrap appends per phase' had no manifest field and is now defined from a manifest-visible signal, the same discipline that removed the wall-clock promise; and a stale 'worker sub-agent' noun."
+      },
+      "timestamp": "2026-08-15T15:51:55Z"
     }
   ]
 }
