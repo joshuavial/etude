@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aul.3",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,79 @@
         "size": 2364
       },
       "timestamp": "2026-06-07T10:24:11.026322Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": "Claude Opus substitute via agy --model \"opus\""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Ensure JSON parsing tests verify strict handling of expected verdict values, such as rejecting uppercase GO or BLOCK when only lowercase is accepted."
+          ],
+          "timestamp": "2026-06-07T09:53:23Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Make unlabeled predictions explicit in the scoring type, such as a Label pointer or Labeled bool.",
+            "Reject unknown fields inside individual label entries as well as top-level JSON fields.",
+            "Add a scoring-level warning test for mixed explicit/proxy inputs to lock in warning propagation and deduplication."
+          ],
+          "timestamp": "2026-06-07T09:53:23Z"
+        },
+        {
+          "seat": "grok",
+          "harness": {
+            "name": "grok",
+            "version": "grok-build"
+          },
+          "provider": {
+            "name": "xai",
+            "model": "grok-build"
+          },
+          "verdict": "go",
+          "optional": [
+            "Cross-reference GateLabelKey validation to ArtifactSource/runmanifest identifier rules.",
+            "Use one canonical name for GateScoredCell or GatePrediction.",
+            "Ensure per-cell predictions retain enough provenance for later CLI reporting."
+          ],
+          "timestamp": "2026-06-07T09:53:23Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Claude Opus CLI seat unavailable due quota; used etude-loop standing Opus substitute via agy --model \"opus\"."
+      },
+      "timestamp": "2026-06-07T09:53:23Z"
     }
   ]
 }
