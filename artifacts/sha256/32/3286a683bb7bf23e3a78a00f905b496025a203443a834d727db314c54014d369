@@ -1,0 +1,150 @@
+commit 17e4a62d75612b6c6b62b9fc848ee19b5c7f7d88
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 12:03:57 2026 +0800
+
+    add make reconcile epic-close gate and mandatory reconciliation docs
+
+diff --git a/Makefile b/Makefile
+index c6a18a8..e0fb053 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,7 +3,7 @@ BIN_DIR := bin
+ VERSION ?= dev
+ DOCS_DIR := docs/cli
+ 
+-.PHONY: build test lint clean docs docs-check docs-reality example
++.PHONY: build test lint clean docs docs-check docs-reality reconcile example
+ 
+ build:
+ 	mkdir -p $(BIN_DIR)
+@@ -32,5 +32,12 @@ docs-check:
+ docs-reality:
+ 	@bash scripts/docs-reality-check.sh
+ 
++# Epic-close holistic gate: re-runs the whole-surface docs/reality checks at the
++# integration point after all sibling beads have landed. MUST exit 0 before
++# bd close <epic>. Fails non-zero if either leg fails.
++reconcile:
++	$(MAKE) docs-reality
++	$(MAKE) docs-check
++
+ example: build
+ 	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh
+diff --git a/docs/plans/dogfood/docs-checklist.md b/docs/plans/dogfood/docs-checklist.md
+index d442109..39405e0 100644
+--- a/docs/plans/dogfood/docs-checklist.md
++++ b/docs/plans/dogfood/docs-checklist.md
+@@ -59,11 +59,55 @@ Resolve every finding before close; for genuinely-planned prose (about unshipped
+ behavior) add a justified suppression to `scripts/docs-reality-allow.txt`. This
+ is separate from `make docs-check` (which only diffs generated `docs/cli`).
+ 
++## Epic-Close Reconciliation (MANDATORY)
++
++This section applies at EPIC close, not at individual bead close. It is distinct
++from the per-bead `make docs-reality` step in "Mechanical reality check" above.
++
++Before running `bd close <epic>` (or `bd epic close-eligible`), you MUST:
++
++**1. Run `make reconcile` — it MUST exit 0.**
++
++`make reconcile` composes two whole-surface checks in sequence:
++
++- `make docs-reality` — builds etude fresh; verifies every shipped command is
++  advertised in `README.md` (as `etude <cmd>` usage), named in the
++  `docs/README.md` index, and has its `docs/cli/etude_<cmd>.md` page; no orphan
++  docs/cli pages; no `docs/plans/**` line still calls a SHIPPED command
++  future/unimplemented.
++- `make docs-check` — diffs generated `docs/cli` against source; fails if stale.
++
++If either leg exits non-zero, resolve every finding before closing the epic. For
++genuinely-planned prose (about unshipped behavior) add a justified suppression to
++`scripts/docs-reality-allow.txt`. Do NOT close the epic until `make reconcile`
++exits 0.
++
++**Why re-run at epic close?** Each bead's `make docs-reality` ran against the
++whole-surface CLI inventory at merge time, but a later sibling bead could
++introduce drift that no earlier bead's pre-merge check saw (e.g. a command
++added by a later bead that the earlier bead's docs don't reference). Re-running
++at the integration point catches cross-bead drift.
++
++**2. Human holistic read (one step, not mechanical).**
++
++Read `README.md` and `docs/README.md` once end-to-end and confirm:
++
++- The full set of commands the epic shipped reads coherently together.
++- `docs/README.md` still explains why user-facing docs are sparse (if that
++  context still applies).
++- No narrative inconsistencies were introduced across the epic's beads.
++
++Record the epic-close gate result in the epic bead notes (one-line: command
++result + commit SHA), consistent with the gate recording convention in the
++review-gate runbook "Epic-Close Gate" section.
++
+ ## Final Review Prompt
+ 
+-Final Review should ask:
++Final Review (per-bead) should ask:
+ 
+-- Does `make docs-reality` pass (no doc/CLI drift)?
++- Does `make docs-reality` pass (no doc/CLI drift)? (Per-bead check; for the
++  epic-close holistic check run `make reconcile` — see "Epic-Close
++  Reconciliation" above.)
+ - Does `docs/README.md` still explain why user-facing docs are sparse?
+ - Does `README.md` match the final diff?
+ - Did any user-facing behavior ship without documentation?
+diff --git a/docs/plans/dogfood/retro-ledger.md b/docs/plans/dogfood/retro-ledger.md
+index 5a69c1d..f2158ea 100644
+--- a/docs/plans/dogfood/retro-ledger.md
++++ b/docs/plans/dogfood/retro-ledger.md
+@@ -179,9 +179,10 @@ Phase-0-completion notes).
+   the README/BRIEF/index refresh `[IMPLEMENTED]` → **etude-phase-prep.2** (commit
+   e16b9b6, which made the guard pass — a closed loop).
+ - **Follow-up beads / Remaining:** etude-phase-prep.5 (closed), etude-phase-prep.2
+-  (closed). An epic-close holistic docs/reality reconciliation remains `[PLANNED]`
+-  (folded into the docs-checklist + a runbook note, not yet a hard gate) — tracked
+-  as open bead **etude-4o0**.
++  (closed). An epic-close holistic docs/reality reconciliation: `[IMPLEMENTED]` →
++  **etude-4o0** (`make reconcile` target composing `make docs-reality` +
++  `make docs-check`; mandatory checklist gate in docs-checklist.md; Epic-Close Gate
++  section in review-gate-runbook.md; commit SHA: etude-4o0).
+ 
+ ---
+ 
+diff --git a/docs/plans/dogfood/review-gate-runbook.md b/docs/plans/dogfood/review-gate-runbook.md
+index 927b640..0d90309 100644
+--- a/docs/plans/dogfood/review-gate-runbook.md
++++ b/docs/plans/dogfood/review-gate-runbook.md
+@@ -562,6 +562,33 @@ arbitrary stage of a multi-stage run.
+   unvalidated value); (c) for any selection heuristic, construct the input where it
+   picks wrong and confirm it errors rather than silently proceeding.
+ 
++## Epic-Close Gate
++
++Closing an epic is a gated action with a mandatory pass/fail check.
++
++**The gate:** before `bd close <epic>` (or `bd epic close-eligible`), you MUST
++run `make reconcile` and it MUST exit 0. This composes `make docs-reality` (whole-
++surface CLI-inventory check) and `make docs-check` (generated-docs drift check).
++See `docs/plans/dogfood/docs-checklist.md` "Epic-Close Reconciliation" for the
++full procedure including the one human holistic-read step.
++
++**Important:** `make reconcile` is a workflow-required command, NOT a `bd`
++pre-close hook. `bd` emits no mechanical pre-close event and has no plugin hook
++at epic close. Enforcement is documentary discipline — a required MUST + a
++pass/fail target — the same mechanism as all other workflow gates documented here.
++
++**Recording:** record the epic-close gate result in the epic bead's notes as a
++one-line gate note:
++
++```text
++Epic-close gate: make reconcile exit 0, <commit SHA> — closing.
++```
++
++This is consistent with the normal gate attempt note format (phase, result,
++commit reference). No four-seat reviewer panel is required for the epic-close
++gate (it is a mechanical pass/fail command, not a design/code review); the gate
++passes on `make reconcile` exit 0 + the holistic README/index read.
++
+ ## Recording Results
+ 
+ Record gate results in bead notes:
