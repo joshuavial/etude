@@ -349,6 +349,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:31:00Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r4",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "validate imported-and-passed without a transcript artifact as an invalid evidence tuple"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r4",
+            "artifact": "552e39df5fefeb17fb3bb2ef2bc2976923be6bb546a38bbd8a89da1517f3b97c",
+            "path": "artifacts/sha256/55/552e39df5fefeb17fb3bb2ef2bc2976923be6bb546a38bbd8a89da1517f3b97c",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 351
+          },
+          "timestamp": "2026-08-16T03:38:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "test tuple validator origin",
+            "error on pre-reservation collisions",
+            "do not claim full secret containment",
+            "make terminal errors actionable"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r4",
+            "artifact": "a7ebb5b2244e4c768ad2b9cfc55beba5f4754180ec93ed7478659e1d907f4816",
+            "path": "artifacts/sha256/a7/a7ebb5b2244e4c768ad2b9cfc55beba5f4754180ec93ed7478659e1d907f4816",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 551
+          },
+          "timestamp": "2026-08-16T03:38:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:38:00Z"
     }
   ]
 }
