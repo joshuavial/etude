@@ -1,0 +1,7 @@
+## etude-ikj3: resolve retry stage runners
+
+- Fix workflow runner lookup in `internal/cli/replay.go:runForward` without rewriting persisted names or manifest order. Exact workflow stage-name match always wins (a literal `plan.r2` is legal). If no exact match exists, recognize a final generated `.rN` suffix with N >= 2, then resolve its exact base stage. Strip only one suffix; never trim arbitrary `.r` text or recursively erase literal names. Return existing clear error if no valid base exists.
+- This allows both `plan.r2` -> `plan` for retries and `plan.r2.r3` -> literal base `plan.r2`. A manifest name colliding exactly with a workflow stage is inherently ambiguous; choose exact name as requested. A future explicit workflow-stage identity field is outside this fix.
+- Keep original recorded inputs, producer metadata, names in diagnostics and replay execution order. No second production of upstream inputs; forward replay remains recorded-input replay.
+- Tests should exercise default workflow/registry resolution, not injected forwardRunner (existing injection bypasses the defect): original plus r2/r3 all invoke expected adapter with distinct recorded inputs; literal `.r2` selects its own runner even when `plan` exists; nested literal name retry resolves correctly; malformed suffix/r1/unknown name stays an error; explicit --runner override still works.
+
