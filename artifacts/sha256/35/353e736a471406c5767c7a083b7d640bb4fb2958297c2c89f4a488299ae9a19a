@@ -1,0 +1,5 @@
+# Verify — etude-6j8 (consolidate cli subject-extraction / id-validation / harness-formatting)
+Result: PASS. Pure refactor, zero behavior change. Tier 2.
+- go build ./... clean; go test ./... fully green (Opus seat ran uncached internal/cli = ok 37.4s). go vet/gofmt clean.
+- Byte-identity verified (Opus, against old HEAD source + the test assertions): (1) sortedRetroSubjects reproduces retroSubjectsList's logic exactly (prefixes {subject_run.,bead.}, sort prefix-lexical then index) — retro list SUBJECTS comma-join unchanged (empty→nil→Join=""), retro show '  subject:' lines unchanged (nil→0 iters, matching the old len>0 guard; no header when empty per retro_test.go:672). (2) validateExtraID yields exactly "invalid run id %q"/"invalid retro id %q" (run_test.go:344, retro_test.go:621), check still runs pre-git. (3) formatHarness slots into the producer parts slice + the stage/seat prefixes byte-identically (run_test.go:396/434/558).
+- Scope: internal/cli/run.go + retro.go only; capture.go/capture_run.go/artifactstore/inferMediaType NOT touched (the audit's inferMediaType-move sub-item was DROPPED at plan time — wrong layering, artifactstore is path-agnostic).

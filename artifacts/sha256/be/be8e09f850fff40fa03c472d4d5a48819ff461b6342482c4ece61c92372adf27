@@ -1,0 +1,35 @@
+## Plan
+
+**Approach:** Premise-checked the 4 audit sub-items. INCLUDE 2/3/4 (clean, zero-behavior-change internal cli refactors). DROP sub-item 1 (inferMediaType move) as a layering regression, not an improvement. Bundle stays ONE commit (all changes confined to internal/cli, no package moves, no exported API).
+
+**Sub-item decisions:**
+- (1) inferMediaType -> artifactstore: DROP. artifactstore.AddContent(role,mediaType,content) is content-only / path-agnostic (store.go:66 never touches paths; caller supplies mediaType). inferMediaType maps a file EXTENSION->media-type, a filesystem/IO concern; all 3 callers (capture.go:257, capture.go:552, capture_run.go:381) are CLI code reading files. Moving a path->mediatype table into a content-addressed byte store inverts layering and would force an exported artifactstore.InferMediaType for a cli-only helper. It already lives in the right layer. The audit was wrong.
+- (2) Dedup retro subject extraction: INCLUDE. retroSubjectsList (retro.go:257-289, type indexed) and the inline block in printRetroDetail (retro.go:309-335, type indexedSubject) are byte-identical sort-by-(prefix,index) over subject_run.N/bead.N; differ only in type name + final step (join vs print).
+- (3) Collapse validateRunIDExtra (run.go:134) + validateRetroIDExtra (retro.go:235): INCLUDE, keeping the validator distinction. They call DIFFERENT validators in different packages (runmanifest.IsValidRunID vs retro.IsValidRetroID), so the shared helper takes the pre-computed validity bool + kind.
+- (4) formatHarness helper: INCLUDE. The 3 sites (run.go:167-172 stage, run.go:225-230 seat, retro.go:370-375 producer) share the exact 'name' vs 'name version' decision; only prefix/indent/context differs. A pure formatHarness(Harness) string (returning the joined inner value, NOT printing) is cleanly reusable at all 3.
+
+**Files (all internal/cli):**
+- internal/cli/retro.go - extract shared sortedRetroSubjects(refs) []string used by both retroSubjectsList (join with ',') and printRetroDetail (print '  subject: %s'); collapse validateRetroIDExtra into call to validateExtraID; use formatHarness in producer-parts block.
+- internal/cli/run.go - add validateExtraID(kind string, valid bool, id string) error returning fmt.Errorf('invalid %s id %q', kind, id); repoint validateRunIDExtra caller (run.go:104); add formatHarness(runmanifest.Harness) string; use it at stage block (167-172) and seat block (225-230).
+- NO changes to capture.go / capture_run.go / artifactstore (sub-item 1 dropped).
+
+**Behavior-identical guarantees:**
+- (2) sortedRetroSubjects preserves the existing sort (prefix lexical: bead. before subject_run., then numeric index) and the exact 'subject: ' / '  subject: ' output + comma-joined SUBJECTS column value. Empty -> '' unchanged.
+- (3) Exact error strings preserved: 'invalid run id %q' and 'invalid retro id %q' (helper formats 'invalid %s id %q' with kind 'run'/'retro').
+- (4) formatHarness returns 'name version' when both set, else 'name'; callers keep their own prefix/indent ('  harness:     ', '    harness:  ', producer join), so output bytes are unchanged. Empty Name still suppresses the line (caller keeps the Name!='' guard).
+
+**Tests (existing coverage, no new behavior):**
+- (2) retro_test.go TestRetroShowExistingRetro (subject r1/etude-q87 lines), TestRetroListMultipleRetrosDeterministicOrder + col 'SUBJECTS', TestRetroShow workflow-scope asserts NO 'subject:' line (672).
+- (3) run_test.go invalid-run-id table (344-349); retro_test.go invalid-retro-id table (621-626).
+- (4) run_test.go 'harness:     claude-code 2.1.150' (396), 'harness:     claude-code 1.0' (434), seat 'harness:  gemini-cli 3.1' (558); legacy capture asserts NO 'harness:' line (262).
+- Run: go test ./internal/cli/... and go vet ./...
+
+**Docs:** None. Internal refactor with zero behavior change, no user-facing surface, no flags, no command-reference output altered.
+
+**Risks:** None - 3 isolated internal/cli refactors, no package moves, no API changes, fully covered by existing tests.
+
+**Bundle:** ONE commit. Sub-item 1 dropped, so nothing crosses a package boundary; no separate scope note needed.
+
+**Capture:**
+- inputs: bead etude-6j8 description; internal/cli/{capture.go,capture_run.go,retro.go,run.go}; internal/artifactstore/store.go (AddContent signature); internal/runmanifest/manifest.go (IsValidRunID), internal/retro/retro.go (IsValidRetroID); tests capture_test.go, retro_test.go, run_test.go
+- output: bead --design field
