@@ -1,0 +1,126 @@
+# Verification report
+
+## Automated results on rebased tree
+
+All requested targets passed:
+
+```text
+make test         PASS (all Go packages, including liverun, replay, runmanifest)
+make lint         PASS (gofmt clean; go vet ./...)
+make docs-check   PASS (26 generated command docs match)
+make docs-reality PASS (16 commands; docs match shipped CLI)
+make build        PASS (bin/etude built from rebased branch)
+```
+
+Focused integration commands also passed:
+
+```text
+go test ./internal/liverun -run 'TestGateRerunCallerWorkspaceDeliversEvidenceWithReadCheckout|TestGateAC3_RerunWithFeedback' -count=1
+ok github.com/joshuavial/etude/internal/liverun
+
+go test ./internal/runmanifest -run 'TestVersionAllowlist|TestManifestOriginalCheckoutVersionRules' -count=1
+ok github.com/joshuavial/etude/internal/runmanifest
+```
+
+## What the combined regression proves
+
+- Both caller attempts execute in the caller repo and leave clean descendant
+  commits, satisfying the mutation guard.
+- Attempt one's session transcript and log are imported and referenced.
+- Attempt two's actual `RunRequest.Inputs` contains the exact prior-attempt index
+  plus output, log, and transcript bytes from the killed attempt.
+- The index byte comparison covers stage name, round, session ID, all three
+  digests, roles, evidence statuses, gate ID/status, both blocking seats, their
+  required feedback, and `resumed_session: false`.
+- Four real seat runner invocations across two gate rounds each receive distinct
+  disposable checkouts at the original SHA and cannot see caller mutations.
+- The resulting manifest remains version 4 and retains `OriginalGitSHA`, two
+  caller workspace stage records, both post-run SHAs, session evidence, and logs.
+
+## Required plan-gate corrections retained
+
+- `validatePriorTranscriptEvidence(nil)` returns nil, so a missing producer
+  session is the normal no-transcript state and deterministic runners continue.
+- `Engine.Run` calls `validatePriorAttemptRoleCollisions` before start/resume,
+  checkout, or runner resolution; programmatic colliding workflows fail at
+  engine entry with zero runner calls.
+
+## Built-binary manual QA observed before this gate
+
+The binary under review was rebuilt and identified itself:
+
+```console
+$ make build && ./bin/etude --version
+mkdir -p bin
+go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=dev" -o bin/etude ./cmd/etude
+etude dev
+```
+
+An isolated clean Git fixture then ran a real caller-workspace producer through
+a block, rerun, and pass with `read_checkout: true`:
+
+```console
+$ /Users/jv/projects/etude/.worktrees/lane-s6z/bin/etude run caller-rerun --workflow caller-rerun --task task.txt --run-id qa-second-rebase-caller-rerun-008
+captured f475e3e33f98ff9e788dbcee0409dd333c4a5ddb
+captured gate produce.r1 status=rerun
+captured 6a1424fb9fcf0699160de47d8bb94d26797e4a12
+captured gate produce.r2 status=pass
+ref refs/etude/runs/qa-second-rebase-caller-rerun-008
+```
+
+The durable manifest observation was:
+
+```json
+{
+  "manifest_version": 4,
+  "original_git_sha": "6ba6517a91fcda4da459d3040be38a97ad51e72f",
+  "stages": [
+    {"stage":"produce","git_sha":"39321122c93d5c0a32f23f9e8d35cc8aa9d3578c","runner_workspace":"caller","session_id":"caller-session-1","log_digest":"dc5b73dfbfed0079f39ccca1a913b78db4cad6a62ff3e9963a168b2f8b4c6134","input_roles":["task"]},
+    {"stage":"produce.r2","git_sha":"4b14c6f8be2c463f3dd21a2b1c23e3984bd4225f","runner_workspace":"caller","session_id":"caller-session-2","log_digest":"f5179361fc0b167490368b60dec3a7ced0fd467c925adb2717f7d4ff343e96a0","input_roles":["task","gate-feedback","prior-attempts","prior-attempt-1-output","prior-attempt-1-log","prior-attempt-1-transcript"]}
+  ],
+  "gates": [
+    {"gate_id":"produce.r1","status":"rerun","read_checkout":true},
+    {"gate_id":"produce.r2","status":"pass","read_checkout":true}
+  ]
+}
+```
+
+Reading r2's stored output from the run ref showed that the actual process found
+and consumed its numbered input file:
+
+```console
+$ git show refs/etude/runs/qa-second-rebase-caller-rerun-008:artifacts/sha256/b7/b7d4dd91516f17eaeec5511664cc7ce6b18853ecd1ed80ded65ed0f45bef535f
+R2 CONSUMED THIS INPUT FILE:
+02-prior-attempts
+{
+  "version": 1,
+  "attempts": [{
+    "stage": "produce",
+    "round": 1,
+    "session_id": "caller-session-1",
+    "resumed_session": false,
+    "output_digest": "5972e2e186cfef75824bdc1486cdefd8d501b6176ca9cf35c55f8fd5b918b558",
+    "log_digest": "dc5b73dfbfed0079f39ccca1a913b78db4cad6a62ff3e9963a168b2f8b4c6134",
+    "transcript_digest": "e6bc1476db812db5fa19078cdf677c99cd433a740d5074f954a5d30eec39788c",
+    "killing_verdict": {"gate_id":"produce.r1","status":"rerun","seats":[
+      {"seat":"check.0","verdict":"block","required":["exit 1: forced manual-QA rerun: first attempt rejected"]},
+      {"seat":"qa-seat","verdict":"go"}
+    ]}
+  }]
+}
+```
+
+The caller r1 log artifact contains both streams:
+
+```text
+[stdout bytes=24 dropped=0 retained=head]
+caller stdout attempt 1
+
+[stderr bytes=24 dropped=0 retained=tail]
+caller stderr attempt 1
+```
+
+Separate built-binary runs recorded an imported sidecar transcript and stage log,
+and completed a deterministic no-sidecar stage with `producer_session: null`.
+The collision workflow exited 1 at parse/engine entry and its runner sentinel was
+absent. Full command output is retained for the PR Manual QA section.
