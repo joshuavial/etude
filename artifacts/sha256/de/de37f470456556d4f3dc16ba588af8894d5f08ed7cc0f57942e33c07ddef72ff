@@ -1,0 +1,7 @@
+## Docs — etude-nbv (Changed: no)
+
+No shipped docs needed. Dead-code removal with zero user-facing change. The removed 'case fetchBangAbort:'
+arm + its message ('fetch aborted: cannot classify ref %s') were provably unreachable and undocumented.
+docs/sync.md documents sync behavior/errors generically (remote not found, invalid remote, no local refs,
+'fetch failed: ...', 'push failed: ...', diverged-ref) and does not reference the removed arm/message/switch;
+accurate before+after. No generated docs/CHANGELOG.
