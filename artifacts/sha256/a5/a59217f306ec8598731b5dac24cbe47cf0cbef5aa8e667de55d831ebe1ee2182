@@ -1,0 +1,136 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4ba17e7..48f2c6a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -32,6 +32,13 @@ mechanics.
+   same-named stage occurrence's output, log, or input rather than only the
+   newest, so recapturing a stage under the same name (`--expect append`) keeps
+   earlier gates valid.
++- Stage runners, gate seats, gate checks, bench judges and retro generators
++  now run in their own Unix process group, which is killed on timeout or
++  cancellation and again after the command exits, so backgrounded descendants
++  can no longer keep writing after etude has returned (A03). `Ctrl-C` and
++  `SIGTERM` cancel the running command and its group. Non-Unix platforms keep
++  the previous direct-child cancellation. See
++  [Subprocess lifecycle](docs/run.md#subprocess-lifecycle).
+ 
+ ---
+ 
+diff --git a/docs/bench.md b/docs/bench.md
+index 6c06746..f709131 100644
+--- a/docs/bench.md
++++ b/docs/bench.md
+@@ -201,7 +201,7 @@ that failed mid-benchmark. A `CACHED` marker flags rows served from the cache.
+ | `--judge <command>` | Judge command spec (whitespace-split into argv). Falls back to `git config etude.judge`. Required (via flag or config). |
+ | `--judge-model <model>` | Model passed to the judge process as `ETUDE_MODEL`. Falls back to `git config etude.judgeModel`. Empty is allowed (the judge command may encode its own model). This is the **referee** model and is independent of `--model`. |
+ | `--seed <n>` | Seed for per-pair presentation randomisation (position-bias mitigation). Replay mode only. |
+-| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process is killed when the timeout elapses. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. Runner and judge output is also read through a hard size cap (default 64 MiB). |
++| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process and its whole process group is killed when the timeout elapses, so backgrounded descendants do not outlive the invocation; each group is killed again after its process exits, even on success. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. See [Subprocess lifecycle](run.md#subprocess-lifecycle). Runner and judge output is also read through a hard size cap (default 64 MiB). |
+ | `--no-cache` | Force re-evaluation; skip the eval-result cache. Replay mode only. |
+ | `--model`, `--skill-id`, `--skill-repo`, `--skill-version`, `--harness`, `--harness-version` | Override the corresponding field in the **contestant** (replay) producer. These describe the new skill being benchmarked; they never affect the judge. Replay mode only. |
+ 
+diff --git a/docs/gates.md b/docs/gates.md
+index 6ae1bf5..b4f9424 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -327,7 +327,10 @@ regardless of output. All three carry a `failure_note` in the stored
+ **Check runners** do not write an output envelope. Their verdict is the
+ process exit code: 0 = pass, nonzero = hard BLOCK. A check that cannot
+ launch, times out, or exits nonzero is always a hard veto, independent of seat
+-votes.
++votes. A check runs in its own process group, and that group is terminated when
++the check times out or is cancelled, and again after it exits (even on a passing
++exit, so a check must not leave helpers running) — see
++[Subprocess lifecycle](run.md#subprocess-lifecycle).
+ 
+ ### Synthesis and the stored record
+ 
+@@ -393,7 +396,10 @@ degraded-gate policy), see
+ ## Reviewer-only authentication environment
+ 
+ A registry seat may declare `env_allowlist` containing environment variable
+-names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
++names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]`. The
++`claude` CLI needs `USER` in addition to `CLAUDE_CONFIG_DIR` to locate its
++keychain credential, so a seat that authenticates through the keychain rather
++than an OAuth token must list it. The gate
+ resolver combines these names with the workflow allowlist for that seat's
+ primary and fallback subprocesses. Values come from the calling environment at
+ execution time; do not put credential values in YAML or captured artifacts.
+diff --git a/docs/replay.md b/docs/replay.md
+index 6a41088..f71ece4 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -31,7 +31,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
+ |------|-------------|
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+ | `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. The file is opened without following symlinks (on Unix, atomically via `O_NOFOLLOW`): a non-existent path is created, an existing regular file is overwritten, but an existing symlink (or other non-regular file) is rejected rather than followed — so `--output` cannot clobber a file the symlink points at. |
+-| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
++| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner's whole process group is killed when the timeout elapses and the command returns a "timed out" error, so backgrounded descendants do not outlive the invocation; the group is killed again after the runner exits, even on success. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. See [Subprocess lifecycle](run.md#subprocess-lifecycle). |
+ | `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording-record). |
+ | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+ | `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
+diff --git a/docs/retro.md b/docs/retro.md
+index 56194f3..dd15b31 100644
+--- a/docs/retro.md
++++ b/docs/retro.md
+@@ -284,9 +284,13 @@ neither is set.
+ ### Generator timeout and output limits
+ 
+ `--timeout <duration>` bounds each generator invocation (default `10m`; `0`
+-disables). The generator process is killed when the timeout elapses and the
+-command returns a "timed out" error; a small grace period bounds cleanup even if
+-the generator backgrounds a child that holds its output pipe open. The
++disables). The generator's whole process group is killed when the timeout
++elapses and the command returns a "timed out" error, so backgrounded descendants
++do not outlive the invocation; the group is killed again after the generator
++exits, even on success (see
++[Subprocess lifecycle](run.md#subprocess-lifecycle)). A small grace period bounds
++cleanup even if the generator backgrounds a child that holds its output pipe
++open. The
+ generator's output file is read through a hard size cap (default 64 MiB) — an
+ output exceeding the cap is rejected rather than read into memory unbounded.
+ 
+diff --git a/docs/run.md b/docs/run.md
+index 7803f18..118f324 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -621,6 +621,38 @@ etude replay <run-id> <stage> --allow-env
+ 
+ `--allow-env` and `--record` cannot be combined (rejected with a clear error).
+ 
++### Subprocess lifecycle
++
++On Unix, every command etude manages — a stage runner, a gate model seat, a gate
++check, a bench judge, and the retro generator — runs in its own process group.
++The whole group is killed with `SIGKILL` when the command's timeout fires or its
++context is cancelled, and again after the command exits.
++
++The consequence is that **no process left in the group survives the invocation,
++including after a successful exit**. Backgrounded helpers, a wrapper script's
++real worker, and children that redirected their stdio are all terminated, so
++none of them can keep writing into the worktree or the output file after etude
++has moved on. A runner that deliberately backgrounds a helper must expect that
++helper to be killed when the stage returns.
++
++Pipe draining stays bounded by a 10 s grace period after the command exits or is
++cancelled, so a child holding the inherited stdout/stderr write-ends cannot hang
++the run.
++
++This is a lifecycle guarantee, not a sandbox:
++
++- a child that calls `setsid` or `setpgid` leaves the group and is not reached;
++- a terminated descendant may linger as a zombie until its parent reaps it —
++  etude guarantees the signal was delivered, not that the pid disappears.
++
++On Windows and other non-Unix platforms there are no process groups here: the
++direct child is killed and the same drain grace applies, so descendants of the
++command may survive.
++
++`Ctrl-C` (SIGINT) or SIGTERM cancels the running command and its process group,
++and etude exits non-zero. A second signal takes the default action and exits
++immediately.
++
+ ### Forward replay
+ 
+ Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
