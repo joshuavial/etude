@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.6",
   "workflow": "etude-loop",
   "workflow_version": "strict",
@@ -32,6 +32,62 @@
         "size": 569
       },
       "timestamp": "2026-08-17T07:11:20.294521Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "ab59f6544592dae29e7fdef10d2e74a5571f2a58122660ee9179450e08a29799"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirm ancestry enforcement remains caller-only.",
+            "Consider other ignore/config control surfaces only if the guard contract expands.",
+            "Map missing ancestry objects to the caller-workspace sentinel.",
+            "Wrap the added docs prose."
+          ],
+          "timestamp": "2026-08-17T07:16:04Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Reject or ignore graft overlays when validating caller ancestry.",
+            "Detect new raw untracked paths even when a runner changes an external core.excludesFile target."
+          ],
+          "timestamp": "2026-08-17T07:16:04Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:16:04Z"
     }
   ]
 }
