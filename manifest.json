@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-aul.4",
   "workflow": "default",
   "workflow_version": "v1",
@@ -32,6 +32,64 @@
         "size": 7839
       },
       "timestamp": "2026-08-15T07:26:00.258744Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "Install the manual-test binary into a throwaway GOBIN or declare and restore the host-level go install mutation.",
+            "Pin the exact explicit-label key schema, fail when a supplied labels file matches zero cohort cells, and report explicit-versus-proxy counts.",
+            "Make per-variant aggregate scores comparable by using a common successfully evaluated fixture set or explicitly marking unequal sets non-comparable."
+          ],
+          "optional": [
+            "Assert the specific error for every validation-table case.",
+            "Resolve generated CLI reference drift before implementation.",
+            "Canonicalize variant paths so a.md and ./a.md are not treated as distinct variants."
+          ],
+          "timestamp": "2026-08-15T07:32:07Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Install the manual-test binary into a bounded temporary GOBIN instead of overwriting the host-installed etude binary while declaring no blast radius."
+          ],
+          "timestamp": "2026-08-15T07:32:07Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T07:32:07Z"
     }
   ]
 }
