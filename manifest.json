@@ -240,6 +240,68 @@
         "degraded_reason": "pilms down (0 CPU). 2 BLOCK (codex, gemini) / 1 GO (opus). Both blockers agreed on two fixes: add durable_changes[]; replace WARN-only with a cutoff-date BLOCK. Plan amended."
       },
       "timestamp": "2026-05-27T05:12:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "a DATE-granular cutoff is ambiguous (full timestamp vs date string); use a precise instant or a legacy-ref allowlist"
+          ],
+          "timestamp": "2026-05-27T05:30:00Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "3.1"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "malfunction",
+          "failure_note": "gemini-cli attempted to call a nonexistent run_shell_command tool and produced no verdict this round",
+          "timestamp": "2026-05-27T05:30:30Z"
+        },
+        {
+          "seat": "pilms",
+          "harness": {
+            "name": "pi",
+            "version": "lmstudio"
+          },
+          "provider": {
+            "name": "lmstudio",
+            "model": "qwen"
+          },
+          "verdict": "disregarded",
+          "failure_note": "seat unavailable all session (0 CPU)",
+          "timestamp": "2026-05-27T05:31:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "pilms down; gemini malfunctioned (no verdict). codex BLOCK on cutoff-date ambiguity adopted: switched to a precise-instant cutoff 2026-05-27T00:00:00Z."
+      },
+      "timestamp": "2026-05-27T05:31:30Z"
     }
   ]
 }
