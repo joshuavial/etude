@@ -1,0 +1,13 @@
+## Fast-lane Review
+
+Gate: review.r1
+Tier: L4, single Opus seat
+Packet: .etude/tmp/etude-64z-review-packet.md
+Packet SHA-256: 3e57b11df3ec3c2f248ab338738a928f3f199764384aa0db3c7878190fb2217a
+
+VERDICT: PASS_WITH_FOLLOWUPS
+BLOCKING FINDINGS: none
+NON-BLOCKING FOLLOW-UPS: shrink the comparator by reusing cmp diagnostics; document the canonical pretty-manifest layout assumption; preserve first-match tone-police selection
+CONFIDENCE: high
+
+All three follow-ups were folded before commit. The final diff lets cmp report the first differing byte/line, adds expected and actual byte sizes, documents the manifest-layout assumption and fail-closed count check, and retains the first tone-police match. The full suite, lint, live smoke test, and adversarial mismatch test all passed after these folds. Per fast-lane policy the passing gate was not reopened and no seats were added.

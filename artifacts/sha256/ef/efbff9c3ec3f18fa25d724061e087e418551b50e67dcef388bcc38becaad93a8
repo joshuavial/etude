@@ -1,0 +1,16 @@
+✓ etude-64z · Improve research replay mismatch diagnostics   [● P4 · CLOSED]
+Owner: joshuavial · Assignee: joshuavial · Type: task
+Created: 2026-08-15 · Updated: 2026-08-15
+Close reason: landed actionable research replay diagnostics in 1eb1fef
+
+DESCRIPTION
+Follow-up from etude-aqh single-seat review: make the research walkthrough artifact-path extraction less coupled to human run-show formatting and make byte-mismatch failures report actionable sizes or offsets. Keep this as test/example polish; no production replay refactor.
+
+DESIGN
+Change only examples/research/walkthrough.sh. Read stage output paths from the captured run ref's machine-readable manifest.json rather than parsing human run-show text, preserving manifest stage order and identifying tone-police by its stage field. Add one local byte-comparison helper that reports expected/actual sizes and the first differing byte offset for both the full replay and toned suffix; verify with bash syntax, the live walkthrough smoke test, make test, and make lint.
+
+
+COMMENTS
+  2026-08-15 07:38 joshuavial
+    Fast-lane plan implemented in the research walkthrough only: artifact paths now come from the run ref manifest, and mismatches report cmp byte offsets plus expected and actual byte sizes. Verify passed: bash syntax, live walkthrough smoke, forced replay divergence, make test, make lint, and git diff --check. Review gate review.r1: Opus PASS_WITH_FOLLOWUPS; all three optional follow-ups folded and checks rerun without reopening the gate. Packet SHA-256 3e57b11df3ec3c2f248ab338738a928f3f199764384aa0db3c7878190fb2217a. Commit 1eb1fef is on origin/main.
+

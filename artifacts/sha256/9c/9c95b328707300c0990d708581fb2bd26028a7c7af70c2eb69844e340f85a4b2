@@ -1,0 +1,101 @@
+commit 1eb1fefa12d0f3cb0628ea18f04ad9034902db41
+Author: joshuavial <git@codewithjv.com>
+Date:   Sat Aug 15 15:37:43 2026 +0800
+
+    improve research replay mismatch diagnostics
+
+diff --git a/examples/research/walkthrough.sh b/examples/research/walkthrough.sh
+index 47bc6f3..9a08664 100755
+--- a/examples/research/walkthrough.sh
++++ b/examples/research/walkthrough.sh
+@@ -171,27 +171,61 @@ echo "==> Step 2: etude run show $RUN_ID"
+ SHOW_OUT="$("$ETUDE" run show "$RUN_ID")"
+ echo "$SHOW_OUT"
+ 
+-# Read the original stage artifacts back from the captured run ref. Forward
+-# replay prints each stage output sequentially, so their concatenation is the
+-# exact byte-for-byte expected replay stream.
++# Read stage output paths from the run's machine-readable manifest rather than
++# coupling the walkthrough to the human `run show` layout. Forward replay prints
++# each stage output sequentially, so their concatenation is the exact expected
++# replay stream.
++MANIFEST="$WORK/run-manifest.json"
++OUTPUT_ARTIFACTS="$WORK/output-artifacts.tsv"
++git -C "$WORK" show "refs/etude/runs/$RUN_ID:manifest.json" > "$MANIFEST"
++# Etude writes canonical pretty JSON with one key per line; fail-closed count
++# checks below make any future layout change explicit rather than silently skip.
++awk '
++    /^[[:space:]]*"stage":[[:space:]]*/ {
++        stage = $0
++        sub(/^[^:]*:[[:space:]]*"/, "", stage)
++        sub(/".*$/, "", stage)
++    }
++    /^[[:space:]]*"output":[[:space:]]*\{/ { want_output_path = 1; next }
++    want_output_path && /^[[:space:]]*"path":[[:space:]]*/ {
++        path = $0
++        sub(/^[^:]*:[[:space:]]*"/, "", path)
++        sub(/".*$/, "", path)
++        print stage "\t" path
++        want_output_path = 0
++    }
++' "$MANIFEST" > "$OUTPUT_ARTIFACTS"
++
+ EXPECTED_REPLAY="$WORK/expected-replay.out"
+ : > "$EXPECTED_REPLAY"
+-printf '%s\n' "$SHOW_OUT" | awk '/^  output: / { for (i = 1; i <= NF; i++) if ($i ~ /^path=/) { sub(/^path=/, "", $i); print $i } }' |
+-while IFS= read -r artifact_path; do
++TONED_PATH=""
++OUTPUT_COUNT=0
++while IFS=$'\t' read -r stage artifact_path; do
++    [ -n "$artifact_path" ] || continue
+     git -C "$WORK" show "refs/etude/runs/$RUN_ID:$artifact_path" >> "$EXPECTED_REPLAY"
+-done
+-TONED_PATH="$(printf '%s\n' "$SHOW_OUT" | awk '
+-    /^stage: / { stage = $2 }
+-    stage == "tone-police" && /^  output: / {
+-        for (i = 1; i <= NF; i++) if ($i ~ /^path=/) {
+-            sub(/^path=/, "", $i)
+-            print $i
+-            exit
+-        }
+-    }
+-')"
++    OUTPUT_COUNT=$((OUTPUT_COUNT + 1))
++    if [ "$stage" = "tone-police" ] && [ -z "$TONED_PATH" ]; then
++        TONED_PATH="$artifact_path"
++    fi
++done < "$OUTPUT_ARTIFACTS"
++[ "$OUTPUT_COUNT" -eq 5 ] || { echo "expected 5 stage outputs in manifest, found $OUTPUT_COUNT" >&2; exit 1; }
++[ -n "$TONED_PATH" ] || { echo "tone-police output path missing from manifest" >&2; exit 1; }
+ git -C "$WORK" show "refs/etude/runs/$RUN_ID:$TONED_PATH" > "$WORK/original-toned.out"
+ 
++compare_bytes() {
++    local label="$1"
++    local expected="$2"
++    local actual="$3"
++    if cmp "$expected" "$actual"; then
++        return 0
++    fi
++
++    local expected_bytes="$(wc -c < "$expected" | tr -d ' ')"
++    local actual_bytes="$(wc -c < "$actual" | tr -d ' ')"
++    echo "byte mismatch ($label): expected_bytes=$expected_bytes actual_bytes=$actual_bytes" >&2
++    return 1
++}
++
+ # ---------------------------------------------------------------------------
+ # Step 3: forward replay — re-execute all 5 stages with the same recorded
+ # inputs.  Output is byte-stable: stage-runner.sh is deterministic.
+@@ -202,9 +236,10 @@ echo "==> Step 3: etude replay $RUN_ID (forward — all 5 stages)"
+ echo "    replay output:"
+ "$ETUDE" replay "$RUN_ID" > "$WORK/replay.out"
+ cat "$WORK/replay.out"
+-cmp "$EXPECTED_REPLAY" "$WORK/replay.out"
++compare_bytes "full replay" "$EXPECTED_REPLAY" "$WORK/replay.out"
+ TONED_BYTES="$(wc -c < "$WORK/original-toned.out" | tr -d ' ')"
+-tail -c "$TONED_BYTES" "$WORK/replay.out" | cmp "$WORK/original-toned.out" -
++tail -c "$TONED_BYTES" "$WORK/replay.out" > "$WORK/replayed-toned.out"
++compare_bytes "toned output" "$WORK/original-toned.out" "$WORK/replayed-toned.out"
+ echo "    replay bytes match the original stage artifacts (including toned)"
+ 
+ # ---------------------------------------------------------------------------

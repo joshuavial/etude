@@ -1,0 +1,32 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to the single fast-lane review gate
+
+Inputs:
+- bead: etude-64z
+- implementation: uncommitted diff on lane/polish-64z against f520c4a76475f613a9385752c122ba74657b68a9
+- plan: bead design field
+
+Automated tests:
+- changes: none; the changed walkthrough is exercised by the existing live smoke test
+- state: none
+- commands: bash -n examples/research/walkthrough.sh; go test ./internal/example -run TestResearchWalkthroughSmokeTest -count=1; make test; make lint; git diff --check
+- result: all passed after the final optional-follow-up folds
+
+Manual tests:
+- required: yes; the walkthrough itself is the test/example runtime surface
+- result: live five-stage run and forward replay passed against a freshly built binary and throwaway Git repo
+- negative result: a private runner that diverged only during replay failed nonzero; standard cmp reported char 354/line 9 and the helper reported expected_bytes=3177 actual_bytes=3182
+- teardown: both private negative fixtures were moved to Trash
+
+Docs:
+- changed: no
+- result: no shipped behavior changed; the script comment identifies manifest.json as the machine-readable source
+
+QA findings:
+- correctness: output paths come from ordered manifest stages, not run-show presentation text
+- coverage: live success path plus forced byte mismatch path both exercised
+- regressions: full tests and lint passed after final edits
+- code quality: comparison helper reuses cmp offsets and adds byte sizes; canonical pretty-manifest assumption is documented and fails closed
+- risks: no material risks remain
