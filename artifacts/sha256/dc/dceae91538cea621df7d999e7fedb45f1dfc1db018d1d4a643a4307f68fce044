@@ -1,0 +1,24 @@
+### B9. Cadence retro (2026-05-26) — post misc-backlog sweep (0rt/712/4o0)
+- **Trigger/scope:** 3-ticket cadence after the first three misc-backlog beads
+  (etude-0rt shared WriteManifestTree extraction [Tier 1], etude-712 gen-docs
+  drift-guard exhaustive [Tier 2], etude-4o0 epic-close reconcile gate [Tier 3]).
+- **Findings/changes:** added a THIRD item to "Recurring Defect Classes": **a
+  negative/failure-mode test must exercise the claimed failure path for the RIGHT
+  reason.** Caught at etude-712's PLAN gate (codex) — a test that derived its
+  expected set from the generated dir claimed "delete a generated file proves
+  missing-committed" but actually only proved ORPHAN, and omitted byte-stale
+  entirely; two of three fault paths were unproven while the test looked thorough.
+  Fix: inject one fault at a time on the correct side, assert the error names that
+  victim, via a dir-args helper. Also reinforces B8's "gate is load-bearing even on
+  TEST/dev-tooling beads, not just product code."
+- **What worked (preserve):** tier right-sizing held — 0rt (write-path refactor) got
+  full Tier-1 3-seat, 712 got Tier-2, 4o0 (docs/process) got Tier-3 single-Opus; the
+  lighter gates were faster and still caught the real defect (712's at Tier-2 plan).
+  And the planner's HONEST thin-delta call on 4o0 (compose existing checks + promote
+  prose to mandatory, rather than build parallel per-epic machinery) avoided
+  over-building.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect Classes"
+  item 3). Counter reset.
+- **Follow-up beads:** etude (remove dead q87 VerifyArtifactFile/ReferencedArtifactPaths
+  wrappers) + etude (gitignore the gen-docs build artifact) — both filed during the sweep.
+
