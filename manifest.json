@@ -924,6 +924,43 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T19:01:40.389693Z"
+    },
+    {
+      "gate_id": "docs.r2",
+      "phase": "docs",
+      "round": 2,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "66048a67dd529638cbcfa24a9abaab3366104336b5f83215b8d6065c2f943df4"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Two headline numbers are attributed to the wrong run. 'Measured on etude-9uf.5: etude gate alone passed 0 of 5 gates' and 'Measured live during etude-9uf.5, where two of five gates were invoked from the wrong worktree' are measurements of refs/etude/runs/etude-3xt, not of etude-9uf.5. etude-3xt's manifest has 10 attempts / 5 pass / 5 escalated - exactly 5 etude gate attempts, all escalated - and its plan.r1 and implement.r1 failure notes resolve to the supervisor worktree while verify.r1, docs.r1 and review.r1 resolve to the lane. By contrast etude-9uf.5 records only 3 etude gate attempts, all from the correct worktree. In a section whose whole point is that a claim must be auditable against the record, naming the wrong run is the defect this epic's implement gate blocked on three times. Note the THIRD 'of five' claim, the artifact drift, IS correctly about etude-9uf.5 - so the same phrase currently means two different runs within 30 lines.",
+            "2. 'six seat verdicts were acted on and never appended' plus 'would have caught what six separate seats had to notice' does not reconcile with the fingerprint it cites. The manifests show exactly three round-sequence gaps, and the seat counts those rounds would have carried are at most 5, not 6. Either the count is wrong, or a sixth verdict left no gap - in which case the arithmetic would not have caught it and the sentence promises a completeness the mechanism does not provide."
+          ],
+          "timestamp": "2026-08-15T19:14:04Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, both findings correct, both verified by recomputation before folding. The first is the sharper: I attributed etude-3xt's measurements to etude-9uf.5 in runbook text whose entire point is that a claim must be auditable against the record. Verified - .5 has three etude gate attempts, all from the correct worktree, so 'two of five from the wrong worktree' is not reproducible from the run I named, while the artifact-drift claim thirty lines later IS about .5. The same phrase meant two different runs. Now attributed to refs/etude/runs/etude-3xt explicitly, which the text never previously named. The second finding is the more interesting: I wrote that the round-gap fingerprint 'would have caught what six separate seats had to notice', but the manifests hold exactly three gaps carrying at most five verdicts. So either the count was wrong or a missed verdict left no gap - in which case the detector would not have caught it. The runbook now says PARTIAL and explains why a verdict never assigned a round id leaves no hole, because promising a detector more completeness than it has is how the next person stops looking. Three optionals also folded: a lost backslash continuation in the bash block (the heredoc that wrote it had eaten it), the imprecise 'caller's working directory' corrected to the caller's WORKTREE ROOT since etude gate resolves the root and sets cmd.Dir from it, and a back-reference to the seat-exception precondition. And the seat's fourth point became bead etude-a1i: the runbook now describes a detector that nothing implements and no bead covered - the documented-but-unimplemented gap this epic exists to close, recreated in the act of documenting it."
+      },
+      "timestamp": "2026-08-15T19:14:04Z"
     }
   ]
 }
