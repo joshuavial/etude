@@ -351,6 +351,44 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T06:26:14Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "final-review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Make validateStageName blank handling self-contained for future callers",
+            "Audit checked-in registry modes for values outside the new closed set"
+          ],
+          "timestamp": "2026-08-15T06:50:02Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-a8x"
+        ]
+      },
+      "timestamp": "2026-08-15T06:50:02Z"
     }
   ]
 }
