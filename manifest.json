@@ -520,6 +520,57 @@
         ]
       },
       "timestamp": "2026-08-16T07:54:51Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "424516e345f2dee429ef21692e7adb1ab1b2f3e8b5c7b6c76431b114c6cff742"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Name every hermetic consumer explicitly, name original_git_sha in gate recovery, and rewrap the run documentation paragraph."
+          ],
+          "timestamp": "2026-08-16T07:58:03Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Limit legacy stage-zero fallback documentation to non-caller manifests.",
+            "Name bench as an original-checkout consumer."
+          ],
+          "timestamp": "2026-08-16T07:58:03Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T07:58:03Z"
     }
   ]
 }
