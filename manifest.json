@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-profile-smoke-sol",
   "workflow": "dev-claude",
   "workflow_version": "manual-v1",
@@ -27,6 +27,60 @@
         "size": 327
       },
       "timestamp": "2026-09-07T00:39:40.075421Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "routine-review.r1",
+      "phase": "routine-review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "routine-review",
+          "role": "routine-review",
+          "artifact": "dc3a4214cacb0ce6012be9ecb94febc42d5adf62ffaa4611508f879b17c72a78"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "sol",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "sol",
+            "artifact": "7a1d7ef74c816b1c322a58553901292c365ca0674302f08950bf872313b6e2c4",
+            "path": "artifacts/sha256/7a/7a1d7ef74c816b1c322a58553901292c365ca0674302f08950bf872313b6e2c4",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 141
+          },
+          "session": {
+            "session_id": "sol-ad6dc497eee740e7",
+            "transcript_artifact": {
+              "role": "sol-transcript",
+              "artifact": "ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "path": "artifacts/sha256/ad/ad6dc497eee740e754fb4922d5db616770558f45c496e30488f4ede47c782545",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 59
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T00:39:48.666669Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T00:39:48.667808Z"
     }
   ]
 }
