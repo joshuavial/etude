@@ -1,0 +1,47 @@
+# Cadence retro (2026-05-27) — etude v1 shipped (kb0 phase: kb0.1–kb0.5)
+
+Cohort: the kb0 "Ship etude v1" phase — kb0.1 (v1 scope/boundary doc), kb0.2
+(README/docs v1 coherence), kb0.3 (CHANGELOG + version mechanics), kb0.4 (v1
+release checklist RELEASING.md), kb0.5 (gofmt fix for the lint gate). The epic
+etude-kb0 is closed; the roadmap is now complete except the user-blocked Phase 1.
+
+## Trigger
+3-ticket cadence (check (c)); META=Y. This is the v1-ship wrap-up retro.
+
+## Context
+After etude-8hq completed, the only unblocked next phase was kb0 "Ship v1" (an
+undecomposed epic). I surfaced the choice to the user (8hq done, roadmap otherwise
+done, Phase 1 blocked) and they chose decompose+ship kb0. The codebase was already
+healthy (build/test/docs green, 13 commands shipped), so v1 was a release-readiness
+phase: scope definition + reconciling the brief + release artifacts, NOT feature work.
+
+## What went well (preserve)
+- **Decomposing an open-ended "ship vN" epic over a healthy codebase into a small,
+  honest set of release beads worked.** The scope doc (kb0.1) anchored the rest;
+  deferring Phase 1 + the still-planned list kept v1 coherent and unblocked.
+- **The plan gate caught factual drift** in the docs beads (the V1-SCOPE `prime` row;
+  the pointer "inline-only" phrasing) — accuracy review of docs pays off, not just code.
+- **Planning kb0.4 surfaced a hidden defect** (`make lint` was red) before it could
+  bite a real release.
+
+## What went wrong (the durable lesson)
+- **Unformatted code shipped in etude-8hq.2 and went undetected until v1.** The 8hq.2
+  occurred_at change broke struct-field alignment; `gofmt -l` flagged log.go +
+  manifest.go, but `go test` passed (gofmt drift is not a test failure), so my
+  Go-bead Verify (build + test) missed it. It only surfaced when kb0.4's release
+  checklist ran `make lint`. Root cause: Verify for Go changes ran build+test but
+  NOT `make lint` (gofmt + go vet).
+- **Phase-epic-close-needs-allowlisting recurred** (kb0 epic, as B19 noted for 8hq):
+  when the epic auto-closed it became a runless closed bead and blocked the push
+  until allowlisted. A standing, recurring step.
+- **codex-exec hung again** (the kb0.5 gate, "Reading additional input from stdin");
+  proceeded on a degraded gate justified by a mechanical proof (`git diff -w` empty).
+
+## Durable changes landed
+- v1 release docs: V1-SCOPE.md, README v1 coherence, CHANGELOG.md, RELEASING.md.
+- kb0.5: `make lint` is now green.
+- **Runbook Runtime Verifier lens now requires `make lint` (gofmt + go vet) for any
+  Go change** — the gap that let unformatted code ship.
+
+## Decision
+informational — etude v1 phase complete; durable changes implemented.

@@ -1,0 +1,27 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-27",
+  "failure_modes": [
+    "unformatted Go code (gofmt drift from 8hq.2's struct edits) shipped undetected until v1 because Verify ran go build + go test but not make lint (gofmt drift is not a test failure)",
+    "the kb0 phase epic auto-closed as a runless bead and blocked the push until allowlisted (recurring per-phase pattern, also seen for 8hq)",
+    "codex-exec hung again on the kb0.5 gate ('Reading additional input from stdin')"
+  ],
+  "root_causes": [
+    "Verify for Go changes did not include make lint (gofmt -l + go vet); build+test alone cannot catch formatting drift",
+    "a phase epic is a runless rollup; closing it adds a runless closed bead that the completeness audit flags until it is allowlisted"
+  ],
+  "follow_up_beads": [
+    "Phase 1 (xenota capture adapter + GitHub import) remains USER-BLOCKED — the only roadmap work left",
+    "etude-9ey (cross-retro index) remains available (unblocked by 8hq.5)"
+  ],
+  "decisions": [
+    "v1 = shipped surface (phases 0/2/3/4); Phase 1 + still-planned list deferred (V1-SCOPE.md)",
+    "version string v1.0.0; the tag is a human action (RELEASING.md), not cut by the workflow",
+    "kb0 epic allowlisted as a rollup (children .1-.5 have runs)"
+  ],
+  "durable_changes": [
+    "docs/plans/product/V1-SCOPE.md (v1 scope/boundary) + README v1 coherence + CHANGELOG.md + RELEASING.md",
+    "kb0.5 gofmt fix — make lint now green",
+    "review-gate-runbook Runtime Verifier lens now requires make lint (gofmt + go vet) for any Go change"
+  ]
+}
