@@ -581,6 +581,61 @@
         ]
       },
       "timestamp": "2026-08-16T00:08:00Z"
+    },
+    {
+      "gate_id": "verify.r1",
+      "phase": "verify",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unnamed-in-harness-task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "The final aul.4+aul.5 tree must rerun the complete suite.",
+            "Confirm the installed manual-test binary was built from implement.r4.",
+            "List the exact bench regression test names in closeout evidence.",
+            "Document absolute judge paths and progression-proxy circularity.",
+            "Never push or close the temporarily red aul.4 commit without aul.5 immediately following."
+          ],
+          "timestamp": "2026-08-16T00:16:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Inline the committed regression-test diff so the automated coverage claims are independently reviewable."
+          ],
+          "timestamp": "2026-08-16T00:16:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Opus ran as the required unnamed in-harness Task."
+      },
+      "timestamp": "2026-08-16T00:16:00Z"
     }
   ]
 }
