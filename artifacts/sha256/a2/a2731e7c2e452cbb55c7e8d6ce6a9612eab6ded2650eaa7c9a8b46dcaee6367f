@@ -1,0 +1,7 @@
+# Verify — etude-kb0.2 (README/docs v1 coherence)
+Docs-only (Tier 3). README.md + BRIEF.md (1-line pointer) + docs/plans/product/README.md (index entry).
+## Checks
+- `make docs-reality` → OK (13 commands; shipped command list + usage block + See-links UNTOUCHED). `make reconcile` → green. `git status` → only the 3 docs.
+- New README `## Still planned / not yet built` section references docs/plans/product/V1-SCOPE.md (does not duplicate); deferred list consistent with V1-SCOPE §Deferred (verified by the implement-gate Opus seat). eval phrasing fixed to "no standalone etude eval cobra command". Design pointer split: BRIEF = rationale, V1-SCOPE = current scope.
+- BRIEF.md gained a 1-line plain pointer to V1-SCOPE (no "not yet" adjacent to a shipped cmd token — docs-reality safe). product/README.md index gained the V1-SCOPE entry.
+## Result: PASS

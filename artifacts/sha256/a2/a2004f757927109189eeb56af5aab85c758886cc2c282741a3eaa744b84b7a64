@@ -1,0 +1,156 @@
+✓ etude-kb0.2 · Polish README and docs for coherent v1 release presentation   [● P1 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-27 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+Make the top-level README and docs/*.md present the shipped surface coherently as a first release. The README Status section currently scatters deferred-feature notes inline (e.g. 'no standalone etude eval CLI yet'); consolidate these into a clear, single 'Still planned / not yet built' section that matches the v1 scope doc (etude-kb0.1) without duplicating its content (link to it). Verify docs/README.md index and per-command docs read as a coherent v1, and that deferred features (live xenota capture adapter, etude import, standalone etude eval, query, external pointers, docs site) are clearly marked as not-yet-built where mentioned. docs-reality is green, so this is human-level coherence/polish, NOT fixing CLI drift — do not change any command behavior.
+
+DESIGN
+## Plan
+
+**Approach:** Docs-only coherence polish (Tier 3). Make the top-level `README.md`
+present etude's shipped v1 surface coherently and consolidate its scattered
+deferred-feature notes into ONE "Still planned / not yet built" section that
+LINKS to the authoritative `docs/plans/product/V1-SCOPE.md` (shipped by kb0.1)
+rather than duplicating the deferred list. Add the 1-line BRIEF.md → V1-SCOPE.md
+cross-link that kb0.1 deferred to this bead, and index V1-SCOPE.md in the
+product-plans doc index. No code, no CLI/behavior change, no per-command/CLI doc
+edits (those are generated). Keep every shipped `etude <cmd>` usage mention and
+the per-command "See ..." links intact so `make docs-reality` stays green
+(scripts/docs-reality-check.sh:70 requires README usage mentions for each
+shipped command).
+
+**Current state observed (cite):**
+- README.md has NO single consolidated deferred section. Deferred notes are
+  SCATTERED: README.md:45-46 (parenthetical "...there is no standalone `etude
+  eval` CLI yet.") and README.md:50 ("Planning notes for components that do not
+  exist yet live under docs/plans/").
+- The actual consolidated "Still planned / not yet built" list lives in
+  docs/plans/README.md:75-87 (capture adapters, import, query, standalone eval,
+  external pointers, docs site).
+- V1-SCOPE.md (kb0.1) is the authoritative scope doc. grep confirms it is
+  referenced by NO other .md file — it is not yet linked from README.md,
+  docs/README.md, docs/plans/README.md, or docs/plans/product/README.md.
+- BRIEF.md:5 status line is stale ("implementation has not started"); V1-SCOPE.md:7
+  explicitly says "A cross-link back from BRIEF.md is tracked under bead
+  etude-kb0.2."
+
+**Files:**
+- `README.md` — three minimal edits (no rewrite):
+  1. Status intro (README.md:5-8): light coherence touch so the README opens by
+     presenting the shipped v1 capability as a first release. Keep the implemented
+     command list (README.md:10-37) and the prose CLI-surface summary
+     (README.md:39-46) — they back the docs-reality usage check. Trim the inline
+     "...there is no standalone `etude eval` CLI yet." parenthetical from the
+     summary (README.md:45-46) so the single deferred section becomes the one
+     place deferred state is framed (avoid duplication). Keep the eval-is-a-library
+     fact (it is true and matches V1-SCOPE.md:51-56), just drop the "yet"-as-status
+     framing from the summary paragraph.
+  2. Add a new short "## Still planned / not yet built" section (placed right after
+     the Status section, before "## Build And Test" at README.md:52). It does NOT
+     re-list every item — it states that v1 ships the surface above and that
+     deferred features (live xenota capture adapter, `etude import`, standalone
+     `etude eval`, query command, external artifact pointers, docs site) are
+     defined and tracked in V1-SCOPE.md, with a single link to
+     [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md). Reference,
+     do not duplicate. Phrasing must keep "not yet built" wording OFF the same line
+     as any `etude <cmd>` token (README is not under docs/plans/** so the scan
+     does not gate it, but keep claims accurate and avoid future drift).
+  3. Update the existing pointer at README.md:48-50 so the "full design" line points
+     readers to V1-SCOPE.md for current scope alongside BRIEF.md for design
+     rationale (one added clause/link), removing the now-redundant "components that
+     do not exist yet" inline note since the new section + V1-SCOPE cover it.
+- `docs/plans/product/BRIEF.md` — add ONE line under the stale status line
+  (BRIEF.md:5), e.g. a note that for current shipped scope vs deferred work see
+  [V1-SCOPE.md](V1-SCOPE.md). This closes the cross-link kb0.1 deferred
+  (V1-SCOPE.md:7). Do not edit the stale status sentence itself or any other
+  BRIEF prose. Keep the link line free of `not yet`-style tokens adjacent to any
+  `etude <cmd>` (BRIEF.md is under docs/plans/** and IS gated by the stale-claim
+  scan, scripts/docs-reality-check.sh:88-101).
+- `docs/plans/product/README.md` — add V1-SCOPE.md to the product-plans index
+  (currently missing; index entries are README.md:6-18). Add one bullet:
+  "[v1 scope and boundary](V1-SCOPE.md) - what v1 ships vs what is deferred,
+  reconciling BRIEF.md with the shipped state." Place it directly after the
+  Design brief bullet (product/README.md:6) since V1-SCOPE reconciles the brief.
+
+**Out of scope (do NOT touch):** any code; docs/cli/** generated reference; the
+shipped command list / usage block / per-command "See" links in README.md;
+CHANGELOG (kb0.3); release checklist / handoff (kb0.4); docs/plans/README.md
+"Still planned" list (it already exists and is consistent — V1-SCOPE.md is the
+authoritative source, that index list stays as-is and need not be re-pointed in
+this tight-scoped bead). docs/README.md needs no change (it already links Plans
+and notes the README is the implemented-state summary).
+
+**Tests:**
+- No unit tests (docs-only). Verification is the existing make guards:
+  - `make docs-reality` must stay green — confirms every shipped `etude <cmd>`
+    still has a README usage mention and a docs/README index entry, no orphan CLI
+    pages, and no docs/plans/** stale claim co-located with a shipped command
+    token (the BRIEF.md cross-link must not trip this).
+  - `make reconcile` (which runs docs-reality) must stay green.
+  - `make docs-check` unaffected (no docs/cli edits) but worth a sanity run.
+- Manual read-through: README opens coherently as v1; the new "Still planned"
+  section's deferred items match V1-SCOPE.md:60-97 exactly (capture adapters/
+  import Phase 1, standalone eval, query, external pointers, docs site) — same
+  items, same reasons, no contradiction/drift.
+
+**Docs:** This bead IS the docs work. After Verify, the changed files
+(README.md, BRIEF.md cross-link, product/README.md index) are the deliverable.
+No generated CLI reference regeneration needed (no command surface change). No
+separate user-guide updates beyond the three files above.
+
+**Risks:**
+- Low. Main risk is accidentally weakening a shipped-command usage mention in
+  README and breaking docs-reality — mitigated by leaving the command list,
+  usage block, and "See" links untouched and only touching the deferred framing.
+- Secondary risk: BRIEF.md cross-link wording tripping the docs/plans/** stale-
+  claim scan if it places a "not yet" token next to an `etude <cmd>` token —
+  mitigated by keeping the link line to a plain pointer to V1-SCOPE.md.
+
+**Capture:**
+- inputs: bead etude-kb0.2 (bd show) + parent epic etude-kb0 + dep etude-kb0.1;
+  README.md (read fully), docs/README.md, docs/plans/README.md,
+  docs/plans/product/V1-SCOPE.md, docs/plans/product/BRIEF.md (status line),
+  docs/plans/product/README.md, scripts/docs-reality-check.sh, Makefile
+  (docs-reality/reconcile targets); grep for "V1-SCOPE" cross-references.
+- output: bead --design field (this plan).
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- README.md: trimmed inline 'there is no standalone `etude eval` CLI yet' parenthetical; dropped 'components that do not exist yet' scattered framing; updated design pointer to reference both BRIEF.md (rationale) and V1-SCOPE.md (current scope); added new '## Still planned / not yet built' section before '## Build And Test' that names the six deferred items and links to V1-SCOPE.md — no duplication of the full list.
+- docs/plans/product/BRIEF.md: added one cross-link pointer line directly after the stale status line, pointing to V1-SCOPE.md for shipped scope vs deferred. No other BRIEF prose touched.
+- docs/plans/product/README.md: added V1-SCOPE.md bullet directly after the Design brief entry in the product-plans index.
+
+**Checks run:**
+- `make docs-reality`: OK — 13 commands; docs match the shipped CLI.
+- `make reconcile`: exit 0 (docs-reality + docs-check both green).
+
+**Changed files:**
+- README.md
+- docs/plans/product/BRIEF.md
+- docs/plans/product/README.md
+
+**Plan deviations:** None. All three edits exactly match the approved plan. Shipped command list, usage block, and 'See' links in README.md untouched.
+
+**Capture:**
+- inputs: approved plan (bd show etude-kb0.2 --design), README.md, BRIEF.md, docs/plans/product/README.md, V1-SCOPE.md, scripts/docs-reality-check.sh
+- output: working tree diff (3 files); make docs-reality + reconcile green
+
+ACCEPTANCE CRITERIA
+README has a single clear deferred/'still planned' section consistent with the v1 scope doc; docs/README.md and per-command docs present a coherent v1 with deferred features clearly marked. No CLI/behavior changes. make docs-reality and make reconcile stay green.
+
+LABELS: phase:implement
+
+PARENT
+  ↑ ○ etude-kb0: (EPIC) Ship etude v1 ● P1
+
+DEPENDS ON
+  → ✓ etude-kb0.1: Write v1 scope and boundary doc reconciling the brief ● P1
+
+BLOCKS
+  ← ○ etude-kb0.4: Write v1 release checklist and handoff doc ● P1
+

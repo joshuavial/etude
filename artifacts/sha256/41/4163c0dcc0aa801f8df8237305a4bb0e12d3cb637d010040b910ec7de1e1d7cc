@@ -1,0 +1,54 @@
+commit 1ca74dad18ce1f79f52077ce7f21fe5897d998da
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 17:59:45 2026 +0800
+
+    polish README and docs for coherent v1 release presentation
+
+diff --git a/README.md b/README.md
+index 06ef383..da52a28 100644
+--- a/README.md
++++ b/README.md
+@@ -42,12 +42,13 @@ packages are Go APIs internal to this module. The implemented CLI surface is
+ `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
+ `etude gc`, `etude reindex`, `etude retro capture`, `etude retro generate`,
+ `etude retro list`, `etude retro show`, `etude prime`, `etude log`,
+-and the root help and version output. (The `eval` package is a library used by `etude bench`;
+-there is no standalone `etude eval` CLI yet.)
++and the root help and version output. (The `eval` package is a library used by `etude bench`; there is no standalone `etude eval` cobra command.)
+ 
+-The full design is in
+-[`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
+-for components that do not exist yet live under [`docs/plans/`](docs/plans/).
++The design rationale is in [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). For the current v1 scope and what is deferred, see [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md).
++
++## Still planned / not yet built
++
++v1 ships the CLI surface listed above. The following are confirmed deferred to post-v1 and tracked in [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md): live xenota capture adapter, `etude import` backfill, standalone `etude eval` command, a `query` command over the SQLite index, external artifact pointer capture via the CLI, and a browsable docs site.
+ 
+ ## Build And Test
+ 
+diff --git a/docs/plans/product/BRIEF.md b/docs/plans/product/BRIEF.md
+index b86e096..6f8743d 100644
+--- a/docs/plans/product/BRIEF.md
++++ b/docs/plans/product/BRIEF.md
+@@ -4,6 +4,8 @@
+ 
+ *Status: design brief — this document is the plan; implementation has not started.*
+ 
++For the current shipped scope and deferred items, see [V1-SCOPE.md](V1-SCOPE.md).
++
+ ## 1. Problem
+ 
+ Improving the skills that drive a coding agent — planning, implementation,
+diff --git a/docs/plans/product/README.md b/docs/plans/product/README.md
+index b5c5f06..8eea934 100644
+--- a/docs/plans/product/README.md
++++ b/docs/plans/product/README.md
+@@ -4,6 +4,7 @@ These notes describe planned `etude` product behavior. They are not shipped
+ user-facing documentation.
+ 
+ - [Design brief](BRIEF.md) - current product direction and phased plan.
++- [v1 scope and boundary](V1-SCOPE.md) - what v1 ships vs what is deferred, reconciling BRIEF.md with the shipped state.
+ - [Retrospectives](retrospectives.md) - first-class retro artifacts, triggers,
+   CLI shape, and manifest integration.
+ - [etude retro command](etude-retro-command.md) - concrete design for the
