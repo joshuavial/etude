@@ -1,0 +1,1230 @@
+commit f473dcb75a25007c421e417e373793d416bbcf07
+Author: joshuavial <git@codewithjv.com>
+Date:   Mon May 25 19:18:01 2026 +0800
+
+    add assertion evaluator and check registry
+
+diff --git a/internal/eval/assertionevaluator.go b/internal/eval/assertionevaluator.go
+new file mode 100644
+index 0000000..d1552fd
+--- /dev/null
++++ b/internal/eval/assertionevaluator.go
+@@ -0,0 +1,393 @@
++package eval
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"path/filepath"
++	"strings"
++)
++
++// Sentinel errors for AssertionEvaluator.
++var (
++	// ErrUnknownCheck is returned when a check Kind is not present in the registry.
++	ErrUnknownCheck = errors.New("unknown assertion check")
++	// ErrAssertionConfig is returned for invalid or missing assertion configuration
++	// (nil Assertion, empty Checks, rubric set on assertion request, wrong target
++	// count, or blank check Kind).
++	ErrAssertionConfig = errors.New("invalid assertion config")
++)
++
++// checkFunc is the signature for a built-in deterministic check.
++// passed=true means the check passed. findings accumulate per-item observations
++// (failures only; passes produce no findings). err signals a configuration or
++// internal error — the caller propagates it rather than treating it as Passed=false.
++type checkFunc func(req EvalRequest, args map[string]string) (passed bool, findings []Finding, err error)
++
++// AssertionEvaluator implements Evaluator by running a set of deterministic
++// checks against EvalRequest bytes. No Judge, no LLM, no exec, no IO.
++//
++// Checks is the injectable check registry. If nil, defaultChecks() is used,
++// which includes the two built-in checks. Tests may inject a custom registry.
++type AssertionEvaluator struct {
++	Checks map[string]checkFunc
++}
++
++// compile-time interface satisfaction assertion.
++var _ Evaluator = (*AssertionEvaluator)(nil)
++
++// NewAssertionEvaluator returns an AssertionEvaluator seeded with defaultChecks().
++func NewAssertionEvaluator() *AssertionEvaluator {
++	return &AssertionEvaluator{Checks: defaultChecks()}
++}
++
++// defaultChecks returns the built-in check registry.
++func defaultChecks() map[string]checkFunc {
++	return map[string]checkFunc{
++		"required-artifact-presence":            checkRequiredArtifactPresence,
++		"test-plan-mentions-every-changed-file": checkTestPlanMentionsEveryChangedFile,
++	}
++}
++
++// checks returns the evaluator's registry, falling back to defaultChecks() if nil.
++func (e *AssertionEvaluator) checks() map[string]checkFunc {
++	if e.Checks != nil {
++		return e.Checks
++	}
++	return defaultChecks()
++}
++
++// Evaluate runs all configured assertion checks against req and returns an
++// assertion-coherent Evaluation.
++//
++// Head-validation order:
++//  1. req.Method must be "assertion"
++//  2. req.Rubric must be nil (assertion forbids rubric config)
++//  3. req.Assertion must be non-nil
++//  4. len(req.Assertion.Checks) must be >= 1
++//  5. each check Kind must be non-blank
++//  6. len(req.Targets) must be exactly 1
++//
++// Each check is resolved in the registry; an unknown Kind aborts Evaluate with
++// ErrUnknownCheck (config error, not a content failure). Check-internal errors
++// are propagated directly; they do NOT produce Passed=false.
++//
++// Passed is the logical AND of all check results. Failures emit Findings;
++// passes emit none.
++func (e *AssertionEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error) {
++	if req.Method != "assertion" {
++		return Evaluation{}, fmt.Errorf("AssertionEvaluator requires method \"assertion\", got %q", req.Method)
++	}
++	if req.Rubric != nil {
++		return Evaluation{}, fmt.Errorf("%w: assertion method must not have rubric config", ErrAssertionConfig)
++	}
++	if req.Assertion == nil {
++		return Evaluation{}, fmt.Errorf("%w: assertion method requires assertion config", ErrAssertionConfig)
++	}
++	if len(req.Assertion.Checks) == 0 {
++		return Evaluation{}, fmt.Errorf("%w: assertion.checks must have at least one check", ErrAssertionConfig)
++	}
++	for i, c := range req.Assertion.Checks {
++		if strings.TrimSpace(c.Kind) == "" {
++			return Evaluation{}, fmt.Errorf("%w: assertion.checks[%d].kind required", ErrAssertionConfig, i)
++		}
++	}
++	if len(req.Targets) != 1 {
++		return Evaluation{}, fmt.Errorf("%w: assertion requires exactly 1 target, got %d", ErrAssertionConfig, len(req.Targets))
++	}
++
++	registry := e.checks()
++	passed := true
++	var findings []Finding
++
++	for _, c := range req.Assertion.Checks {
++		fn, ok := registry[c.Kind]
++		if !ok {
++			return Evaluation{}, fmt.Errorf("%w: %q", ErrUnknownCheck, c.Kind)
++		}
++		ok, fs, err := fn(req, c.Args)
++		if err != nil {
++			return Evaluation{}, err
++		}
++		if !ok {
++			passed = false
++		}
++		findings = append(findings, fs...)
++	}
++
++	// Keep Findings nil when empty (mirrors pairwise combineDouble convention).
++	if len(findings) == 0 {
++		findings = nil
++	}
++
++	return Evaluation{
++		Score: Score{
++			Kind:   ScoreAssertion,
++			Passed: &passed,
++		},
++		Findings: findings,
++	}, nil
++}
++
++// ---- Built-in check #1: required-artifact-presence ----
++
++// checkRequiredArtifactPresence passes iff an EvalInput with the given role
++// exists and has non-empty Content in the selected input lane(s).
++//
++// Args:
++//   - role (required): the Role to look for.
++//   - in (optional): "targets", "context", or "both" (default "both").
++func checkRequiredArtifactPresence(req EvalRequest, args map[string]string) (bool, []Finding, error) {
++	role, ok := args["role"]
++	if !ok || strings.TrimSpace(role) == "" {
++		return false, nil, fmt.Errorf("%w: required-artifact-presence requires \"role\" arg", ErrAssertionConfig)
++	}
++
++	lane := "both"
++	if v, ok := args["in"]; ok && strings.TrimSpace(v) != "" {
++		lane = strings.TrimSpace(v)
++	}
++
++	var inputs []EvalInput
++	switch lane {
++	case "targets":
++		inputs = req.Targets
++	case "context":
++		inputs = req.Context
++	default: // "both"
++		inputs = append(req.Targets, req.Context...)
++	}
++
++	for _, inp := range inputs {
++		if inp.Role == role && len(inp.Content) > 0 {
++			return true, nil, nil
++		}
++	}
++
++	return false, []Finding{{
++		Severity: SeverityError,
++		Message:  fmt.Sprintf("required artifact with role %q is absent or empty", role),
++		Pointer:  role,
++	}}, nil
++}
++
++// ---- Built-in check #2: test-plan-mentions-every-changed-file ----
++
++// checkTestPlanMentionsEveryChangedFile passes iff every file path reported by
++// the unified diff is mentioned in the test plan text.
++//
++// Args:
++//   - plan_role (optional, default "plan"): Role of the plan input. Resolved
++//     from Targets first, then Context.
++//   - diff_role (optional, default "diff"): Role of the diff input. Resolved
++//     from Context.
++//   - match (optional, default "either"): "path", "basename", or "either".
++//     Determines whether the full path, the basename, or either must appear in
++//     the plan text as a substring.
++//   - case_sensitive (optional, default "false"): "true" or "false".
++func checkTestPlanMentionsEveryChangedFile(req EvalRequest, args map[string]string) (bool, []Finding, error) {
++	planRole := argOrDefault(args, "plan_role", "plan")
++	diffRole := argOrDefault(args, "diff_role", "diff")
++	matchMode := argOrDefault(args, "match", "either")
++	caseSensitive := argOrDefault(args, "case_sensitive", "false") == "true"
++
++	// Resolve plan content: Targets first, then Context.
++	planContent := findInputContent(req.Targets, planRole)
++	if planContent == nil {
++		planContent = findInputContent(req.Context, planRole)
++	}
++	if planContent == nil {
++		return false, []Finding{{
++			Severity: SeverityError,
++			Message:  fmt.Sprintf("test plan artifact (role %q) not found", planRole),
++			Pointer:  planRole,
++		}}, nil
++	}
++
++	// Resolve diff content from Context.
++	diffContent := findInputContent(req.Context, diffRole)
++	if diffContent == nil {
++		return false, []Finding{{
++			Severity: SeverityError,
++			Message:  fmt.Sprintf("diff artifact (role %q) not found", diffRole),
++			Pointer:  diffRole,
++		}}, nil
++	}
++
++	changedFiles := parseChangedFiles(diffContent)
++
++	planText := string(planContent)
++	if !caseSensitive {
++		planText = strings.ToLower(planText)
++	}
++
++	var findings []Finding
++	for _, file := range changedFiles {
++		if !fileMentioned(planText, file, matchMode, caseSensitive) {
++			findings = append(findings, Finding{
++				Severity: SeverityError,
++				Message:  fmt.Sprintf("changed file %q not mentioned in test plan", file),
++				Pointer:  file,
++			})
++		}
++	}
++
++	return len(findings) == 0, findings, nil
++}
++
++// fileMentioned reports whether file is mentioned in planText per the match mode.
++// planText must already be lowercased when caseSensitive=false.
++func fileMentioned(planText, file, matchMode string, caseSensitive bool) bool {
++	candidate := file
++	if !caseSensitive {
++		candidate = strings.ToLower(file)
++	}
++
++	base := filepath.Base(candidate)
++
++	switch matchMode {
++	case "path":
++		return strings.Contains(planText, candidate)
++	case "basename":
++		return strings.Contains(planText, base)
++	default: // "either"
++		return strings.Contains(planText, candidate) || strings.Contains(planText, base)
++	}
++}
++
++// parseChangedFiles extracts the list of changed (added/modified/renamed) file
++// paths from a unified diff. It returns a deduplicated, stable (first-seen)
++// ordered slice of paths.
++//
++// The parser is a small state machine that only reads file-header lines OUTSIDE
++// hunk bodies, so added/removed content lines inside a hunk can never be
++// mistaken for headers. An "@@ " hunk header switches into hunk-body mode; a
++// "diff --git " line switches back to header mode for the next file section.
++// Without this guard, a hunk-body line that ADDS content beginning "++ "
++// renders as "+++ <content>" (and a removed "-- " line as "--- <content>") and
++// would be misread as a file header, yielding a phantom changed-file.
++//
++// Supported diff subset:
++//   - Git-format unified diffs whose file sections are delimited by
++//     "diff --git " lines (what `git diff` and the bench produce).
++//   - Per file: the post-image "+++ " header (leading "b/"/"a/" prefix stripped,
++//     tab timestamp suffix discarded), and "rename to <path>" lines (the new
++//     path after a rename, which avoids the ambiguous "diff --git a/X b/Y" split
++//     on paths that contain spaces).
++//   - Pure deletes ("+++ /dev/null") are skipped — a deleted file is not a
++//     "changed file the plan must mention".
++//
++// Explicitly unsupported (and not silently wrong — the affected paths are
++// simply absent from the output):
++//   - Plain "diff -u" output WITHOUT "diff --git " delimiters: only the first
++//     file's header (before its first hunk) is read; later files are skipped.
++//   - Paths with embedded spaces on "diff --git a/X b/Y" header lines (the
++//     a/b prefix stripping used by git is ambiguous when paths contain spaces).
++//   - Quoted or core.quotePath-escaped paths (paths containing non-ASCII or
++//     special characters that git escapes with backslash sequences).
++func parseChangedFiles(diff []byte) []string {
++	seen := make(map[string]struct{})
++	var order []string
++	inHunk := false
++
++	scanner := bufio.NewScanner(bytes.NewReader(diff))
++	for scanner.Scan() {
++		line := scanner.Text()
++
++		// Track hunk state so body content is never read as a header.
++		switch {
++		case strings.HasPrefix(line, "diff --git "):
++			inHunk = false // new file section; headers follow until the first hunk
++			continue
++		case strings.HasPrefix(line, "@@ "):
++			inHunk = true // hunk header; body content follows
++			continue
++		}
++		if inHunk {
++			continue
++		}
++
++		// Primary source: post-image "+++ " header.
++		if strings.HasPrefix(line, "+++ ") {
++			path := strings.TrimPrefix(line, "+++ ")
++			// Strip timestamp suffix after a tab (e.g. "b/foo.go\t2024-01-01...").
++			if i := strings.IndexByte(path, '\t'); i >= 0 {
++				path = path[:i]
++			}
++			// Skip pure deletes.
++			if path == "/dev/null" {
++				continue
++			}
++			// Skip quoted/core.quotePath-escaped paths (e.g. "b/foo\303\251.go").
++			// These are documented as unsupported: leave them absent rather than
++			// append the raw escaped string as a bogus path.
++			if strings.HasPrefix(path, "\"") {
++				continue
++			}
++			// Strip leading "b/" or "a/" prefix added by git.
++			path = stripDiffPrefix(path)
++			if path == "" {
++				continue
++			}
++			if _, dup := seen[path]; !dup {
++				seen[path] = struct{}{}
++				order = append(order, path)
++			}
++			continue
++		}
++
++		// Rename new-path: "rename to <path>" (git extended header line).
++		if strings.HasPrefix(line, "rename to ") {
++			path := strings.TrimPrefix(line, "rename to ")
++			path = strings.TrimSpace(path)
++			if path == "" {
++				continue
++			}
++			// Skip quoted/escaped paths (unsupported — absent, not bogus).
++			if strings.HasPrefix(path, "\"") {
++				continue
++			}
++			if _, dup := seen[path]; !dup {
++				seen[path] = struct{}{}
++				order = append(order, path)
++			}
++		}
++	}
++
++	return order
++}
++
++// stripDiffPrefix strips the leading "b/" or "a/" prefix that git prepends to
++// diff header paths.
++func stripDiffPrefix(path string) string {
++	if strings.HasPrefix(path, "b/") {
++		return path[2:]
++	}
++	if strings.HasPrefix(path, "a/") {
++		return path[2:]
++	}
++	return path
++}
++
++// ---- helpers ----
++
++// findInputContent returns the Content of the first EvalInput in inputs whose
++// Role matches role, or nil if none is found.
++func findInputContent(inputs []EvalInput, role string) []byte {
++	for _, inp := range inputs {
++		if inp.Role == role {
++			return inp.Content
++		}
++	}
++	return nil
++}
++
++// argOrDefault returns args[key] if present and non-empty, otherwise def.
++func argOrDefault(args map[string]string, key, def string) string {
++	if v, ok := args[key]; ok && strings.TrimSpace(v) != "" {
++		return strings.TrimSpace(v)
++	}
++	return def
++}
+diff --git a/internal/eval/assertionevaluator_test.go b/internal/eval/assertionevaluator_test.go
+new file mode 100644
+index 0000000..ea6c198
+--- /dev/null
++++ b/internal/eval/assertionevaluator_test.go
+@@ -0,0 +1,819 @@
++package eval
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"testing"
++	"time"
++)
++
++// ---- helpers ----
++
++func assertionTarget(role string, content []byte) EvalInput {
++	return EvalInput{Role: role, Content: content}
++}
++
++func assertionContext(role string, content []byte) EvalInput {
++	return EvalInput{Role: role, Content: content}
++}
++
++func assertionSpec(checks ...AssertionCheck) *AssertionSpec {
++	return &AssertionSpec{Checks: checks}
++}
++
++func assertionCheck(kind string, args map[string]string) AssertionCheck {
++	return AssertionCheck{Kind: kind, Args: args}
++}
++
++func newAssertionReq(target EvalInput, spec *AssertionSpec, ctx ...EvalInput) EvalRequest {
++	return EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{target},
++		Context:   ctx,
++		Assertion: spec,
++	}
++}
++
++// ---- head-validation tests ----
++
++func TestAssertionEvaluator_WrongMethod(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "rubric",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "out"})),
++	})
++	if err == nil {
++		t.Fatal("want error for non-assertion method, got nil")
++	}
++	if errors.Is(err, ErrAssertionConfig) {
++		t.Errorf("method mismatch should not wrap ErrAssertionConfig, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_NonNilRubric(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "out"})),
++		Rubric:    &RubricRef{Path: "rubric.md", Version: "abc"},
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Fatalf("want ErrAssertionConfig for non-nil Rubric, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_NilAssertion(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: nil,
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Fatalf("want ErrAssertionConfig for nil Assertion, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_EmptyChecks(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: &AssertionSpec{Checks: []AssertionCheck{}},
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Fatalf("want ErrAssertionConfig for empty Checks, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_BlankCheckKind(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:  "assertion",
++		Targets: []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(AssertionCheck{
++			Kind: "   ", // blank after trim
++			Args: nil,
++		}),
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Fatalf("want ErrAssertionConfig for blank Kind, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_WrongTargetCount(t *testing.T) {
++	e := NewAssertionEvaluator()
++	spec := assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "out"}))
++
++	// Zero targets.
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{},
++		Assertion: spec,
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Errorf("zero targets: want ErrAssertionConfig, got %v", err)
++	}
++
++	// Two targets.
++	src := validArtifactSource()
++	_, err = e.Evaluate(context.Background(), EvalRequest{
++		Method: "assertion",
++		Targets: []EvalInput{
++			{Role: "a", Content: []byte("x"), Source: src},
++			{Role: "b", Content: []byte("y"), Source: src},
++		},
++		Assertion: spec,
++	})
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Errorf("two targets: want ErrAssertionConfig, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_UnknownCheckKind(t *testing.T) {
++	e := NewAssertionEvaluator()
++	_, err := e.Evaluate(context.Background(), EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(assertionCheck("no-such-check", nil)),
++	})
++	if !errors.Is(err, ErrUnknownCheck) {
++		t.Fatalf("want ErrUnknownCheck, got %v", err)
++	}
++}
++
++// ---- required-artifact-presence tests ----
++
++func TestRequiredArtifactPresence_Pass(t *testing.T) {
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("some content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "output"})),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("want Passed=true, got %v", eval_.Score.Passed)
++	}
++	if len(eval_.Findings) != 0 {
++		t.Errorf("want no findings on pass, got %v", eval_.Findings)
++	}
++}
++
++func TestRequiredArtifactPresence_FailRoleAbsent(t *testing.T) {
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("some content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "missing-role"})),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("want Passed=false, got %v", eval_.Score.Passed)
++	}
++	if len(eval_.Findings) != 1 {
++		t.Errorf("want 1 finding, got %d", len(eval_.Findings))
++	}
++}
++
++func TestRequiredArtifactPresence_FailEmptyContent(t *testing.T) {
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte{}), // empty content
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "output"})),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("want Passed=false for empty Content, got %v", eval_.Score.Passed)
++	}
++}
++
++func TestRequiredArtifactPresence_MissingRoleArg(t *testing.T) {
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{})),
++	)
++	_, err := e.Evaluate(context.Background(), req)
++	if !errors.Is(err, ErrAssertionConfig) {
++		t.Fatalf("want ErrAssertionConfig for missing role arg, got %v", err)
++	}
++}
++
++func TestRequiredArtifactPresence_InSelectorTargets(t *testing.T) {
++	e := NewAssertionEvaluator()
++	// Role "plan" is in Context, not Targets. in=targets should fail.
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{
++			"role": "plan",
++			"in":   "targets",
++		})),
++		assertionContext("plan", []byte("plan text")), // in Context only
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("in=targets: want Passed=false (plan is in context not targets), got true")
++	}
++}
++
++func TestRequiredArtifactPresence_InSelectorContext(t *testing.T) {
++	e := NewAssertionEvaluator()
++	// Role "plan" is in Context. in=context should pass.
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{
++			"role": "plan",
++			"in":   "context",
++		})),
++		assertionContext("plan", []byte("plan text")),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("in=context: want Passed=true, got false")
++	}
++}
++
++// ---- test-plan-mentions-every-changed-file tests ----
++
++const sampleDiff = `diff --git a/internal/foo/bar.go b/internal/foo/bar.go
++index abc1234..def5678 100644
++--- a/internal/foo/bar.go
+++++ b/internal/foo/bar.go
++@@ -1,3 +1,4 @@
++ package foo
+++
+++// changed
++diff --git a/cmd/main.go b/cmd/main.go
++index 111..222 100644
++--- a/cmd/main.go
+++++ b/cmd/main.go
++@@ -1 +1,2 @@
++ package main
+++// change
++`
++
++func TestTestPlanMentions_Pass_Path(t *testing.T) {
++	planText := "The test plan covers internal/foo/bar.go and cmd/main.go changes."
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", map[string]string{
++			"match": "path",
++		})),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("match=path: want Passed=true, got false; findings: %v", eval_.Findings)
++	}
++}
++
++func TestTestPlanMentions_Pass_Basename(t *testing.T) {
++	// Plan only mentions basenames.
++	planText := "Test plan mentions bar.go and main.go."
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", map[string]string{
++			"match": "basename",
++		})),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("match=basename: want Passed=true, got false; findings: %v", eval_.Findings)
++	}
++}
++
++func TestTestPlanMentions_FailWithFindingPerFile(t *testing.T) {
++	// Plan mentions neither file.
++	planText := "This plan says nothing about the changed files."
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", nil)),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("want Passed=false, got true")
++	}
++	// Two changed files → two findings.
++	if len(eval_.Findings) != 2 {
++		t.Errorf("want 2 findings (one per missing file), got %d: %v", len(eval_.Findings), eval_.Findings)
++	}
++	for _, f := range eval_.Findings {
++		if f.Severity != SeverityError {
++			t.Errorf("finding severity = %q, want error", f.Severity)
++		}
++	}
++}
++
++func TestTestPlanMentions_CaseInsensitiveDefault(t *testing.T) {
++	// Plan mentions paths in UPPERCASE; default case_sensitive=false should still pass.
++	planText := "Covers INTERNAL/FOO/BAR.GO and CMD/MAIN.GO."
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", nil)),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("case_sensitive=false default: want Passed=true, got false; findings: %v", eval_.Findings)
++	}
++}
++
++func TestTestPlanMentions_CaseSensitiveTrue(t *testing.T) {
++	// Plan mentions UPPERCASE paths, but case_sensitive=true → should fail.
++	planText := "Covers INTERNAL/FOO/BAR.GO and CMD/MAIN.GO."
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", map[string]string{
++			"case_sensitive": "true",
++		})),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("case_sensitive=true: want Passed=false (uppercase plan ≠ lowercase paths), got true")
++	}
++}
++
++func TestTestPlanMentions_PlanNotFound(t *testing.T) {
++	e := NewAssertionEvaluator()
++	// No input with role "plan".
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", nil)),
++		assertionContext("diff", []byte(sampleDiff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("want Passed=false when plan role absent, got true")
++	}
++	if len(eval_.Findings) != 1 {
++		t.Errorf("want 1 finding for missing plan, got %d: %v", len(eval_.Findings), eval_.Findings)
++	}
++}
++
++func TestTestPlanMentions_DiffNotFound(t *testing.T) {
++	e := NewAssertionEvaluator()
++	// No input with role "diff".
++	req := newAssertionReq(
++		assertionTarget("output", []byte("artifact content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", nil)),
++		assertionContext("plan", []byte("some plan text")),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("want Passed=false when diff role absent, got true")
++	}
++	if len(eval_.Findings) != 1 {
++		t.Errorf("want 1 finding for missing diff, got %d: %v", len(eval_.Findings), eval_.Findings)
++	}
++}
++
++// TestTestPlanMentions_BasenameCollision verifies that match=path does NOT
++// count an unrelated text "data.go" as mentioning the changed file "a.go".
++func TestTestPlanMentions_BasenameCollision(t *testing.T) {
++	diff := `diff --git a/internal/a.go b/internal/a.go
++index 123..456 100644
++--- a/internal/a.go
+++++ b/internal/a.go
++@@ -1 +1,2 @@
++ package internal
+++// changed
++`
++	// Plan mentions "data.go" and "some/other/a.go" but NOT "internal/a.go".
++	planText := "Plan mentions data.go and some/other/a.go but not the real path."
++
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		assertionSpec(assertionCheck("test-plan-mentions-every-changed-file", map[string]string{
++			"match": "path",
++		})),
++		assertionContext("plan", []byte(planText)),
++		assertionContext("diff", []byte(diff)),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	// match=path: "internal/a.go" is not in the plan text (only "data.go" and "some/other/a.go" are).
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("match=path: want Passed=false (basename collision should not count), got true")
++	}
++}
++
++// ---- parseChangedFiles edge-case tests ----
++
++func TestParseChangedFiles_Add(t *testing.T) {
++	diff := `diff --git a/new.go b/new.go
++new file mode 100644
++index 0000000..abc1234
++--- /dev/null
+++++ b/new.go
++@@ -0,0 +1 @@
+++package main
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "new.go" {
++		t.Errorf("add: want [new.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_Modify(t *testing.T) {
++	diff := `diff --git a/foo/bar.go b/foo/bar.go
++index abc..def 100644
++--- a/foo/bar.go
+++++ b/foo/bar.go
++@@ -1 +1,2 @@
++ package foo
+++// changed
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "foo/bar.go" {
++		t.Errorf("modify: want [foo/bar.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_PhantomAddedPlusLine(t *testing.T) {
++	// A hunk BODY that adds a line whose content begins "++ " renders as
++	// "+++ note". It must NOT be misread as a post-image header (no phantom).
++	diff := `diff --git a/real.go b/real.go
++index abc..def 100644
++--- a/real.go
+++++ b/real.go
++@@ -1,2 +1,3 @@
++ package main
+++++ note
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "real.go" {
++		t.Errorf("phantom +++ body line: want [real.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_PhantomBodyHeaderPair(t *testing.T) {
++	// A hunk body with a removed "-- foo" line and an added "++ bar" line
++	// renders as "--- foo"/"+++ bar". Neither may be read as a header.
++	diff := `diff --git a/real.go b/real.go
++index abc..def 100644
++--- a/real.go
+++++ b/real.go
++@@ -1,3 +1,3 @@
++ package main
++--- foo
+++++ bar
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "real.go" {
++		t.Errorf("phantom body header pair: want [real.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_QuotedPathAbsent(t *testing.T) {
++	// A quoted/core.quotePath-escaped path is unsupported: it must be ABSENT
++	// from the result (not appended as the raw escaped string), and other files
++	// in the same diff must still parse. Covers both "+++ " and "rename to ".
++	diff := `diff --git a/plain.go b/plain.go
++index abc..def 100644
++--- a/plain.go
+++++ b/plain.go
++@@ -1 +1,2 @@
++ package main
+++// changed
++diff --git "a/uni\303\251.go" "b/uni\303\251.go"
++index abc..def 100644
++--- "a/uni\303\251.go"
+++++ "b/uni\303\251.go"
++@@ -1 +1,2 @@
++ package main
+++// changed
++diff --git a/old.go b/renamed.go
++similarity index 100%
++rename from old.go
++rename to "renamed\303\251.go"
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "plain.go" {
++		t.Errorf("quoted paths must be absent: want [plain.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_Delete(t *testing.T) {
++	// Pure delete: +++ /dev/null — should be skipped.
++	diff := `diff --git a/gone.go b/gone.go
++deleted file mode 100644
++index abc1234..0000000
++--- a/gone.go
+++++ /dev/null
++@@ -1 +0,0 @@
++-package gone
++`
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 0 {
++		t.Errorf("delete: want [], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_Rename(t *testing.T) {
++	// Rename: the new path comes from "rename to <path>".
++	diff := `diff --git a/old/name.go b/new/name.go
++similarity index 95%
++rename from old/name.go
++rename to new/name.go
++index abc..def 100644
++--- a/old/name.go
+++++ b/new/name.go
++@@ -1,2 +1,2 @@
++ package foo
++-// old comment
+++// new comment
++`
++	files := parseChangedFiles([]byte(diff))
++	// Both "rename to" and "+++ b/new/name.go" should resolve to "new/name.go".
++	// After dedup there should be exactly one entry.
++	if len(files) != 1 || files[0] != "new/name.go" {
++		t.Errorf("rename: want [new/name.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_MultipleFilesDedup(t *testing.T) {
++	// Two distinct files; ensure stable (first-seen) order.
++	diff := `diff --git a/alpha.go b/alpha.go
++--- a/alpha.go
+++++ b/alpha.go
++@@ -1 +1 @@
++ package main
++diff --git a/beta.go b/beta.go
++--- a/beta.go
+++++ b/beta.go
++@@ -1 +1 @@
++ package main
++diff --git a/alpha.go b/alpha.go
++--- a/alpha.go
+++++ b/alpha.go
++@@ -2 +2 @@
++ extra
++`
++	files := parseChangedFiles([]byte(diff))
++	// alpha.go appears twice but should deduplicate; beta.go once.
++	if len(files) != 2 {
++		t.Errorf("dedup: want 2 files, got %d: %v", len(files), files)
++	}
++	if files[0] != "alpha.go" || files[1] != "beta.go" {
++		t.Errorf("order: want [alpha.go, beta.go], got %v", files)
++	}
++}
++
++func TestParseChangedFiles_PrefixStrip(t *testing.T) {
++	// Verify both "b/" and "a/" prefixes are stripped.
++	diff := "+++ b/src/main.go\n"
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "src/main.go" {
++		t.Errorf("b/ strip: want [src/main.go], got %v", files)
++	}
++
++	diff2 := "+++ a/src/main.go\n"
++	files2 := parseChangedFiles([]byte(diff2))
++	if len(files2) != 1 || files2[0] != "src/main.go" {
++		t.Errorf("a/ strip: want [src/main.go], got %v", files2)
++	}
++}
++
++func TestParseChangedFiles_TimestampStrip(t *testing.T) {
++	// Tabs introduce a timestamp suffix in some diff formats.
++	diff := "+++ b/foo/bar.go\t2024-01-01 12:00:00 +0000\n"
++	files := parseChangedFiles([]byte(diff))
++	if len(files) != 1 || files[0] != "foo/bar.go" {
++		t.Errorf("timestamp strip: want [foo/bar.go], got %v", files)
++	}
++}
++
++// ---- aggregation tests ----
++
++func TestAssertionEvaluator_AggregationBothPass(t *testing.T) {
++	passCheck := func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++		return true, nil, nil
++	}
++	e := &AssertionEvaluator{Checks: map[string]checkFunc{
++		"pass1": passCheck,
++		"pass2": passCheck,
++	}}
++	req := EvalRequest{
++		Method:  "assertion",
++		Targets: []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(
++			assertionCheck("pass1", nil),
++			assertionCheck("pass2", nil),
++		),
++	}
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || !*eval_.Score.Passed {
++		t.Errorf("both pass: want Passed=true, got %v", eval_.Score.Passed)
++	}
++	if len(eval_.Findings) != 0 {
++		t.Errorf("both pass: want no findings, got %v", eval_.Findings)
++	}
++}
++
++func TestAssertionEvaluator_AggregationOneFails(t *testing.T) {
++	failFinding := Finding{Severity: SeverityError, Message: "check-a failed"}
++	e := &AssertionEvaluator{Checks: map[string]checkFunc{
++		"pass": func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++			return true, nil, nil
++		},
++		"fail": func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++			return false, []Finding{failFinding}, nil
++		},
++	}}
++	req := EvalRequest{
++		Method:  "assertion",
++		Targets: []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(
++			assertionCheck("pass", nil),
++			assertionCheck("fail", nil),
++		),
++	}
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("one fails: want Passed=false, got true")
++	}
++	if len(eval_.Findings) != 1 || eval_.Findings[0].Message != failFinding.Message {
++		t.Errorf("one fails: want 1 finding %q, got %v", failFinding.Message, eval_.Findings)
++	}
++}
++
++func TestAssertionEvaluator_AggregationBothFail(t *testing.T) {
++	// Both checks fail; findings should accumulate.
++	e := &AssertionEvaluator{Checks: map[string]checkFunc{
++		"fail1": func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++			return false, []Finding{{Severity: SeverityError, Message: "f1"}}, nil
++		},
++		"fail2": func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++			return false, []Finding{{Severity: SeverityError, Message: "f2"}}, nil
++		},
++	}}
++	req := EvalRequest{
++		Method:  "assertion",
++		Targets: []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(
++			assertionCheck("fail1", nil),
++			assertionCheck("fail2", nil),
++		),
++	}
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Score.Passed == nil || *eval_.Score.Passed {
++		t.Errorf("both fail: want Passed=false, got true")
++	}
++	if len(eval_.Findings) != 2 {
++		t.Errorf("both fail: want 2 findings, got %d: %v", len(eval_.Findings), eval_.Findings)
++	}
++}
++
++func TestAssertionEvaluator_CheckErrorPropagates(t *testing.T) {
++	// A check that returns an error should cause Evaluate to return that error,
++	// NOT set Passed=false.
++	sentinel := fmt.Errorf("internal check error")
++	e := &AssertionEvaluator{Checks: map[string]checkFunc{
++		"err-check": func(_ EvalRequest, _ map[string]string) (bool, []Finding, error) {
++			return false, nil, sentinel
++		},
++	}}
++	req := EvalRequest{
++		Method:    "assertion",
++		Targets:   []EvalInput{assertionTarget("out", []byte("x"))},
++		Assertion: assertionSpec(assertionCheck("err-check", nil)),
++	}
++	_, err := e.Evaluate(context.Background(), req)
++	if err == nil {
++		t.Fatal("want error propagated from check, got nil")
++	}
++	if !errors.Is(err, sentinel) {
++		t.Errorf("want sentinel error, got %v", err)
++	}
++}
++
++func TestAssertionEvaluator_AllPassEmitsNoFindings(t *testing.T) {
++	e := NewAssertionEvaluator()
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "output"})),
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	if eval_.Findings != nil {
++		t.Errorf("all-pass: want nil Findings, got %v", eval_.Findings)
++	}
++}
++
++// ---- Score coherence tests (EvalResult.Validate) ----
++
++// buildValidEvalResult wraps an Evaluation into a valid EvalResult.
++func buildValidEvalResult(eval_ Evaluation, spec *AssertionSpec) EvalResult {
++	src := validArtifactSource()
++	base := EvalIDBase("assertion", "assertion-test-run", "output", time.Now())
++	return EvalResult{
++		EvalResultVersion: 1,
++		EvalID:            base,
++		Method:            "assertion",
++		Score:             eval_.Score,
++		Findings:          eval_.Findings,
++		Assertion:         spec,
++		Targets:           []ArtifactSource{src},
++		Producer:          testProducer(),
++		Created:           time.Now().UTC(),
++	}
++}
++
++func TestAssertionEvaluator_ScoreCoherence_Pass(t *testing.T) {
++	e := NewAssertionEvaluator()
++	spec := assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "output"}))
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		spec,
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	result := buildValidEvalResult(eval_, spec)
++	if err := result.Validate(); err != nil {
++		t.Fatalf("EvalResult.Validate() failed for pass Score: %v", err)
++	}
++}
++
++func TestAssertionEvaluator_ScoreCoherence_Fail(t *testing.T) {
++	e := NewAssertionEvaluator()
++	spec := assertionSpec(assertionCheck("required-artifact-presence", map[string]string{"role": "missing"}))
++	req := newAssertionReq(
++		assertionTarget("output", []byte("content")),
++		spec,
++	)
++	eval_, err := e.Evaluate(context.Background(), req)
++	if err != nil {
++		t.Fatalf("Evaluate: %v", err)
++	}
++	result := buildValidEvalResult(eval_, spec)
++	if err := result.Validate(); err != nil {
++		t.Fatalf("EvalResult.Validate() failed for fail Score: %v", err)
++	}
++}
