@@ -373,6 +373,46 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T05:31:20Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "final-review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Decide whether Gemini environment and trust flags belong in canonical defaults",
+            "Consider rejecting duplicate primary or fallback invocation candidates"
+          ],
+          "timestamp": "2026-08-15T06:10:48Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-kcd",
+          "etude-tm6",
+          "etude-7zm"
+        ]
+      },
+      "timestamp": "2026-08-15T06:10:48Z"
     }
   ]
 }
