@@ -1,0 +1,184 @@
+# etude-jqs — VERIFY gate brief
+
+PHASE: verify (implement folded in — the plan passed both seats after seven rounds)
+TIER: L1, which is [opus, codex] since upstream 770584b removed the gemini seat.
+Full committed panel, nothing waived. The registry notes L1 now equals L2/L3 in
+composition; restoring a third seat is tracked as etude-pzq. Recorded so this
+gate record is not later misread as three-seat.
+
+ANCESTOR: bead etude-jqs, P1, follow-on to etude-i19 (landed be1098d) and
+etude-nad (landed ddc3397). etude-i19 REMOVED the `refs/etude/*` fetch refspec
+because `git fetch --prune` was deleting unpushed run refs — that stopped the
+damage but left the cause: origin's namespace was mapped onto the same local
+namespace etude writes to, so prune could not be safe by construction, and with
+no fetch refspec at all a bare `git fetch` never brought the namespace down.
+Measured against: a configured fetch refspec must be safe to have again, such
+that `git fetch --prune` can only ever delete a disposable mirror ref and never a
+locally-produced one. The original incident destroyed three recorded gate
+attempts.
+
+BLAST RADIUS (7 files; tests create throwaway git repositories under `t.TempDir()`,
+auto-removed by the test runner, and touch no repository of the developer's): `internal/refstore/store.go`,
+`internal/refstore/store_test.go`, `internal/cli/init.go`,
+`internal/cli/init_test.go`, `internal/cli/sync_test.go`, `docs/init.md`,
+`docs/sync.md`. Nothing outside this worktree. It changes the git config
+`etude init` writes and adds a ref namespace. It moves, rewrites and deletes NO
+existing ref — migration is purely additive. `internal/cli/sync.go` itself is
+NOT modified; only a test file guarding it is added.
+
+TOPOLOGY: several concurrent agent lanes, each a linked git worktree, sharing ONE
+ref store and ONE `.git/config`. No daemon. The destructive actor is ordinary git
+tooling — `git fetch --prune`, run automatically by `workmux remove --gone`.
+
+DURABILITY / DELIVERY-CLASS: local git config plus the git ref store. Config
+writes go through the lock-retrying helper landed in i19 (`--replace-all` with an
+anchored escaped value-pattern, so concurrent writers converge; retry on lock
+collision; child under `LC_ALL=C`). No run data is rewritten. Mirror refs are
+disposable by definition and re-derived by the next fetch.
+
+AUTHORITATIVE vs PROXY: LOCAL-vs-MIRROR provenance is now STRUCTURAL rather than
+inferred — the path answers it, with no heuristic, timestamp or proxy. That is
+the distinction that makes prune safe. WHICH-REMOTE provenance is NOT injective
+for slash-containing remote names (remote `team` with `refs/etude/runs/runs/x`
+and remote `team/runs` with `refs/etude/runs/x` construct the same mirror path);
+bounded to mirror-only aliasing, re-derived by the next fetch, unreachable from
+any local authoritative ref and unmatched by any push refspec. Filed as etude-cng.
+
+COMPLETENESS-ENUMERATION: every site that writes or passes a `refs/etude/*`
+refspec, and its disposition in this diff.
+
+| site | disposition |
+|---|---|
+| `init.go` legacy fetch removal | UNCHANGED (i19's predicate, no carve-out needed — the mirror is outside `refs/etude/`) |
+| `init.go` push refspec | UNCHANGED — spans exactly the local namespaces, cannot match a sibling mirror |
+| `init.go` mirrored fetch | NEW — three refspecs, one per kind, installed AFTER the legacy removal |
+| `sync.go:94` fetch | UNCHANGED code; NEW guard tests that it never gains `--prune` and never forces into the local namespace |
+| `sync.go:263` push | UNCHANGED — cannot carry the mirror |
+| `refstore.validateRef` | UNCHANGED — mirror writes rejected structurally; asserted by test |
+| readers (`run`, `log`, `gc`, `index`, `reindex`, `bench`, `liverun`) | UNCHANGED — `List("refs/etude/<kind>")` cannot match `refs/etude-mirror/`; asserted by test |
+
+IRREVERSIBLE SEQUENCES: 1
+
+IRREVERSIBLE SEQUENCE mirror-fetch-migration: 5 steps, each ONE `git config`
+invocation. An earlier draft declared FOUR and said "push untouched". That was
+WRONG and a seat caught it: `init` does not narrow the push refspec, but it DOES
+ADD it when absent, which is a durable config write and therefore a real step and
+a real crash point.
+
+IRREVERSIBLE STEP mirror-fetch-migration.1: remove every fetch refspec on the
+target remote whose destination lands in the local etude namespace.
+IRREVERSIBLE STEP mirror-fetch-migration.2: add the canonical push refspec if the
+target remote does not already carry it (converged via --replace-all).
+IRREVERSIBLE STEP mirror-fetch-migration.3: install the mirrored fetch refspec for runs.
+IRREVERSIBLE STEP mirror-fetch-migration.4: install the mirrored fetch refspec for retros.
+IRREVERSIBLE STEP mirror-fetch-migration.5: install the mirrored fetch refspec for evals.
+
+CRASH-PREFIX RESIDUALS:
+CRASH-PREFIX mirror-fetch-migration.1: no etude fetch refspec is CONFIGURED; push
+config is whatever it already was. The precise claim is "no NEW fetch can be
+started with the legacy refspec after this step", NOT "run refs are not prunable":
+a `git fetch --prune` already in flight read its refspecs at startup and still
+holds the legacy one. Git's config lock orders writes, not readers that have
+already read. That window is one-time and INHERITED — etude-i19 already removes
+this refspec and has the identical race — and no ordering at any layer closes it,
+because the hazardous state is in another process's memory. Post-etude-nad it is
+a LOUD FAILURE rather than silent loss: a vanished run ref makes the next capture
+refuse instead of rebuilding a fresh manifest.
+CRASH-PREFIX mirror-fetch-migration.2: as .1, plus the canonical push refspec
+present. Sharing works; no fetch refspec exists, so no mirror exists. Safe.
+CRASH-PREFIX mirror-fetch-migration.3: as .2, plus runs mirrored on fetch. Retros
+and evals simply not mirrored yet. No push refspec can match the mirror, so it
+cannot leave this clone. Incomplete mirroring, no data loss, no upload path.
+CRASH-PREFIX mirror-fetch-migration.4: as .3, plus retros mirrored.
+CRASH-PREFIX mirror-fetch-migration.5: fully migrated.
+
+The ordering rule is etude-i19's, not this layout's: the legacy hazardous fetch
+refspec is removed FIRST, so the earliest prefix is the safest state rather than
+the most exposed one.
+
+TRUST BOUNDARY: none crossed. `etude init` runs in the operator's own repository
+under their own account. The only caller-supplied input reaching a ref path is
+the `--remote` name, which is validated by CONSTRUCTING the mirror ref and
+checking it with `git check-ref-format`.
+
+## Behaviour-preserving invariants (confirm, don't reconstruct)
+
+1. `refs/etude-mirror/` is a SIBLING of `refs/etude/`, so no refspec spanning
+   `refs/etude/*` can match it. Refspec globbing and `for-each-ref` match on path
+   components, and `-` is not `/`.
+2. As RAW STRINGS, `"refs/etude-mirror/…"` DOES start with `"refs/etude"`. Every
+   production constant is slash-anchored (`refs/etude/`), which is what keeps (1)
+   true for prefix tests too. Audited: no unanchored `HasPrefix(x, "refs/etude")`
+   exists in production Go. `TestMirrorNamespaceIsDisjointFromLocal` pins the
+   invariant AND deliberately asserts the raw-string overlap still exists, so the
+   warning comments cannot be "simplified" away.
+3. Forced (`+`) applies ONLY to mirror destinations. The local namespace is never
+   a fetch destination in configured refspecs, so no forced refspec can overwrite
+   an authoritative local run.
+4. `ValidateMirrorRemote` builds a CONCRETE probe ref (`…/runs/probe`), never a
+   `*` glob, before `check-ref-format` — `*` is illegal in a plain ref name and
+   would otherwise reject every remote and give the right answer for the wrong
+   reason. This mirrors git's own `valid_remote_name`, which validates by
+   building `refs/remotes/<name>/test`.
+5. Both refspec lists are driven from `refstore.Kinds`, so a new kind cannot be
+   silently omitted from one side.
+
+## Verification evidence
+
+Eleven new tests. The load-bearing ones:
+- `TestFetchPruneOnlyDeletesFromMirror` — the acceptance test. Real bare remote,
+  real `git fetch --prune`, both halves of the asymmetry asserted: a
+  locally-produced run the remote has never seen SURVIVES, and a mirror entry
+  whose source was deleted on the remote IS pruned, with the local run still
+  intact after the second prune.
+- `TestInitDoesNotRemoveItsOwnMirroredFetchRefspec` — second init is a no-op;
+  this is the self-destruct the rejected nested layout would have caused.
+- `TestInitStillRemovesLegacyBroadFetchRefspecAfterMirroring` — the literal i19
+  hazard is still removed, the mirrored refspecs installed, and the remote's
+  `refs/heads/*` refspec untouched.
+- `TestInitLeavesPushRefspecUntouched` — including a user's deliberate
+  `refs/etude/*:refs/archive/etude/*` variant.
+- `TestSyncFetchNeverPrunes` / `TestSyncFetchIntoLocalNamespaceIsNotForced` —
+  guards on code this diff does NOT change. sync's refspec targets the
+  AUTHORITATIVE namespace and is not in config, so if it ever gained `--prune` or
+  a `+` it would re-arm the etude-nad data-loss mode through a path i19's
+  config-side fix does not cover.
+- `TestBroadPushRefspecDoesNotCarryMirrorToRemote` — settles the push question by
+  DEMONSTRATION rather than assertion: a real push to a real bare remote, with the
+  broad refspec deliberately left in place, carries the local run and does NOT
+  carry the mirror. Under the rejected nested layout this test would fail.
+- `TestConfigWrittenRemoteBypassesGitNameValidation` — pins why etude cannot
+  delegate remote-name validation to git: `git remote add` refuses the name, but a
+  config-written remote is visible to `git remote get-url`, so it reaches etude.
+- `TestMirrorNamespaceIsDisjointFromLocal`, `TestRefstoreRejectsWritesToMirrorNamespace`,
+  `TestListLocalPrefixesExcludeMirrorRefs`, `TestInitInstallsNoMirrorRefspecForIllegalRemoteName`.
+
+BUILT-BINARY PROOF against a real bare remote:
+```
+removed  remote.origin.fetch = +refs/etude/*:refs/etude/*
+configured remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*   (+retros, +evals)
+git fetch --prune:  * [new ref] refs/etude/runs/theirs -> refs/etude-mirror/origin/runs/theirs
+remote deletes its run; prune again:  - [deleted] (none) -> refs/etude-mirror/origin/runs/theirs
+local runs:  refs/etude/runs/mine   <- SURVIVES
+mirror:      []                     <- pruned
+```
+
+`make test`, `make lint`, `make docs-check` green repo-wide, finished before this
+packet was assembled.
+
+## Disclosed limitations, please adjudicate
+
+1. **The mirror is inert** — populated by fetch, pruned by fetch, read by
+   nothing. The payoff is independent of readability (prune safe by construction,
+   a fetch refspec able to exist at all, structural provenance). Divergence
+   reporting is etude-eje; it depends on which-remote provenance, so etude-cng
+   must land before or with it.
+2. **Mirror refs pin objects.** A plain `git fetch` now downloads the remote's
+   etude object graph and mirror refs keep it reachable, so `git gc` will not
+   reclaim it. No expiry exists until etude-26i, including after a remote is
+   renamed or removed. Documented in `docs/init.md` with a hand-cleanup command.
+3. **Not injective for slash-containing remote names** (etude-cng), bounded to
+   mirror-only aliasing as described above.
+4. **`refs/etude/` now means "everything here gets pushed"**, a consequence of
+   leaving the push refspec broad. Documented, so a future local-only ref is not
+   placed there.
