@@ -1,0 +1,12 @@
+# Verify — etude-sb4 (document recommended retro-meta sidecar convention)
+
+Result: PASS. Docs-only change (no code), Tier 3.
+
+- No singular `root_cause` (word-boundary, excluding `root_causes`) remains anywhere in the repo after the change — verified by grep.
+- `make docs-check` clean; `make docs-reality` OK (13 commands); `go test ./...` fully green (no Go change; the canned-meta test TestRetroGenerateWithCannedMeta already used the plural `root_causes` array, so no test change needed).
+- docs/retro.md is a hand-written guide (generated pages live in docs/cli/etude*.md), so no generated-doc drift.
+- The new "Recommended convention" table (`failure_modes` []string, `root_causes` []string) matches the shape in internal/cli/retro_test.go:1405, docs/plans/product/retrospectives.md, and etude-retro-command.md. Both JSON examples parse and are mutually consistent.
+- Advisory-not-enforced preserved: the doc explicitly states etude does not enforce a sidecar schema and additional keys are allowed/ignored — consistent with etude-2ku's verbatim json.Valid-only storage.
+
+## Scope
+docs/retro.md only. 1-bead=1-commit.

@@ -1,0 +1,10 @@
+# Final Review — etude-sb4 (document recommended retro-meta sidecar convention)
+
+Verdict: GO (Tier 3, single Opus review seat). Commit 96c2d15 "document recommended retro-meta sidecar convention".
+
+- Resolves a real documentation contradiction surfaced while deferring etude-9ey: docs/retro.md used `root_cause` (singular string) while retrospectives.md, etude-retro-command.md, and the canned-meta test (retro_test.go:1405) used `root_causes` (plural array). Standardized on the plural-array form (3-to-1 precedent).
+- Added a "Recommended convention" subsection (advisory keys `failure_modes`/`root_causes`, both []string, additional keys allowed/ignored, with a table + valid JSON example) and aligned the `retro show` example to the array form.
+- DOCS ONLY — no code enforcement, preserving etude-2ku's deliberate schema-free verbatim storage (the pre-existing "schema is not interpreted by etude — stored verbatim" line is intact; the new text is explicitly advisory).
+- Guards: docs-check / docs-reality (13 cmds) green; no generated-doc drift (hand-written guide); go test unaffected. Zero singular `root_cause` left in the repo.
+- Scope: docs/retro.md only. 1-bead=1-commit.
+- Decision rationale: scoped down from the bead's original "validation/normalization seam" to docs-only, because adding enforcement would reverse etude-2ku's intentional schema-free design. The convention is documented as recognized-but-advisory, giving a future cross-retro index (etude-9ey, still deferred pending real sidecar data) a stable contract without imposing runtime validation.

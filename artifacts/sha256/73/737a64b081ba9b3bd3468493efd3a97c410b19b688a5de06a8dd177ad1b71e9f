@@ -1,0 +1,16 @@
+✓ etude-sb4 · Define retro-meta sidecar schema convention   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+Resolve the retro-meta sidecar convention CONTRADICTION (docs-only, no enforcement — preserves etude-2ku's deliberate schema-free verbatim storage). docs/retro.md:232 uses 'root_cause' (singular string) while docs/plans/product/retrospectives.md, etude-retro-command.md, and internal/cli/retro_test.go (TestRetroGenerateWithCannedMeta) use 'root_causes' (plural array). Standardize on the plural-array form (failure_modes: []string, root_causes: []string), align docs/retro.md's example, and document the recognized-but-advisory convention in docs/retro.md. NO code enforcement/validation seam. Unblocks etude-9ey once real sidecar data exists.
+
+LABELS: phase:implement
+
+DISCOVERED FROM
+  ◊ ❄ etude-9ey: Cross-retro failure-mode / root-cause index ● P3
+
+BLOCKS
+  ← ❄ etude-9ey: Cross-retro failure-mode / root-cause index ● P3
+
