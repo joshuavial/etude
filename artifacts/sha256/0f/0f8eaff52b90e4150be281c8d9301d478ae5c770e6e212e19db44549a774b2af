@@ -1,0 +1,19 @@
+# Verify — etude-q87 (Retro storage + `etude retro capture`)
+
+Status: PASS. Recommendation: proceed to Docs.
+
+## Automated
+- `go build ./...` PASS; `make lint` PASS (gofmt + go vet clean).
+- `go test ./...` — all 13 internal packages PASS (incl. internal/retro, internal/cli, internal/refstore, internal/worktree with no flake on retest). The ONLY red test was `cmd/gen-docs TestDriftGuard` (`docs/cli/etude.md is stale`), which is the expected q87-caused Docs-phase regeneration (proven q87-caused by stashing q87 → guard passes). Cleared in the Docs phase via `make docs`.
+
+## Built-binary manual test (throwaway temp git repo; real repo created zero retro refs)
+- `make build` → `bin/etude`; exercised in an `mktemp` git repo (init + seed commit), then deleted.
+- Happy path: exit 0; stdout `captured <commit>` + `ref refs/etude/retros/retro-cohort-run-foo-...-<UTCstamp>`.
+- `manifest.json`: `workflow=retro`, `workflow_version=retro-v1`, single `retro` stage (`produced_by=retro`, `git_sha`=HEAD), output `role=retro` / `text/markdown; charset=utf-8` / content-addressed; Refs = indexed `subject_run.1`/`subject_run.2`/`bead.1` + flat `scope`/`trigger`/`decision`.
+- Body fidelity: stored artifact blob byte-identical to source (sha256 matches file + manifest artifact path).
+- Fix 1 (reserved-key guard): `--ref subject_run.1=...` and `--ref scope=...` ERROR "reserved"; non-reserved `--ref owner=jv` succeeds and lands in Refs.
+- Fix 2 (stdin): `--file -` works, body byte-identical.
+- Error/branch paths: cohort with no `--subject-run` errors clearly; `scope=workflow` with no subjects succeeds (`retro-workflow-workflow-<stamp>`); invalid scope / missing `--file` / invalid subject-run id all error (exit 1). Create-only collision: two captures in the same UTC second allocate distinct ids (`...-2` suffix), no overwrite.
+
+## QA findings
+Implementation matches the approved plan precisely (retros namespace, runmanifest.Manifest type reuse not runmanifest.Writer, create-only retro.Writer, indexed Refs, capture-first). Refstore allowlist edits exactly parallel to runs/evals. Exported VerifyArtifactFile/ReferencedArtifactPaths are thin single-source-of-truth wrappers. Coverage adequate (unit + refstore + cli-level, both gate fixes covered by tests and confirmed via the binary). No regressions. Scope: 8 code files only.
