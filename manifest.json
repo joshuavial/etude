@@ -318,6 +318,57 @@
       ],
       "decision": {},
       "timestamp": "2026-06-07T04:29:50Z"
+    },
+    {
+      "gate_id": "plan.r4",
+      "phase": "plan",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "guard summary-word collision: assert refspec-line ABSENCE against specific prefixes (configured remote., plan: configure, not found, skipping), not the bare word now in the summary line",
+            "assert dry-run summary on populated+configured repo equals 2nd normal-run summary"
+          ],
+          "timestamp": "2026-06-07T04:34:35Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-high"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "comment that dry-run missing-remote is intentionally report-only except malformed names",
+            "optional dry-run idempotency test"
+          ],
+          "timestamp": "2026-06-07T04:34:35Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-07T04:34:35Z"
     }
   ]
 }
