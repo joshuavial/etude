@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-97y",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,73 @@
         "size": 1586
       },
       "timestamp": "2026-06-30T06:32:00.616216Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": "gemini-3.1-pro-preview"
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "go",
+          "optional": [
+            "verify eval rubric paths and init.md code blocks"
+          ],
+          "timestamp": "2026-06-30T03:00:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "in-harness Task subagent"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "state gate-free rationale in Default() doc comment; explicit BRIEF 4.1 note"
+          ],
+          "timestamp": "2026-06-30T03:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "targeted search for old-default doc language"
+          ],
+          "timestamp": "2026-06-30T03:00:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T03:00:00Z"
     }
   ]
 }
