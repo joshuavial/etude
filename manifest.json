@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-phase-prep.3",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,54 @@
         "size": 762
       },
       "timestamp": "2026-05-25T18:09:16.441165Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T16:00:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "the 1-reroll shortcut loosens the >=2 disregard bar (DISPUTED: it is the existing runbook rule, bounded to known root-caused artifacts)"
+          ],
+          "timestamp": "2026-05-26T16:01:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-26T16:05:00Z"
     }
   ]
 }
