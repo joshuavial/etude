@@ -1,0 +1,81 @@
+# VERIFY — etude-nad (b): `etude capture --expect create|append`
+
+## What shipped
+
+`internal/cli/capture.go`:
+- `--expect create|append` on `etude capture`, validated before any artifact
+  read or git write; an unrecognised value is a usage error.
+- After the single existing `Resolve`, two fail-fast guards: `--expect append`
+  with a missing ref errors and writes nothing; `--expect create` with an
+  existing ref errors and leaves the ref untouched.
+- Every successful capture prints a third stdout line, `action create` or
+  `action append`. The `action` value is the same string already used to build
+  the run-ref commit message, so the reported action and the recorded commit
+  message cannot diverge.
+
+Omitting `--expect` keeps today's behaviour, plus the new `action` line.
+
+## Automated tests
+
+`internal/cli/capture_test.go`, five new tests:
+
+| test | pins |
+|---|---|
+| `TestCaptureExpectAppendFailsWhenRunMissing` | non-zero, error names the run and the ref, and **`refs/etude` is empty afterwards** |
+| `TestCaptureExpectCreateFailsWhenRunExists` | non-zero, error names the run and its current tip, **ref tip unchanged** |
+| `TestCaptureExpectAppendPreservesPriorStages` | create then append: both stages, in order, both artifacts readable |
+| `TestCaptureReportsCreateAndAppendAction` | `action create` then `action append`; and lines 1–2 keep their exact prior format/position |
+| `TestCaptureRejectsUnknownExpectValue` | usage error naming both accepted values, no ref created |
+
+```
+$ go test ./internal/cli/ -run TestCapture
+ok  github.com/joshuavial/etude/internal/cli  18.930s
+```
+
+## Manual CLI verification (CLI-facing change — built binary, real repo)
+
+`go build -o etude ./cmd/etude`, run against a fresh scratch git repo. Every
+`--expect` value, both success paths, all three failure paths, exit codes and
+ref state checked after each:
+
+| # | command | result |
+|---|---|---|
+| 1 | `capture plan --run r1 --output plan=plan.md` | rc=0, `action create` |
+| 2 | `capture impl --run r1 … --expect create` | **rc=1**, `run "r1" already exists (refs/etude/runs/r1 at cd9e330…); --expect create refuses to append to it`; ref verified unchanged |
+| 3 | `capture impl --run r1 … --expect append` | rc=0, `action append` |
+| 4 | `run show r1` | both stages `plan` and `impl` present with their artifacts |
+| 5 | `git update-ref -d refs/etude/runs/r1` then `capture impl --run r1 … --expect append` | **rc=1**, `run "r1" not found (refs/etude/runs/r1); --expect append refuses to create a new run — the run's recorded history may have been lost, so investigate before re-capturing`; `refs/etude` verified empty — **nothing created** |
+| 6 | same state, no flag | rc=0 but prints `action create` — the old silent-create path now announces itself |
+| 7 | `capture plan --run r2 … --expect create` | rc=0, `action create` |
+| 8 | `capture plan --run r3 … --expect maybe` | **rc=1**, `invalid --expect "maybe": want "create" or "append"`; no ref created |
+
+Case 5 is the recorded incident reproduced end to end: the ref is deleted out
+from under a live run and the next capture, which believes it is extending that
+run, now refuses instead of silently starting a fresh manifest. Case 6 shows
+what an unqualified caller sees in the same situation — still a create, but no
+longer a silent one.
+
+## Blast radius
+
+`make test` and `make lint` (repo-wide, not just the touched package).
+`make docs` regenerated `docs/cli/etude_capture.md`; `make docs-check` run.
+
+Consumers of capture's stdout re-checked against the real tree: the
+`captured `-prefix assertions in `internal/cli/run_test.go:769` and
+`internal/liverun/engine_test.go:134` are against the **liverun engine's**
+output (`internal/liverun/engine.go:452`), a different code path, untouched.
+`scripts/dogfood-capture.sh` invokes `capture-run`, not `capture`, and does not
+parse stdout.
+
+## Not covered, deliberately
+
+- `--expect` is opt-in, so an existing caller that passes nothing keeps the
+  create-on-missing behaviour. That is the backward-compatibility choice the
+  plan gate reviewed and passed; the `action` line is what protects that caller.
+- Adopting `--expect append` inside `scripts/dogfood-*.sh` is **not** done here:
+  those files belong to a live sibling lane (epic-9uf) and are off-limits to
+  this one.
+- The disappearance itself is root-caused but not fixed here; the fix is
+  bead **etude-i19** (`etude init` must stop registering `refs/etude/*` as a
+  *fetch* refspec, which is what makes any `git fetch --prune` delete unpushed
+  run refs).
