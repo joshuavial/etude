@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `internal/liverun/gate.go` deletes `firstCheckoutGitlink` but shows no import cleanup; the stale `os/exec` import used by that function will leave the package failing to compile unless removed.
+OPTIONAL: none
+CONFIDENCE: medium
