@@ -1,0 +1,34 @@
+# Final Review — etude-8hq.8
+
+## Gate summary
+PLAN gate — tier 2 (codex/gemini/opus + pilms-down): **unanimous GO**. All three
+INDEPENDENTLY dry-ran the title parser over the live 17-ref corpus: it flags only
+B16, the B5 date parenthetical `(2026-05-25/26)` is fenced by the all-tokens-valid-id
+rule, the 7 `retro-workflow-*` refs SKIP. nm6's runless status + the `--bead`
+precedent (B17) confirmed.
+
+IMPLEMENT gate — tier 2, **unanimous GO** (codex/gemini/opus). Verified check (g)
+collects `bead.*` AND `subject_run.*` (critical for the repair shape), etude-prefix
+normalization, anchored fullmatch, WARN-only, batch-only. Opus ran 57 tests + the
+real audit + confirmed the g.3 bead.*-only case asserts no-WARN.
+
+PIVOT re-confirm — **GO** (codex + gemini): the gated plan's SUPERSEDE was found to
+break against check (f)'s post-cutoff sidecar requirement (a supersede mints a
+post-cutoff ref); both seats confirmed annotate-via-allowlist is the right
+resolution and deferring the supersede+sidecar to etude-8hq.5 (handled
+supersession-aware for all 17 refs at once) is the correct scope boundary.
+
+## Scope
+4 files, 1 commit (f48ceb0): dogfood-completeness-audit.sh (check g + B16 allowlist),
+its test (g.1–g.7), capture-protocol.md (subjects-without-runs + check g), retro-ledger.md
+(B16 annotation). Dogfood-layer only (no etude-core change). The sidecar backfill +
+the workflow-retro re-tag are correctly deferred to etude-8hq.5.
+
+## Cross-bead lesson (for the cadence retro)
+The cutoff×supersede interaction (superseding a pre-cutoff retro creates a
+post-cutoff ref that check (f) hard-gates) was missed by the plan AND all 3 plan-gate
+seats; caught only at implementation when the audit actually ran. Reinforces
+"verify-the-verification": run the real audit on the actual data before declaring a
+data-repair plan sound. Worth a runbook note in etude-8hq.5/8hq.7.
+
+## Verdict: GO — ready to close.

@@ -1,0 +1,30 @@
+# Verify — etude-8hq.8 (retro subject-consistency guard + B16 annotation)
+
+## Automated tests
+- `make dogfood-audit-test` → **58 passed, 0 failed**. New check-(g) cases g.1–g.7:
+  both-present→PASS, missing→WARN, `bead.*`-only subject→PASS (B16-repair shape),
+  date-parenthetical→SKIP, no-id-list→SKIP, etude-prefix-normalization→PASS, and
+  g.7 allowlisted-ref→SKIP (locks the B16 annotation mechanism).
+- `bash -n` both scripts: clean.
+
+## Behavior
+- `make dogfood-audit` → exit 0. check (g) flags NO retros (B16 is annotated/skipped);
+  the 7 `retro-workflow-*` refs SKIP (no parseable id-list). The only WARN is check
+  (f)'s pre-cutoff sidecar backlog (etude-8hq.5 worklist).
+- check (g) is batch-only (not `--bead`), WARN-only (never blocks), compares title
+  parenthetical id tokens against manifest `subject_run.*` AND `bead.*` (etude-prefix
+  normalized), all-tokens-valid-id rule fences the B5 date false-positive.
+
+## B16 repair — ANNOTATED (plan deviation, re-confirmed)
+The gated plan said SUPERSEDE. Implementation revealed a supersede mints a NEW
+post-cutoff ref that check (f) (8hq.3) hard-requires carry a sidecar → `make
+dogfood-audit` exit 1 (and the old ref would still WARN unless checks become
+supersession-aware). Pivoted to ANNOTATE (acceptance-allowed): B16's ref id is in
+`SUBJECT_CONSISTENCY_ALLOW` with an inline reason; retro-ledger documents why nm6 is
+runless + that etude-8hq.5 re-captures B16 with `--bead etude-nm6` + sidecar in one
+supersession-aware pass (removing the allowlist entry then). Pivot re-confirmed GO by
+codex + gemini.
+
+## Result: PASS
+No defects. The supersede ref created during exploration was deleted (local-only,
+never pushed). check (g) code unchanged from the implement-gate-approved version.

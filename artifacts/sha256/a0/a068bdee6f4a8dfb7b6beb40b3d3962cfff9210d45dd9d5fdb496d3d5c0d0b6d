@@ -1,0 +1,569 @@
+commit f48ceb0a63b8036fdae304fd11a6b0792d7b09fd
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 09:23:49 2026 +0800
+
+    add retro subject-consistency guard and annotate B16 divergence
+
+diff --git a/docs/plans/dogfood/capture-protocol.md b/docs/plans/dogfood/capture-protocol.md
+index d358d3c..380adfd 100644
+--- a/docs/plans/dogfood/capture-protocol.md
++++ b/docs/plans/dogfood/capture-protocol.md
+@@ -254,6 +254,24 @@ test result, or bead status that established what passed or failed.
+ `docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
+ etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
+ 
++#### Cadence subjects without run refs
++
++When a cadence cohort covers a bead that has **no `refs/etude/runs/<id>`** —
++for example, a data-backfill bead, an allowlisted bead, or any bead that was
++never run through the dev-workflow — record that bead as `--bead <id>` (which
++writes a `bead.N` ref in the manifest), NOT as `--subject-run <id>`.
++
++Using `--subject-run <id>` requires a valid run ref to exist
++(`internal/cli/retro.go:471-474`); it will fail if the run has not been
++captured yet. The `--bead` flag records the bead identity without requiring a
++run ref.
++
++The consistency guard (check (g)) treats both `subject_run.*` and `bead.*`
++refs equally as "subject present in refs", so using `--bead` for these cases
++produces a clean audit result. The canonical example is `etude-nm6`
++(gate-record backfill, allowlisted), which has no run ref and must be recorded
++via `--bead etude-nm6` when it appears as a cohort subject.
++
+ Manual dogfood capture supports these retro triggers now:
+ 
+ - **End-of-run retro**: after a bead closes, summarize what changed, what gates
+@@ -517,8 +535,10 @@ exact hard checks (a), (b), (d).
+   `retro-meta` sidecar — batch modes only, not `--bead`.
+ - **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue; (f) a
+   *pre-convention* cadence retro lacking the sidecar (one summarizing line — the
+-  backfill worklist for etude-8hq.5). (c)/(f) run in batch modes only, not
+-  `--bead` — deadlock avoidance.
++  backfill worklist for etude-8hq.5); (g) retro subject consistency — cadence retro
++  body title claims a subject id absent from the manifest's `subject_run.*`/`bead.*`
++  refs (where-possible parse; retros with no parseable id-list are silently skipped).
++  (c)/(f)/(g) run in batch modes only, not `--bead` — deadlock avoidance.
+ 
+ ### Bypass and defer policy
+ 
+@@ -597,6 +617,15 @@ For each in-scope, non-allowlisted bead:
+   mode, warns only if the manifest's `git_sha` touched `docs/`.
+ - **(f) Bypass report**: always prints allowlisted beads with their reasons so
+   exceptions are visible. Never affects exit.
++- **(g) Retro subject consistency** (WARN only, batch mode only): for each
++  cadence-retro ref, parses the subject id-list from the retro body's title
++  line (the last parenthetical group, split on `/`/`,`, all tokens matching
++  `[a-z0-9]+(\.[a-z0-9]+)*`). Compares claimed ids against the manifest's
++  `subject_run.*` and `bead.*` refs. Warns if any claimed id is absent. Retros
++  whose title has no parseable id-list (workflow retros, date parentheticals)
++  are silently skipped — "where possible". Never blocks. Use `--bead` with
++  `bead.*` for subjects without run refs (see
++  [Cadence subjects without run refs](#cadence-subjects-without-run-refs)).
+ 
+ ### Exit codes
+ 
+diff --git a/docs/plans/dogfood/retro-ledger.md b/docs/plans/dogfood/retro-ledger.md
+index 0c9a0bc..1c24ef5 100644
+--- a/docs/plans/dogfood/retro-ledger.md
++++ b/docs/plans/dogfood/retro-ledger.md
+@@ -463,6 +463,24 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
+   gate-capture mandate. Captured as an `etude retro` artifact. Counter reset.
+ - **Remaining:** NO non-blocked work — corpus is complete (66 runs / 18 retros / 35 gated
+   runs, all consistent). Phase 1 (xenota/github-import) USER-BLOCKED; 8b7 + 9ey deferred.
++- **B16 subject-mismatch repair (etude-8hq.8):** The original B16 ref
++  (`retro-cohort-etude-6j8-20260526T215942Z`) had a subject-consistency defect:
++  the body named `nm6` as a cohort subject but the manifest had no `subject_run.*`
++  or `bead.*` ref for it. Root cause: `nm6` is a data-backfill bead allowlisted in
++  `scripts/dogfood-completeness-allow.txt` — it has no `refs/etude/runs/etude-nm6`
++  (no dev-workflow run), so `--subject-run etude-nm6` would fail validation. The
++  correct form is `--bead etude-nm6` (writes a `bead.N` ref, does not require a run
++  ref). **Resolution (etude-8hq.8): ANNOTATED, not superseded.** A supersede now
++  would mint a NEW ref with a post-cutoff `created` timestamp, which check (f)
++  (etude-8hq.3) hard-requires carry a 7-key retro-meta sidecar — pulling sidecar
++  authorship (etude-8hq.5's job) into this subjects-only bead, and leaving the old
++  pre-cutoff ref still WARNing on check (g) unless the checks become
++  supersession-aware. So B16 is instead annotated: its ref id is recorded in
++  `SUBJECT_CONSISTENCY_ALLOW` in `scripts/dogfood-completeness-audit.sh` with the
++  reason above (an explicit, auditable record of WHY the divergence is legitimate),
++  and check (g) skips it. etude-8hq.5 will re-capture B16 (and the other migrated
++  retros) with `--bead etude-nm6` + a sidecar in one convention-compliant,
++  supersession-aware pass — at which point the allowlist entry can be removed.
+ 
+ ### B17. Cadence retro (2026-05-27) — moving dogfood completeness from memory to a mechanical gate (nm6/8hq.4/8hq.1)
+ - **Trigger/scope:** 3-ticket cadence, flagged MECHANICALLY this time by the new
+diff --git a/scripts/dogfood-completeness-audit.sh b/scripts/dogfood-completeness-audit.sh
+index 6078138..acf2c6b 100755
+--- a/scripts/dogfood-completeness-audit.sh
++++ b/scripts/dogfood-completeness-audit.sh
+@@ -34,6 +34,11 @@
+ #   (f) cadence-sidecar — every cadence-retro ref on/after     [hard post-cutoff; batch only]
+ #       CADENCE_SIDECAR_CUTOFF must have a valid 7-key retro-meta
+ #       sidecar; pre-cutoff refs without one are WARN only.
++#   (g) retro subject consistency — for each cadence-retro whose [WARN only; batch only]
++#       body title contains a parseable id-list parenthetical,
++#       every claimed id must appear in the manifest's
++#       subject_run.* or bead.* refs. Where-possible: retros
++#       with no parseable id-list are silently skipped.
+ #   bypass report — print allowlisted beads + reasons.         [info; never affects exit]
+ #
+ # Allowlist: scripts/dogfood-completeness-allow.txt
+@@ -538,6 +543,153 @@ print('ok')
+   echo ""
+ fi
+ 
++# ---------------------------------------------------------------------------
++# (g) Retro subject consistency — WARN ONLY, batch mode only
++# For each cadence-retro ref, parse the subject id-list from the BODY title
++# (the retro-role stage output) and compare against manifest subject_run.* +
++# bead.* refs. Where-possible: retros with no parseable id-list are skipped.
++#
++# Parse algorithm (validated against live corpus, zero false positives):
++#   1. Find all (...) groups in the title; take the LAST one.
++#   2. Split on ' + ' and keep only the FIRST chunk (drops "defer" suffixes).
++#   3. Require the chunk to contain '/' and split into >=2 tokens (split on /).
++#      Also accept ',' as a delimiter (handles "(6j8, kig, nm6)" style).
++#   4. Strip whitespace from each token.
++#   5. All-tokens-valid-id rule: every token must match ^[a-z0-9]+(\.[a-z0-9]+)*$
++#      anchored end-to-end. If ANY token fails (e.g. date "2026-05-25" has '-'),
++#      SKIP the entire retro — the parenthetical is not an id-list.
++#   6. Prefix each surviving token with "etude-" and check against manifest refs.
++#
++# Inline allowlist for known legitimate divergences (keyed by retro ref id):
++# B16's body title legitimately names nm6 (part of the 6j8/kig/nm6 cadence cohort),
++# but nm6 is a data-backfill bead with NO run ref (see dogfood-completeness-allow.txt),
++# so it could not be a --subject-run. Annotated here pending etude-8hq.5, which
++# re-captures B16 with --bead etude-nm6 + a sidecar in one convention-compliant pass
++# (a sidecar-less supersede now would be a post-cutoff cadence retro and fail check (f)).
++# Add entries here if a retro genuinely cannot be repaired:
++#   SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-some-id-TIMESTAMP")
++SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-etude-6j8-20260526T215942Z")
++
++if [[ "$mode" != "bead" ]]; then
++  echo "=== Check (g): retro subject consistency (WARN only) ==="
++
++  while IFS= read -r retro_ref; do
++    manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
++
++    # Only process cadence-retro refs
++    trigger="$(python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++print(m.get('refs',{}).get('trigger',''))
++" <<< "$manifest_data" 2>/dev/null || echo "")"
++    [[ "$trigger" == "cadence-retro" ]] || continue
++
++    # Check inline allowlist
++    retro_short="${retro_ref#refs/etude/retros/}"
++    skip_allowed=false
++    for allowed_id in "${SUBJECT_CONSISTENCY_ALLOW[@]+"${SUBJECT_CONSISTENCY_ALLOW[@]}"}"; do
++      if [[ "$retro_short" == "$allowed_id" ]]; then
++        skip_allowed=true
++        break
++      fi
++    done
++    $skip_allowed && continue
++
++    # Find the retro-role stage path and read the body
++    body_path="$(python3 -c "
++import json,sys
++m=json.load(sys.stdin)
++for s in m.get('stages',[]):
++    if s.get('output',{}).get('role','')=='retro':
++        print(s.get('output',{}).get('path',''))
++        break
++" <<< "$manifest_data" 2>/dev/null || echo "")"
++
++    if [[ -z "$body_path" ]]; then
++      # No retro-role stage: no body to parse, skip silently
++      continue
++    fi
++
++    # Read the body and extract the title line (first non-empty line)
++    title_line="$(git cat-file -p "$retro_ref:$body_path" 2>/dev/null | grep -m1 '.' || true)"
++    if [[ -z "$title_line" ]]; then
++      continue
++    fi
++
++    # Parse the subject id-list from the title using Python
++    # Returns: "SKIP" | "WARN:<missing1>,<missing2>" | "PASS"
++    check_result="$(python3 -c "
++import sys, re, json, subprocess
++
++title = sys.argv[1]
++manifest_json = sys.argv[2]
++retro_ref = sys.argv[3]
++
++# Find all (...) groups in the title; take the LAST one
++parens = re.findall(r'\(([^)]+)\)', title)
++if not parens:
++    print('SKIP')
++    sys.exit(0)
++
++last_paren = parens[-1]
++
++# Split on ' + ' and keep only the first chunk
++first_chunk = last_paren.split(' + ')[0].strip()
++
++# Split on '/' or ',' to get tokens
++tokens_raw = re.split(r'[/,]', first_chunk)
++tokens = [t.strip() for t in tokens_raw]
++
++# Must have at least 2 tokens (and the original chunk must contain '/' or ',')
++if len(tokens) < 2 or not re.search(r'[/,]', first_chunk):
++    print('SKIP')
++    sys.exit(0)
++
++# All-tokens-valid-id rule: every token must match ^[a-z0-9]+(\.[a-z0-9]+)*$
++id_pattern = re.compile(r'^[a-z0-9]+(\.[a-z0-9]+)*$')
++for tok in tokens:
++    if not id_pattern.fullmatch(tok):
++        print('SKIP')
++        sys.exit(0)
++
++# Read manifest and collect subject_run.* and bead.* VALUES
++try:
++    m = json.loads(manifest_json)
++except Exception:
++    print('SKIP')
++    sys.exit(0)
++
++refs = m.get('refs', {})
++subject_values = set()
++for k, v in refs.items():
++    if k.startswith('subject_run.') or k.startswith('bead.'):
++        # Normalize: strip 'etude-' prefix for bare comparison
++        bare = v[len('etude-'):] if v.startswith('etude-') else v
++        subject_values.add(bare)
++
++# Check each token against the subject values
++missing = []
++for tok in tokens:
++    if tok not in subject_values:
++        missing.append(tok)
++
++if missing:
++    print('WARN:' + ','.join(missing))
++else:
++    print('PASS')
++" "$title_line" "$manifest_data" "$retro_ref" 2>/dev/null || echo "SKIP")"
++
++    if [[ "$check_result" == "SKIP" || "$check_result" == "PASS" ]]; then
++      $quiet || echo "  PASS (g) subject consistency: $retro_ref"
++    elif [[ "$check_result" == WARN:* ]]; then
++      missing_ids="${check_result#WARN:}"
++      log_warn "subject-consistency" "$retro_ref" \
++        "title claims subject(s) absent from manifest refs: $missing_ids"
++    fi
++  done < <(git for-each-ref refs/etude/retros --format='%(refname)')
++  echo ""
++fi
++
+ # ---------------------------------------------------------------------------
+ # (e) Docs drift — WARN ONLY, both modes
+ # bead mode: warn only if manifest git_sha actually touched docs/
+diff --git a/scripts/dogfood-completeness-audit_test.sh b/scripts/dogfood-completeness-audit_test.sh
+index efbab25..8c49c62 100755
+--- a/scripts/dogfood-completeness-audit_test.sh
++++ b/scripts/dogfood-completeness-audit_test.sh
+@@ -839,6 +839,301 @@ assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+ # Clean up all check-f retro refs so subsequent tests don't see them
+ delete_all_retros
+ 
++# ===========================================================================
++# Helper: seed_cadence_retro_with_body
++#
++# Creates a cadence-retro ref whose manifest has a retro-role stage pointing
++# at a content-addressed body blob. The body contains a chosen title line as
++# its first line (so check (g) can parse the subject id-list from it).
++#
++# Also accepts bead refs in addition to subject_run refs.
++#
++# Usage:
++#   seed_cadence_retro_with_body \
++#     <retro-id> \
++#     <title-line> \
++#     "subject_run:etude-aaa" "subject_run:etude-bbb" "bead:etude-ccc" ...
++#
++# The subject/bead args must be prefixed with "subject_run:" or "bead:" to
++# distinguish them.
++# ===========================================================================
++seed_cadence_retro_with_body() {
++  local retro_id="$1"; shift
++  local title_line="$1"; shift
++
++  # Build refs_json from remaining args (subject_run: or bead: prefixed)
++  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
++  local sr_i=1
++  local bead_i=1
++  for arg in "$@"; do
++    local typ="${arg%%:*}"
++    local val="${arg#*:}"
++    if [[ "$typ" == "subject_run" ]]; then
++      refs_json="${refs_json},\"subject_run.$sr_i\":\"$val\""
++      (( sr_i++ )) || true
++    elif [[ "$typ" == "bead" ]]; then
++      refs_json="${refs_json},\"bead.$bead_i\":\"$val\""
++      (( bead_i++ )) || true
++    fi
++  done
++  refs_json="${refs_json}}"
++
++  # Write the body blob (first line = title_line)
++  local body_content
++  body_content="$(printf '%s\n\nBody text.\n' "$title_line")"
++  local body_blob_sha
++  body_blob_sha="$(git hash-object -w --stdin <<< "$body_content")"
++  local body_path="artifacts/sha256/${body_blob_sha:0:2}/$body_blob_sha"
++
++  # Build manifest with a retro-role stage pointing at the body blob
++  local manifest
++  manifest="$(python3 -c "
++import json
++body_path = '$body_path'
++body_sha  = '$body_blob_sha'
++m = {
++    'manifest_version': 2,
++    'run_id': '$retro_id',
++    'workflow': 'retro',
++    'workflow_version': 'retro-v1',
++    'created': '2026-05-26T00:00:00Z',
++    'refs': json.loads('''$refs_json'''),
++    'stages': [
++        {
++            'stage': 'retro',
++            'produced_by': 'retro',
++            'git_sha': '',
++            'inputs': [],
++            'output': {
++                'role': 'retro',
++                'artifact': body_sha,
++                'path': body_path,
++                'media_type': 'text/markdown; charset=utf-8',
++                'storage': 'content',
++                'size': 0
++            }
++        }
++    ]
++}
++print(json.dumps(m))
++")"
++
++  # Write the manifest blob and tree with both manifest.json and the body blob
++  local manifest_blob_sha
++  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
++
++  # Build tree: manifest.json + body at its content-addressed path
++  local tree_sha
++  tree_sha="$(python3 -c "
++import subprocess, sys
++
++manifest_blob = '$manifest_blob_sha'
++body_blob     = '$body_blob_sha'
++body_path     = '$body_path'
++
++parts = body_path.split('/')
++# parts = ['artifacts','sha256','<2-char>','<hash>']
++
++# Level 3 tree: just the blob
++level3_in = '100644 blob {}\t{}\n'.format(body_blob, parts[3])
++r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
++tree3 = r3.stdout.strip()
++
++# Level 2 tree: the 2-char dir
++level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
++r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
++tree2 = r2.stdout.strip()
++
++# Level 1 tree: sha256 dir
++level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
++r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
++tree1 = r1.stdout.strip()
++
++# Level 0 tree: artifacts dir + manifest.json
++level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
++level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
++r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
++print(r0.stdout.strip())
++")"
++
++  local commit_sha
++  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
++  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
++}
++
++# ===========================================================================
++# TEST GROUP: check (g) retro subject consistency
++#
++# NOTE: The id-pattern used by check (g) is ^[a-z0-9]+(\.[a-z0-9]+)*$ which
++# does NOT allow hyphens. The real corpus uses short alphanumeric ids like
++# "6j8", "kig", "nm6". We seed dedicated short-id run refs for these tests
++# rather than reusing the hyphenated test-aaa/test-bbb fixture ids.
++# ===========================================================================
++
++# Seed short-id run refs for g-tests and push them
++seed_run_ref "ga1" "$INITIAL_SHA" "plan.r1"
++seed_run_ref "ga2" "$INITIAL_SHA" "plan.r1"
++seed_run_ref "ga3" "$INITIAL_SHA" "plan.r1"
++git push origin "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null
++
++write_bd_json "ga1" "ga2"
++
++# ===========================================================================
++# TEST (g.1): title "(a/b)" with both a,b present as subject_run → PASS (no WARN)
++# ===========================================================================
++t_start "(g.1) title subjects all present as subject_run → no WARN (exit 0)"
++
++delete_all_retros
++seed_cadence_retro_with_body "retro-g1-pass" \
++  "# Cadence Retro (ga1/ga2)" \
++  "subject_run:ga1" "subject_run:ga2"
++git push origin "refs/etude/retros/retro-g1-pass" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.1) all subjects present"
++
++t_start "(g.1) no subject-consistency WARN in output"
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST (g.2): title "(a/b/c)" with a,b as subject_run but c MISSING → WARN + exit 0
++# gc1 is in the title but absent from all manifest refs → WARN naming gc1.
++# ===========================================================================
++t_start "(g.2) title claims missing subject → WARN (exit 0)"
++
++delete_all_retros
++seed_cadence_retro_with_body "retro-g2-warn" \
++  "# Cadence Retro (ga1/ga2/gc1)" \
++  "subject_run:ga1" "subject_run:ga2"
++git push origin "refs/etude/retros/retro-g2-warn" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.2) missing subject is WARN not hard gap"
++
++t_start "(g.2) output contains subject-consistency WARN"
++assert_output_contains "subject-consistency" "$AUDIT_OUT"
++
++t_start "(g.2) WARN names the missing id"
++assert_output_contains "gc1" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST (g.3): bead.* ref counts as a present subject (B16/B17 shape)
++# title "(a/b/c)" with a,b as subject_run and c ONLY as bead.N → PASS (no WARN)
++# This directly guards the B16-repair shape (Opus NIT g.5 from design).
++# ===========================================================================
++t_start "(g.3) bead.* ref counts as present subject → no WARN (exit 0)"
++
++delete_all_retros
++seed_cadence_retro_with_body "retro-g3-bead" \
++  "# Cadence Retro (ga1/ga2/ga3)" \
++  "subject_run:ga1" "subject_run:ga2" "bead:ga3"
++git push origin "refs/etude/retros/retro-g3-bead" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.3) bead.* ref accepted as present"
++
++t_start "(g.3) no subject-consistency WARN in output"
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST (g.4): title with date parenthetical "(2026-05-25/26)" → SKIP (no WARN)
++# This guards the B5 footgun: "2026-05-25" contains '-' → fails id pattern →
++# entire parenthetical rejected → SKIP (no WARN).
++# ===========================================================================
++t_start "(g.4) date parenthetical in title → SKIP (no WARN, exit 0)"
++
++delete_all_retros
++seed_cadence_retro_with_body "retro-g4-date" \
++  "# Cadence Retro (2026-05-25/26)" \
++  "subject_run:ga1"
++git push origin "refs/etude/retros/retro-g4-date" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.4) date parenthetical → skip, no WARN"
++
++t_start "(g.4) no subject-consistency WARN for date parenthetical"
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST (g.5): workflow-style title with no parseable id-list → SKIP (no WARN)
++# Guards the 7 retro-workflow-* refs in the live corpus: titles like
++# "Retro — commit abc1234 (workflow retro)" have a single-token parenthetical
++# that is not a slash/comma-separated id-list → SKIP.
++# ===========================================================================
++t_start "(g.5) workflow retro title with no parseable id-list → SKIP (no WARN, exit 0)"
++
++delete_all_retros
++seed_cadence_retro_with_body "retro-g5-noparse" \
++  "# Retro workflow run abc1234" \
++  "subject_run:ga1"
++git push origin "refs/etude/retros/retro-g5-noparse" --quiet 2>/dev/null
++
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.5) workflow title → skip, no WARN"
++
++t_start "(g.5) no subject-consistency WARN for workflow title"
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++# ===========================================================================
++# TEST (g.6): etude- prefix normalization
++# The manifest subject_run values carry the "etude-" prefix (e.g. "etude-ga1")
++# while the title tokens are bare (e.g. "ga1"). The check must strip the
++# "etude-" prefix from manifest values before comparing so bare title tokens match.
++# ===========================================================================
++t_start "(g.6) etude- prefix normalization: bare title tokens match etude-prefixed manifest values → PASS"
++
++delete_all_retros
++# Pass etude-prefixed values so the manifest has subject_run.1=etude-ga1,
++# subject_run.2=etude-ga2. The title uses bare tokens: (ga1/ga2).
++# Normalization must strip "etude-" from manifest values → ga1 == ga1 → PASS.
++seed_cadence_retro_with_body "retro-g6-prefix" \
++  "# Cadence Retro (ga1/ga2)" \
++  "subject_run:etude-ga1" "subject_run:etude-ga2"
++git push origin "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null
++
++write_bd_json "ga1" "ga2"
++run_audit_split --last 9
++assert_exit 0 "$AUDIT_RC" "(g.6) etude- prefix normalization: no WARN"
++
++t_start "(g.6) no subject-consistency WARN with etude- prefixed manifest values"
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++# Cleanup g6 retro
++git update-ref -d "refs/etude/retros/retro-g6-prefix" 2>/dev/null || true
++git push origin --delete "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null || true
++
++# Cleanup short-id g-test run refs
++git update-ref -d "refs/etude/runs/ga1" 2>/dev/null || true
++git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
++git update-ref -d "refs/etude/runs/ga3" 2>/dev/null || true
++git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null || true
++
++# TEST (g.7): a ref id in SUBJECT_CONSISTENCY_ALLOW is SKIPPED even when its
++# title claims a subject absent from manifest refs (the B16 annotation mechanism).
++# Uses the exact hardcoded allowlist entry id so this locks the real B16 skip.
++t_start "(g.7) allowlisted ref with a title/refs mismatch → SKIPPED (no subject-consistency WARN)"
++
++delete_all_retros
++# nm6 is claimed in the title but NOT present in refs → check (g) WOULD WARN, but
++# this ref id is in SUBJECT_CONSISTENCY_ALLOW (the B16 annotation), so it is skipped.
++seed_cadence_retro_with_body "retro-cohort-etude-6j8-20260526T215942Z" \
++  "### B16. Cadence retro — closure (6j8/kig/nm6)" \
++  "subject_run:etude-6j8" "subject_run:etude-kig"
++git push origin "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null
++
++run_audit_split --last 9
++# The allowlist mechanism is proven by the ABSENCE of a subject-consistency WARN
++# for this mismatching ref (the overall exit code depends on unrelated bead state).
++assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
++
++git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" 2>/dev/null || true
++git push origin --delete "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null || true
++
++# ===========================================================================
++# Cleanup check-g retro refs
++# ===========================================================================
++delete_all_retros
++
+ # ===========================================================================
+ # Summary
+ # ===========================================================================

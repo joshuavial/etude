@@ -1,0 +1,284 @@
+## Plan
+
+**Approach:** Two-part bead — a one-time data repair plus a standing guard.
+(1) Repair B16 (`refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z`) by
+SUPERSEDING it: re-capture the byte-identical body with the missing nm6 subject
+correctly represented as `--bead etude-nm6` (a `bead.N` ref, NOT `--subject-run`,
+because nm6 was a data-backfill bead with no `refs/etude/runs/etude-nm6` — confirmed
+by its allowlist entry `scripts/dogfood-completeness-allow.txt:16` and by B17 which
+already uses `bead.1=etude-nm6` alongside `subject_run.1/2`). (2) Add a new PRAGMATIC
+consistency check (g) to `scripts/dogfood-completeness-audit.sh` that parses the
+subject id-list out of each cadence-retro TITLE and WARNs when a parsed id is absent
+from the manifest's `subject_run.*`/`bead.*` refs — "where possible", skipping any
+retro whose title has no parseable id-list. (3) Document the `--bead` mechanism for
+subjects-without-run-refs in the backfill runbook.
+
+This was VALIDATED empirically by dry-running the parser against the live corpus
+(17 cadence-trigger refs): it flags ONLY B16 (nm6 missing) and skips all 7 mis-tagged
+workflow retros + B17 (no parseable id-list), with zero false positives — see Risks
+for the date-parenthetical footgun the dry-run caught and fenced.
+
+---
+
+### Decision 1 — B16 repair: SUPERSEDE (re-capture with `--bead etude-nm6`)
+
+Retros are immutable, content-addressed refs (`internal/retro/retro.go:75-83`,
+create-only, no in-place edit). So "repair" = capture a NEW corrected ref that
+points back at B16 via `--supersedes`. Chosen over annotate-only because:
+- The acceptance explicitly lists "repaired, superseded, or annotated" — supersede
+  is the cleanest: it produces a ref whose manifest refs MATCH its body claims, so
+  the new guard (g) passes on the corrected artifact while still flagging the old one
+  is moot (the old ref keeps its divergence but is now marked superseded-by lineage).
+- nm6's correct representation already exists in the corpus (B17 `bead.1=etude-nm6`),
+  so this is faithful transcription, not invention.
+
+**SCOPE FENCE:** this bead fixes SUBJECTS ONLY. Do NOT add a 7-key retro-meta
+sidecar (`--meta-file`) and do NOT set `--occurred-at` here. Those are
+etude-8hq.5 (sidecar backfill) and shipped-8hq.2 (event-time) territory. The new
+B16-corrected ref will itself be a pre-cutoff cadence retro WITHOUT a sidecar, so
+it lands on the etude-8hq.5 WARN backfill worklist (check (f), pre-cutoff = WARN,
+`scripts/dogfood-completeness-audit.sh:527-537`). 8hq.5 will re-capture it AGAIN
+to add the sidecar. **Double-supersede of historical data is explicitly acceptable:**
+the lineage chain (B16 -> 8hq.8-corrected -> 8hq.5-with-sidecar) is honest history,
+not churn, because each re-capture records a distinct, real correction.
+
+**Exact re-capture procedure** (run from repo root; verify the body matches first):
+
+```bash
+OLD=retro-cohort-etude-6j8-20260526T215942Z
+OLDREF=refs/etude/retros/$OLD
+# Extract the byte-identical body from the immutable B16 ref (the retro-role stage path):
+git cat-file -p "$OLDREF:artifacts/sha256/39/39b6e62b9f501523dec138a0018b3b14df206935b64ed03b641d3a1bcaabfc8c" > /tmp/b16-body.md
+# (Generic form: read manifest.json, find the stage whose output.role=="retro", use its output.path.)
+
+etude retro capture cohort \
+  --file /tmp/b16-body.md \
+  --subject-run etude-6j8 \
+  --subject-run etude-kig \
+  --bead etude-nm6 \
+  --trigger cadence-retro \
+  --decision informational \
+  --supersedes "$OLD" \
+  --git-sha 2a013162219a3c7f75fba7636dd215b82e61325b \
+  --message "retro: supersede B16 to add missing nm6 subject (bead ref)"
+
+# Then push the new ref so check (d) stays green:
+git push origin "refs/etude/retros/<new-id>:refs/etude/retros/<new-id>"
+```
+
+Notes:
+- The new id is `retro-cohort-etude-6j8-<NOW>` (id base uses capture-time `now()`
+  + first subject-run, `internal/retro/retro.go:30-31`); the timestamp differs from
+  B16's `...215942Z`, so NO ref collision (`AllocateRetroId`, retro.go:36-58).
+- `--decision informational` (not `superseded`): the corrected ref is the live one;
+  the body content is unchanged so it remains an informational retro. `--supersedes`
+  records the lineage in `refs.supersedes` (`internal/cli/retro.go:658-660`, shown by
+  `retro show`, retro.go:302-304). Carry the ORIGINAL B16 `--git-sha`
+  (`2a01316...`, from B16's stage) to preserve provenance of when it was authored.
+- This is a MANUAL data-repair step performed during this bead's implement phase
+  (like the B8-B15 / gate backfills), then captured in the dev-workflow run. It does
+  NOT require new etude-core code — `--supersedes` + `--bead` already ship.
+
+---
+
+### Decision 2 — The consistency guard: new check (g) in the audit script
+
+Add a new check **(g) retro subject consistency** to
+`scripts/dogfood-completeness-audit.sh`, modeled on existing checks (c)/(f) which
+already iterate `refs/etude/retros/*`, filter `refs.trigger=="cadence-retro"`, and
+read manifests via `git cat-file -p <ref>:manifest.json` (audit.sh:368-398, 435-530).
+**Batch modes only** (`--last`/`--since`), NOT `--bead` — consistent with (c)/(f),
+which skip `--bead` to avoid close-time deadlocks (the guard is repo-wide advisory).
+
+**Verdict: WARN, not BLOCK.** Rationale:
+- Consistency is advisory and the signal is a *body-text parser* over human-written
+  titles. A brittle parser must NEVER hard-fail a code push. (c) and (f)-pre-cutoff
+  are both WARN-only for the same "advisory, don't deadlock" reason
+  (audit.sh:357-416, 533-537).
+- A clean "title-claims-X but X not in refs" case (exactly B16) is a real defect, but
+  WARN surfaces it loudly in batch output without blocking unrelated pushes. After the
+  B16 repair lands, the corpus is clean and the WARN is silent — so a future
+  regression (a new cadence retro whose body claims a subject it didn't `--subject-run`
+  /`--bead`) shows up immediately as the ONLY WARN. Promoting to BLOCK can be a
+  follow-up once the parser has proven non-brittle in practice; do NOT BLOCK on a
+  body-parser in its first iteration.
+
+**Parse method (where-possible; the body title, not the manifest):**
+- The manifest does NOT carry the title; the subject id-list lives in the retro BODY's
+  first heading line. So read the body: find the stage with `output.role=="retro"`,
+  take its `output.path`, `git cat-file -p <ref>:<path>`, take line 1.
+- Extract candidate ids from the LAST parenthetical group in the title, e.g.
+  `(6j8/kig/nm6)`, `(094/21z/sb4 + 9ey defer)`, `(2ku/qih/aqt)`.
+  Algorithm (validated against the live corpus, see Risks):
+  1. Find all `(...)` groups; take the LAST one (subjects are trailing).
+  2. Split that group on ` + ` and keep only the FIRST chunk — this DROPS
+     "+ 9ey defer" / "+ 8b7 defer" (deferred beads named in B13/B15 titles, which are
+     NOT subjects and correctly absent from refs).
+  3. Require the chunk to contain `/` AND split into >=2 tokens.
+  4. Require EVERY token to match the bead-id shape `^[a-z0-9]+(\.[a-z0-9]+)*$`.
+     If any token fails (e.g. a date group `2026-05-25/26` -> token `2026-05-25` has
+     hyphens), REJECT the whole group and treat the retro as "no parseable subjects"
+     -> SKIP. This all-or-nothing rule is what prevents the date false positive.
+  5. Prefix each surviving token with `etude-` to form the candidate id.
+- For each candidate id, assert it appears in the manifest's subject keys
+  (`subject_run.*` OR `bead.*` values). Any candidate NOT present -> one WARN per ref
+  listing the missing ids.
+- **"Where possible":** a retro whose title yields NO candidate id-list (workflow
+  retros titled `... — commit <sha>`; B17 with no parenthetical id-list) is SKIPPED
+  silently — there is nothing to compare. This is exactly how the 7 mis-tagged
+  `retro-workflow-workflow-*` refs pass trivially (Decision 4).
+
+**Allowlist for known exceptions:** reuse the existing
+`scripts/dogfood-completeness-allow.txt` mechanism is NOT a good fit (it's keyed by
+bead id, not retro ref). Instead, add a small inline allowlist constant in the script
+keyed by retro ref id for any retro that legitimately diverges and cannot be repaired
+(currently EMPTY — B16 is repaired, not allowlisted). Document the constant inline so
+future genuine exceptions have a home. Keep it minimal; prefer repair over allowlist.
+
+**Footgun avoidance:** do the title read + id parsing entirely inside a single
+`python3 -c` block fed the manifest on stdin (like (c)/(f) at audit.sh:370-398), and
+use Python set membership for the comparison. Do NOT use `grep -c ... || echo 0`
+(the documented B17 regression, retro-ledger.md:482-485) — there is no grep-count
+anywhere in this check.
+
+---
+
+### Decision 3 — Runbook docs (subjects without run refs)
+
+Primary home: **`docs/plans/dogfood/capture-protocol.md`** — add a short subsection
+under "Retro Capture" (after the cadence-sidecar note at lines 251-255) titled
+"Cadence subjects without run refs". Content: when a cadence cohort covers a bead
+that has NO `refs/etude/runs/<id>` (data-backfill / allowlisted / non-dev-workflow
+beads — e.g. etude-nm6), record it as `--bead <id>` (a `bead.N` ref), NOT
+`--subject-run <id>` (which requires a valid run id and would fail validation,
+`internal/cli/retro.go:471-474`). The consistency guard (g) treats `bead.N` and
+`subject_run.N` equally as "subjects present in refs".
+
+Also extend the **Dogfood Completeness Audit** section of the same file
+(capture-protocol.md:556-650) with a "(g) retro subject consistency" bullet (WARN,
+batch only, where-possible parse), mirroring the existing (a)-(f) descriptions, and
+add it to the "What BLOCKS vs WARNS" list (capture-protocol.md:512-521) under WARN.
+
+Secondary: **`docs/plans/dogfood/retro-ledger.md`** — append a one-line correction
+note to the B16 entry (retro-ledger.md:440-465) recording that B16 was superseded by
+`<new-id>` to add the missing nm6 subject (as a `--bead` ref, since nm6 has no run),
+and why nm6 has no run ref (data-backfill bead, allowlisted). This satisfies the
+acceptance clause "annotated with why nm6 has no subject run" even though we chose
+supersede — the ledger note is the human-readable record of the repair.
+
+No SHIPPED user-facing docs (`docs/retro.md`, `docs/cli/*`) change: the `--bead` and
+`--supersedes` flags already ship and are already documented; this bead adds no new
+CLI surface. `make docs-reality` / `docs-check` should stay green.
+
+---
+
+### Files (1 bead = 1 commit)
+
+- `scripts/dogfood-completeness-audit.sh` — add check (g): retro subject consistency
+  (WARN, batch only, title-parenthetical parser, where-possible skip, inline
+  retro-ref allowlist constant). Wire its findings into the existing
+  `warnings`/summary plumbing (audit.sh:129-132, 622-631) and `--json` warnings
+  array.
+- `scripts/dogfood-completeness-audit_test.sh` — add a `seed_cadence_retro_with_body`
+  helper (variant of `seed_cadence_retro_with_meta`, audit_test.sh:204-316, that
+  stores a real markdown BODY blob with a chosen title line) + tests: (g.1) title
+  subjects all present -> no WARN/exit 0; (g.2) title claims a subject absent from
+  refs -> WARN + exit 0 (the B16 shape: subjects in title, one missing from refs);
+  (g.3) workflow/commit-title retro with no parseable id-list -> SKIP (no WARN);
+  (g.4) date-parenthetical title `(2026-05-25/26)` -> SKIP (no false-positive WARN);
+  (g.5) `--bead` ref counts as a present subject (B17 shape); (g.6) `--bead`-mode does
+  NOT run check (g).
+- `docs/plans/dogfood/capture-protocol.md` — "Cadence subjects without run refs"
+  subsection + (g) bullet in the audit section + (g) WARN entry in BLOCKS-vs-WARNS.
+- `docs/plans/dogfood/retro-ledger.md` — B16 supersede/correction annotation note.
+- `refs/etude/retros/<new-id>` — the corrected B16 retro (data artifact, not a file;
+  created by the re-capture command + pushed). The old B16 ref is left immutable.
+
+**Out of scope:** the 7-key sidecar backfill (etude-8hq.5); `--occurred-at`
+event-time (shipped 8hq.2); any etude-core (Go) changes — the guard is a
+dogfood-layer shell check exactly like (a)-(f); re-tagging the mis-tagged workflow
+retros (see Decision 4).
+
+---
+
+### Decision 4 — The mis-tagged `retro-workflow-workflow-*` retros
+
+7 of the 10 workflow-scope retros carry `trigger=cadence-retro` but have NO subjects
+and a commit-sha title (`... — commit a568056`). They are arguably mis-tagged
+(workflow retros, not cohort cadence) — but **this bead explicitly DEFERS re-tagging
+them.** Justification:
+- Re-tagging is a data re-capture identical in kind to the 8hq.5 sidecar backfill, and
+  these refs are pre-cutoff WARN material there already (check (f)); folding it in here
+  would blow the subjects-only scope fence.
+- The guard (g) is designed so it does NOT false-positive on them: their titles have
+  no parseable `(a/b/c)` id-list, so check (g) SKIPS them ("where possible"). VERIFIED
+  by the corpus dry-run — all 7 are reported SKIP, zero WARNs.
+- So the guard does NOT silently pass them by accident; it correctly has nothing to
+  assert because they make no in-title subject claim. The plan STATES this explicitly
+  rather than relying on luck. If a future decision wants them re-tagged to
+  `trigger=process-retro` (matching the 3 sibling workflow retros at
+  refs/.../215650Z/215651Z/215702Z), that is a separate backfill bead.
+
+---
+
+### Tests
+
+- Guard fixture tests (g.1)-(g.6) above, run via `make dogfood-audit-test`
+  (`scripts/dogfood-completeness-audit_test.sh`). Key edge cases: missing-subject
+  WARN (B16 shape), date-parenthetical NON-false-positive, `--bead` counts as subject,
+  workflow/no-id-list skip, batch-only (not `--bead`).
+- Built-binary manual check is NOT required for this bead's GUARD (it is a shell+python
+  audit, not an etude CLI write path). The B16 RE-CAPTURE, however, writes to
+  `refs/etude/retros/*`; per MEMORY/runbook (capture-protocol.md:226-238) any command
+  that WRITES refs must be exercised against a throwaway repo first — so dry-run the
+  exact `etude retro capture` command in a `mktemp -d` + `git init` seeded repo to
+  confirm the new ref shape (subjects = 6j8, kig + bead nm6; supersedes set) before
+  running it for real in the working repo.
+- After repair + guard land: run `make dogfood-audit` and confirm check (g) reports
+  zero WARNs across the whole corpus (B16 now clean), and the existing 41 audit tests
+  still pass.
+
+---
+
+### Docs
+
+- `docs/plans/dogfood/capture-protocol.md` — new subsection + (g) audit bullet +
+  WARN list entry (see Decision 3).
+- `docs/plans/dogfood/retro-ledger.md` — B16 correction annotation (see Decision 3).
+- No shipped `docs/retro.md` / `docs/cli/*` changes — no new CLI surface; `--bead`
+  and `--supersedes` already ship and are documented.
+
+---
+
+### Risks
+
+- **Parser brittleness (the main risk):** human-written titles are not a schema. A
+  corpus dry-run of the proposed parser caught a real false positive — the B5 workflow
+  retro title `... (2026-05-25/26) — commits ...` made a naive `/`-split emit a bogus
+  `etude-26` candidate. MITIGATED by the all-tokens-must-be-valid-id rule (step 4),
+  which rejects the date group entirely; re-validated dry-run flags ONLY B16 and skips
+  all workflow/date/no-id-list titles. WARN-not-BLOCK further contains residual risk:
+  a future title the parser misreads at worst produces a noisy WARN, never a blocked
+  push. The inline retro-ref allowlist absorbs any genuine un-repairable exception.
+- **Double re-capture lineage:** the B16-corrected ref will be re-captured AGAIN by
+  8hq.5 (to add the sidecar). Accepted and documented as honest history (Decision 1).
+- **`--bead` vs `--subject-run` cadence coverage:** check (c) only counts
+  `subject_run.*` as "covered" (audit.sh:378-385), so representing nm6 as `--bead`
+  (not `--subject-run`) does not change nm6's cadence-coverage status — correct, since
+  nm6 has no run to cover and is allowlisted anyway. No regression to (c).
+
+---
+
+### Capture
+
+- inputs: bead etude-8hq.8 (`bd show`), parent epic etude-8hq;
+  `scripts/dogfood-completeness-audit.sh` (checks c/f pattern, warn plumbing),
+  `scripts/dogfood-completeness-audit_test.sh` (seed helpers), `internal/cli/retro.go`
+  (--bead/--supersedes/--subject-run flags + id base), `internal/retro/retro.go`
+  (RetroIDBase/AllocateRetroId/Writer create-only), B16 manifest+body
+  (`refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z`), B17 manifest
+  (`refs/.../retro-cohort-etude-8hq.4-20260526T234335Z`, the bead.1=etude-nm6
+  precedent), `scripts/dogfood-completeness-allow.txt` (nm6 entry),
+  `docs/plans/dogfood/capture-protocol.md`, `docs/plans/dogfood/retro-ledger.md`
+  (B16 entry); a live corpus dry-run of the title parser (17 cadence refs).
+- output: bead --design field (this plan)
