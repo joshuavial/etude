@@ -1,0 +1,20 @@
+# Generated docs review — etude-aul.5
+
+`make docs` regenerated the Cobra reference after the committed aul.4 flag
+surface. The only tracked change is `docs/cli/etude_bench.md`, adding:
+
+- `--gate string`
+- `--variant stringArray`
+- `--cohort string`
+- `--labels string`
+
+The synopsis and all pre-existing flags remain generated from the command.
+
+Verification on the complete aul.4 + aul.5 tree:
+
+- `make test`: pass (`internal/cli` 149.376s; all packages green)
+- `make lint`: pass
+- `make docs-check`: pass
+- `make reconcile`: pass
+- `git diff --check`: pass
+- tracked scope: only `docs/cli/etude_bench.md`
