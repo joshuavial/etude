@@ -1,0 +1,5 @@
+# Final Review — etude-bench-command.1 (bench cohort selection)
+PLAN gate: attempt 1 BLOCK (codex: git_sha non-empty only, not syntactically valid) vs Opus/gemini GO. Disputed tool-behavior empirically resolved (manifest.Validate + replay pre-run check non-empty only; format validated at worktree.Checkout) -> added syntactic isValidGitSHA (40/64 lowercase hex) + invalid-git-sha skip reason. Attempt 2: GO x3 (Opus confirmed not over-strict).
+IMPLEMENT+FINAL gate: attempt 1 BLOCK (Opus: TOCTOU — ReadFile(ref) re-resolves after Resolve(ref)->commit, risking snapshot mismatch). Fixed to ReadCommitFile(commit). Attempt 2: GO x3 (codex, gemini, Opus). pilms established 0-CPU outage throughout; 3-substantive-seat fallback per runbook.
+Process note: codex truncated w/o verdict on the ~1000-line full-file inline input; small delta input completed fine.
+Docs: NO-DOCS (internal library; docs land with .4 CLI). Committed 5b7b45f.
