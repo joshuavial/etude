@@ -1,0 +1,5 @@
+# Verify — etude-roadmap.2.3 (Surface gate reviewer data in run show) — PASS
+- gofmt/vet clean; `go test ./...` all pass; `make docs-check` no diff.
+- New tests: TestRunShowRendersGates (3-attempt fixture exercising block+required, go+skill, disregarded+note, degraded, escalated+escalation+deferred, optional, failed+raw_output, manifest ordering, count-based note assertion, exactly-one-skill-line) + TestRunShowNoGatesUnchanged (gate-less run prints no gate section).
+- Built-binary manual test: `etude run show etude-roadmap.2.4` (real 3-gate fixture) renders all gates as a clean audit log; pre-existing stages output byte-identical.
+- Backward-compat: gate-less runs print no gate section (empty Gates loop).
