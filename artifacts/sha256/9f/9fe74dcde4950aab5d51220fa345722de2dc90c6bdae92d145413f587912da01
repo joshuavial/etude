@@ -1,0 +1,21 @@
+# Verify artifact — etude-2pc.2 (migrate dev workflow, retire gates.yaml)
+**Status: pass. Recommendation: proceed to Docs.** Real-LLM execution deferred to etude-s6z (sanctioned).
+
+## Automated (all green)
+- go test ./internal/cli/... ./internal/registry/... ./internal/workflow/... → ok (incl. migration_test)
+- make lint clean; GOOS=windows+linux build OK; make docs zero diff; make docs-reality OK (14 commands)
+
+## AC-to-evidence map
+- AC1 (live via etude run) → built-binary PASS + HARD-VETO deterministic runs + real-config `etude run default` dispatched the `dev` runner (claude launched), failed at runner-input boundary `Input must be provided through stdin/prompt …` (NOT config/resolution) → migrated workflow wired live. Real-LLM seat/runner exec deferred to etude-s6z (blocked on etude-3a2).
+- AC2 (gates from per-stage config+registry) → deterministic gate checks executed for real from the stage gate block; run.go loads registry+workflow and resolves by name. TestMigrationWorkflowParsesAndCrossResolves.
+- AC3 (skills read new files) → etude-review SKILL.md reads registry.yaml + per-phase gate in workflow.yaml; stale Grok/L2-three narrative dropped; dev-workflow reads the runbook (never used gates.yaml).
+- AC4 (gates.yaml removed) → file deleted (git D); TestMigrationGatesYAMLDeleted guards re-introduction; no live consumer.
+- AC5 (no panel regression) → seats opus/codex/gemini byte-identical (invoke incl. --skip-trust, model_reasoning_effort="high", -s read-only, fallbacks, mode); tier composition unchanged; only sanctioned L2 name fix three→two + additive dev seat; abstraction block verbatim. TestMigrationCriticalSeatFieldsPreserved.
+
+## Built-binary proof transcript
+- real-config dispatch: `stage "plan" failed: runner failed: claude: exit status 1: Error: Input must be provided either through stdin or as a prompt argument when using --print`
+- gate PASS: checks-only gate (/usr/bin/true) → check.0 go, status=pass, exit 0
+- gate HARD-VETO: failing check (/usr/bin/false) → block, status=escalated (max rounds), resume hint, in run show
+
+## QA findings
+Matches approved plan Files list exactly. Durable migration guard on real repo files + built-binary gate execution. No regressions. Clean.

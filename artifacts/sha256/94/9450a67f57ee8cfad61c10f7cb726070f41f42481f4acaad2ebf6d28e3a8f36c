@@ -1,0 +1,20 @@
+# Final Review artifact — etude-2pc.2 (migrate dev workflow, retire gates.yaml)
+**Verdict: GO. Commit scope clean. Ready to close.** Commit cd954cbf5ae1cb670d61885701f9931e444f42b8.
+
+## Scope (7 in-scope paths)
+.etude/registry.yaml (new), .etude/workflow.yaml (mod), .etude/gates.yaml (DELETED), .claude/skills/etude-review/SKILL.md, internal/registry/registry.go (1-line comment), internal/cli/migration_test.go (new), docs/plans/product/live-execution.md. Pre-existing mkdocs files NOT staged; no stray scratch files.
+
+## Confirmed
+- Green re-run: go test ./internal/cli/ ./internal/registry/... ./internal/workflow/... PASS; make lint clean; make docs zero diff; make docs-reality OK.
+- AC5 panel composition byte-identical (only sanctioned L2 name fix three→two + additive dev seat); seat invokes preserved verbatim.
+- No dangling gates.yaml/phase_gates consumer (only intentional guard strings in migration_test); registry round-trips; dev runner + all gate tiers cross-resolve.
+- Real-LLM execution deferral to etude-s6z is sanctioned (matches xin precedent), tracked.
+
+## Gate history
+- Plan r1 PASS (Tier 1 unanimous; AC1 deferral tracked in etude-s6z).
+- Implement r1 (codex GO, opus GO, gemini empty — orchestrator empty-docs-diff payload bug, not a code defect), r2 PASS after re-inlining the diff (Tier 1 unanimous; opus independently verified AC5 + docs sweep).
+- Verify r1 PASS (Tier 1 unanimous; built-binary proofs; deferral tracked).
+- Docs r1 PASS (Tier 3 single Opus; full gates.yaml audit clean).
+- Final Review r1 PASS (Tier 3 single Opus / dev-pr-reviewer).
+
+## Deferred (non-blocking) → etude-s6z (real-LLM dev run), etude-df4 (migration_test hardening).

@@ -1,0 +1,285 @@
+◐ etude-2pc.2 · Migrate dev workflow to the new schema and retire gates.yaml   [● P1 · IN_PROGRESS]
+Owner: joshuavial · Type: feature
+Created: 2026-06-29 · Updated: 2026-06-30
+
+DESCRIPTION
+Port the .etude config to the general schema (the v1 proof path). Move gates.yaml seats/tiers/quorum -> the shared registry; phase_gates -> per-stage `gate` blocks (tier + abstraction); add per-stage `runner` for plan/implement/verify/docs/review; add deterministic check stages where a test settles disputes objectively. Update the dev-workflow gate and etude-review skills to read the new files. Delete gates.yaml. Drive the dev workflow live end-to-end via `etude run` as the proof. Design: docs/plans/product/live-execution.md (Sequencing).
+
+DESIGN
+## Plan
+
+### Goal
+Port `.etude/` config to the schema landed in etude-2pc.1/xin/04i: seats/tiers/quorum
+→ `.etude/registry.yaml`; `phase_gates` (tier+abstraction) → per-stage `gate` blocks on
+`.etude/workflow.yaml`; add per-stage `runner`; add a deterministic gate-check on verify;
+update the `etude-review` skill to read the new files; delete `.etude/gates.yaml`. Prove
+it under the no-secrets constraint below.
+
+### BUILD-vs-DEFER premise check (P2 — the secrets tension)
+The dev STAGE runners (`claude -p` etc.) and the model GATE SEATS (opus/codex/gemini) both
+need credentials. Scoped secret passthrough is **etude-3a2 (NOT done)**; live runners get the
+hermetic 3-var env (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) and CANNOT authenticate
+(verified in internal/liverun/gate.go:113 and engine env). So a full real-LLM end-to-end
+run is impossible today. **Committed scope** (matches the bead's sanctioned menu):
+- BUILD now: the migrated `registry.yaml` + `workflow.yaml` PARSE+VALIDATE+fully cross-resolve
+  under registry.ParseYAML / workflow.ParseYAML (no secrets); and `etude run` WALKS a graph
+  live with deterministic runners while a DETERMINISTIC gate CHECK executes for real
+  (checks need no secrets) — proving orchestration + gate execution end-to-end.
+- DEFER (post-3a2, noted not faked): real-LLM execution of the actual dev stage runners and
+  model-seat gate panels. AC1/AC2 are honestly satisfied at the orchestration + config/
+  resolution + deterministic-check level; real-LLM seat EXECUTION waits on 3a2. This deferral
+  is EXPLICITLY TRACKED in filed follow-up bead **etude-s6z** ("Drive the real dev workflow
+  live end-to-end with real-LLM runners + model-seat gates", depends on etude-2pc.2 + etude-3a2)
+  — not just a prose note.
+
+### Approach (committed decisions, empirically verified)
+All YAML below was parsed through the REAL `registry.ParseYAML`/`workflow.ParseYAML`
+(harness run inside the module) — registry: 4 seats / 4 tiers, round-trips byte-stable;
+workflow: 5 stages each runner+gate, every runner.name resolves to a seat, every gate.tier
+resolves to a tier whose seats are all defined. ALL CHECKS PASS.
+
+1. **`.etude/registry.yaml` (NEW in repo)** — port gates.yaml `quorum`/`tiers`/`seats`
+   verbatim with two corrections + one addition:
+   - Seats `opus`, `codex`, `gemini` copied with invoke strings PRESERVED exactly, incl.
+     gemini `--skip-trust` (+ the `env -u …` prefix) and codex `-s read-only`, plus
+     `model_fallbacks` and `mode`.
+   - Fix the stale tier NAME: L2 was "Strong three-seat gate" but lists 2 seats →
+     "Strong two-seat gate". (L1 three-seat, L3 two-seat, L4 single-seat already correct.)
+   - Add a producer seat `dev` (provider anthropic/claude-opus, harness claude-code,
+     invoke "claude -p --model opus") so per-stage `runner` names resolve. Runners are
+     looked up in `reg.Seats` (resolve.go:45), so the dev harness must be a seat entry; it
+     belongs to no tier (valid). gates.yaml `escalation` prose has no schema home — the
+     mechanism is the L-ladder (ResolveTiers next-stronger); the policy text already lives
+     in the runbook/etude-review skill.
+2. **`.etude/workflow.yaml` (modified)** — keep each stage's existing `skill:` (REQUIRED by
+   workflow.go:339; runner is additive, matching etude-2pc.1) and `eval:`; ADD per stage:
+   - `runner: {name: dev}` on plan/implement/verify/docs/review.
+   - `gate: {tier, abstraction}` ported from `phase_gates`: plan→L2 (+ the validated plan
+     abstraction block verbatim), implement→L3, verify→L2, docs→L4, review→L4.
+   - verify gate ALSO gets deterministic `checks: [{command: "make test"}, {command: "make lint"}]`
+     (the test that settles disputes objectively). `checks`+`tier` together is valid
+     (only seats+tier are mutually exclusive — validateGate, workflow.go:443).
+3. **`skill:` per stage — KEPT (additive).** Required by the schema; runner is the new
+   harness binding alongside it. Not replaced.
+4. **etude-review skill — new sources.** Tier→seats now from `.etude/registry.yaml`. The
+   per-phase tier + abstraction (formerly `phase_gates`) now come from the matching stage's
+   `gate` block in `.etude/workflow.yaml` (stage name == phase name: plan/implement/verify/
+   docs/review). Update SKILL.md lines 36, 50-52, 67 accordingly and drop the stale
+   hardcoded panel narrative at line 38 (mentions Grok / "L2=three"; registry is the source
+   of truth, per the skill's own rule 2).
+5. **dev-workflow skill — NO file-path change.** Confirmed: `.claude/skills/dev-workflow/SKILL.md`
+   contains zero gates.yaml/phase_gates/registry.yaml references; its gate is "the four-
+   reviewer process in docs/plans/dogfood/review-gate-runbook.md", and the runbook also
+   contains no gates.yaml path. So AC3 ("dev-workflow + etude-review skills read the new
+   files") is met by the etude-review change; dev-workflow already reads via the runbook,
+   not the deleted file. State this explicitly.
+6. **Migration safety.** Update etude-review SKILL.md AND delete `.etude/gates.yaml` in the
+   SAME commit (1 bead = 1 commit) so no window exists where a skill points at a deleted file.
+
+### Plan-gate round 1 folded optionals (all GO, no required changes)
+gemini GO, codex GO, opus GO. Folded: (a) migration_test asserts CRITICAL seat fields are preserved exactly from gates.yaml — gemini invoke contains `--skip-trust`, codex invoke contains `model_reasoning_effort="high"` + `-s read-only`, model_fallbacks intact (guards port data-loss; gemini+codex). (b) AC1 strengthening (opus): also run `etude run` against the REAL `.etude/workflow.yaml` far enough to show the real `dev` stage runner is DISPATCHED and fails precisely at the credential boundary (not a config/resolution error) — proves the actual dev workflow is wired live, not just an analogue. (c) Docs sweep (opus): `docs/plans/product/live-execution.md` references gates.yaml at lines ~41/149/181/187/189 — ensure each reads as historical / "the registry (renamed gates.yaml)" and none point at a live file post-deletion. (d) `internal/registry/registry.go:173` comment "the proven gates.yaml definitions" — reword so no in-tree pointer survives to the deleted file (adds registry.go as a 1-line in-scope change).
+
+### Files
+- `.etude/registry.yaml` — NEW (port seats/tiers/quorum; corrected L2 name; add `dev` seat).
+- `.etude/workflow.yaml` — MODIFIED (per-stage runner + gate{tier,abstraction}; verify checks).
+- `.etude/gates.yaml` — DELETE.
+- `.claude/skills/etude-review/SKILL.md` — MODIFIED (gates.yaml → registry.yaml + workflow.yaml;
+  per-phase tier/abstraction from workflow stage gates; drop stale panel narrative).
+- `internal/cli/migration_test.go` — NEW (durable proof guard; incl. critical-seat-field
+  preservation assertions per folded optional (a)).
+- `internal/registry/registry.go` — 1-LINE comment reword at :173 (drop the "proven gates.yaml
+  definitions" pointer to the deleted file) per folded optional (d).
+- `docs/plans/product/live-execution.md` — Sequencing note (proof path landed; real-LLM run
+  deferred to etude-s6z) + sweep the gates.yaml references at ~41/149/181/187/189 to read as
+  historical/"renamed gates.yaml" per folded optional (c). No CLI surface change → no `make docs`
+  regeneration.
+
+### Validation
+- `make build && make test && make lint` green.
+- New migration_test passes (parse + validate + cross-resolve + round-trip on the REAL files).
+
+### Test/Proof plan (AC1-AC5 under no-secrets)
+- **migration_test.go (no secrets, durable):** reads the real `../../.etude/registry.yaml`
+  + `../../.etude/workflow.yaml`; asserts registry.ParseYAML/workflow.ParseYAML succeed;
+  every stage.Runner.Name ∈ reg.Seats; every stage.Gate.Tier ∈ reg.Tiers with all tier
+  seats defined; verify stage has 2 checks; registry round-trips via YAML()→ParseYAML
+  (defect #5). Proves AC2 config+resolution + AC4-correctness. (Verified by an out-of-tree
+  harness: ALL CHECKS PASS.)
+- **Live orchestration + real gate-check execution (no secrets):** in a `mktemp -d` git
+  repo, scaffold a deterministic mirror workflow (inline-command runners writing to
+  $ETUDE_OUTPUT_FILE + a checks-only gate) and run `etude run <wf> --task task.txt`.
+  VERIFIED EMPIRICALLY with the built binary:
+  - pass path: `captured <oid>` per stage, `captured gate beta.r1 status=pass`, exit 0,
+    inspectable via `etude run show`.
+  - hard-veto path: a check exiting 1 → `status=rerun` then `status=escalated` (max_rounds
+    exhausted), recorded as gate attempts in the manifest, visible in `etude run show`.
+  Proves AC1 (live via `etude run`) + AC2 (gate executes from per-stage config) for real.
+- **AC4:** `.etude/gates.yaml` removed; grep confirms no remaining code/script consumer
+  (only registry.go comment + etude-review skill, both updated/irrelevant).
+- **AC5 (no regression in review panels):** etude-review still resolves identical seats
+  (opus/codex/gemini unchanged invoke/mode/fallbacks) and identical per-phase tiers
+  (L2/L3/L2/L4/L4) and the plan abstraction block verbatim — only the SOURCE FILE moved
+  (gates.yaml → registry.yaml + workflow.yaml). Panel composition is byte-identical.
+- **DEFERRED (post-3a2):** real-LLM run of the real dev workflow (claude/codex/gemini stage
+  runners + model-seat gates). Noted in live-execution.md; not faked.
+
+### Docs blast radius
+Small. Only `docs/plans/product/live-execution.md` (Sequencing note). No CLI command/flag
+change → no generated `docs/cli/*` regeneration, no `make docs-check` impact. `etude init`
+already scaffolds registry.yaml + workflow.yaml and never wrote gates.yaml (init.go:144-150),
+so deleting gates.yaml does not affect scaffolding.
+
+### Risks
+- The `dev` runner seat and the model-seat gates cannot execute live without etude-3a2
+  secrets — explicitly DEFERRED (the sanctioned P2 decision), not a regression.
+- codex invoke carries a literal `model_reasoning_effort="high"` that `strings.Fields`
+  passes with embedded quotes — PRE-EXISTING in gates.yaml, preserved verbatim; not changed
+  by this migration.
+- Reviewers may read AC1 as requiring a real-LLM run; mitigated by the honest scope split
+  above + two real, command-backed proofs.
+
+### Capture
+- inputs: bead etude-2pc.2 description + ACs; docs/plans/product/live-execution.md;
+  .etude/gates.yaml; .etude/workflow.yaml; internal/{workflow,registry}/*.go;
+  internal/liverun/{engine,gate,resolve}.go; internal/cli/{run,init}.go;
+  .claude/skills/{etude-review,dev-workflow}/SKILL.md; docs/plans/dogfood/review-gate-runbook.md;
+  empirical: ParseYAML cross-resolve harness + throwaway `etude run` pass/hard-veto proofs.
+- output: bead --design field
+
+
+
+NOTES
+Plan gate attempt 1 (Tier 1): GO unanimous. AC1 real-LLM deferral matches xin precedent + tracked in etude-s6z. Folded optionals: migration_test field-preservation, real-workflow dispatch-to-credential-boundary proof, docs sweep of gates.yaml refs, registry.go:173 comment reword. result: pass
+Implement gate: attempt 1 (codex GO, opus GO, gemini empty/rerun — orchestrator inlined an empty docs-diff payload, NOT a code defect; opus independently verified AC5 byte-identical panel + docs sweep from repo). Reran gemini with populated diff → GO. attempt 2 PASS (Tier 1 unanimous).
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes: internal/cli/migration_test.go (new; durable proof guard, authored in Implement). No production-code changes in Verify.
+- commands:
+  - go test -count=1 ./internal/cli/... ./internal/registry/... ./internal/workflow/...
+  - make lint (gofmt + go vet)
+  - GOOS=windows GOARCH=amd64 go build ./... ; GOOS=linux GOARCH=amd64 go build ./...
+  - make docs (+ git status) ; make docs-reality ; make build
+- result: ALL PASS. cli/registry/workflow tests ok. lint clean. both cross-compiles exit 0. `make docs` produced ZERO generated-doc diff. docs-reality OK (14 commands). binary built (bin/etude).
+
+Manual tests (built binary, no secrets, throwaway git repos):
+- required: yes (AC1 live `etude run` orchestration + gate execution)
+- result:
+  - Real-config dispatch (AC1): copied real .etude/registry.yaml + workflow.yaml into temp repo; `etude run default` parsed both with no config/resolution error, resolved the `dev` runner, DISPATCHED claude (launched /Users/jv/.local/bin/claude) and failed precisely at the runner-input/credential boundary: `stage "plan" failed: runner failed: claude: exit status 1: Error: Input must be provided either through stdin or as a prompt argument when using --print`. Proves the migrated workflow is wired live, not an analogue.
+  - Deterministic gate PASS path: stage runner dispatched, output captured, checks-only gate (/usr/bin/true) → seat check.0 verdict=go, gate status=pass, exit 0, inspectable via `etude run show`.
+  - Deterministic gate HARD-VETO path: failing check (/usr/bin/false) → verdict=block (required: exit 1), gate status=escalated (max rounds 1 exhausted), run errored + resume hint, inspectable via `etude run show`. Proves AC1 live orchestration + AC2 gate-executes-from-config.
+  - AC4: .etude/gates.yaml absent from working tree (git: D); grep finds NO live go/sh/.claude consumer; etude-review SKILL.md, dev-workflow SKILL.md, and review-gate-runbook.md contain zero gates.yaml refs.
+  - temp dirs cleaned up.
+
+AC-to-evidence map:
+- AC1 (live via etude run): built-binary deterministic PASS + HARD-VETO runs (orchestration end-to-end) AND real-config dispatch-to-credential-boundary. Real-LLM seat/runner EXECUTION deferred to etude-s6z (blocked on etude-3a2) — sanctioned, not a failure.
+- AC2 (gates execute from per-stage config + registry): deterministic gate checks executed for real from the stage `gate` block; run.go loads .etude/workflow.yaml + registry.yaml and resolves runners/seats by name (resolve.go). TestMigrationWorkflowParsesAndCrossResolves.
+- AC3 (skills read new files): etude-review SKILL.md now reads .etude/registry.yaml (tiers/seats) + per-phase gate.tier/abstraction from .etude/workflow.yaml; stale "Grok / L2=three" panel narrative dropped. dev-workflow gate reads the runbook (never referenced gates.yaml). Confirmed: zero gates.yaml refs in skills/runbook.
+- AC4 (gates.yaml removed): file deleted; TestMigrationGatesYAMLDeleted guards re-introduction; no live consumer.
+- AC5 (no panel regression): registry seats opus/codex/gemini byte-identical to old gates.yaml (invoke incl. --skip-trust + model_reasoning_effort="high" + -s read-only, model_fallbacks, mode). Tier seat composition identical (L1=gemini/opus/codex, L2/L3=opus/codex, L4=opus). Only change: sanctioned L2 name fix "three"→"two" (it always listed 2 seats) + additive `dev` producer seat. Per-phase tiers L2/L3/L2/L4/L4 and plan abstraction block carried verbatim. TestMigrationCriticalSeatFieldsPreserved.
+
+QA findings:
+- correctness: matches the approved plan exactly; Files list delivered (registry.yaml new, workflow.yaml per-stage runner+gate+verify checks, gates.yaml deleted, etude-review SKILL.md, migration_test.go, registry.go:173 comment reworded, live-execution.md sweep).
+- coverage: migration_test asserts parse+validate+cross-resolve+round-trip+critical-field-preservation+gates.yaml-deleted on the REAL repo files; gate execution proven by built binary. Adequate.
+- regressions: none found. make docs zero diff; docs-reality OK; cross-compiles clean; AC5 panel byte-identity confirmed.
+- code quality: clean; lint passes; comment pointer to deleted file removed.
+- risks: real-LLM end-to-end remains deferred to etude-s6z (post-3a2) — explicitly tracked, sanctioned by plan, not a defect. codex invoke carries literal embedded quotes (pre-existing in gates.yaml, preserved verbatim).
+
+Capture:
+- inputs: approved plan (--design) + Implement artifact + working-tree diff + prior gate notes
+- output: append-only Verify note
+
+Verify gate attempt 1 (Tier 1): GO unanimous. AC1-AC5 all evidenced; AC5 byte-identical panel independently re-confirmed; real-LLM deferred to etude-s6z. Test-hardening optionals deferred to etude-df4. result: pass
+## Docs
+
+Changed: yes (by implementer as part of bead)
+Files:
+- docs/plans/product/live-execution.md (modified by implementer: Sequencing note updated; all gates.yaml refs → historical/renamed phrasing)
+- .claude/skills/etude-review/SKILL.md (modified by implementer: reads .etude/registry.yaml + .etude/workflow.yaml; stale panel narrative dropped)
+
+Rationale:
+- docs/plans/product/live-execution.md: five remaining 'gates.yaml' references all read as historical ('the renamed former gates.yaml', 'historical gates.yaml'); none point at a live deleted file. Sequencing section records proof-path landed (etude-2pc.2) + real-LLM run deferred to etude-s6z.
+- .claude/skills/etude-review/SKILL.md: implementer updated lines 36/49-51/55/66 to read .etude/registry.yaml (tiers/seats) and .etude/workflow.yaml (per-stage gate.tier/abstraction); stale 'Grok / L2=three' narrative dropped; file is the live skill, not a planning doc.
+- No over-claim: docs explicitly state real-LLM runner execution (claude -p, opus/codex/gemini seats) is deferred to etude-s6z pending etude-3a2 secret passthrough. What shipped: config migration + orchestration + deterministic gate execution.
+- docs/gates.md, docs/README.md, docs/plans/dogfood/review-gate-runbook.md, docs/plans/dogfood/*.md, .claude/skills/dev-workflow/SKILL.md: zero gates.yaml references (confirmed by grep).
+
+Policy check:
+- policy applied: no repo docs policy file; conventions inferred from docs/ layout, Makefile (make docs / make docs-reality), and planning-docs area (docs/plans/).
+- shipped docs describe implemented behavior only
+- planning material remains under docs/plans/product/ (live-execution.md is a planning doc, correctly marked)
+- generated references are separate from hand-written guides (docs/cli/ generated; hand-written guides in docs/)
+- generated output was updated through the repo workflow (make docs → zero diff; make docs-reality OK — 14 commands)
+
+Pre-existing-dirty files:
+- docs/README.md: pre-existing dirty (link updates unrelated to gates.yaml); NOT touched by Docs phase
+- docs/plans/README.md: pre-existing dirty; NOT touched
+- docs/replay.md: pre-existing dirty; NOT touched
+- mkdocs.yml: untracked pre-existing; NOT touched
+- requirements-docs.txt: untracked pre-existing; NOT touched
+- No pre-existing-dirty file required a gates.yaml→registry.yaml fix (all were clean on that dimension).
+
+Capture:
+- inputs: Verify artifact and docs policy (inferred from repo)
+- output: docs audit confirms sweep correct; no additional changes needed
+Docs gate attempt 1 (Tier 3, single Opus): GO. Full gates.yaml audit — every remaining ref historical/migration-narrative, no live pointer; etude-review reads registry.yaml+workflow.yaml; no over-claim; docs-reality green. Fixed cosmetic line-wrap. result: pass
+
+ACCEPTANCE CRITERIA
+dev workflow runs live via `etude run`; gates execute from per-stage config + registry; dev-workflow + etude-review skills read the new files; gates.yaml removed; no regression in the review panels.
+
+LABELS: phase:review
+
+PARENT
+  ↑ ○ etude-2pc: (EPIC) Live execution: drive and gate workflows, not just replay ● P1
+
+DEPENDS ON
+  → ✓ etude-04i: Live gate execution: deterministic checks (hard veto) + model seats (weighted), rerun/escalate, auto capture-gate ● P1
+  → ✓ etude-2pc.1: Schema + registry foundation: per-stage runner + gate blocks, shared seat/runner registry ● P1
+  → ✓ etude-xin: Live workflow orchestration (etude run): walk an arbitrary stage graph live, capture by construction ● P1
+
+BLOCKS
+  ← ○ etude-2pc.3: Generality test: run a second (research-style) workflow live ● P3
+  ← ○ etude-df4: Harden migration_test: pin per-stage gate tier values + exact-match seat fallbacks/mode ● P3
+  ← ○ etude-s6z: Drive the real dev workflow live end-to-end with real-LLM stage runners + model-seat gates (post-etude-3a2) ● P2
+
+COMMENTS
+  2026-06-30 00:18 joshuavial
+    ## Final Review
+    
+    Recommendation: close (GO)
+    
+    Reviewed:
+    - plan artifact (--design)
+    - implementation diff (working tree)
+    - verify artifact
+    - docs artifact
+    
+    Commit scope (verified): IN-SCOPE only — .etude/registry.yaml (new), .etude/workflow.yaml (mod), .etude/gates.yaml (DELETED), .claude/skills/etude-review/SKILL.md, internal/registry/registry.go (1-line comment), internal/cli/migration_test.go (new), docs/plans/product/live-execution.md. Pre-existing/unrelated (MUST NOT stage): .gitignore (+site/), docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt — all present at session start, mkdocs work, not this bead.
+    
+    Docs review:
+    - policy applied: inferred (no policy file); make docs / make docs-reality + docs/plans planning area
+    - user-facing changes documented: not applicable (no CLI surface change; make docs zero diff)
+    - shipped docs describe implemented+verified behavior only: pass
+    - planned material remains in planning docs (live-execution.md): pass
+    - generated references handled separately: pass (docs/cli regen zero diff)
+    - docs disposition: close
+    
+    Findings: none.
+    
+    Re-confirmed green this review: go test ./internal/cli/ ./internal/registry/... ./internal/workflow/... PASS; make lint clean; make docs ZERO diff; make docs-reality OK (14 cmds).
+    
+    Adversarial sweep:
+    - AC5 panel byte-identical: L1=gemini/opus/codex, L2=opus/codex, L3=opus/codex, L4=opus; seat invokes verbatim (gemini --skip-trust, codex model_reasoning_effort=high + -s read-only + fallbacks). Only sanctioned changes: L2 name three->two, additive dev producer seat. PASS.
+    - No dangling gates.yaml/phase_gates consumer (only migration_test guard strings). PASS.
+    - registry round-trip byte-stable; dev runner + all gate tiers cross-resolve. PASS.
+    - No data loss. live-execution.md gates.yaml refs all historical/renamed.
+    - Real-LLM execution deferred to etude-s6z (sanctioned) — not blocking.
+    
+    Commit readiness: one atomic commit appropriate. The gates.yaml DELETE must be included — stage with 'git add -A .etude/gates.yaml' (or git rm) alongside the new/modified in-scope paths; do NOT use git add -A at repo root (would sweep the pre-existing docs/mkdocs files).
+    
+    Capture:
+    - inputs: all phase artifacts + final diff
+    - output: append-only Final Review note
+

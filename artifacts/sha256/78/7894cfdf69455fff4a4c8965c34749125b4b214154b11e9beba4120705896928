@@ -1,0 +1,623 @@
+commit cd954cbf5ae1cb670d61885701f9931e444f42b8
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue Jun 30 08:19:26 2026 +0800
+
+    migrate dev workflow to registry+per-stage gates and retire gates.yaml
+
+diff --git a/.claude/skills/etude-review/SKILL.md b/.claude/skills/etude-review/SKILL.md
+index a65091f..82553ba 100644
+--- a/.claude/skills/etude-review/SKILL.md
++++ b/.claude/skills/etude-review/SKILL.md
+@@ -33,9 +33,8 @@ recorded → gate. Otherwise → review (this skill).
+    Do NOT assign roles like "Systems Critic" / "Security Auditor" / "Pragmatist"
+    — that is the `design-council` skill and it manufactures review axes the user
+    did not ask for. Divergence must come from model diversity alone.
+-2. **Tiers come from `.etude/gates.yaml`** — read it; never hardcode the panel.
+-   L1 = heaviest (Gemini + Opus + Codex + Grok), L2 = three (Opus + Codex +
+-   Grok), L3 = two (Opus + Codex), L4 = one (Opus). Higher number = lighter.
++2. **Tiers and seats come from `.etude/registry.yaml`** — read it; never
++   hardcode the panel. L1 = heaviest, L4 = lightest. Higher number = lighter.
+    Match the tier to risk; when unsure, go heavier.
+ 3. **Unanimous.** GO only if every seat returns GO. Any BLOCK → BLOCK. A seat
+    failure (auth/quota/empty/truncation) is NOT a GO — reroll it (smaller input)
+@@ -47,10 +46,10 @@ recorded → gate. Otherwise → review (this skill).
+ ## Steps
+ 
+ ### 1. Resolve the panel
+-Read `.etude/gates.yaml`. Take the requested tier (default L2 if unspecified and
+-the target is code; L4 for docs-only/no shipping-code changes, or the matching
+-`phase_gates` tier when a phase is named). Expand to its `seats` and each seat's
+-`invoke` + `mode`.
++Read `.etude/registry.yaml`. Take the requested tier (default L2 if unspecified
++and the target is code; L4 for docs-only/no shipping-code changes, or the
++matching stage's `gate.tier` in `.etude/workflow.yaml` when a phase is named).
++Expand to its `seats` and each seat's `invoke` + `mode`.
+ 
+ ### 2. Gather inputs and write a working dir
+ Put scratch in `.etude/reviews/<topic>/` (kebab topic from the subject). Write
+@@ -64,12 +63,13 @@ dispatching, and re-verify the snapshot is unchanged after the seats run.
+ 
+ ### 3. Build ONE shared prompt
+ Same text for every seat. **Lead the prompt with the phase's `abstraction` block
+-from `.etude/gates.yaml` `phase_gates`** — it sets the review altitude and is the
+-first thing each seat reads. For a PLAN gate this is the validated wording ("BLOCK
+-only if the plan (a) misses a requirement, (b) regresses/loosens an observable
+-behavior/contract, or (c) specifies an unimplementable mechanism; implementation
+-minutiae → OPTIONAL"). This is not optional polish: a bench (Variant B vs A on the
+-Dolt-recovered etude-2bm.1 plan rounds) showed it cuts the plan-gate review-spiral
++from the matching stage's `gate` block in `.etude/workflow.yaml`** — it sets the
++review altitude and is the first thing each seat reads. For a PLAN gate this is
++the validated wording ("BLOCK only if the plan (a) misses a requirement,
++(b) regresses/loosens an observable behavior/contract, or (c) specifies an
++unimplementable mechanism; implementation minutiae → OPTIONAL"). This is not
++optional polish: a bench (Variant B vs A on the Dolt-recovered etude-2bm.1 plan
++rounds) showed it cuts the plan-gate review-spiral
+ — stopping false blocks on minutiae while still catching real regressions. Then
+ include: what the artifact is, the artifact/diff inlined, the cited ground-truth
+ facts, and this return contract:
+diff --git a/.etude/gates.yaml b/.etude/gates.yaml
+deleted file mode 100644
+index 50c4441..0000000
+--- a/.etude/gates.yaml
++++ /dev/null
+@@ -1,99 +0,0 @@
+-# Etude review-gate tier definitions — the single machine-readable source of
+-# truth for L1/L2/L3/L4 panels. Two consumers read this file:
+-#   - a GATE (in the dev-workflow): runs the tier panel on a phase artifact and
+-#     CAPTURES the verdicts into the run via `etude capture-gate`.
+-#   - a REVIEW (the etude-review skill): runs the SAME tier panel ephemerally on
+-#     any artifact and does NOT capture.
+-#
+-# A seat is a MODEL/HARNESS identity that reviews the SAME shared prompt and
+-# votes GO/BLOCK. Seats are NEVER role personas (that is design-council, a
+-# different tool); divergence comes from model diversity, not assigned roles.
+-# Every tier requires a UNANIMOUS pass of its seats — none advances on partial
+-# approval. A seat failure (auth/quota/tool/empty/truncation) never counts as a
+-# pass and escalates per the degraded-gate policy in the runbook.
+-
+-quorum: unanimous
+-
+-# Tier numbers are inverted by weight: L1 is the heaviest, L4 the lightest.
+-tiers:
+-  L1:
+-    name: Full three-seat gate
+-    seats: [gemini, opus, codex]
+-    use: >-
+-      Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage
+-      format / ref-namespace / git-plumbing changes that could lose or corrupt
+-      data, or break backward compatibility.
+-  L2:
+-    name: Strong three-seat gate
+-    seats: [opus, codex]
+-    use: >-
+-      The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any
+-      change touching product/CLI behavior, schema/format, refs/etude/*, or docs
+-      claiming NEW shipped behavior.
+-  L3:
+-    name: Medium two-seat gate
+-    seats: [opus, codex]
+-    use: >-
+-      The IMPLEMENT-phase gate, and low-risk localized refactors / validation
+-      tightening / test strengthening on an already-gated component.
+-  L4:
+-    name: Light single-seat gate
+-    seats: [opus]
+-    use: >-
+-      DOCS and FINAL REVIEW phase gates, and changes with no shipping-code change
+-      (test-only additions or docs/planning-only changes).
+-
+-# Per-phase gate strength for the dev-workflow loop (escalate UP on risk).
+-# PLAN and VERIFY are the heavy-QA gates. Each entry also pins
+-# the ABSTRACTION LEVEL the gate prompt must tell seats to review at, so a plan
+-# gate does not spiral on implementation minutiae (push those to OPTIONAL / the
+-# implement+verify gates, where a failing test settles disputes objectively).
+-phase_gates:
+-  plan:
+-    tier: L2
+-    # Validated by bench (Variant B beat A 2/2 vs 1/2 on the Dolt-recovered
+-    # etude-2bm.1 plan rounds): this altitude cut the review-spiral — A over-blocked
+-    # a contract-correct plan on implementation minutiae; B passed it while still
+-    # catching the real behavior regression. Include this block verbatim in plan-gate prompts.
+-    abstraction: >-
+-      ABSTRACTION LEVEL: review at design/contract/behavior-preservation altitude —
+-      NOT implementation minutiae. BLOCK only if the plan (a) misses a requirement,
+-      (b) regresses or loosens an observable behavior/contract, or (c) specifies a
+-      mechanism that cannot be implemented as described. Anything that is an
+-      implementation detail a coder would naturally resolve, or that a test would
+-      catch, goes in OPTIONAL — do NOT block on it.
+-  implement: {tier: L3, abstraction: "code correctness against the approved plan"}
+-  verify:    {tier: L2, abstraction: "test adequacy + real built-binary behavior"}
+-  docs:      {tier: L4, abstraction: "docs match implemented behavior; docs policy"}
+-  review:    {tier: L4, abstraction: "bead-level readiness; diff vs plan"}
+-
+-# Escalation OVERRIDES the chosen tier. If an L2/L3 target turns out to touch an
+-# L1 surface, or any seat finds it changes shipped behavior/schema/storage or
+-# could lose data, STOP and rerun at L1. Record the tier choice in the verdict.
+-escalation: >-
+-  If a target picked for L2/L3 touches an L1 surface, or any seat finds it
+-  changes shipped behavior/schema/storage or could lose/corrupt data, stop and
+-  rerun at L1.
+-
+-# Seat identities + canonical non-interactive invocations. Each seat receives
+-# ONLY the shared gate prompt and the inlined artifact — never hidden context.
+-# `mode` captures the hard-won per-seat execution constraint (see the runbook
+-# "Per-seat execution constraints"): seats MUST NOT mutate the working tree.
+-seats:
+-  opus:
+-    provider: anthropic/claude-opus
+-    harness: claude-code
+-    invoke: "claude -p --model opus"        # prompt on stdin
+-    mode: inline                            # may mutation-test via a /tmp copy, NEVER the repo file
+-  codex:
+-    provider: openai/gpt-5.5
+-    harness: codex
+-    invoke: 'codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="high" -s read-only -'  # prompt on stdin
+-    model_fallbacks: [gpt-5.4, gpt-5.3, gpt-5.2]
+-    mode: diff-only                         # review the diff ONLY; never go build/test/vet; keep input < ~700 lines
+-  gemini:
+-    provider: google/gemini-3.1-pro-preview
+-    harness: gemini-cli
+-    invoke: "env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p"
+-    model_fallbacks: [gemini-3-pro-preview, gemini-3-flash-preview, gemini-2.5-pro]
+-    mode: inline-no-tools                   # inline the code; reason WITHOUT calling tools (its GrepTool bleeds across files)
+diff --git a/.etude/registry.yaml b/.etude/registry.yaml
+new file mode 100644
+index 0000000..11ff043
+--- /dev/null
++++ b/.etude/registry.yaml
+@@ -0,0 +1,71 @@
++# Etude seat/tier registry — the single machine-readable source of truth for
++# named runners and tier presets. Two consumers read this file:
++#   - the LIVE RUN ENGINE: resolves stage runners and gate seat invocations by
++#     name from this registry.
++#   - the REVIEW SKILL (etude-review): reads seat invoke/mode here and per-phase
++#     tier + abstraction from the matching stage gate block in workflow.yaml.
++#
++# A seat is a MODEL/HARNESS identity that reviews the SAME shared prompt and
++# votes GO/BLOCK. Seats are NEVER role personas (that is design-council, a
++# different tool); divergence comes from model diversity, not assigned roles.
++# Every tier requires a UNANIMOUS pass of its seats — none advances on partial
++# approval. A seat failure (auth/quota/tool/empty/truncation) never counts as a
++# pass and escalates per the degraded-gate policy in the runbook.
++
++quorum: unanimous
++
++# Seat identities + canonical non-interactive invocations. Each seat receives
++# ONLY the shared gate prompt and the inlined artifact — never hidden context.
++# `mode` captures the hard-won per-seat execution constraint (see the runbook
++# "Per-seat execution constraints"): seats MUST NOT mutate the working tree.
++seats:
++  opus:
++    provider: anthropic/claude-opus
++    harness: claude-code
++    invoke: "claude -p --model opus"
++    mode: inline
++  codex:
++    provider: openai/gpt-5.5
++    harness: codex
++    invoke: 'codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="high" -s read-only -'
++    model_fallbacks: [gpt-5.4, gpt-5.3, gpt-5.2]
++    mode: diff-only
++  gemini:
++    provider: google/gemini-3.1-pro-preview
++    harness: gemini-cli
++    invoke: "env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p"
++    model_fallbacks: [gemini-3-pro-preview, gemini-3-flash-preview, gemini-2.5-pro]
++    mode: inline-no-tools
++  dev:
++    provider: anthropic/claude-opus
++    harness: claude-code
++    invoke: "claude -p --model opus"
++
++# Tier numbers are inverted by weight: L1 is the heaviest, L4 the lightest.
++tiers:
++  L1:
++    name: Full three-seat gate
++    seats: [gemini, opus, codex]
++    use: >-
++      Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage
++      format / ref-namespace / git-plumbing changes that could lose or corrupt
++      data, or break backward compatibility.
++  L2:
++    name: Strong two-seat gate
++    seats: [opus, codex]
++    use: >-
++      The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any
++      change touching product/CLI behavior, schema/format, refs/etude/*, or docs
++      claiming NEW shipped behavior.
++  L3:
++    name: Medium two-seat gate
++    seats: [opus, codex]
++    use: >-
++      The IMPLEMENT-phase gate, and low-risk localized refactors / validation
++      tightening / test strengthening on an already-gated component.
++  L4:
++    name: Light single-seat gate
++    seats: [opus]
++    use: >-
++      DOCS and FINAL REVIEW phase gates, and changes with no shipping-code change
++      (test-only additions or docs/planning-only changes).
+diff --git a/.etude/workflow.yaml b/.etude/workflow.yaml
+index 0ac7140..c91534b 100644
+--- a/.etude/workflow.yaml
++++ b/.etude/workflow.yaml
+@@ -8,12 +8,28 @@ stages:
+     eval:
+       method: rubric
+       rubric: evals/plan-rubric.md
++    runner:
++      name: dev
++    gate:
++      tier: L2
++      abstraction: >-
++        ABSTRACTION LEVEL: review at design/contract/behavior-preservation altitude —
++        NOT implementation minutiae. BLOCK only if the plan (a) misses a requirement,
++        (b) regresses or loosens an observable behavior/contract, or (c) specifies a
++        mechanism that cannot be implemented as described. Anything that is an
++        implementation detail a coder would naturally resolve, or that a test would
++        catch, goes in OPTIONAL — do NOT block on it.
+   - name: implement
+     produces: diff
+     inputs:
+       - plan
+       - repo-state
+     skill: dev-executor
++    runner:
++      name: dev
++    gate:
++      tier: L3
++      abstraction: "code correctness against the approved plan"
+   - name: verify
+     produces: verify
+     inputs:
+@@ -23,12 +39,25 @@ stages:
+     eval:
+       method: rubric
+       rubric: evals/verify-rubric.md
++    runner:
++      name: dev
++    gate:
++      tier: L2
++      abstraction: "test adequacy + real built-binary behavior"
++      checks:
++        - command: "make test"
++        - command: "make lint"
+   - name: docs
+     produces: docs-diff
+     inputs:
+       - diff
+     skill: dev-docs-writer
+     optional: true
++    runner:
++      name: dev
++    gate:
++      tier: L4
++      abstraction: "docs match implemented behavior; docs policy"
+   - name: review
+     produces: review
+     inputs:
+@@ -38,3 +67,8 @@ stages:
+     skill: dev-pr-reviewer
+     eval:
+       method: pairwise
++    runner:
++      name: dev
++    gate:
++      tier: L4
++      abstraction: "bead-level readiness; diff vs plan"
+diff --git a/docs/plans/product/live-execution.md b/docs/plans/product/live-execution.md
+index cfd33d8..56e412a 100644
+--- a/docs/plans/product/live-execution.md
++++ b/docs/plans/product/live-execution.md
+@@ -38,10 +38,11 @@ is planned.
+ 3. **Config lives on the stage; the seat/runner library is shared.** Each stage
+    carries its own `runner` and optional `gate` block. How to *invoke* a named
+    runner/seat (e.g. `opus`, `codex`) lives in a single shared **registry** file
+-   (the former `gates.yaml`, renamed — it is a runner/seat registry, not gate
+-   bindings) referenced by name from stage runners, gate seats, and
+-   `etude-review`'s ephemeral panels alike. Tier presets (`L1–L4`) remain as
+-   optional named seat-groups; inline seat lists are allowed for one-offs.
++   (`.etude/registry.yaml` — the renamed former `gates.yaml`; it is a
++   runner/seat registry, not gate bindings) referenced by name from stage
++   runners, gate seats, and `etude-review`'s ephemeral panels alike. Tier
++   presets (`L1–L4`) remain as optional named seat-groups; inline seat lists are
++   allowed for one-offs.
+ 4. **Gates execute, with hard checks and soft seats.** Live mode adds gate
+    *execution*. A gate has two seat kinds: **checks** (deterministic; any failure
+    is a hard BLOCK, no threshold) and **seats** (model votes; weighted
+@@ -146,7 +147,7 @@ What is implemented:
+ 
+ Gate config lives on the stage (`checks`, `seats`/`tier`, `pass_threshold`,
+ `max_rounds`, `abstraction`); seat/tier *definitions* live in the shared
+-registry (the former `gates.yaml`).
++registry (`.etude/registry.yaml` — the renamed former `gates.yaml`).
+ 
+ ### Acceptance criteria (met)
+ 
+@@ -176,15 +177,25 @@ passthrough explicit and auditable.
+ 
+ ## Sequencing
+ 
+-The **schema + registry foundation** lands first: per-stage `runner` and `gate`
+-blocks, run-level default runner, and the shared seat/runner registry (the
+-renamed `gates.yaml`) with tier presets. Orchestration (§1) is the spine and
+-builds on the schema. Gate execution (§2) builds on orchestration and is the
+-largest piece. Secret passthrough (§3) is small and independent — it depends only
+-on the schema, and is only *exercised* once a live LLM runner exists.
+-
+-The proof path lands after §1+§2: convert the existing dev workflow to the new
+-schema, migrate `gates.yaml` (seats/tiers → registry; `phase_gates` → per-stage
+-gate blocks), update the `dev-workflow` and `etude-review` skills to read the new
+-files, and delete `gates.yaml`. A second, research-style workflow lands later as
+-an explicit generality test.
++The **schema + registry foundation** landed first (etude-2pc.1): per-stage
++`runner` and `gate` blocks, run-level default runner, and the shared seat/runner
++registry (`.etude/registry.yaml` — the renamed historical `gates.yaml`) with tier
++presets. Orchestration (§1) is the spine and builds on the schema. Gate execution
++(§2) builds on orchestration and is the largest piece. Secret passthrough (§3) is
++small and independent — it depends only on the schema, and is only *exercised*
++once a live LLM runner exists.
++
++The **proof path has landed (etude-2pc.2)**: the existing dev workflow was
++converted to the new schema — historical `gates.yaml` seats/tiers/quorum migrated
++to `.etude/registry.yaml`; `phase_gates` migrated to per-stage `gate` blocks in
++`.etude/workflow.yaml`; the `etude-review` skill now reads the new files; the
++historical `gates.yaml` is deleted. The deterministic-check gate (verify stage)
++and orchestration walk were proven live via `etude run` with a throwaway repo.
++
++**Real-LLM end-to-end run is deferred to bead etude-s6z** (depends on
++etude-2pc.2 + etude-3a2 secret passthrough): running the real `dev` stage runner
++(`claude -p`) and model-seat gates (opus/codex/gemini) live requires secret
++passthrough (§3), which is not yet built.
++
++A second, research-style workflow lands later as an explicit generality test
++(etude-2pc.3).
+diff --git a/internal/cli/migration_test.go b/internal/cli/migration_test.go
+new file mode 100644
+index 0000000..27c8af8
+--- /dev/null
++++ b/internal/cli/migration_test.go
+@@ -0,0 +1,230 @@
++package cli
++
++// migration_test.go is a durable proof guard for the etude-2pc.2 migration:
++// gates.yaml seats/tiers/quorum → .etude/registry.yaml; phase_gates →
++// per-stage gate blocks in .etude/workflow.yaml. These tests run against the
++// REAL files in the repo (no secrets required) and fail immediately if the
++// migration regresses critical field values or if gates.yaml is re-introduced.
++
++import (
++	"bytes"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/joshuavial/etude/internal/registry"
++	"github.com/joshuavial/etude/internal/workflow"
++)
++
++// repoRootForMigration resolves the repository root relative to this test
++// file's location. Uses runtime.Caller so the path is compile-time stable
++// regardless of the working directory when tests are invoked.
++func repoRootForMigration(t *testing.T) string {
++	t.Helper()
++	_, thisFile, _, ok := runtime.Caller(0)
++	if !ok {
++		t.Fatal("runtime.Caller(0) failed")
++	}
++	// thisFile: .../internal/cli/migration_test.go — two levels up is repo root.
++	return filepath.Join(filepath.Dir(thisFile), "../..")
++}
++
++// TestMigrationRegistryParsesAndValidates asserts that .etude/registry.yaml
++// is accepted by registry.ParseYAML and carries exactly 4 seats and 4 tiers
++// with unanimous quorum.
++func TestMigrationRegistryParsesAndValidates(t *testing.T) {
++	root := repoRootForMigration(t)
++	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	if err != nil {
++		t.Fatalf("read .etude/registry.yaml: %v", err)
++	}
++	reg, err := registry.ParseYAML(content)
++	if err != nil {
++		t.Fatalf("registry.ParseYAML: %v", err)
++	}
++	if got := reg.EffectiveQuorum(); got != "unanimous" {
++		t.Errorf("quorum = %q, want %q", got, "unanimous")
++	}
++	if got := len(reg.Seats); got != 4 {
++		t.Errorf("seat count = %d, want 4 (opus/codex/gemini/dev)", got)
++	}
++	if got := len(reg.Tiers); got != 4 {
++		t.Errorf("tier count = %d, want 4 (L1/L2/L3/L4)", got)
++	}
++	for _, name := range []string{"opus", "codex", "gemini", "dev"} {
++		if _, ok := reg.Seats[name]; !ok {
++			t.Errorf("seat %q missing from registry", name)
++		}
++	}
++	for _, tier := range []string{"L1", "L2", "L3", "L4"} {
++		if _, ok := reg.Tiers[tier]; !ok {
++			t.Errorf("tier %q missing from registry", tier)
++		}
++	}
++}
++
++// TestMigrationCriticalSeatFieldsPreserved guards against data-loss during
++// the port from gates.yaml. Asserts the exact invoke substrings that the
++// etude-review skill and live-run engine rely on are present verbatim.
++func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
++	root := repoRootForMigration(t)
++	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	if err != nil {
++		t.Fatalf("read .etude/registry.yaml: %v", err)
++	}
++	reg, err := registry.ParseYAML(content)
++	if err != nil {
++		t.Fatalf("registry.ParseYAML: %v", err)
++	}
++
++	gemini, ok := reg.Seats["gemini"]
++	if !ok {
++		t.Fatal("gemini seat missing")
++	}
++	if !strings.Contains(gemini.Invoke, "--skip-trust") {
++		t.Errorf("gemini invoke missing --skip-trust: %q", gemini.Invoke)
++	}
++
++	codex, ok := reg.Seats["codex"]
++	if !ok {
++		t.Fatal("codex seat missing")
++	}
++	if !strings.Contains(codex.Invoke, `model_reasoning_effort="high"`) {
++		t.Errorf("codex invoke missing model_reasoning_effort=\"high\": %q", codex.Invoke)
++	}
++	if !strings.Contains(codex.Invoke, "-s read-only") {
++		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)
++	}
++	if len(codex.ModelFallbacks) == 0 {
++		t.Error("codex model_fallbacks must be non-empty")
++	}
++}
++
++// TestMigrationWorkflowParsesAndCrossResolves asserts that .etude/workflow.yaml
++// is accepted by workflow.ParseYAML with 5 stages, every stage runner name
++// resolves to a registry seat, every stage gate tier resolves to a registry
++// tier whose seats are all defined, and the verify stage has exactly 2 checks.
++func TestMigrationWorkflowParsesAndCrossResolves(t *testing.T) {
++	root := repoRootForMigration(t)
++
++	regContent, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	if err != nil {
++		t.Fatalf("read .etude/registry.yaml: %v", err)
++	}
++	reg, err := registry.ParseYAML(regContent)
++	if err != nil {
++		t.Fatalf("registry.ParseYAML: %v", err)
++	}
++
++	wfContent, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
++	if err != nil {
++		t.Fatalf("read .etude/workflow.yaml: %v", err)
++	}
++	wf, err := workflow.ParseYAML(wfContent)
++	if err != nil {
++		t.Fatalf("workflow.ParseYAML: %v", err)
++	}
++
++	if got := len(wf.Stages); got != 5 {
++		t.Errorf("stage count = %d, want 5", got)
++	}
++
++	for _, s := range wf.Stages {
++		if s.Runner == nil {
++			t.Errorf("stage %q: runner is nil, every stage must have a runner", s.Name)
++			continue
++		}
++		if s.Runner.Name == "" {
++			t.Errorf("stage %q: runner.name is empty", s.Name)
++			continue
++		}
++		if _, ok := reg.Seats[s.Runner.Name]; !ok {
++			t.Errorf("stage %q: runner name %q not found in registry seats", s.Name, s.Runner.Name)
++		}
++	}
++
++	for _, s := range wf.Stages {
++		if s.Gate == nil {
++			t.Errorf("stage %q: gate is nil, every stage must have a gate", s.Name)
++			continue
++		}
++		if s.Gate.Tier == "" {
++			t.Errorf("stage %q: gate.tier is empty", s.Name)
++			continue
++		}
++		tier, ok := reg.Tiers[s.Gate.Tier]
++		if !ok {
++			t.Errorf("stage %q: gate tier %q not found in registry tiers", s.Name, s.Gate.Tier)
++			continue
++		}
++		for _, seatName := range tier.Seats {
++			if _, ok := reg.Seats[seatName]; !ok {
++				t.Errorf("stage %q: gate tier %q references undefined seat %q", s.Name, s.Gate.Tier, seatName)
++			}
++		}
++	}
++
++	// verify stage must have exactly 2 deterministic checks
++	var verifyStage *workflow.Stage
++	for i := range wf.Stages {
++		if wf.Stages[i].Name == "verify" {
++			verifyStage = &wf.Stages[i]
++			break
++		}
++	}
++	if verifyStage == nil {
++		t.Fatal("verify stage not found")
++	}
++	if verifyStage.Gate == nil {
++		t.Fatal("verify stage has no gate")
++	}
++	if got := len(verifyStage.Gate.Checks); got != 2 {
++		t.Errorf("verify gate check count = %d, want 2", got)
++	}
++}
++
++// TestMigrationRegistryRoundTrips asserts that ParseYAML(reg.YAML()) is
++// byte-stable (defect #5). Encodes the parsed registry, parses that output,
++// encodes again, and compares the two encodings.
++func TestMigrationRegistryRoundTrips(t *testing.T) {
++	root := repoRootForMigration(t)
++	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
++	if err != nil {
++		t.Fatalf("read .etude/registry.yaml: %v", err)
++	}
++	reg, err := registry.ParseYAML(content)
++	if err != nil {
++		t.Fatalf("registry.ParseYAML: %v", err)
++	}
++
++	first, err := reg.YAML()
++	if err != nil {
++		t.Fatalf("reg.YAML() first encode: %v", err)
++	}
++	reg2, err := registry.ParseYAML(first)
++	if err != nil {
++		t.Fatalf("registry.ParseYAML on first encode: %v", err)
++	}
++	second, err := reg2.YAML()
++	if err != nil {
++		t.Fatalf("reg2.YAML() second encode: %v", err)
++	}
++	if !bytes.Equal(first, second) {
++		t.Errorf("registry YAML round-trip is not byte-stable:\nfirst:\n%s\nsecond:\n%s", first, second)
++	}
++}
++
++// TestMigrationGatesYAMLDeleted asserts that .etude/gates.yaml no longer
++// exists (AC4: the file must be deleted in this migration, never re-introduced).
++func TestMigrationGatesYAMLDeleted(t *testing.T) {
++	root := repoRootForMigration(t)
++	gatesPath := filepath.Join(root, ".etude", "gates.yaml")
++	_, err := os.Stat(gatesPath)
++	if err == nil {
++		t.Errorf(".etude/gates.yaml still exists at %s — it must be deleted by the etude-2pc.2 migration", gatesPath)
++	} else if !os.IsNotExist(err) {
++		t.Errorf("unexpected error checking for .etude/gates.yaml: %v", err)
++	}
++}
+diff --git a/internal/registry/registry.go b/internal/registry/registry.go
+index df0a991..8e4eee4 100644
+--- a/internal/registry/registry.go
++++ b/internal/registry/registry.go
+@@ -170,7 +170,7 @@ func ensureEOF(dec *yaml.Decoder) error {
+ }
+ 
+ // Default returns the canonical scaffold registry for etude init.  The seats
+-// and tiers mirror the proven gates.yaml definitions in a concise form that
++// and tiers are modeled on the prior tier/seat config in a concise form that
+ // users edit to configure their own reviewers.
+ func Default() Registry {
+ 	return Registry{
