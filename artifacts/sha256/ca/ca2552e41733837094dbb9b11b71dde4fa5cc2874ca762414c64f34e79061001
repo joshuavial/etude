@@ -1,0 +1,878 @@
+33fd4bf5dd70ee74a5170379d27ea04a3cc0c7f5
+mirror fetched etude refs to a sibling namespace so fetch and prune are safe
+
+
+ docs/init.md                    |  75 +++++++++--
+ docs/sync.md                    |  21 +--
+ internal/cli/init.go            |  74 ++++++++++-
+ internal/cli/init_test.go       | 288 +++++++++++++++++++++++++++++++++++++++-
+ internal/cli/sync.go            |  10 +-
+ internal/cli/sync_test.go       |  84 ++++++++++++
+ internal/refstore/store.go      |  80 +++++++++++
+ internal/refstore/store_test.go |  67 ++++++++++
+ 8 files changed, 670 insertions(+), 29 deletions(-)
+commit 33fd4bf5dd70ee74a5170379d27ea04a3cc0c7f5
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Aug 16 10:30:37 2026 +0800
+
+    mirror fetched etude refs to a sibling namespace so fetch and prune are safe
+
+diff --git a/docs/init.md b/docs/init.md
+index ec4ce0f..fc00acd 100644
+--- a/docs/init.md
++++ b/docs/init.md
+@@ -8,9 +8,10 @@ remote. Transferring the namespace is the job of [`etude sync`](sync.md), which
+ passes its own refspecs on the command line and works whether or not `init`
+ configured the remote.
+ 
+-`init` deliberately does **not** register a *fetch* refspec for the namespace,
+-and removes one left behind by an older version — see
+-[Why there is no fetch refspec](#why-there-is-no-fetch-refspec).
++`init` registers a *fetch* refspec that mirrors the remote's etude refs into a
++separate, disposable namespace — never into your local one — and removes any
++older refspec that pointed at the local namespace directly. See
++[Local refs and remote mirrors](#local-refs-and-remote-mirrors).
+ 
+ ## What it creates
+ 
+@@ -28,20 +29,60 @@ All files are written to the working tree for normal review and commit on main.
+ 
+ ## Refspec configuration
+ 
+-By default init configures `origin` with exactly one refspec:
++By default init configures `origin` with:
+ 
+ ```
+-remote.origin.push = refs/etude/*:refs/etude/*
++remote.origin.push  =  refs/etude/*:refs/etude/*
++remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*
++remote.origin.fetch = +refs/etude/retros/*:refs/etude-mirror/origin/retros/*
++remote.origin.fetch = +refs/etude/evals/*:refs/etude-mirror/origin/evals/*
+ ```
+ 
+ The push refspec is non-forced: a non-fast-forward push fails loudly rather
+-than silently overwriting a remote ref.
++than silently overwriting a remote ref. The fetch refspecs ARE forced, which is
++safe precisely because their destination is the mirror — see below.
+ 
+ If `origin` does not exist, the refspec step is skipped and init still succeeds
+ (useful when initializing a repo before the remote is added). Use `--remote` to
+ target a different remote.
+ 
+-### Why there is no fetch refspec
++### Local refs and remote mirrors
++
++```
++refs/etude/runs/*                     YOURS. Authoritative. Never pruned.
++refs/etude/retros/*                   YOURS.
++refs/etude/evals/*                    YOURS.
++refs/etude-mirror/<remote>/runs/*     That remote's copy. Disposable, prunable.
++refs/etude-mirror/<remote>/retros/*   Mirror.
++refs/etude-mirror/<remote>/evals/*    Mirror.
++```
++
++Fetched refs land in the **mirror**; refs you produce stay in your own namespace
++and are never a fetch destination. That asymmetry is what makes
++`git fetch --prune` safe: prune deletes refs that the remote no longer has, and
++the only refs it can reach are mirror refs, which are re-created by the next
++fetch. A run you have produced and not yet pushed is not reachable by prune at
++all.
++
++The mirror is a **sibling** of `refs/etude/`, not nested inside it. That is
++deliberate: `refs/etude/*:refs/etude/*` — the push refspec — would match a nested
++mirror and upload this clone's copy of the remote back to the remote. As a
++sibling it cannot match, so no push refspec, present or future, can carry it.
++
++Two consequences worth knowing:
++
++- **Nothing reads the mirror yet.** It is populated by `git fetch` and pruned by
++  `git fetch --prune`, and that is all. `etude run show`, `etude log`, `etude gc`
++  and the index all read your local namespace only. Reporting what a remote has
++  that you do not — and detecting divergence — is a separate, later change.
++- **Mirror refs pin objects.** A plain `git fetch` now downloads the remote's
++  etude objects and the mirror refs keep them reachable, so they are not
++  reclaimed by `git gc`. There is no expiry for the mirror yet, including after a
++  remote is renamed or removed; `refs/etude-mirror/<name>/` for a remote that no
++  longer exists will linger. Delete such a namespace by hand if it matters:
++  `git for-each-ref --format='%(refname)' refs/etude-mirror/<name>/ | xargs -r -n1 git update-ref -d`
++
++### Why the fetch refspec must never target your local namespace
+ 
+ A fetch refspec whose *destination* is the local `refs/etude/*` namespace —
+ `+refs/etude/*:refs/etude/*`, which `etude init` used to add — makes every local
+@@ -64,18 +105,28 @@ takes every other lane's unpushed run refs with it. The failure is silent:
+ `etude capture` treats a missing run ref as "create", so the next capture
+ starts a fresh manifest and reports success.
+ 
+-Nothing needed the fetch refspec: `etude sync` passes
+-`refs/etude/*:refs/etude/*` explicitly on its own `git fetch` command line, so
+-syncing is unaffected. Removing it costs nothing and closes the failure.
++The fix is not to go without a fetch refspec — it is to point it somewhere
++disposable. A refspec whose destination is `refs/etude-mirror/<remote>/…` gives
++prune nothing of yours to delete, which is what `init` now configures.
+ 
+ The push refspec is **not** affected and must stay: it is what makes
+ `git push origin` carry run refs at all. Pushing cannot delete a local ref.
+ 
++Note the corollary: `refs/etude/` now means "everything here is pushed to the
++remote". A future local-only ref — a cache, an index, a cursor — must NOT be
++placed under `refs/etude/`, or the broad push refspec will upload it.
++
++One user-authored spelling can reach the mirror: a refspec written as
++`refs/etude*` (no trailing slash) matches `refs/etude-mirror/…` as well as
++`refs/etude/…`. Everything etude writes anchors on `refs/etude/` with the slash,
++so this cannot arise from `etude init` — but if you hand-write refspecs, keep the
++slash.
++
+ ### Migrating an existing repository
+ 
+ Any repository initialised by an older `etude init` still carries the dangerous
+-refspec and will not fix itself. Re-run init — it removes it, on both the normal
+-and `--force` paths:
++refspec and will not fix itself. Re-run init — it removes that refspec and
++installs the mirrored ones in its place, on both the normal and `--force` paths:
+ 
+ ```bash
+ etude init                      # repairs the DEFAULT remote (origin)
+diff --git a/docs/sync.md b/docs/sync.md
+index 924aef9..400b896 100644
+--- a/docs/sync.md
++++ b/docs/sync.md
+@@ -28,14 +28,19 @@ Sync runs in order:
+ Both the fetch and push pass an explicit refspec on the command line, so sync
+ works even if `etude init` was never run.
+ 
+-This is why `etude init` configures **only** a push refspec and never a fetch
+-refspec into `refs/etude/*`: sync does not need one, and a configured fetch
+-refspec into that namespace makes every local run ref prunable by a bare
+-`git fetch --prune`. See
+-[Why there is no fetch refspec](init.md#why-there-is-no-fetch-refspec).
+-
+-`etude sync` is therefore the supported way to pull the namespace down. A plain
+-`git fetch` does not bring `refs/etude/*` with it, by design.
++`etude sync` is the supported way to pull the namespace down **into your local
++refs**, and it is the only thing that does so.
++
++A plain `git fetch` also brings the namespace down, but into the per-remote
++mirror at `refs/etude-mirror/<remote>/…`, never into `refs/etude/*`. That
++distinction is what makes `git fetch --prune` safe — prune can only reach mirror
++refs — and it is why sync's own refspecs are passed explicitly rather than read
++from config. See [Local refs and remote mirrors](init.md#local-refs-and-remote-mirrors).
++
++Sync's fetch is deliberately **non-forced** and never passes `--prune`. Its
++destination is your authoritative namespace, so forcing would let a remote ref
++overwrite a local unpushed run, and pruning by a local-destination refspec would
++delete local runs the remote has never seen. Both are asserted by tests.
+ 
+ ## Reconciliation behavior
+ 
+diff --git a/internal/cli/init.go b/internal/cli/init.go
+index 3b0427c..1067c89 100644
+--- a/internal/cli/init.go
++++ b/internal/cli/init.go
+@@ -13,6 +13,7 @@ import (
+ 	"time"
+ 	"unicode"
+ 
++	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/registry"
+ 	"github.com/joshuavial/etude/internal/workflow"
+ 	"github.com/spf13/cobra"
+@@ -311,9 +312,18 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 				return []actionLine{{statusNote, note}}, nil
+ 			}
+ 
+-			// Remote present: drop any etude-registered fetch refspec, then add
+-			// the push refspec. Removal runs first so a repo initialised by an
+-			// older etude is made safe even if the push step later errors.
++			// Remote present. ORDER IS LOAD-BEARING and the rule is etude-i19's:
++			// a legacy fetch refspec whose destination lands in the LOCAL etude
++			// namespace makes every local run ref prunable, so it is removed
++			// FIRST. Every later step therefore runs from a state that cannot be
++			// pruned by configuration, and an interruption at any point leaves
++			// the dangerous setting gone rather than the safe one missing.
++			//
++			// (Precisely: after this step no NEW fetch can be started with the
++			// legacy refspec. A `git fetch --prune` already in flight read its
++			// refspecs at startup and still holds it; removing config cannot
++			// reach into a running process. That window is one-time and is
++			// inherited from etude-i19, which has the same property.)
+ 			lines, err := removeEtudeFetchRefspecs(ctx, root, fetchKey)
+ 			if err != nil {
+ 				return nil, err
+@@ -322,7 +332,18 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+-			return append(lines, pushLines...), nil
++			lines = append(lines, pushLines...)
++
++			// Then install the mirrored fetch refspecs. Their destination is the
++			// SIBLING namespace refs/etude-mirror/<remote>/<kind>/, so a bare
++			// `git fetch --prune` can only ever delete a disposable mirror ref —
++			// which is what makes a configured fetch refspec safe to have again
++			// after etude-i19 had to remove it entirely.
++			mirrorLines, err := addMirroredFetchRefspecs(ctx, root, remote, fetchKey)
++			if err != nil {
++				return nil, err
++			}
++			return append(lines, mirrorLines...), nil
+ 		},
+ 	}
+ }
+@@ -804,3 +825,48 @@ func gitRemotes(ctx context.Context, root string) ([]string, error) {
+ 	}
+ 	return strings.Split(raw, "\n"), nil
+ }
++
++// mirroredFetchRefspec is the refspec that mirrors one kind from a remote:
++//
++//	+refs/etude/<kind>/*:refs/etude-mirror/<remote>/<kind>/*
++//
++// Forced (+) is correct here and ONLY here. The destination is a copy of the
++// remote, so it should always match the remote and there is nothing of ours to
++// lose in it. The local namespace is never a fetch destination, so no forced
++// refspec can overwrite an authoritative local run.
++func mirroredFetchRefspec(remote, kind string) string {
++	return "+refs/etude/" + kind + "/*:" + refstore.MirrorPrefix(remote, kind) + "*"
++}
++
++// addMirroredFetchRefspecs installs one mirrored fetch refspec per etude ref
++// kind on the target remote, driven from refstore.Kinds so a new kind cannot be
++// silently omitted from one side of the fetch/push pair.
++//
++// Each is a separate `git config` write and therefore a separate crash point.
++// That is safe in any prefix: a partially-installed set mirrors only some kinds,
++// which is incomplete mirroring with no data loss and no upload path — no push
++// refspec can match the mirror namespace at all.
++func addMirroredFetchRefspecs(ctx context.Context, root, remote, fetchKey string) ([]actionLine, error) {
++	// Validate the CONSTRUCTED mirror ref before writing any refspec: one that
++	// cannot work must never be installed.
++	//
++	// This is not redundant with git's own remote-name check. `git remote add`
++	// rejects a name like "prod:backup", but a remote written straight into
++	// config as remote.<name>.url exists and `git remote get-url` succeeds for
++	// it — so remoteExists returns true and we get here with a name that cannot
++	// form a legal ref. Removing this check let exactly that install three
++	// unusable refspecs; see the note in internal/refstore/store.go.
++	if err := (refstore.Store{RepoDir: root}).ValidateMirrorRemote(ctx, remote); err != nil {
++		return nil, fmt.Errorf("cannot mirror remote %q: %w", remote, err)
++	}
++
++	var lines []actionLine
++	for _, kind := range refstore.Kinds {
++		l, err := addRefspecIfAbsent(ctx, root, fetchKey, mirroredFetchRefspec(remote, kind))
++		if err != nil {
++			return nil, err
++		}
++		lines = append(lines, l...)
++	}
++	return lines, nil
++}
+diff --git a/internal/cli/init_test.go b/internal/cli/init_test.go
+index fa57f4c..bf0415d 100644
+--- a/internal/cli/init_test.go
++++ b/internal/cli/init_test.go
+@@ -6,10 +6,12 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"reflect"
+ 	"regexp"
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/joshuavial/etude/internal/refstore"
+ 	"github.com/joshuavial/etude/internal/registry"
+ 	"github.com/joshuavial/etude/internal/workflow"
+ )
+@@ -723,22 +725,23 @@ func TestInitSummaryCounts(t *testing.T) {
+ 	}
+ 	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
+ 
+-	// First run: all created + 1 configured (push only — no fetch refspec).
++	// First run: all created + 4 configured — the push refspec plus one mirrored
++	// fetch refspec per etude ref kind (runs, retros, evals).
+ 	stdout, stderr, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
+ 	}
+-	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 1 configured", expectedCreated)
++	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 4 configured", expectedCreated)
+ 	if !strings.Contains(stdout, wantSummary1) {
+ 		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
+ 	}
+ 
+-	// Second run: all skipped + 1 configured (already-configured → still in configured bucket).
++	// Second run: all skipped + 4 configured (already-configured → same bucket).
+ 	stdout2, stderr2, err := execute("init")
+ 	if err != nil {
+ 		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
+ 	}
+-	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 1 configured", expectedCreated)
++	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 4 configured", expectedCreated)
+ 	if !strings.Contains(stdout2, wantSummary2) {
+ 		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
+ 	}
+@@ -1284,3 +1287,280 @@ func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
+ 		t.Fatalf("non-force init did not repair the push refspec: %q", got)
+ 	}
+ }
++
++// ---------------------------------------------------------------------------
++// etude-jqs: fetched refs mirror to the SIBLING namespace refs/etude-mirror/,
++// so a configured fetch refspec is safe to have again — `git fetch --prune` can
++// only ever delete a disposable mirror ref, never a locally-produced one.
++// ---------------------------------------------------------------------------
++
++func TestInitRegistersMirroredFetchRefspecs(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	// The oracle is a LITERAL list, deliberately not refstore.Kinds: a test that
++	// loops over the same enumeration it is checking cannot detect that
++	// enumeration regressing (drop "evals" and both the loop and the count agree
++	// with the bug). Assert the enumeration against the literal too.
++	wantKinds := []string{"runs", "retros", "evals"}
++	if !reflect.DeepEqual(refstore.Kinds, wantKinds) {
++		t.Fatalf("refstore.Kinds = %#v, want %#v — refspec coverage is driven from this", refstore.Kinds, wantKinds)
++	}
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	for _, kind := range wantKinds {
++		want := "+refs/etude/" + kind + "/*:refs/etude-mirror/origin/" + kind + "/*"
++		if !strings.Contains(got, want) {
++			t.Errorf("missing mirrored fetch refspec for %q:\nwant %s\ngot:\n%s", kind, want, got)
++		}
++	}
++	if n := strings.Count(got, ":refs/etude-mirror/origin/"); n != len(wantKinds) {
++		t.Errorf("mirrored fetch refspec count = %d, want %d:\n%s", n, len(wantKinds), got)
++	}
++	// The destination must never be the local namespace — that is the i19 hazard.
++	if strings.Contains(got, ":refs/etude/") {
++		t.Fatalf("a fetch refspec still targets the LOCAL namespace: %q", got)
++	}
++}
++
++// The push refspec is deliberately left alone: it spans exactly the local
++// namespaces, which is correct, and it cannot match a sibling mirror. Narrowing
++// it would need a migration whose predicate would also delete a user's own
++// deliberate variant.
++func TestInitLeavesPushRefspecUntouched(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "refs/etude/*:refs/archive/etude/*")
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if !strings.Contains(push, "refs/etude/*:refs/archive/etude/*") {
++		t.Fatalf("init deleted the user's own push refspec: %q", push)
++	}
++	if !strings.Contains(push, canonicalPushRefspec) {
++		t.Fatalf("canonical push refspec missing: %q", push)
++	}
++	// Count, not just survival: --replace-all with a mis-anchored or
++	// metacharacter-naive value pattern could eat the user's variant while
++	// leaving the canonical one, which a Contains check cannot detect.
++	if n := len(strings.Fields(strings.TrimSpace(push))); n != 2 {
++		t.Fatalf("push refspec line count = %d, want 2 (canonical + the user's own):\n%s", n, push)
++	}
++}
++
++// No push refspec spanning refs/etude/* may match the mirror. This is the whole
++// reason the mirror is a SIBLING rather than nested under refs/etude/remotes/.
++func TestPushRefspecCannotMatchMirrorNamespace(t *testing.T) {
++	for _, kind := range refstore.Kinds {
++		mirror := refstore.MirrorPrefix("origin", kind) + "run-1"
++		if strings.HasPrefix(mirror, "refs/etude/") {
++			t.Fatalf("mirror ref %q is inside refs/etude/, so the broad push refspec would upload it", mirror)
++		}
++	}
++}
++
++// The second init must be a no-op on the refspecs it installed. Under the
++// rejected NESTED layout this self-destructed: i19's cleanup removes any fetch
++// refspec whose destination is inside refs/etude/, which a nested mirror is.
++func TestInitDoesNotRemoveItsOwnMirroredFetchRefspec(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++
++	if _, _, err := execute("init"); err != nil {
++		t.Fatalf("first init: %v", err)
++	}
++	first := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	if _, _, err := execute("init"); err != nil {
++		t.Fatalf("second init: %v", err)
++	}
++	second := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	if first != second {
++		t.Fatalf("second init changed the fetch refspecs it installed:\nfirst:\n%s\nsecond:\n%s", first, second)
++	}
++	for _, kind := range []string{"runs", "retros", "evals"} {
++		if n := strings.Count(second, "refs/etude-mirror/origin/"+kind+"/"); n != 1 {
++			t.Errorf("mirrored fetch refspec for %q appears %d times, want exactly 1", kind, n)
++		}
++	}
++}
++
++// The legacy hazard must STILL be removed — the fixture is the literal i19 value.
++func TestInitStillRemovesLegacyBroadFetchRefspecAfterMirroring(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
++	seedHazardousFetchRefspec(t, repo, "origin")
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
++	if strings.Contains(got, "+refs/etude/*:refs/etude/*") {
++		t.Fatalf("legacy hazardous fetch refspec survived: %q", got)
++	}
++	if !strings.Contains(got, "refs/etude-mirror/origin/runs/") {
++		t.Fatalf("mirrored refspec not installed alongside the removal: %q", got)
++	}
++	if !strings.Contains(got, "refs/remotes/origin/*") {
++		t.Fatalf("init removed the branch fetch refspec: %q", got)
++	}
++}
++
++// A remote whose name cannot form a legal ref must never get a mirror refspec.
++//
++// etude validates this itself, and must: `git remote add` refuses such a name,
++// but a remote written straight into config as remote.<name>.url exists anyway
++// and `git remote get-url` SUCCEEDS for it — so remoteExists returns true and
++// init reaches its refspec code with a name that cannot form a legal ref.
++// Deleting etude's check on the assumption git had already caught it installed
++// three unusable refspecs; see refstore.ValidateMirrorRemote.
++func TestInitInstallsNoMirrorRefspecForIllegalRemoteName(t *testing.T) {
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	const evil = "prod:backup"
++	// Written straight into config: `git remote add` would reject the name, which
++	// is the point — this is the only way such a remote can exist.
++	gitCapture(t, repo, "config", "--local", "remote."+evil+".url", "https://example.com/x.git")
++
++	_, stderr, err := execute("init", "--remote", evil)
++	if err == nil {
++		t.Fatalf("init accepted a remote whose name cannot form a legal ref\nstderr: %s", stderr)
++	}
++	got, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote."+evil+".fetch").Output()
++	if strings.Contains(string(got), "refs/etude-mirror") {
++		t.Fatalf("a mirror refspec was installed for a remote that cannot have one: %q", got)
++	}
++}
++
++// Why etude cannot delegate remote-name validation to git, contrary to
++// appearances. `git remote add` rejects a name that cannot form a legal ref —
++// but a remote written straight into config exists anyway and `git remote
++// get-url` succeeds for it, so it reaches etude's refspec code. This pins both
++// halves, because deleting etude's own check on the first half alone shipped
++// three unusable refspecs.
++func TestConfigWrittenRemoteBypassesGitNameValidation(t *testing.T) {
++	repo := initCaptureRepo(t)
++	const evil = "prod:backup"
++
++	// git's porcelain refuses it...
++	if err := exec.Command("git", "-C", repo, "remote", "add", evil, "https://example.com/x.git").Run(); err == nil {
++		t.Fatalf("git remote add accepted %q; this test's premise is gone", evil)
++	}
++	// ...but a config-written remote is visible to get-url, which is what
++	// etude's remoteExists probes.
++	gitCapture(t, repo, "config", "--local", "remote."+evil+".url", "https://example.com/x.git")
++	if err := exec.Command("git", "-C", repo, "remote", "get-url", evil).Run(); err != nil {
++		t.Fatalf("get-url rejected the config-written remote; etude's own validation would then be unreachable and could be deleted: %v", err)
++	}
++	// So the constructed mirror ref really is illegal and etude must catch it.
++	if err := exec.Command("git", "-C", repo, "check-ref-format",
++		refstore.MirrorPrefix(evil, "runs")+"probe").Run(); err == nil {
++		t.Fatalf("expected %q to produce an illegal mirror ref", evil)
++	}
++}
++
++// TestFetchPruneOnlyDeletesFromMirror is the acceptance test for etude-jqs, and
++// the whole reason the bead exists. It drives a REAL `git fetch --prune` against
++// a REAL bare remote and asserts the asymmetry that makes a configured fetch
++// refspec safe again:
++//
++//   - a locally-produced run ref that the remote has never seen SURVIVES;
++//   - a mirror entry whose source has disappeared from the remote IS pruned.
++//
++// Before etude-i19 the first of those was deleted, destroying three recorded
++// gate attempts. i19 fixed it by removing the fetch refspec entirely; this bead
++// restores the refspec while keeping the guarantee.
++func TestFetchPruneOnlyDeletesFromMirror(t *testing.T) {
++	origin := t.TempDir()
++	gitCapture(t, origin, "init", "--bare")
++
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", origin)
++	gitCapture(t, repo, "push", "origin", "HEAD:main")
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++
++	// A run that exists only on the remote, so fetching mirrors it.
++	gitCapture(t, origin, "update-ref", "refs/etude/runs/theirs", head)
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++
++	// A locally-produced run the remote has never seen. This is the ref the
++	// original incident destroyed.
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/mine", head)
++
++	gitCapture(t, repo, "fetch", "--prune", "origin")
++
++	if !refExists(t, repo, "refs/etude/runs/mine") {
++		t.Fatal("git fetch --prune deleted a locally-produced run ref — this is the etude-nad incident reopened")
++	}
++	mirrored := refstore.MirrorPrefix("origin", "runs") + "theirs"
++	if !refExists(t, repo, mirrored) {
++		t.Fatalf("the remote's run was not mirrored to %s", mirrored)
++	}
++
++	// Now the remote deletes its run. Prune must reap the MIRROR entry — that is
++	// what makes the mirror disposable — while the local run is still untouched.
++	gitCapture(t, origin, "update-ref", "-d", "refs/etude/runs/theirs")
++	gitCapture(t, repo, "fetch", "--prune", "origin")
++
++	if refExists(t, repo, mirrored) {
++		t.Fatalf("stale mirror ref %s survived prune; the mirror is supposed to be prunable", mirrored)
++	}
++	if !refExists(t, repo, "refs/etude/runs/mine") {
++		t.Fatal("second prune deleted the locally-produced run ref")
++	}
++}
++
++// TestBroadPushRefspecDoesNotCarryMirrorToRemote settles by DEMONSTRATION, not
++// assertion, the question of whether the broad push refspec must be narrowed.
++//
++// Under the rejected NESTED layout (refs/etude/remotes/<remote>/…) it must be:
++// refs/etude/*:refs/etude/* matches a nested mirror, so a push uploads this
++// clone's copy of origin back to origin. Under the SIBLING layout it cannot,
++// because refs/etude-mirror/… is not inside refs/etude/. This drives a REAL push
++// against a REAL bare remote with the broad refspec left in place and shows the
++// mirror does not travel.
++func TestBroadPushRefspecDoesNotCarryMirrorToRemote(t *testing.T) {
++	origin := t.TempDir()
++	gitCapture(t, origin, "init", "--bare")
++
++	repo := initCaptureRepo(t)
++	chdir(t, repo)
++	gitCapture(t, repo, "remote", "add", "origin", origin)
++	gitCapture(t, repo, "push", "origin", "HEAD:main")
++	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
++
++	if _, stderr, err := execute("init"); err != nil {
++		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
++	}
++	// The broad push refspec is deliberately left in place by this bead.
++	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
++	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
++		t.Fatalf("precondition: expected the broad push refspec to still be configured, got %q", push)
++	}
++
++	// A local run (should travel) and a mirror ref (must NOT).
++	gitCapture(t, repo, "update-ref", "refs/etude/runs/mine", head)
++	gitCapture(t, repo, "update-ref", refstore.MirrorPrefix("origin", "runs")+"theirs", head)
++
++	gitCapture(t, repo, "push", "origin")
++
++	remoteRefs := gitCapture(t, origin, "for-each-ref", "--format=%(refname)")
++	if !strings.Contains(remoteRefs, "refs/etude/runs/mine") {
++		t.Fatalf("the broad push refspec did not carry a local run ref:\n%s", remoteRefs)
++	}
++	if strings.Contains(remoteRefs, "etude-mirror") {
++		t.Fatalf("the broad push refspec carried the MIRROR namespace to the remote — "+
++			"narrowing it would be required after all:\n%s", remoteRefs)
++	}
++}
+diff --git a/internal/cli/sync.go b/internal/cli/sync.go
+index 2bbd3cf..6aa9328 100644
+--- a/internal/cli/sync.go
++++ b/internal/cli/sync.go
+@@ -91,7 +91,15 @@ func syncEnv() []string {
+ 
+ // fetch runs git fetch --porcelain and classifies the result.
+ func (r syncRunner) fetch(ctx context.Context, root, remote string) error {
+-	cmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "--porcelain", remote, "refs/etude/*:refs/etude/*")
++	// --no-prune is REQUIRED, not defensive. This refspec's destination is the
++	// LOCAL authoritative namespace, and per git-fetch(1) pruning applies to the
++	// destinations of command-line refspecs too — so with fetch.prune or
++	// remote.<name>.prune set to true in the user's or global config, this fetch
++	// would delete local run refs the remote does not have. That is exactly the
++	// etude-nad data-loss mode, reached through a path etude-i19's config-side
++	// fix does not cover because this refspec is not in config at all.
++	// Not passing --prune is not enough; the setting is the user's, not ours.
++	cmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "--no-prune", "--porcelain", remote, "refs/etude/*:refs/etude/*")
+ 	cmd.Env = syncEnv()
+ 
+ 	var stdoutBuf, stderrBuf bytes.Buffer
+diff --git a/internal/cli/sync_test.go b/internal/cli/sync_test.go
+index 3255252..9b2820f 100644
+--- a/internal/cli/sync_test.go
++++ b/internal/cli/sync_test.go
+@@ -700,3 +700,87 @@ func TestSyncWorksWithNoConfiguredEtudeFetchRefspec(t *testing.T) {
+ 		t.Fatal("fetch leg did not retrieve run-1 without a config fetch refspec")
+ 	}
+ }
++
++// TestSyncFetchNeverPrunes pins a constraint that is invisible in sync's own
++// behaviour but load-bearing for etude-jqs.
++//
++// sync fetches with an explicit command-line refspec whose destination is the
++// LOCAL authoritative namespace (that is deliberate — it is how remote runs
++// become readable, and etude-jqs does not change it). Per git-fetch(1), a
++// command-line refspec under --prune prunes according to THAT refspec. So if
++// sync ever gained --prune it would delete local run refs absent from the
++// remote: the exact etude-nad failure, re-armed through a path that etude-i19's
++// config-side fix does not cover, because the refspec is not in config at all.
++//
++// The mirrored fetch refspecs etude-jqs installs make a BARE `git fetch --prune`
++// safe. They cannot make an explicit local-destination refspec safe, so this
++// asserts the one thing that keeps it safe: sync does not pass --prune.
++func TestSyncFetchNeverPrunes(t *testing.T) {
++	src, err := os.ReadFile("sync.go")
++	if err != nil {
++		t.Fatalf("read sync.go: %v", err)
++	}
++	if strings.Contains(string(src), `"--prune"`) {
++		t.Fatal("sync.go passes --prune. Its fetch refspec targets the LOCAL namespace, " +
++			"so pruning by it deletes locally-produced run refs that the remote does not have — " +
++			"the etude-nad data-loss mode.")
++	}
++	// Not passing --prune is NOT sufficient: fetch.prune / remote.<name>.prune in
++	// the user's or global config make git prune command-line refspec
++	// destinations too. --no-prune must be passed explicitly.
++	if !strings.Contains(string(src), `"--no-prune"`) {
++		t.Fatal("sync.go does not pass --no-prune. With fetch.prune=true in user or global " +
++			"config, git prunes the destinations of command-line refspecs, so sync's " +
++			"LOCAL-namespace refspec would delete unpushed refs/etude/* — the etude-nad " +
++			"data-loss mode, via a path the config-side fix in etude-i19 does not cover.")
++	}
++}
++
++// The local fetch destination must also stay NON-forced. A forced refspec into
++// refs/etude/* lets a remote ref overwrite a local unpushed run, which is why
++// sync carries non-fast-forward classification rather than just forcing.
++func TestSyncFetchIntoLocalNamespaceIsNotForced(t *testing.T) {
++	src, err := os.ReadFile("sync.go")
++	if err != nil {
++		t.Fatalf("read sync.go: %v", err)
++	}
++	if strings.Contains(string(src), `"+refs/etude/*:refs/etude/*"`) {
++		t.Fatal("sync.go forces its fetch into the LOCAL namespace; a remote ref could then " +
++			"overwrite a local unpushed run. Forcing is correct ONLY for the mirror destination.")
++	}
++}
++
++// TestSyncDoesNotPruneLocalRunsUnderFetchPruneConfig drives the real hazard
++// rather than inspecting source: with fetch.prune=true set (a common user
++// setting), git prunes the destinations of COMMAND-LINE refspecs too. sync's
++// fetch refspec targets the LOCAL authoritative namespace, so without an
++// explicit --no-prune this deletes unpushed run refs — the etude-nad data-loss
++// mode, reached through a path etude-i19's config-side fix does not cover
++// because this refspec never appears in config.
++func TestSyncDoesNotPruneLocalRunsUnderFetchPruneConfig(t *testing.T) {
++	repoA := initCaptureRepo(t)
++	bare := setupBareRemote(t, repoA)
++
++	capture1Stage(t, repoA, "shared", "plan", "plan.md", "# plan")
++	chdir(t, repoA)
++	if _, stderr, err := execute("sync"); err != nil {
++		t.Fatalf("seed sync: %v\nstderr: %s", err, stderr)
++	}
++
++	repoB := cloneFrom(t, bare)
++	// The user's own setting, not etude's.
++	gitCapture(t, repoB, "config", "--local", "fetch.prune", "true")
++	head := strings.TrimSpace(gitCapture(t, repoB, "rev-parse", "HEAD"))
++	// A run produced locally and never pushed — what the original incident ate.
++	gitCapture(t, repoB, "update-ref", "refs/etude/runs/unpushed-local", head)
++
++	chdir(t, repoB)
++	if _, stderr, err := execute("sync"); err != nil {
++		t.Fatalf("sync under fetch.prune=true: %v\nstderr: %s", err, stderr)
++	}
++	if !refExists(t, repoB, "refs/etude/runs/unpushed-local") {
++		t.Fatal("etude sync deleted a locally-produced unpushed run ref because fetch.prune=true " +
++			"was set in config; sync must pass --no-prune since its refspec targets the " +
++			"authoritative namespace")
++	}
++}
+diff --git a/internal/refstore/store.go b/internal/refstore/store.go
+index 071c91f..6e225e4 100644
+--- a/internal/refstore/store.go
++++ b/internal/refstore/store.go
+@@ -19,8 +19,88 @@ const (
+ 	evalsNS    = "refs/etude/evals/"
+ 	retrosNS   = "refs/etude/retros/"
+ 	defaultGit = "git"
++
++	// MirrorNS is where a REMOTE's etude refs are mirrored on fetch. It is a
++	// SIBLING of refs/etude/, deliberately not nested inside it.
++	//
++	// Nesting was tried and rejected: a nested mirror sits inside the namespace
++	// push refspecs span, which made a push upload this clone's mirror of origin
++	// back to origin, made `etude init` delete the very refspec it had just
++	// installed, and made that push hazard repo-GLOBAL because init can only
++	// migrate the one remote it is pointed at. A sibling dissolves all three —
++	// no refspec spanning refs/etude/* can match refs/etude-mirror/*.
++	//
++	// Local refs are AUTHORITATIVE and never pruned. Mirror refs are DISPOSABLE,
++	// re-derived by the next fetch, which is what makes a configured fetch
++	// refspec safe to have again after bead etude-i19 had to remove it.
++	//
++	// NOTE the trailing slash on every namespace constant here. Disjointness
++	// relies on it: as RAW STRINGS "refs/etude-mirror/…" does start with
++	// "refs/etude", so an unanchored prefix test would wrongly match a mirror
++	// ref. Refspec globbing and for-each-ref match on path components and are
++	// unaffected. TestMirrorNamespaceIsDisjointFromLocal pins this.
++	MirrorNS = "refs/etude-mirror/"
+ )
+ 
++// Kinds is the single enumeration of etude ref kinds. Anything building a
++// per-kind refspec drives it from here, so a new kind cannot be silently
++// omitted from one side of the fetch/push pair.
++var Kinds = []string{"runs", "retros", "evals"}
++
++// MirrorPrefix returns the namespace a remote's refs of the given kind are
++// mirrored into: refs/etude-mirror/<remote>/<kind>/.
++//
++// Callers MUST run ValidateMirrorRemote first — see the warning there.
++//
++// Slash-containing names such as "team/origin" are valid and accepted, exactly
++// as git accepts them for refs/remotes/team/origin/*. The cost is that this
++// mapping is not injective across such names — see bead etude-cng — an aliasing
++// that can only occur within the disposable mirror and is re-derived by the next
++// fetch.
++func MirrorPrefix(remote, kind string) string {
++	return MirrorNS + remote + "/" + kind + "/"
++}
++
++// mirrorProbeRef builds a CONCRETE ref under MirrorPrefix for validation. It
++// uses a real trailing component rather than a "*" glob on purpose: "*" is
++// illegal in a plain ref name, so check-ref-format would reject every remote and
++// give the right answer for the wrong reason. This mirrors git's own
++// valid_remote_name, which validates by building refs/remotes/<name>/test.
++func mirrorProbeRef(remote string) string {
++	return MirrorPrefix(remote, "runs") + "probe"
++}
++
++// ValidateMirrorRemote reports whether remote can be interpolated into a mirror
++// ref path, by CONSTRUCTING that path and checking it with git's own ref-format
++// rules rather than a bespoke character rule.
++//
++// This is NOT redundant with git's own remote-name validation, though it looks
++// it. `git remote add` does reject a name like "prod:backup" — but a remote can
++// also exist by writing remote.<name>.url straight into config, and
++// `git remote get-url` then SUCCEEDS for it. So a name git's porcelain would
++// never create can still be present and reachable, and without this check
++// `etude init` installs refspecs whose destination is not a legal ref and which
++// can therefore never work.
++//
++// That was verified the hard way: this function was deleted as "provably
++// unreachable" on the strength of a test whose fixture also wrote a malformed
++// fetch refspec, which was what actually made get-url fail. A test with only the
++// url set immediately installed three illegal mirror refspecs. Do not remove it
++// again without reproducing that case.
++//
++// A colon is the motivating character: illegal in a ref name AND the refspec's
++// own src:dst separator, so it breaks at two levels.
++func (s Store) ValidateMirrorRemote(ctx context.Context, remote string) error {
++	if strings.TrimSpace(remote) == "" {
++		return fmt.Errorf("%w: empty remote name", ErrInvalidRef)
++	}
++	probe := mirrorProbeRef(remote)
++	if _, err := s.git(ctx, nil, nil, "check-ref-format", probe); err != nil {
++		return fmt.Errorf("%w: remote %q produces an invalid mirror ref %q", ErrInvalidRef, remote, probe)
++	}
++	return nil
++}
++
+ var (
+ 	ErrEmptyTree   = errors.New("empty tree")
+ 	ErrInvalidPath = errors.New("invalid path")
+diff --git a/internal/refstore/store_test.go b/internal/refstore/store_test.go
+index eee0968..0326c03 100644
+--- a/internal/refstore/store_test.go
++++ b/internal/refstore/store_test.go
+@@ -924,3 +924,70 @@ func TestStdoutStderrSplit(t *testing.T) {
+ 		t.Fatalf("Resolve = %q, want %q (stderr contamination?)", oid, want)
+ 	}
+ }
++
++// The disjointness of the local and mirror namespaces is what lets every
++// existing refspec, cleanup predicate and reader stay unchanged. As RAW STRINGS
++// "refs/etude-mirror/..." does start with "refs/etude", so this pins the
++// invariant at the constant level: the local prefix is slash-anchored, and no
++// mirror path starts with it.
++func TestMirrorNamespaceIsDisjointFromLocal(t *testing.T) {
++	for _, kind := range Kinds {
++		local := "refs/etude/" + kind + "/"
++		mirror := MirrorPrefix("origin", kind)
++		if strings.HasPrefix(mirror, local) {
++			t.Errorf("mirror %q is inside local %q — push refspecs and the init cleanup predicate would match it", mirror, local)
++		}
++		if strings.HasPrefix(mirror, "refs/etude/") {
++			t.Errorf("mirror %q is inside refs/etude/ — the whole sibling design rests on it not being", mirror)
++		}
++		// The hazard the naming choice carries: unanchored prefix tests DO match.
++		// Documented so a future reader does not "simplify" a constant by
++		// dropping its trailing slash.
++		if !strings.HasPrefix(mirror, "refs/etude") {
++			t.Errorf("expected the raw-string overlap to exist for %q; if this ever stops being true the warning comments about unanchored prefix checks can go", mirror)
++		}
++	}
++}
++
++// etude must never WRITE to the mirror: it is git's copy of a remote, populated
++// only by fetch. validateRef accepts only the three local namespaces, so this is
++// structural — asserted so a future namespace addition cannot quietly open it.
++func TestRefstoreRejectsWritesToMirrorNamespace(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	for _, kind := range Kinds {
++		ref := MirrorPrefix("origin", kind) + "run-1"
++		_, err := store.WriteCommit(ctx, ref, map[string][]byte{"manifest.json": []byte(`{}`)}, WriteOptions{})
++		if !errors.Is(err, ErrInvalidRef) {
++			t.Errorf("WriteCommit(%q) error = %v, want ErrInvalidRef", ref, err)
++		}
++	}
++}
++
++// Readers use List on the local prefixes. A mirror ref must never come back from
++// one, which is what keeps gc, the index, run, log, bench and liverun correct
++// without any change to them.
++func TestListLocalPrefixesExcludeMirrorRefs(t *testing.T) {
++	ctx := context.Background()
++	repo := initRepo(t)
++	store := New(repo)
++
++	if _, err := store.WriteCommit(ctx, "refs/etude/runs/mine", map[string][]byte{"manifest.json": []byte(`{}`)}, WriteOptions{}); err != nil {
++		t.Fatalf("seed local run: %v", err)
++	}
++	// Write a mirror ref the way git would — directly, bypassing the store,
++	// because the store deliberately refuses to.
++	head := strings.TrimSpace(git(t, repo, "rev-parse", "refs/etude/runs/mine"))
++	git(t, repo, "update-ref", MirrorPrefix("origin", "runs")+"theirs", head)
++
++	got, err := store.List(ctx, "refs/etude/runs")
++	if err != nil {
++		t.Fatalf("List: %v", err)
++	}
++	want := []string{"refs/etude/runs/mine"}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("List(refs/etude/runs) = %#v, want %#v — a mirror ref leaked into a local listing", got, want)
++	}
++}
