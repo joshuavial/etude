@@ -1,0 +1,58 @@
+# Integration plan
+
+## Context and invariants
+
+PR #23 adds optional producer session sidecars, bounded stage-log artifacts, and
+digest-bound prior-attempt inputs on gate reruns. Main now adds caller-workspace
+runners whose successful invocation must leave a clean descendant commit,
+records the pre-caller checkout in `Manifest.OriginalGitSHA`, and gives each
+`read_checkout` gate seat an isolated checkout of that original commit.
+
+The integration must preserve these invariants:
+
+- A caller stage's session transcript is resolved relative to the caller worktree
+  while its sidecar remains in the invocation scratch directory.
+- Caller stage stdout/stderr remains a bounded stage-log artifact.
+- A block-triggered caller rerun receives the exact digest-bound prior-attempt
+  index and output/log/transcript inputs from the killed caller attempt.
+- Gate seats with `read_checkout` continue to see isolated checkouts at
+  `OriginalGitSHA`, never the caller stage's post-run mutation.
+- Resume, replay, forward replay, and bench retain `ResolvedStage.RunGitSHA` as
+  the original pre-caller checkout.
+- Missing `Producer.Session` remains the legitimate no-transcript state.
+- Reserved prior-attempt roles still fail at engine entry before checkout or a
+  runner invocation.
+
+## Changes
+
+1. Rebase all four issue commits onto `origin/main` and resolve overlapping
+   engine, manifest, replay, gate, and documentation edits by retaining both
+   feature sets.
+2. Treat manifest version 4 as one format capability level shared by
+   caller-workspace provenance and stage-log references. Writers emit v4 when
+   either feature is present; caller runs require `original_git_sha`; log-only
+   v4 runs may omit it; combined runs remain v4 rather than double-bumping.
+   Continue accepting historical development refs containing logs at v2/v3.
+   Broader versioning semantics remain issue #24.
+3. Add an integration test that performs an actual caller-workspace attempt,
+   commits its mutation, captures session/log evidence, receives a blocking
+   verdict, executes attempt two in the caller workspace, and inspects attempt
+   two's actual `RunRequest.Inputs`. Enable `read_checkout` and assert every
+   reviewer sees the original commit without caller mutations.
+4. Verify the targeted packages, then run `make test`, `make lint`,
+   `make docs-check`, `make docs-reality`, and `make build`.
+5. Run the full STRICT Etude plan/implement/verify/docs/review gates against the
+   rebased change. Redo built-binary QA for caller session/log capture, a
+   deterministic no-sidecar stage, a real caller gate rerun and delivered input
+   bytes, and entry-time role collision. Replace PR #23's Manual QA section,
+   force-push with lease, and leave the PR open.
+
+## Acceptance evidence
+
+- Focused test proves caller workspace + evidence + actual rerun consumption +
+  read-checkout isolation in one execution.
+- Manifest round-trip tests prove caller provenance and a stage log coexist in
+  a single v4 document without losing `OriginalGitSHA` or the log reference.
+- Full repository checks and all required Etude gate records pass.
+- Manual QA output comes from the final built binary and includes manifest and
+  stored-artifact excerpts plus the exact prior-attempt file consumed by r2.
