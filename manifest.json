@@ -136,6 +136,98 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-09-07T03:02:23.149721Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "32e3f0bdbb2ce685a5ad872e0034962e7ea826de0c1bf931186149f4220ba3ef"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "astra",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-6-astra"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Update the Zombies limitation’s “Tests poll to ESRCH” sentence to match the stated ESRCH-or-zombie termination check."
+          ],
+          "raw_output": {
+            "role": "astra",
+            "artifact": "d29d0c160e164c6abafde46989bb754b9346ba9789a85620587f60c86255b525",
+            "path": "artifacts/sha256/d2/d29d0c160e164c6abafde46989bb754b9346ba9789a85620587f60c86255b525",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 282
+          },
+          "session": {
+            "session_id": "astra-971999d281d344f3",
+            "transcript_artifact": {
+              "role": "astra-transcript",
+              "artifact": "971999d281d344f3c31bd2412bc1b5b8bdac4c0c2e4697a6fd70cbfad9e4e2d7",
+              "path": "artifacts/sha256/97/971999d281d344f3c31bd2412bc1b5b8bdac4c0c2e4697a6fd70cbfad9e4e2d7",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 181
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T03:06:02.889309Z"
+        },
+        {
+          "seat": "fable",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-fable-5-1"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. The retro nudge keeping `context.Background()` means its ExecGenerator child, now in its own pgid, no longer receives terminal SIGINT and will outlive a Ctrl-C until its own timeout; state explicitly that this is intended fire-and-forget behavior, and extend the AC7 manual check to at least one eval/retro invocation so the signal path is exercised beyond replay/gate. 2. The `.etude/registry.yaml` `USER` allowlist repair is a fourth concern in a commit whose plan says \"anything else is a split\"; either split it or amend the concern list so the final packet matches the plan. 3. Post-run `cleanup` also kills anything a successful runner deliberately left running; note this in the run.md contract wording (\"no descendant survives `Run`, including on success\") so adapter authors are not surprised."
+          ],
+          "raw_output": {
+            "role": "fable",
+            "artifact": "34998d27b2c274bab3aa5a7882ed882e60a043b67b66a7c6a535adb2be985826",
+            "path": "artifacts/sha256/34/34998d27b2c274bab3aa5a7882ed882e60a043b67b66a7c6a535adb2be985826",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 956
+          },
+          "session": {
+            "session_id": "fable-1a866f479c3ace68",
+            "transcript_artifact": {
+              "role": "fable-transcript",
+              "artifact": "1a866f479c3ace68f680d63eda5f372409243d59f249641d58064e68c899fb25",
+              "path": "artifacts/sha256/1a/1a866f479c3ace68f680d63eda5f372409243d59f249641d58064e68c899fb25",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 860
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-09-07T03:06:57.24977Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-09-07T03:06:57.251457Z"
     }
   ]
 }
