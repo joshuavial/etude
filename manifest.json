@@ -154,6 +154,51 @@
         "degraded_reason": "Gate did NOT pass. codex BLOCKed correctly on a PACKET omission rather than missing work: the tracker reframing had been recorded, but this repo tracks in bd (dolt), which cannot appear in a git diff, so a diff-only packet could not show it. That is a packet bug on the author side; the rule that every requirement a packet asks a seat to adjudicate must appear IN the packet, whatever medium it lives in, was folded into the supervisor runbook."
       },
       "timestamp": "2026-08-15T08:22:08Z"
+    },
+    {
+      "gate_id": "implement.r2",
+      "phase": "implement",
+      "round": 2,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:22:08Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:22:08Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. Three optionals folded. The sharpest: the runbook section warning supervisors NOT to pattern-match stage names contained a factual error made by pattern-matching the stage list — it said four of five roles track their name, but implement produces diff as well as docs producing docs-diff, so it is three of five with TWO traps. Verified against .etude/workflow.yaml and replaced with a table plus both literal commands. Also folded: the negative-path test now compares the whole manifest rather than counts (negative control proves it load-bearing). Noted and honoured: bead .3 remains open with acceptance covering the original defect text, so these two must not be closed out of order."
+      },
+      "timestamp": "2026-08-15T08:22:08Z"
     }
   ]
 }
