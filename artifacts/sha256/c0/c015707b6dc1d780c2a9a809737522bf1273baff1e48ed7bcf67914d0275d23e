@@ -1,0 +1,17 @@
+# Verify — etude-aqt (render retro-meta sidecar in retro show/list)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` FULLY green (incl. cmd/gen-docs TestDriftGuard — no docs/cli drift, no flag added); `make docs-check` clean; `make docs-reality` OK (13 commands); `make lint` clean.
+- 6 new/updated tests in internal/cli/retro_test.go: TestRetroShowWithMetaStageStillRendersSingleBody (updated: body + meta section), TestRetroShowNoMetaStageNoMetaSection, TestRetroShowMetaBodyNoTrailingNewline (newline-guard regression), TestRetroShowMetaPrettyPrinted, TestRetroListMetaColumn, TestRetroListOneRetro (updated header). Existing retro tests unchanged.
+
+## Built-binary, throwaway git+etude-init repo (empirical)
+- Retro WITH `--meta-file` (normal body) → `retro show` renders `--- retro body ---`, body, then `--- retro meta ---` and the sidecar JSON PRETTY-PRINTED (2-space indented, multi-line).
+- **Trailing-newline edge (the codex-caught fix)**: body with NO trailing newline + meta → raw output is `TAIL_NO_NEWLINE\n--- retro meta ---\n{...}` — the guard injected exactly ONE newline; glued-count 0; divider matches as its own whole line.
+- Empty body + meta → no panic, divider on its own line (len>0 guard short-circuits).
+- Retro WITHOUT `--meta-file` → `retro show` has NO `--- retro meta ---` section (count 0); backward-compatible.
+- `retro list` → header `RETRO ID  SCOPE  TRIGGER  SUBJECTS  META  CREATED`; META=Y for meta retros, N for non-meta; CREATED still last + RFC3339Z.
+
+## Scope
+internal/cli/retro.go (findRetroMetaStage role-based helper + show meta section w/ newline-guard + list META column), internal/cli/retro_test.go (6 tests), docs/retro.md (sidecar-rendering prose, META column row, show example). No schema/write-path change, no new flag, no docs/cli regen. Read-only.
