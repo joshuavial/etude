@@ -1,0 +1,30 @@
+# Verify — etude-example-repo
+
+## Scope
+Self-contained, runnable example proving etude works with only git + bash + the etude binary (no beads/tracker/LLM/network). Files: examples/summarize/{walkthrough.sh, summarize-runner.sh, pick-longer-judge.sh, docs/{alpha,beta,gamma}.txt, README.md}, internal/example/example_test.go, Makefile `example` target, README.md + docs/README.md links.
+
+## Static checks
+- `gofmt -l cmd internal` — clean (no output)
+- `go vet ./...` — clean
+- `go build ./...` — clean
+
+## Test suite
+- `go test ./...` — all 13 packages PASS, including new `internal/example` smoke test.
+- `go test ./internal/example/ -run TestWalkthroughSmokeTest` — PASS (~5.2s). Builds etude fresh into t.TempDir(), injects ETUDE_BIN, runs walkthrough.sh under a 3-min timeout, asserts substrings: doc-alpha/beta/gamma, `replay (new skill) wins`, `wins 100.0%`, `B=3`, `reindexed`, `logical artifact bytes`, `Walkthrough complete`. Skips cleanly when bash/git absent.
+
+## End-to-end (`make example`)
+Runs all six steps (init → capture×3 v1 summaries → run list/show → replay → bench → reindex → gc). Headline output:
+```
+bench summarize: replay (new skill) wins 100.0% vs original
+(B=3 A=0 tie=0) over 3 evals; 0 skipped, 0 failed
+```
+
+## Determinism evidence
+- v1 = first line only (`head -n 1`); v2 = first line + `[N words]`. Per-doc byte lengths: alpha 52→63, beta 67→78, gamma 60→71 — v2 strictly longer by exactly 11 bytes in every case. Invariant is structural (v2 = v1 + a non-empty `[N words]\n` line), holds even for single-line / no-trailing-newline / empty docs (verified on /tmp copies during review).
+- Judge decides purely by `wc -c`; etude's per-pair presentation swap is reversed by mapWinnerBack, so the canonical winner is position-invariant. Bench reproduced B=3 A=0 tie=0 across seeds 0/1/2/7/42/99.
+
+## Isolation
+Throwaway `git init` repo + single EXIT trap removing WORK always and BINDIR only when built locally. No writes to the real repo or its refs/etude/*. Temp-dir leak check after run: delta 0.
+
+## Result: PASS
+All checks green; determinism and isolation empirically confirmed.
