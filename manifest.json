@@ -223,6 +223,75 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T00:41:00Z"
+    },
+    {
+      "gate_id": "plan.r3",
+      "phase": "plan",
+      "round": 3,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "bind sidecar read",
+            "model crash residuals",
+            "state failed-runner log scope"
+          ],
+          "raw_output": {
+            "role": "codex-plan-r3",
+            "artifact": "b26b55a30a8837b9abceb6b4a176b20989fb26e80acf140cb31626dbaaad6e35",
+            "path": "artifacts/sha256/b2/b26b55a30a8837b9abceb6b4a176b20989fb26e80acf140cb31626dbaaad6e35",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 299
+          },
+          "timestamp": "2026-08-16T00:45:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "require atomic sidecar publication",
+            "bind sidecar read",
+            "pin compatibility semantics"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r3",
+            "artifact": "d8def985511c3b722710f637b3861e35fb7544a0acaa98ae982dc300a5c3cced",
+            "path": "artifacts/sha256/d8/d8def985511c3b722710f637b3861e35fb7544a0acaa98ae982dc300a5c3cced",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 297
+          },
+          "timestamp": "2026-08-16T00:51:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T00:52:00Z"
     }
   ]
 }
