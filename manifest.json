@@ -137,6 +137,55 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T08:19:43Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "implementation",
+          "artifact": "bc7984a105bf0b3004b8c1159b062c38d01637438b04e45f78d96b8e29695caa"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Add direct non-regular ignore-control fixtures if that claim expands.",
+            "Add an ancestor-specific dirty message if error subtypes are introduced.",
+            "Resolve symlinked global excludes only in a separate compatibility change."
+          ],
+          "timestamp": "2026-08-17T08:23:12Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-17T08:23:12Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T08:23:12Z"
     }
   ]
 }
