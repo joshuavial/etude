@@ -1,0 +1,30 @@
+# Verify artifact — etude-xin
+
+**Status: pass. Recommendation: proceed to Docs.**
+
+## Automated (all green)
+- `go test -count=1 ./internal/liverun/... ./internal/cli/... ./internal/replay/... ./internal/runmanifest/...` → PASS
+- `make lint` (gofmt + go vet) → clean
+- `GOOS=windows` + `GOOS=linux` `go build ./...` → both PASS
+- `make docs` → generated docs current; `make docs-reality` → OK (14 commands)
+- Generated-docs blast radius (matches plan): docs/cli/etude.md, etude_run.md, etude_run_list.md, etude_run_show.md, etude_replay.md. No new generated files.
+
+## AC-to-test map
+- AC1 live + mid-run show → TestEngineRunThreeStages, TestRunWorkflowThreeStages, TestRunShowExistingRun, TestRunListOneRun, **TestEngineMidRunInspectable (CONCURRENT mid-run: while stage-b blocks/executes, the run ref is read and shows exactly [stage-a] captured; then completes to 3 — added gate round 1)**
+- AC2 forward replay → TestReplayForwardThreeStages, TestReplayForwardAllStages, TestReplayForwardSingleStageOnlyFlagsRejected
+- AC3 resume → TestEngineResumeAfterFailure (incl. reseed byte-presence of task+stage-a blobs), TestEngineInvalidExplicitRunID, TestEngineAlreadyCompleteResumeErrors, TestRunWorkflowResume
+- AC4 chaining → TestEngineArtifactRefChaining, TestRunWorkflowArtifactRefChaining
+
+## Manual test (built bin/etude, throwaway repo, deterministic no-LLM 3-stage chain): PASS
+Live run captured 3 stages + ref; run list/show list 3 stages; forward replay re-executed a→b→c exactly; 2-arg single-stage replay unchanged; `--record` rejected in 1-arg mode; stage-b failure → exit 1 + partial run {stage-a} + resume hint; `--resume` completed to 3 stages no duplicates; `--run-id ../evil` → "invalid run id", no ref; no-commit repo → clear HEAD error. Chaining identity confirmed in the binary (stage-a out sha == stage-b in sha; stage-b out == stage-c in).
+
+## Verify-phase fix applied (cosmetic UX bug found during Verify)
+On stage failure the StageError printed TWICE on stderr (runWorkflow printed stageErr.Error(), then root re-printed the returned err). FIXED in internal/cli/run.go: runWorkflow now prints ONLY the resume hint and returns the err for root to print once. **Now ASSERTED by TestRunWorkflowStageFailureSinglePrint (added gate round 1): a failing-stage run prints `stage "stage-a" failed` exactly once AND `resume with:` exactly once on stderr.** Re-ran cli tests (green), lint clean.
+
+## QA findings
+Implementation matches the approved plan — incremental CAS capture, role chaining, run_id gen + explicit-id validation, resume-by-frontier with full referenced-paths blob reseed (incl. task input + git_sha from manifest), forward vs single-stage replay, reserved-name/empty-repo guards, gate no-op deferral, etude-dp7 scope narrowing. No regressions.
+
+## Risks / accepted boundaries
+- LLM-stage replay substitution deferred (forward replay exact only for deterministic graphs) — accepted in plan.
+- Worktree state not captured as artifacts relies on the role-chaining contract — accepted.
+- Deferred optionals tracked: etude-dp7 (failed-stage status), etude-g12 (input hardening).

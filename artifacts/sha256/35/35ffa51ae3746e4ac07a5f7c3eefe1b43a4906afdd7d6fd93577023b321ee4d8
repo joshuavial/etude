@@ -1,0 +1,20 @@
+# Final Review artifact — etude-xin
+
+**Verdict: GO. Commit scope clean. Ready to close.** Commit 474873141ca5b96b7e700afbc22bbcc545812d68.
+
+## Scope
+In-scope staged: internal/cli/{run,run_test,replay,replay_test}.go; new internal/liverun/ (engine, resolve, replay_forward + tests + testdata/echo-runner.sh); docs/run.md; 5 generated docs/cli/* (etude, etude_run, etude_run_list, etude_run_show, etude_replay); docs/plans/product/live-execution.md (§1 marked implemented). Pre-existing mkdocs tooling (.gitignore, docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt) NOT staged.
+
+## Confirmed
+- Coherence: matches plan + committed decisions (incremental CAS, one evolving worktree, run_id gen + explicit-id IsValidRunID validation, resume-by-frontier reseeding all referenced paths incl task blob + git_sha from manifest, forward vs single-stage replay via RangeArgs(1,2), reserved-name/empty-repo guards, gate no-op deferral, manifest_version stays 2, no failed-stage-status field, double-print fix). No drift.
+- Green: go test ./internal/liverun/... ./internal/cli/... PASS; make lint clean; make docs zero new diff; make docs-reality OK (14 commands).
+- Adversarial sweep clean: durable partial run + CAS chain survives resume; filesForManifest passes exactly referenced paths (no ErrMissingArtifact); 2-arg replay preserved; defect #5 avoided (no schema change).
+
+## Gate history
+- Plan: r1 rerun (codex BLOCK failed-stage status → narrowed to etude-dp7), r2 PASS (Tier1 unanimous).
+- Implement: r1 rerun (codex BLOCK explicit --run-id unvalidated), r2 PASS (Tier1 unanimous).
+- Verify: r1 rerun (codex BLOCK mid-run + double-print under-verified), r2 PASS (Tier1 unanimous; added concurrent mid-run + stderr-once tests).
+- Docs: r1 PASS (Tier3 single Opus).
+- Final Review: r1 PASS (Tier3 single Opus / dev-pr-reviewer).
+
+## Deferred (non-blocking) → etude-dp7 (failed-stage status), etude-g12 (input hardening + CLI mid-run-show test).

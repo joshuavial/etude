@@ -1,0 +1,419 @@
+◐ etude-xin · Live workflow orchestration (etude run): walk an arbitrary stage graph live, capture by construction   [● P1 · IN_PROGRESS]
+Owner: joshuavial · Type: feature
+Created: 2026-06-29 · Updated: 2026-06-29
+
+DESCRIPTION
+`etude run <workflow>` (live): walk an ARBITRARY stage graph in dependency order; resolve each stage's runner (registry name or inline; LLM or deterministic script) and invoke the external-runner contract (ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE); run all stages in ONE evolving worktree per run; auto-generate run_id (timestamp+random, `--run-id` override, create-only); chain output role -> next input role per capture-run semantics; capture each stage INCREMENTALLY (compare-and-swap on the run ref) so `etude run show` works mid-run and a crash leaves a valid partial run; stop-and-capture on stage failure with `etude run --resume <id>`. Replay is redefined as FORWARD replay (stages 1..N). Design: docs/plans/product/live-execution.md S1.
+
+DESIGN
+## Plan — etude-xin: Live workflow orchestration (`etude run <workflow>`)
+
+### Goal
+Add a LIVE orchestrator: `etude run <workflow>` walks an arbitrary stage graph in
+dependency order, resolves+invokes each stage's runner through the existing
+external-runner contract (ETUDE_INPUTS_DIR/ETUDE_OUTPUT_FILE) in ONE evolving
+worktree, chains output-role→input-role, and captures each stage INCREMENTALLY by
+CAS-appending to refs/etude/runs/<id> so `etude run show` works mid-run and a
+crash leaves a valid partial run. On stage failure: stop, leave the partial run,
+resume with `--resume <id>`. Redefine `etude replay <run>` (no stage arg) as
+FORWARD replay (stages 1..N). ORCHESTRATION ONLY.
+
+### Plan-gate round 1 → round 2 (this revision)
+Round-1 verdicts: gemini GO, opus GO, **codex BLOCK** (Spec Adversary: the normative spec — bead description + live-execution.md decision 6 — says "capture the failed-stage status"; the plan recorded none, leaving an observability gap where `run show` can't distinguish "stopped before next stage" from "failed at next"). opus concurred the gap is real but GO'd it as defensible **provided a follow-up is explicitly filed**. Consensus-safe resolution (satisfies all three): EXPLICITLY NARROW this bead — failed-stage *status capture + surfacing* is OUT OF SCOPE and tracked in **etude-dp7** (filed, depends on etude-xin). This bead delivers stop + valid partial run + nonzero exit + resume-by-frontier ONLY. Also folded opus's correctness optionals: resume must re-add blob BYTES (not just refs) with a test (decision 5); reserved workflow names `show`/`list`; forward-replay flag semantics; empty-repo HEAD edge (Validation).
+
+### BUILD-vs-DEFER premise check (scope fence)
+- BUILD: graph walk, runner resolution, contract invocation, evolving worktree,
+  run_id gen, role chaining, incremental CAS capture, stop-and-capture+resume,
+  forward replay, hermetic deterministic-runner proof.
+- DEFER (do NOT build here): gate EXECUTION (checks/seats/rerun/escalate, auto
+  capture-gate) = etude-04i — a stage's `gate` block is read but treated as a
+  no-op with a clearly-deferred log line; secret/env passthrough = etude-3a2 —
+  keep ExecRunner's hermetic 3-var env unchanged; dev-workflow migration +
+  gates.yaml retirement = etude-2pc.2. No manifest schema change (see Risks).
+
+### Verified external behavior (cited, not assumed)
+git 2.47.1, sha256 repo, reproduced in a throwaway `git init`:
+- create-only: `git update-ref --no-deref <ref> <c0> ""` succeeds iff ref absent;
+  re-running with old="" on an existing ref → `reference already exists`.
+- CAS append: `commit-tree <tree> -p <c0>` + `update-ref --no-deref <ref> <c1> <c0>`
+  succeeds; a stale old (c0 when head=c1) → `cannot lock ref ... but is at ... but
+  expected ...`. This is exactly `refstore.WriteCommit` (ExpectedOld=""→create-only;
+  non-empty→CAS-append-with-parent). Incremental capture rides this verbatim.
+- `runmanifest.WriteManifestTree` rebuilds the FULL tree from `files` each call
+  (writeTree → read-tree --empty), so every CAS-appended commit's tree is a
+  COMPLETE, validated run snapshot. It validates manifest each call (≥1 stage), so
+  the first write happens AFTER stage 0 completes.
+
+### Approach — committed decisions (one per design question)
+
+1. Incremental capture mechanism — CAS on the run ref.
+   Maintain a single `*artifactstore.Store` across the run (accumulates every
+   input+output blob) and a growing `[]runmanifest.Stage`. After EACH stage
+   completes: append its Stage, build `runmanifest.Manifest{Stages: 0..i}`, call
+   `runmanifest.WriteManifestTree(ctx, store, "refs/etude/runs/", manifest,
+   files, refstore.WriteOptions{ExpectedOld: prevCommit, Message:...})`. Stage 0
+   uses ExpectedOld="" (create-only → owns the run_id, errors ErrRefExists on
+   collision). Stages 1..N use ExpectedOld=prevCommit (CAS append; a concurrent
+   writer → ErrStaleRef → abort the run, partial run already durable). Track
+   prevCommit from each write's returned OID. Stage-building is modelled on
+   `replay/record.go` (build a Stage from result BYTES via artifactstore), not on
+   capture_run.buildStage (which reads disk paths); the genuine shared core that
+   both reuse is `runmanifest.WriteManifestTree` + `artifactstore` — no duplication
+   of the validate→verify→write sequence.
+
+2. Evolving worktree — one per run.
+   The engine creates ONE worktree via `worktree.Checkout(ctx, root, runGitSHA)`
+   (runGitSHA = HEAD at start, or `--git-sha`), owns it for the whole run, and
+   `defer wt.Close()`. Every stage runs with cwd=wt.Dir, so git-lifecycle stages
+   (`git checkout -b`) and deterministic stages reading earlier mutations Just
+   Work. Inter-stage DATA flows two ways: (a) role chaining via captured artifacts
+   (materialized into scratch ETUDE_INPUTS_DIR), and (b) worktree mutations shared
+   in place. For replay hermeticity, the contract is that any state a later stage
+   needs is either captured as a chained artifact role OR re-derivable by re-running
+   deterministic stages in the evolving worktree (see decision 6).
+
+3. run_id generation.
+   `<workflow>-<UTC:20060102T150405Z>-<4-byte crypto/rand hex>` (sortable by
+   timestamp, satisfies IsValidRunID: charset ok, no `..`/leading/trailing dot/
+   `.lock`). `--run-id` overrides (validated via runmanifest.IsValidRunID).
+   Create-only is enforced structurally by stage-0's ExpectedOld="" write — an
+   explicit collision returns the same friendly "already exists" message
+   capture_run uses. (Do NOT use replay.AllocateRunID — its -2..-10 suffix probing
+   is replay-collision behavior, wrong for create-only live runs.)
+
+4. Runner resolution.
+   New helper `resolveStageRunner(wf, reg, stage) (*replay.ExecRunner, error)`:
+   pick `stage.Runner` else `wf.DefaultRunner` else error (no runner). If
+   `.Command != ""` → ExecRunner{Command: strings.Fields(command)}. If
+   `.Name != ""` → look up `reg.Seats[name]` (error if undefined) → ExecRunner{
+   Command: strings.Fields(seat.Invoke)}. Timeout from `--timeout`, MaxOutputBytes
+   64<<20 (mirror replay.go). LLM vs deterministic script are both just commands —
+   no special-casing. This is the cross-file resolution deferred from 2pc.1.
+
+5. Stop-and-capture + resume.
+   On a stage runner returning non-zero/timeout (ExecRunner already maps these to
+   ErrRunnerFailed / DeadlineExceeded): STOP. The partial run = all stages already
+   CAS-captured (durable). `etude run` exits non-zero and prints `stage <name>
+   failed: <err>` + `resume with: etude run <workflow> --resume <id>` on stderr.
+   `--resume <id>`: load the run manifest, build the set of completed Produces
+   roles, derive the frontier = first workflow stage whose Produces role is not yet
+   present (the cold-etude "diff produced vs workflow" model — no stored current
+   stage). Re-seed the artifactstore by iterating the manifest's REFERENCED ARTIFACT
+   PATHS — every captured stage's INPUTS *and* OUTPUTS (runmanifest.ArtifactPaths) —
+   reading each blob's bytes back from the run commit (ReadCommitFile/ReadFile ->
+   artifactstore.AddContent), NOT just outputs and NOT just the role->ArtifactRef
+   map — because WriteManifestTree rebuilds the full tree from `files` and
+   verifyArtifactFile requires every referenced artifact present in `files`; an
+   outputs-only/refs-only reseed makes the first post-resume CAS append fail with
+   ErrMissingArtifact (opus catch). IMPORTANT: the `task` special-role input blob
+   must be reseeded from the commit too — on `--resume`, `--task` is ignored (id
+   comes from the arg), so stage-0's task input is available only from the captured
+   run; iterating referenced paths covers it. Re-open ONE worktree at the run's
+   recorded git_sha READ FROM THE MANIFEST (do NOT recompute HEAD, so a moved HEAD
+   between the failed run and the resume cannot silently change the worktree base),
+   then continue CAS-appending from prevCommit=current ref head. Plain stages never
+   auto-retry.
+   SCOPE NARROWING (gate round 1): a durable "failed stage status" record and its
+   surfacing in `run show` are OUT OF SCOPE for etude-xin and tracked in **etude-dp7**
+   (filed, depends on etude-xin). AC3 requires only resumability, which the
+   frontier-by-diff mechanism delivers without a failed-status field (a failed stage
+   produces no output, so the frontier lands exactly on it). Failure is surfaced
+   live via nonzero exit + stderr only.
+
+6. Forward replay — `etude replay <run>` (stage arg becomes optional).
+   Today `etude replay <run> <stage>` (ExactArgs(2)) replays ONE stage: resolve
+   recorded inputs → checkout recorded git_sha → run runner → emit/optionally
+   --record a linked run. Minimal change: relax to `cobra.RangeArgs(1,2)`. With a
+   stage arg → unchanged single-stage behavior. With NO stage arg → FORWARD replay:
+   create ONE evolving worktree at the run's git_sha, then for each stage in
+   manifest order materialize THAT stage's RECORDED (content-addressed) inputs into
+   scratch and re-invoke its runner with cwd=the shared evolving worktree, emitting
+   each stage's output. Forward + one-evolving-worktree replaces the per-stage
+   pristine random-access model (spec decision 5); hermeticity holds because every
+   stage's INPUTS are the captured artifacts (drift in one stage never propagates
+   to the next). Deterministic runners reproduce worktree state exactly (the
+   proof). LLM-stage output SUBSTITUTION (trusting recorded output over re-invoking
+   a non-deterministic model) is explicitly deferred to the dev-workflow migration
+   (2pc.2); v1 re-invokes runners forward, which is exact for deterministic graphs.
+
+### Chaining + contract details
+- `--task <file>` seeds the special role `task`. Special role `repo-state` is
+  implicit = the cwd worktree (NOT materialized into the inputs dir, NOT recorded
+  as an ArtifactRef — it is captured by the stage's git_sha). All other stage
+  Inputs resolve from a role→(ArtifactRef,bytes) map of previously-produced
+  outputs; each stage registers its Produces output into that map. workflow.Validate
+  already guarantees every input is special-or-produced-earlier.
+- Per stage: materialize chained inputs to <scratch>/inputs/NN-role (reuse
+  ExecRunner which does this), invoke, read output, store output bytes via
+  artifactstore (role = stage.Produces), append Stage, CAS-write.
+- Producer/skill: Stage.Skill + Producer.Skill = {ID: stage.Skill, Repo/Version:
+  default "manual"/run-level} so validateStage passes; Producer.Harness/Model left
+  empty (valid) — populated later by 2pc.2. ProducedBy="original". GitSHA=runGitSHA.
+  Workflow/WorkflowVersion = wf.Name / "<name>-v1".
+
+### Files
+- `internal/liverun/engine.go` — NEW. The live-run engine: graph walk in
+  declaration/dependency order, role-chaining map, per-stage execute (materialize
+  → invoke runner → store output → append Stage → CAS WriteManifestTree), run_id
+  gen, resume frontier derivation, partial-run state reseed. Pure-ish, takes a
+  refstore.Store + replay.Runner factory so it is unit-testable with StubRunner.
+- `internal/liverun/replay_forward.go` — NEW. Forward-replay walk (one evolving
+  worktree, per-stage recorded-input materialization + runner invoke in order).
+- `internal/liverun/resolve.go` — NEW. `resolveStageRunner(workflow, registry,
+  stage)` → *replay.ExecRunner; run_id generation helper; frontier/diff helper.
+- `internal/cli/run.go` — MODIFY. Add `etude run <workflow>` RunE on the existing
+  `run` parent (keep `list`/`show` subcommands intact); add flags `--task`,
+  `--run-id`, `--git-sha`, `--runner`, `--timeout`, `--resume`. Load
+  .etude/workflow.yaml + .etude/registry.yaml (workflow.ParseYAML / registry.ParseYAML
+  via repoRoot+filepath.Join, mirroring init.go), wire liverun engine.
+- `internal/cli/replay.go` — MODIFY. ExactArgs(2)→RangeArgs(1,2); when stage arg
+  absent, dispatch to forward replay (liverun.ReplayForward); preserve all current
+  single-stage behavior/flags when present.
+- `internal/cli/run_test.go`, `internal/cli/replay_test.go` — MODIFY (CLI wiring tests).
+- `internal/liverun/engine_test.go`, `internal/liverun/replay_forward_test.go`,
+  `internal/liverun/resolve_test.go` — NEW (unit tests with StubRunner + real refstore).
+- Reuse UNCHANGED: replay.ExecRunner/Runner/StubRunner, runmanifest.WriteManifestTree,
+  artifactstore, worktree.Checkout, refstore CAS, workflow.ParseYAML, registry.ParseYAML.
+
+### CLI surface
+- `etude run <workflow> --task <file> [--run-id ID] [--git-sha SHA] [--runner CMD]
+  [--timeout DUR] [--resume ID]` — live run; prints `captured <commit>` per stage
+  (or a final line) + `ref refs/etude/runs/<id>`. Non-zero exit on stage failure
+  with a resume hint. `--resume` ignores `--task`/`--run-id` (id comes from arg).
+- `etude run list` / `etude run show <id>` — unchanged (show works mid-run).
+- `etude replay <run>` — forward replay all stages; `etude replay <run> <stage>` —
+  unchanged single-stage replay.
+
+### Validation
+- All CAS writes go through runmanifest.WriteManifestTree → manifest.Validate each
+  step → manifest_version stays 2 (no gates) and every snapshot is round-trippable
+  via ParseJSON. No new manifest fields → defect #5 (absent/null/empty round-trip)
+  is structurally avoided.
+- run_id validated via runmanifest.IsValidRunID before any git call.
+- Generated git_sha = HEAD (real committed OID) so worktree.Checkout (used by
+  replay) always resolves; --git-sha validated via existing validateGitSHA.
+- Reject empty workflow / missing runner / undefined seat name / resume-of-complete
+  run / resume-of-missing run with clear errors.
+- Reserved workflow names (gate round 1, opus): `show` and `list` are valid
+  `[a-z0-9-]` names but are shadowed by the `run` subcommands, so `etude run show`
+  routes to the subcommand. Reject a workflow argument named `show` or `list` with a
+  clear "reserved name" error rather than silently mis-dispatching.
+- Forward-replay flag semantics (gate round 1, opus): in 1-arg `etude replay <run>`
+  (forward) mode, the single-stage-only flags (`--record`, producer overrides,
+  `--output`) are ERRORED with a clear message (they apply only to single-stage
+  replay); only forward-relevant flags are honored. Document this one-line decision.
+- Empty/no-commit repo edge (gate round 1, opus): `runGitSHA = HEAD` requires a real
+  committed OID; emit a clear error when the repo has no commits instead of letting
+  worktree.Checkout fail opaquely.
+
+### Test plan (incl. AC proofs)
+Hermetic deterministic runner: a tiny committed shell script (e.g.
+`testdata/echo-runner.sh`) that reads ETUDE_INPUTS_DIR/* and writes a
+deterministic transform to ETUDE_OUTPUT_FILE — NO LLM, NO network. A 3-stage
+deterministic workflow (a→b→c, all roles chained) drives the proofs.
+- AC1 live + mid-run show: run the 3-stage workflow; assert run ref exists and
+  manifest grows commit-by-commit (rev-list count increments per stage). Mid-run
+  inspectability proved by pausing the runner (a stage script that blocks on a
+  fifo/sentinel) and asserting `etude run show <id>` lists already-captured stages
+  while a later stage is still pending. Normalize volatile fields (run_id,
+  timestamps, git_sha, artifact shas) before golden compare.
+- AC2 forward replay: `etude replay <id>` (no stage) re-executes a→b→c forward;
+  assert each stage re-runs in order and outputs match the deterministic capture
+  (exact, since runner is deterministic + inputs are content-addressed). Use the
+  StubRunner/exec path that EXISTS; normalize volatile fields.
+- AC3 resume: a workflow whose stage b script exits non-zero → run exits non-zero,
+  partial run has stages {a} captured + valid (run show works, ParseJSON ok). Swap
+  b's script for a passing one, `etude run <workflow> --resume <id>` → frontier=b,
+  completes b,c; final manifest has a,b,c. Assert no duplicate stages, CAS chain
+  intact. ALSO assert the resumed run's stage-a output blob AND the `task`-role input
+  blob are byte-PRESENT in the post-resume commit (not merely referenced) — proves
+  the referenced-paths blob-bytes reseed incl. the task input (opus). Manifest Stages
+  are built explicitly from result bytes (record.go model), never derived from
+  store.artifacts, so reseed-time AddContent cannot leak duplicate stage entries.
+  ALSO test: `etude run show`/`list` reserved-name rejection; forward-replay
+  single-stage-flag rejection; no-commit-repo clear error.
+- AC4 chaining: assert stage b's recorded input ArtifactRef (role/sha) equals
+  stage a's recorded output ArtifactRef (content-addressed identity) — i.e.
+  output-role→input-role chaining matches capture-run semantics.
+- Engine unit tests with replay.StubRunner (CONCAT/CANNED/Err modes) over a real
+  refstore in a temp repo: incremental CAS sequence, create-only collision
+  (ErrRefExists), stale-CAS abort, resume frontier derivation, runner resolution
+  (inline vs seat-name vs default vs undefined-seat).
+
+### Docs blast radius (enumerate ALL)
+- Generated by `make docs` (do NOT hand-edit; run target): `docs/cli/etude_run.md`
+  (run gains <workflow> arg + new flags), `docs/cli/etude_replay.md` (optional
+  stage / forward mode), `docs/cli/etude.md` (root synopsis line for run). No NEW
+  generated files (no new subcommands; run/show/list unchanged).
+- Hand-written guides (already in mkdocs nav): `docs/run.md` (add "Live run" +
+  "Resume" sections), `docs/replay.md` (forward-replay redefinition — already
+  mid-edit per git status; align with this design).
+- `docs/README.md` index: update the Runs and Replay one-liners to mention live
+  orchestration + forward replay.
+- `mkdocs.yml`: no new nav entries required (run.md, replay.md, cli/etude_run.md,
+  cli/etude_replay.md already listed). Verify after `make docs` + `make docs-check`.
+- `docs/plans/product/live-execution.md` §1: mark the live-orchestration "Planned"
+  items as implemented for this bead (leave §2 gates / §3 secrets as planned).
+
+### Risks
+- Literal-AC vs description tension: bead description says "capture the failed
+  stage's status", but ACCEPTANCE CRITERIA (read literally) require only
+  resumability. I deliberately add NO manifest schema field for failed-stage
+  status (an orchestration bead should not mutate the manifest schema; it would
+  trip defect #5 round-trip scrutiny). Failure is surfaced via exit code + stderr;
+  the partial run captures only successfully-completed stages. Flagging for the
+  gate: if a recorded failed-stage marker is deemed required, it is a follow-up
+  schema bead.
+- LLM-stage replay substitution is deferred; v1 forward replay re-invokes runners,
+  which is exact only for deterministic graphs (the proof). Stated explicitly so
+  the gate scrutinizes the boundary rather than assuming full LLM-run replay.
+- Worktree state not captured as artifacts won't survive replay; mitigated by the
+  role-chaining contract (the deterministic proof passes ALL inter-stage data
+  through captured roles).
+- O(n) artifact-blob re-add per CAS commit (full-tree rewrite each step); blobs are
+  content-addressed/idempotent and trees tiny — acceptable, noted.
+
+### Capture
+- inputs: bead etude-xin (description + AC), docs/plans/product/live-execution.md
+  §1 + decisions 1/5/6, internal/replay/{exec_runner,runner,record,resolve}.go,
+  internal/cli/{capture_run,run,replay}.go, internal/workflow/workflow.go,
+  internal/registry/registry.go, internal/worktree/worktree.go,
+  internal/runmanifest/manifest.go, internal/refstore/store.go, cmd/gen-docs,
+  Makefile, mkdocs.yml, docs/README.md; empirical git CAS/create-only repro (git 2.47.1).
+- output: bead --design field.
+
+
+
+NOTES
+Plan gate attempt 1 (Tier 1 — new CLI command + refs/etude writes):
+- Gemini Pro: GO (optionals: replay WARN on non-deterministic runner; assert worktree inputs/outputs mid-run)
+- Claude Opus: GO (verified CAS/WriteManifestTree/replay-arity/run-dispatch all sound; flagged: resume must re-add blob BYTES; reserved names show/list; forward-replay flag semantics; empty-repo edge; failed-status gap real but defensible IF follow-up filed)
+- fresh GPT-5.5 xhigh: BLOCK (Spec Adversary: spec requires capturing failed-stage status; not durably recorded; run show can't tell which stage failed)
+- required changes incorporated: explicitly narrowed scope (failed-stage status capture+surfacing = etude-dp7, filed, depends on xin); folded blob-bytes resume + test, reserved names, forward-replay flag semantics, empty-repo edge
+- result: rerun required
+Plan gate attempt 2 (Tier 1):
+- Gemini Pro: GO
+- Claude Opus: GO (verified narrowing coherent — workflow.Validate enforces unique Produces roles so frontier-by-diff is unambiguous; etude-dp7 correctly framed as schema bead; blob-bytes reseed addresses ErrMissingArtifact; folded: reseed ALL referenced paths incl task blob, git_sha from manifest)
+- fresh GPT-5.5 xhigh: GO
+- required changes incorporated: scope narrowed (failed-stage status -> etude-dp7); reseed referenced-paths+task blob+git_sha-from-manifest folded
+- result: pass
+Implement gate: attempt 1 rerun (codex BLOCK — explicit --run-id not validated), attempt 2 PASS (Tier 1 unanimous; fix: startFresh validates explicit run-id via IsValidRunID + TestEngineInvalidExplicitRunID + reseed byte assertion). Optionals deferred to etude-g12.
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes: none in this phase (Implement already wrote engine_test.go, replay_forward_test.go, resolve_test.go, run_test.go, replay_test.go); coverage judged adequate, no dev-test-writer spawn needed.
+- commands:
+  - `go test -count=1 ./internal/liverun/... ./internal/cli/... ./internal/replay/... ./internal/runmanifest/...` → all PASS (liverun 4.6s, cli 105s, replay 16s, runmanifest 5.2s)
+  - `make lint` (gofmt -l + go vet) → PASS, clean
+  - `GOOS=windows GOARCH=amd64 go build ./...` → PASS; `GOOS=linux GOARCH=amd64 go build ./...` → PASS
+  - `make docs` → no new diff; generated docs already current
+  - `make docs-reality` → OK, 14 commands, docs match shipped CLI
+- result: pass
+
+Generated-docs change list (matches plan's expected set exactly):
+- docs/cli/etude.md, docs/cli/etude_run.md, docs/cli/etude_run_list.md, docs/cli/etude_run_show.md, docs/cli/etude_replay.md
+(No new generated files; run/show/list subcommands unchanged. Hand docs docs/run.md/docs/replay.md/docs/README.md are Docs-phase work.)
+
+AC-to-test map:
+- AC1 (live + mid-run show): TestEngineRunThreeStages, TestRunWorkflowThreeStages, TestRunShowExistingRun, TestRunListOneRun + manual binary (3 "captured" lines, `run list` shows 3 stages, `run show` lists 3 stages).
+- AC2 (forward replay): TestReplayForwardThreeStages, TestReplayForwardAllStages, TestReplayForwardSingleStageOnlyFlagsRejected + manual binary (`etude replay <id>` re-executed a->b->c forward, exact deterministic output).
+- AC3 (resume after failure): TestEngineResumeAfterFailure (incl. reseed byte-presence of task input + stage-a output blobs), TestEngineInvalidExplicitRunID, TestEngineAlreadyCompleteResumeErrors, TestRunWorkflowResume + manual binary (failing stage-b -> exit 1 + partial run {stage-a} + resume hint; fix -> `--resume` completes 3 stages, no dupes).
+- AC4 (chaining = capture-run semantics): TestEngineArtifactRefChaining, TestRunWorkflowArtifactRefChaining + manual binary (stage-a output sha a3b1... == stage-b input sha; stage-b output 6dba... == stage-c input).
+
+Manual tests:
+- required: yes (new `etude run <workflow>` CLI command; resume/forward-replay are workflow-level behaviors)
+- reason: built-binary path for a new CLI command per dev-workflow expectations.
+- result: PASS. Built bin/etude via `make build`. In throwaway git repo: `etude init` scaffolded .etude/; replaced workflow.yaml with a deterministic 3-stage chain (task->a->b->c) using inline runner.command -> shell script (no LLM/network). Verified:
+  - `etude run demo --task task.txt` -> 3 "captured <commit>" + `ref refs/etude/runs/<id>`, exit 0; `run list`/`run show <id>` list 3 stages.
+  - forward replay `etude replay <id>` -> re-executed forward, exact output `stage[do the work]stage[stage[do the work]]stage[stage[stage[do the work]]]`.
+  - single-stage replay `etude replay <id> stage-b` (2-arg) -> unchanged behavior.
+  - forward-replay flag rejection: `etude replay <id> --record` -> "--record is only valid for single-stage replay", exit 1.
+  - resume: stage-b script exit 3 -> nonzero exit, partial run {stage-a}, "resume with: etude run demo --resume <id>"; fixed script + `--resume` -> completed b,c, 3 stages total, no duplicates.
+  - invalid `--run-id ../evil` -> "invalid run id", exit 1, no ref created.
+  - no-commit repo -> clear "resolve HEAD: ensure the repo has at least one commit or pass --git-sha".
+  - temp dirs cleaned up.
+
+QA findings:
+- correctness: matches approved plan. CAS incremental capture, role chaining, run_id gen + explicit-id validation, resume-by-frontier with full referenced-paths blob reseed (incl. task input + git_sha from manifest), forward replay (1-arg) vs single-stage (2-arg), reserved-name + empty-repo guards all present and behave as designed. Gate blocks are correctly no-op'd (deferred to etude-04i). Scope narrowing (failed-stage status -> etude-dp7) respected.
+- coverage: strong. Unit tests over real refstore with StubRunner cover incremental CAS, create-only collision, frontier derivation, runner resolution (inline/seat/default/undefined), invalid explicit run-id (no-ref assertion), resume byte-presence. CLI wiring + manual binary cover end-to-end.
+- regressions: none. Existing single-stage replay tests still pass; replay arity relaxed to RangeArgs(1,2) without breaking 2-arg path (verified in binary). docs-reality clean.
+- code quality: clean (gofmt/vet pass); good reuse of runmanifest.WriteManifestTree/artifactstore/worktree/refstore; no production-code duplication of the validate->write core.
+- risks: (1) MINOR/non-blocking — on stage failure the StageError message prints twice on stderr: runWorkflow prints stageErr.Error() then returns the same err, which root ExecuteWithWriters prints again. Only the resume hint is unique. Cosmetic; recommend runWorkflow print only the resume hint (let root print the error). Suggest a small follow-up nit; not an AC violation. (2) Documented design boundaries: LLM-stage replay substitution deferred (forward replay is exact only for deterministic graphs); worktree state not captured as artifacts relies on the role-chaining contract. Both stated in plan, acceptable.
+
+Capture:
+- inputs: approved plan (--design) + Implement artifact (uncommitted diff)
+- output: append-only Verify note
+
+Verify gate attempt 1 (Tier 1):
+- Gemini Pro: GO
+- Claude Opus: GO (spot-checked tests genuine; double-print fix correct; flagged double-print only manual-tested)
+- fresh GPT-5.5 xhigh: BLOCK (AC1 mid-run inspect not evidenced by a test; double-print under-verified)
+- required changes incorporated: added TestEngineMidRunInspectable (concurrent mid-run inspection) + TestRunWorkflowStageFailureSinglePrint (error once + hint once)
+- result: rerun required
+Verify gate: attempt 1 rerun (codex BLOCK — mid-run + double-print under-verified), attempt 2 PASS (Tier 1 unanimous; added TestEngineMidRunInspectable [concurrent, -race clean] + TestRunWorkflowStageFailureSinglePrint). Optional CLI mid-run show test deferred to etude-g12.
+## Docs
+
+Changed: yes
+Files:
+- docs/run.md ("Live run" and "Resume" sections added — clean file, this bead only)
+- docs/plans/product/live-execution.md (§1 marked IMPLEMENTED; §2/§3 remain planned; etude-dp7 deferred noted)
+
+Rationale:
+- docs/run.md: added "Live run" (etude run <workflow>, all flags, incremental capture, forward replay, mid-run show) and "Resume" (etude run --resume <id>, frontier derivation, re-seed behaviour, deferred failed-stage status note) sections documenting what etude-xin shipped.
+- docs/plans/product/live-execution.md: updated status header and §1 to "Implemented (etude-xin)" with the full implemented scope; §2 annotated "Planned (etude-04i)"; §3 annotated "Planned (etude-3a2)"; durable failed-stage status deferred to etude-dp7 noted in §1.
+- docs/replay.md: pre-existing modified (anchor link fixes, unrelated mkdocs/docs-tooling work). Forward replay is documented in docs/run.md under the "Live run / Forward replay" subsection; docs/replay.md already accurately describes single-stage replay and requires no addition from this bead. NOT touched.
+- docs/README.md: pre-existing modified (cosmetic mkdocs changes). Existing Runs/Replay entries in the index are not "genuinely missing" entries — they are pre-existing entries. NOT touched to avoid entangling bead changes.
+- Generated docs (docs/cli/etude.md, etude_run.md, etude_run_list.md, etude_run_show.md, etude_replay.md): already regenerated by Implement phase; make docs produced zero new diff.
+
+Policy check:
+- policy applied: repo convention (mkdocs, make docs for generated refs, hand-written guides in docs/*.md, planning docs in docs/plans/product/)
+- shipped docs describe implemented behavior only
+- planning material remains under docs/plans/product/ (live-execution.md)
+- generated references are separate from hand-written guides
+- generated output was updated through the repo workflow (make docs) in Implement phase; Docs phase confirmed zero additional diff
+
+Capture:
+- inputs: Verify artifact and docs policy
+- output: docs/run.md additions + docs/plans/product/live-execution.md §1 status update
+Docs gate attempt 1 (Tier 3, single Opus): GO. docs/run.md (Live run/Resume/Forward replay) + live-execution.md §1 implemented; pre-existing-dirty docs/replay.md+README.md untouched; no over-claim; docs-reality green. Folded doc nits: run-id 8-hex, failure-line quoting, gate-deferred note.
+
+ACCEPTANCE CRITERIA
+etude run executes an arbitrary stage graph live + inspectable via etude run show (incl. mid-run); produced run replays FORWARD via etude replay from captured artifacts; failed run resumable via etude run --resume; stage chaining matches capture-run semantics.
+
+LABELS: phase:review
+
+PARENT
+  ↑ ○ etude-2pc: (EPIC) Live execution: drive and gate workflows, not just replay ● P1
+
+DEPENDS ON
+  → ✓ etude-2pc.1: Schema + registry foundation: per-stage runner + gate blocks, shared seat/runner registry ● P1
+
+BLOCKS
+  ← ○ etude-04i: Live gate execution: deterministic checks (hard veto) + model seats (weighted), rerun/escalate, auto capture-gate ● P1
+  ← ○ etude-2pc.2: Migrate dev workflow to the new schema and retire gates.yaml ● P1
+  ← ○ etude-dp7: Capture + surface failed-stage status in live runs (run show shows which stage failed and why) ● P2
+  ← ○ etude-g12: liverun input hardening: validate --resume id before ref resolve; refstore-layer run-id assertion; explicit-empty task vs no-task ● P3
+
+COMMENTS
+  2026-06-29 22:06 joshuavial
+    ## Final Review (Tier-3 single-seat gate): GO
+    
+    Reviewed: plan (--design), full uncommitted diff (run.go/replay.go + internal/liverun/* + tests), Verify artifact, Docs artifact + docs/run.md/live-execution.md/generated cli docs.
+    
+    Green re-confirmed:
+    - go test -count=1 ./internal/liverun/... ./internal/cli/... -> ok (liverun 3.1s, cli 65.6s)
+    - make lint -> exit 0
+    - make docs -> zero new diff (same 5 cli files)
+    - make docs-reality -> OK, 14 commands
+    
+    Coherence with plan: confirmed. Incremental CAS (create-only stage0 + CAS-append), one evolving worktree, run_id gen + explicit --run-id IsValidRunID validation, resume-by-frontier reseeding ALL referenced paths incl task input via ArtifactPaths, git_sha read from manifest.Stages[0].GitSHA (not HEAD), forward replay 1-arg vs single-stage 2-arg (RangeArgs(1,2)), single-stage-only flag rejection, reserved-name + empty-repo guards, gate no-op deferral, manifest_version stays 2 (no new fields), double-print fixed (runWorkflow prints only resume hint, root prints err once). No drift.
+    
+    Adversarial sweep: no data-loss path (durable partial run, CAS chain intact on resume); filesForManifest passes exactly referenced paths so no ErrMissingArtifact post-reseed; replay arity preserves 2-arg behavior; generated-doc blast radius is exactly the planned 5 files, no new files; defect#5 round-trip structurally avoided.
+    
+    Commit scope: IN-SCOPE = internal/cli/{run,run_test,replay,replay_test}.go, internal/liverun/ (new), docs/run.md, docs/cli/{etude,etude_run,etude_run_list,etude_run_show,etude_replay}.md, docs/plans/product/live-execution.md (tracked; this bead updated §1). Pre-existing/unrelated mkdocs work MUST be excluded: .gitignore, docs/README.md, docs/plans/README.md, docs/replay.md, _ai/research/, mkdocs.yml, requirements-docs.txt. Requires SELECTIVE staging (no git add -A / commit -a).
+    
+    Recommendation: close. Stage live-execution.md WITH this bead.
+
