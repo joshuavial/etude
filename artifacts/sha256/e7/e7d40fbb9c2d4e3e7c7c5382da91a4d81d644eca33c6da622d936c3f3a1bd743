@@ -1,0 +1,396 @@
+✓ etude-github-import · Implement GitHub PR import backfill   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-18 · Updated: 2026-05-27
+Close reason: Closed
+
+DESCRIPTION
+Implement etude import --from-github --repo <owner/name> --last N to reconstruct runs from historical PR final diffs and PR bodies, with clear limitations for plan and implement stages.
+
+DESIGN
+## Plan
+
+**Approach:** Add a NEW top-level `etude import` cobra command that reconstructs
+etude runs from historical GitHub PRs via the authenticated `gh` CLI (NO GitHub
+token). Each merged/closed PR maps to one run with exactly two stages: a
+final-diff artifact and a PR-body artifact. The plan ENCODES THE HONEST
+LIMITATION from BRIEF.md:315-325,416-423 — old PRs reliably yield only the final
+diff + PR body, so imported runs are useful for benching `review`/`docs` skills
+but NOT `plan`/`implement` (first drafts were never saved). We do NOT fabricate
+plan/implement stages. We REUSE the runmanifest + capture-run writing path
+(content-addressing, create-only ref write) rather than reinventing it. gh is an
+external dependency, so a `gh`-runner interface (mirroring the retro generate
+injected-generator seam at internal/cli/retro.go:793-801) makes tests hermetic.
+
+### Command surface
+
+```
+etude import --from-github --repo <owner/name> --last N [flags]
+```
+
+Flags (decided):
+- `--from-github` (bool, required for v1) — source selector. v1 supports only
+  GitHub; the flag is explicit so a future `--from-gitlab` etc. is additive.
+  If absent: error "exactly one source is required (--from-github)".
+- `--repo <owner/name>` (string, required) — validated as `<owner>/<name>`
+  (each segment non-empty, no spaces/slashes beyond the single separator).
+- `--last N` (int, default 50) — matches BRIEF.md:386 `--last 50`. Reject N<1.
+- `--state merged|closed|all` (string, default `merged`) — passed through to
+  `gh pr list --state`. Default merged because only merged PRs carry a stable
+  merge commit (the run's git_sha anchor); for `closed`/`all`, PRs lacking a
+  merge commit are SKIPPED with a warning (no git_sha to anchor on).
+- `--dry-run` (bool, default false) — fetch + map + print what WOULD be imported
+  (run_id, pr#, git_sha, occurred_at, skip/exists reason) to stdout; write
+  NOTHING to refs.
+- `--message <msg>` (string) — optional commit message override (mirrors
+  capture-run, internal/cli/capture_run.go:137); default per-run message below.
+
+Registered in internal/cli/root.go:36-48 via `cmd.AddCommand(newImportCommand(out, errOut))`.
+
+### gh integration (NO token) — exact calls + fields
+
+Confirmed working with gh 2.88.1 against a live repo (cli/cli):
+
+1. List PRs (one call, JSON):
+   ```
+   gh pr list --repo <owner/name> --state <state> --limit <N> \
+     --json number,title,body,mergedAt,mergeCommit,author,url,state
+   ```
+   Returns a JSON array; each element has: `number` (int), `title` (string),
+   `body` (string), `mergedAt` (RFC3339 string, "" or null when not merged),
+   `mergeCommit.oid` (40-hex string, null when no merge commit), `author.login`
+   (string), `url` (string), `state` (string: "MERGED"/"CLOSED"/"OPEN").
+   (Confirmed: these exact fields all populate. `reviews` is also available on
+   the list `--json` set but is NOT needed — review TEXT is not reconstructible
+   from the list and is out of scope; we record only diff + body.)
+
+2. Final diff per PR (one call each, raw text):
+   ```
+   gh pr diff <number> --repo <owner/name>
+   ```
+   Emits the unified diff on stdout, exit 0 on success, exit 1 + a clear stderr
+   message ("could not find pull request diff: HTTP 404 ...") on failure.
+   (Confirmed both success and the non-zero failure exit.)
+
+gh-not-installed / not-authed handling (NO token fallback):
+- Before any fetch, run `gh auth status` once. If `gh` is not on PATH
+  (exec.LookPath fails) OR `gh auth status` exits non-zero, return a CLEAR
+  actionable error and exit non-zero, e.g.:
+  `gh CLI is required and must be authenticated; install gh and run 'gh auth login' (etude import uses gh, not a GitHub token)`.
+- Per-PR `gh pr diff` failure: by default skip that PR with a warning to stderr
+  and continue (one bad PR must not abort a --last 50 import); a `gh pr list`
+  failure (whole-fetch) is fatal.
+
+### PR -> run manifest mapping (one PR = one run)
+
+| Field | Value | Notes |
+|---|---|---|
+| run_id | `gh-<owner>-<repo>-pr<number>` | Sanitized: each `/`,`.` etc. in owner/repo replaced so the id satisfies `runmanifest.IsValidRunID` (manifest.go:675; allowed charset `[A-Za-z0-9_.-]`, no leading/trailing dot, no `..`, no `.lock`). Stable + collision-safe (PR# is unique per repo). |
+| git_sha | `mergeCommit.oid` | The PR merge commit; the repo state anchor for replay. Validated 40/64-hex (validateGitSHA, capture.go:304). PRs with no merge commit are SKIPPED. |
+| occurred_at | `mergedAt` (RFC3339) | REUSE the manifest OccurredAt field (8hq.2; manifest.go:43-47, set like retro.go:758) so `etude log` places imported runs at their real merge time, not import time. |
+| created | import time (now, UTC) | Capture time, as everywhere. |
+| workflow / workflow_version | `github-import` / `github-import-v1` | Distinct constants so imported runs are queryable/distinguishable from manual/live runs. |
+| refs | `{pr: "<number>", repo: "<owner/name>", source: "github", url: "<pr url>", author: "<login>"}` | All string values (BRIEF.md:293). Keys validated by validateRefsMap (capture_run.go:440). NOTE: refs values are NOT charset-restricted (only keys are), so `<owner/name>` and the URL are valid ref VALUES. |
+| producer.harness | `{name: "github-import", version: "<gh version>"}` | Records the import path as the producer harness. |
+| producer.model | "" | No model — these are human-authored historical artifacts, not LLM output. Empty model is valid per the manifest schema. |
+| producer.skill | `{id: "github-import", repo: "github-import", version: "github-import"}` | skill.id/repo/version are all REQUIRED non-empty by validateStage (manifest.go:403-411), so we set sentinel values. |
+
+Stages (exactly two; honest model):
+1. stage `implement`, produced_by `import`, output role `diff`, media_type
+   `text/x-diff; charset=utf-8` (inferMediaType handles `.diff`, capture.go:608),
+   content = `gh pr diff` output. (Role `diff` matches the BRIEF implement
+   stage `produces: diff`, BRIEF.md:113.)
+2. stage `review`, produced_by `import`, output role `review`, media_type
+   `text/markdown; charset=utf-8`, content = the PR `body`. (PR body is the
+   closest historical analog to a review/docs artifact, BRIEF.md:422.)
+
+produced_by is the sentinel `import` (a valid identifier; distinguishes these
+from `original`/`replay`/`retro`). The LIMITATION is encoded structurally
+(only diff + body stages exist; no `plan` stage, no first-draft `implement`
+artifact) AND documented in docs/import.md (below). A PR with an EMPTY body
+still produces the diff stage but SKIPS the review stage (empty artifact would
+be meaningless); a PR with an empty diff (rare) skips the diff stage. A PR that
+ends up with zero stages is skipped with a warning (a manifest requires >=1
+stage, manifest.go:226).
+
+### Reuse-capture-run approach
+
+REUSE, do not reinvent:
+- `artifactstore.New()` + `store.AddContent(role, mediaType, content)` for
+  content-addressing (as capture_run.go:210, addFileArtifactFromPath:373).
+- `runmanifest.ArtifactFromManifestArtifact` to build ArtifactRefs.
+- `runmanifest.WriteManifestTree(ctx, store, "refs/etude/runs/", manifest,
+  files, refstore.WriteOptions{Message})` with ExpectedOld="" — the create-only
+  path (capture_run.go:241-249). On `refstore.ErrRefExists`, treat as
+  "already imported, skip" (NOT a fatal error — see idempotency).
+- Constants/helpers from capture.go: `validateGitSHA`, `inferMediaType`,
+  `validateCLIIdentifier`, `validateRefsMap`.
+The PR->Stage assembly is NEW (no file paths; content comes from gh, not disk),
+so we add a small `buildImportStage(role, mediaType string, content []byte,
+gitSHA, now)` helper rather than overloading capture-run's path-based
+`buildStage`. No extraction from capture_run.go is required; the shared writing
+core already lives in `runmanifest.WriteManifestTree`.
+
+### Idempotency + safety
+
+- Create-only writes (ExpectedOld=""). A PR whose run ref
+  `refs/etude/runs/gh-<owner>-<repo>-pr<number>` already exists is SKIPPED with
+  an informational line ("pr 123 already imported as <run_id>, skipping"), NOT
+  an error. So re-running `--last N` never clobbers and is safely repeatable
+  (matches capture-run's create-only guarantee, refstore.go:65-68).
+- Read-only against GitHub: only `gh pr list` / `gh pr diff` / `gh auth status`
+  (no `gh pr edit`, no `gh api -X POST`). No writes to GitHub.
+- Writes ONLY `refs/etude/runs/*` locally. Does NOT auto-push (matches
+  capture/capture-run, which never push; the user runs `etude sync` separately,
+  BRIEF.md:191-194). Documented in docs/import.md.
+- `--dry-run` writes nothing.
+- Summary line at end: "imported X, skipped Y (already present), skipped Z (no
+  merge commit / empty), errors E".
+
+### Tests (gh is external -> hermetic, fixture-injected)
+
+Test seam (mirrors retro generate, retro.go:793-801): define a small interface
+
+```go
+type ghClient interface {
+    AuthStatus(ctx) error
+    ListPRs(ctx, repo, state string, limit int) ([]ghPR, error)
+    Diff(ctx, repo string, number int) ([]byte, error)
+}
+```
+
+Production impl `execGHClient` shells out to `gh` (exec.CommandContext, like
+capture.go:317 / replay exec_runner.go:139). `newImportCommand(out, errOut)`
+builds the runner with a real `execGHClient`; an unexported
+`buildImportCommand(out, errOut, runner)` (the retro.go:806 pattern) lets tests
+inject a `stubGHClient` backed by FIXTURES — NO live GitHub, NO network.
+
+Fixtures (testdata):
+- `testdata/import/pr-list.json` — a sample `gh pr list --json ...` array: 3
+  PRs (one normal merged PR with body+diff; one merged PR with EMPTY body; one
+  CLOSED PR with no merge commit).
+- `testdata/import/pr-<n>.diff` — sample unified diffs per PR.
+
+Assertions (internal/cli/import_test.go):
+1. Happy path: 3-PR fixture -> reads back each written run via the refstore
+   (as capture_run_test.go does); assert manifest has run_id
+   `gh-<owner>-<repo>-pr<n>`, git_sha == mergeCommit.oid, OccurredAt == mergedAt,
+   refs {pr,repo,source,url,author}, exactly the diff (role `diff`) + review
+   (role `review`) stages with produced_by `import`, and NO plan stage.
+2. Empty-body PR: only the `diff` stage is written (review skipped).
+3. No-merge-commit PR (state=closed): SKIPPED, summary counts it, no ref written.
+4. Idempotency: importing the same fixture twice -> second run reports all
+   PRs skipped-already-present, refs unchanged (compare commit oids).
+5. `--dry-run`: prints the plan, writes zero refs (List(refs/etude/runs)==0).
+6. gh-not-authed: `stubGHClient.AuthStatus` returns error -> command exits
+   non-zero with the actionable message; nothing written.
+7. Table/parse test: a focused unit test on the `gh`-JSON -> `ghPR` ->
+   run-mapping function (sanitize run_id; map mergedAt->OccurredAt; skip rules)
+   covering owner/repo sanitization, missing mergeCommit, empty body.
+
+Use the test git-repo + refstore helpers already used by capture_run_test.go.
+
+### Built-binary manual test (CLI bead — REQUIRED)
+
+After `make build`, run the REAL gh-backed path in a throwaway etude repo:
+```
+TMP=$(mktemp -d) && git -C "$TMP" init -q && (cd "$TMP" && git commit -q --allow-empty -m init && \
+  "$PWD/bin/etude" import --from-github --repo cli/cli --last 3 && \
+  "$PWD/bin/etude" run list && "$PWD/bin/etude" log)
+# inspect: git -C "$TMP" for-each-ref refs/etude/runs ; etude run show <run-id>
+# confirm diff+body artifacts, occurred_at == merge time, then rm -rf "$TMP"
+```
+(joshuavial/etude currently has NO merged PRs, so use a small real repo such as
+cli/cli — verified to return PRs above — or any repo with >=3 merged PRs.) Also
+run `etude import --from-github --repo cli/cli --last 3` a SECOND time to
+confirm idempotent skipping, and `--dry-run` to confirm no-write. Clean up the
+temp repo.
+
+### Docs
+
+- `docs/cli/etude_import.md` — GENERATED by `make docs`
+  (go run ./cmd/gen-docs, Makefile:22-23). A new cobra command auto-produces
+  this page; `make docs-check` (Makefile:25-27) then passes.
+- `docs/import.md` — NEW hand-written page: the command, flags, the exact gh
+  calls, the PR->run mapping, AND the HONEST LIMITATION (good for review/docs
+  bench, weak for plan/implement). Must NOT claim plan/implement first-drafts
+  are recovered.
+- `README.md`: add `etude import` to the command USAGE mentions AND
+  `docs/README.md`: add an `[Import](import.md)` index link — REQUIRED so
+  `make docs-reality` (scripts/docs-reality-check.sh:6-12) passes for the new
+  top-level command.
+- DO NOT rewrite V1-SCOPE.md to claim import joined v1. import is correctly
+  DEFERRED-from-v1 (V1-SCOPE.md:66-71,111-113); building it now as the
+  next-after-v1 Phase-1 feature is consistent. OPTIONAL follow-up (not blocking
+  this bead): flip the V1-SCOPE Phase-1 status note from "USER-BLOCKED" to
+  "shipped post-v1" — but that is a docs reconciliation, kept out of this code
+  bead's scope unless the gate asks for it.
+
+### Scope / decomposition
+
+RECOMMENDATION: KEEP AS ONE BEAD (one commit). The feature is coherent and
+moderate: ~one new file `internal/cli/import.go` (the command + ghClient
+interface + execGHClient + PR->manifest mapping, ~250-300 LOC reusing
+runmanifest/artifactstore/refstore wholesale) + `internal/cli/import_test.go`
++ fixtures + one line in root.go + the two docs. The gh-fetch and the
+PR->manifest mapping are tightly coupled (the mapping consumes the gh JSON
+shape directly) and splitting them would create an artificial library boundary
+with no second consumer. If the gate finds the diff too large at review, the
+natural split is (a) `ghClient` interface + execGHClient + PR->manifest mapping
++ unit/table tests, then (b) `import` command wiring + e2e fixture test + docs —
+as two child beads. Default: single bead.
+
+### Files
+
+- internal/cli/import.go — NEW: `newImportCommand`/`buildImportCommand`,
+  `ghClient` interface, `execGHClient`, `ghPR` DTO, PR->manifest mapping,
+  create-only write via runmanifest.WriteManifestTree, dry-run + summary.
+- internal/cli/root.go — MODIFY: register `newImportCommand` in the AddCommand
+  list (root.go:36-48).
+- internal/cli/import_test.go — NEW: hermetic fixture-injected tests + table
+  test (assertions above).
+- internal/cli/testdata/import/pr-list.json, pr-<n>.diff — NEW fixtures.
+- docs/cli/etude_import.md — NEW (generated by `make docs`).
+- docs/import.md — NEW hand-written page (command + honest limitation).
+- README.md, docs/README.md — MODIFY: advertise + index the new command
+  (required for `make docs-reality`).
+
+**Risks:**
+- gh JSON field stability: low — fields confirmed against gh 2.88.1; DTO uses
+  only documented `--json` keys and tolerates absent mergeCommit/empty body.
+- `gh pr diff` exit semantics: confirmed exit 0 on success, exit 1 + clear
+  stderr on 404 — per-PR failures are skipped-with-warning, not fatal.
+- run_id sanitization must always yield a valid IsValidRunID; covered by the
+  table test. Otherwise straightforward — heavy reuse of the proven
+  capture-run/runmanifest path.
+
+**Capture:**
+- inputs: bead etude-github-import (+ parent etude-phase1, dep
+  etude-run-manifest); BRIEF.md (§4.6:315-325, §5:375-390, §6:416-423,
+  §4.4:220-304); V1-SCOPE.md:66-71,111-113; internal/cli/capture_run.go,
+  capture.go, root.go, retro.go; internal/runmanifest/manifest.go;
+  internal/refstore/store.go; internal/replay/exec_runner.go; Makefile;
+  scripts/docs-reality-check.sh; live `gh` probes (gh pr list/diff against
+  cli/cli, gh auth status).
+- output: bead --design field
+
+## AMENDMENT (plan gate r1 — codex BLOCK + gemini BLOCK adopted: stage-honesty fix)
+
+Plan gate: codex BLOCK + gemini BLOCK (verified-true; both agree). Everything else
+(gh calls, run_id, occurred_at=mergedAt, reuse of capture-run/runmanifest/artifactstore/
+refstore, create-only idempotency, read-only-against-GitHub, hermetic ghClient+fixtures,
+single-bead scope, NO token) was confirmed CORRECT. The one defect + its agreed fix:
+
+### Fix 1 — NO `implement` stage (stage honesty)
+The original mapping (`implement`→role `diff` + `review`→role `body`) is DISHONEST:
+the brief (BRIEF.md §4.6 ~:321, §6 ~:422) is explicit that historical PRs reliably
+yield ONLY the final diff + PR body and are good for benching **`review`/`docs`**, NOT
+`plan`/`implement` (first-draft plans AND implementations were never saved). Tagging a
+final, post-review merged diff as an `implement` stage would let `implement`-skill
+benchmarking compete against polished post-review code — polluting the bench pool.
+
+**Corrected mapping — one `review` stage, no plan, no implement:**
+- A single stage `review`, `produced_by: import`:
+  - **input**: the final diff artifact, role `diff` (the thing being reviewed / the
+    review context).
+  - **output**: the PR body artifact, role `pr-body` (the human's PR description /
+    review-ish text — the review-stage artifact).
+- NO `plan` stage. NO `implement` stage. The imported run is explicitly a
+  review/docs-evaluable record only — the structural shape encodes the brief's
+  limitation (you cannot bench plan/implement against it because those stages don't
+  exist in the manifest).
+- **Empty-body PR**: there is no review output. Then write a single stage `import`
+  (or `final-diff`) whose OUTPUT is the diff artifact (role `diff`) and no review —
+  i.e. a final-diff-only record — rather than fabricating a review output. (Manifest
+  requires each stage to have an output; the diff is the output in that case.) Decide
+  the exact stage name at implement, but do NOT invent a review/implement output.
+- Document in `docs/import.md` that imported runs carry ONLY review/docs-usable
+  artifacts (final diff + PR body) and deliberately omit plan/implement stages.
+
+### Fix 2 — populate Workflow + WorkflowVersion (gemini NIT; Validate requires them)
+`runmanifest.Manifest.Validate` requires non-empty `Workflow` AND `WorkflowVersion`.
+The import manifest MUST set them explicitly: `Workflow: "github-import"`,
+`WorkflowVersion: "github-import-v1"` (or `"1"`). Confirm against the validator at
+implement.
+
+### Fix 3 — test + doc NITs (codex)
+- Add a fixture + test case for a per-PR `gh pr diff` FAILURE (e.g. a 404 / non-zero
+  exit): the importer SKIPS that PR with a warning and continues (not fatal). 
+- `docs/retro.md`/manifest docs already describe `occurred_at`; note in `docs/import.md`
+  that imported runs set `occurred_at = mergedAt` so `etude log` places them at merge
+  time (the OccurredAt field now has an import producer too).
+
+### Unchanged
+Command surface, gh calls + JSON fields, run_id scheme, git_sha=mergeCommit.oid (skip
+no-merge-commit PRs), occurred_at=mergedAt, refs {pr,repo,source,url,author}, reuse of
+the capture-run writing path, create-only idempotency, read-only GitHub, the ghClient
+fixture seam, the built-binary manual test (against cli/cli), one-bead scope,
+post-v1-Phase-1 (do NOT touch V1-SCOPE). Only the stage mapping changes (review-only,
+no implement) + the two NIT fixes.
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- NEW `internal/cli/import.go`: `etude import` cobra command with `ghClient` interface, `execGHClient` (shells to `gh`), PR→run manifest mapping, create-only write via `runmanifest.WriteManifestTree`, dry-run + summary output
+- NEW `internal/cli/import_test.go`: 12 hermetic fixture-injected tests covering happy-path (review-only stage shape, no plan/implement), empty-body PR (final-diff stage), no-merge-commit skip, diff-failure skip-with-warning, idempotency, dry-run, gh-not-authed error, run-id sanitization table test, mergedAt→occurred_at mapping, missing flag validation
+- NEW `internal/cli/testdata/import/pr-list.json`: 4-PR fixture (normal, empty-body, no-merge-commit, diff-fail)
+- NEW `internal/cli/testdata/import/pr-101.diff`, `pr-102.diff`
+- MODIFIED `internal/cli/root.go`: registered `newImportCommand`
+- MODIFIED `internal/cli/prime.go`: removed `import` from Planned list (now shipped)
+- MODIFIED `internal/cli/prime_test.go`: removed `import` from plannedNames assertion
+- MODIFIED `docs/cli/etude_import.md`: GENERATED by `make docs`
+- NEW `docs/import.md`: hand-written page — command, flags, gh calls, PR→run mapping, honest limitation (review/docs-only, no plan/implement), occurred_at=mergedAt note
+- MODIFIED `README.md`: advertised `etude import --from-github`, added to command list, updated deferred-commands paragraph
+- MODIFIED `docs/README.md`: added Import index link
+
+**Key decisions:**
+- AMENDMENT stage-honesty fully implemented: single `review` stage (diff input + pr-body output); empty-body → `final-diff` stage; NO plan/implement stages anywhere
+- `ghClient` interface + `buildImportCommand(out, errOut, client)` test seam mirrors retro.go:793-815 pattern exactly
+- Idempotency via `ErrRefExists` catch, continue (not fatal)
+- Per-PR diff failure: skip-with-warning, not fatal
+
+**Checks run:**
+- `go test ./...`: PASS (all packages)
+- `make lint` (gofmt + go vet): PASS
+- `make docs`: regenerated 21 docs including etude_import.md
+- `make docs-reality`: OK — 14 commands; docs match the shipped CLI
+- `make reconcile`: PASS
+
+**Built-binary manual test (against live gh, cli/cli --last 3):**
+- First run: imported pr 13518 as gh-cli-cli-pr13518, imported pr 13491 as gh-cli-cli-pr13491, 1 skipped (HTTP 500 diff unavailable)
+- Stage shape: review stage, produced_by=import, input role=diff, output role=pr-body
+- occurred_at values: pr13518→2026-05-26T08:07:00Z, pr13491→2026-05-22T16:39:32Z (PR merge times confirmed)
+- Second run: all PRs reported 'already imported', idempotent skip confirmed, refs unchanged
+- --dry-run: printed 3 would-import lines, wrote zero refs confirmed
+- No token used (gh only), no refs pushed to origin
+
+**Changed files:**
+- `internal/cli/import.go` (NEW)
+- `internal/cli/import_test.go` (NEW)
+- `internal/cli/testdata/import/pr-list.json` (NEW)
+- `internal/cli/testdata/import/pr-101.diff` (NEW)
+- `internal/cli/testdata/import/pr-102.diff` (NEW)
+- `internal/cli/root.go` (MODIFIED)
+- `internal/cli/prime.go` (MODIFIED)
+- `internal/cli/prime_test.go` (MODIFIED)
+- `docs/cli/etude_import.md` (GENERATED)
+- `docs/import.md` (NEW)
+- `README.md` (MODIFIED)
+- `docs/README.md` (MODIFIED)
+
+**Plan deviations:** None. AMENDMENT fully implemented.
+
+**Capture:**
+- inputs: bead etude-github-import design field (including AMENDMENT section); internal/cli/capture_run.go; internal/runmanifest/manifest.go; internal/artifactstore/store.go; internal/refstore/store.go; internal/cli/retro.go:793-815; internal/cli/root.go; internal/cli/capture_test.go (test helper patterns)
+- output: working tree diff and this bead notes
+
+LABELS: phase:implement
+
+PARENT
+  ↑ ○ etude-phase1: (EPIC) Phase 1: xenota capture adapter and GitHub import ● P2
+
+DEPENDS ON
+  → ✓ etude-run-manifest: Define and write run manifests ● P1
+
+

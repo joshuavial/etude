@@ -1,0 +1,10 @@
+# Verify — etude-github-import (etude import --from-github via gh CLI)
+New public CLI command (Tier 1). Phase-1 GitHub half, unblocked via the authed `gh` CLI (NO token; xenota adapter still deferred).
+## Checks
+- `go test ./internal/cli/` PASS (12+ import tests, hermetic via stub ghClient + testdata/import/ fixtures — no live gh needed after the preflight fix). `make lint` green. `make docs-reality` OK (14 commands). `make reconcile` green.
+- Built-binary manual test (live gh, throwaway repo): `etude import --from-github --repo cli/cli --last 3` → runs `gh-cli-cli-pr<N>`; manifest = single `review` stage (input role `diff`, output role `pr-body`), workflow=github-import, occurred_at = PR merge time, refs {pr,repo,source,url,author}; NO plan/implement stage. Re-run → idempotent skip (create-only/ErrRefExists). `--dry-run` → 0 refs written. A PR with a transient diff-500 → skip-with-warning (not fatal). No token, no push.
+## Stage honesty (the amended fix)
+Per BRIEF §4.6/§6: imported PRs reliably yield only final diff + PR body → review/docs-evaluable. Mapping is review-only (no plan/implement) so `implement`/`plan` skills can't bench against post-review code. Empty-body PR → a `final-diff` stage (diff output), no fabricated review.
+## Run-id robustness (implement-gate codex BLOCK, fixed)
+`buildImportRunID` collapses `..` (not just `--`) + a defensive `runmanifest.IsValidRunID` guard skips any PR whose id would be invalid — no invalid run id reaches the manifest write. Adversarial inputs (foo..bar, foo...bar, own..er/foo..bar) verified clean.
+## Result: PASS
