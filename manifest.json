@@ -438,6 +438,52 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T16:44:35.190551Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify",
+          "artifact": "e0f8f46356cdab20d81e48cd14382c72cef8383d4238d08989b6b8042eba8ff2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T17:01:37Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T17:01:37Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. The deterministic checks ran live at verify.r1 (make test go, make lint go) and this attempt records the completed panel, appended before the verdict was acted on. THE SUPERVISION FINDING OF THIS PROOF RUN: the gate had to be invoked FROM THE WORKER'S WORKTREE. The supervisor's own worktree does not contain the change at all - grep -c retro_file internal/cli/retro.go returns 0 there - so running etude gate from the supervisor's cwd would have executed make test and make lint against the wrong tree, passed both, and certified nothing. Nothing in etude gate, the supervisor runbook, or the workflow config says which worktree the checks run in; the checks simply inherit the caller's cwd. That is a silent fail-open on the one gate whose whole value is executing real checks, and it is invisible because the wrong answer is green. The opus seat independently confirmed the worker's claim that its regressions were MEASURED red without the change rather than asserted. Five optionals returned, the sharpest being that the artifact records WHERE the checks ran but not WHY that matters, and a misquoted diffstat (+160/-15 double-counts deletions from --stat; --numstat gives +145/-15). All handed back to the worker verbatim."
+      },
+      "timestamp": "2026-08-15T17:01:37Z"
     }
   ]
 }
