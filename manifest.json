@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-9uf.1",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -59,6 +59,53 @@
         "size": 14695
       },
       "timestamp": "2026-08-15T05:50:31.813292Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:50:32Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "antigravity",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-6-thinking"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T05:50:32Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "opus seat run as the documented substitute (registry claude -p --model opus returns Not logged in under a Claude Code orchestrator; in-harness sub-agent seat returned no verdict across five attempts this session). Substitute: agy --model Claude Opus 4.6 (Thinking), identical packet. Both PASS_WITH_FOLLOWUPS, no blocking. All five follow-ups FOLDED into the plan, not deferred: explicit exit-code contract table; session-evidence step naming storeSeatSessionEvidence plus a parity test asserting evidence fields; reconciliation of a real contradiction opus caught (the prompt told the MODEL to write the envelope while the adapter section had the ADAPTER building it — resolved so the model emits a prose RETURN block and the adapter owns the envelope); a fail-closed adapter contract with four ordered cases; and the --timeout default and expiry behavior."
+      },
+      "timestamp": "2026-08-15T05:50:32Z"
     }
   ]
 }
