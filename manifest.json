@@ -757,6 +757,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T08:02:59.480266Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "0d1905762cc240ff2bde435466ec96578c3d574e7d654946ce9dddd61a09ef81"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) Artifact asserts each finding is addressed without naming the file/symbol that changed — a one-clause pointer per finding would let a later seat verify without re-deriving the diff. 2) It states tests/lint/replay QA/gates are \"required before commit\" but reports no results; record the actual outcomes in the same artifact once run, so readiness and verification are not split across records. 3) Name the tracked follow-up (issue/bead id) for the deferred operator override and the raw-log trust-boundary policy work rather than referring to it generically."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "b705ea5c9e8d5a91292c94d71024466aedd5b3f62975c0c6719f176cf3add869",
+            "path": "artifacts/sha256/b7/b705ea5c9e8d5a91292c94d71024466aedd5b3f62975c0c6719f176cf3add869",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 712
+          },
+          "session": {
+            "session_id": "opus-a00a2ccc97e837b5",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "a00a2ccc97e837b52e285819b5219dcb7281e42f94622adad0785ff4409df26d",
+              "path": "artifacts/sha256/a0/a00a2ccc97e837b52e285819b5219dcb7281e42f94622adad0785ff4409df26d",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 619
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-16T08:03:30.665511Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T08:03:30.665615Z"
     }
   ]
 }
