@@ -1,0 +1,16 @@
+# Verify — etude-0rt (shared WriteManifestTree run-writer helper)
+
+Status: PASS. Recommendation: proceed to Docs (no-op).
+
+## Automated
+- `go build ./...` exit 0; `go test ./...` all 14 pkgs ok (internal/runmanifest + internal/retro pass); `make lint` clean; `make docs-check` no diff; `make docs-reality` OK (10 cmds). New TestWriteManifestTreeParameterization passes both sub-tests (retros-prefix create-only ErrRefExists; CAS append via ExpectedOld + stale ErrStaleRef).
+
+## Built-binary smoke (behavior-equivalence; throwaway temp git repo)
+- Run-writer CREATE: `etude capture plan --run etude-smoke1` -> exit 0, captured + ref refs/etude/runs/etude-smoke1.
+- Run-writer APPEND/CAS (exercises ExpectedOld): `etude capture implement --run etude-smoke1` -> exit 0, ref advanced; run show renders both stages.
+- manifest.json via refactored core is well-formed (manifest_version 2; run_id/workflow/workflow_version/created/refs/stages; both stages complete producer/output/git_sha/timestamp) — nothing dropped/reshaped.
+- Retro-writer CREATE-ONLY: `etude retro capture phase --subject-run etude-smoke1` -> exit 0, ref refs/etude/retros/...; retro show renders. Writer-level create-only ErrRefExists locked by new test + existing TestWriterIsCreateOnly.
+- Temp repo cleaned up.
+
+## QA findings
+Matches the Layer-A plan exactly. Shared WriteManifestTree parameterized by refPrefix + refstore.WriteOptions; runmanifest passes runs prefix + opts.ExpectedOld; retro passes retros prefix + empty ExpectedOld (create-only) + default "retro: <id>" message. Behavior-equivalent. No existing test edited (git diff manifest_test.go = only the additive test; retro_test.go untouched). Scope: 3 files (manifest.go, retro.go, manifest_test.go). The manifest.JSON() reorder has no observable effect.
