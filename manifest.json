@@ -1382,6 +1382,52 @@
         "degraded_reason": "CORRECTION RECORD. This attempt CORRECTS the reviewed_stages of an earlier passing record on this same run. It does not re-run any seat and grants no new approval; it exists so the manifest names the bytes the seats were actually handed. The verdicts are the ones already given. implement.r4 recorded artifact 67a23225 (stage implement.r5), but gate-impl-r3.packet.md froze e54ff6f8 (stage implement.r4) and codex's envelope landed thirteen minutes BEFORE 67a23225 existed. So the passing record named an artifact no seat had seen, and the artifact the seats DID approve appeared ungated. Found by the final-review seat, which recomputed envelope timestamps against stage capture times rather than trusting the record. Root cause: the bootstrap path takes reviewed-stage and artifact as author-supplied arguments, so a supervisor who has re-captured since the packet was frozen will name the newer stage by reflex. etude gate cannot make this mistake - it resolves the reviewed stage itself. Recorded on etude-4ed."
       },
       "timestamp": "2026-08-15T20:31:56Z"
+    },
+    {
+      "gate_id": "verify.r4",
+      "phase": "verify",
+      "round": 4,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "3f7aaa4057f305a7cb8211ffb4e1f5819e00c9d792d379bdc16d0c9b0d887ae2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T20:32:01Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T20:32:01Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "CORRECTION RECORD. This attempt CORRECTS the reviewed_stages of an earlier passing record on this same run. It does not re-run any seat and grants no new approval; it exists so the manifest names the bytes the seats were actually handed. The verdicts are the ones already given. verify.r3 recorded artifact 4d5924bc - the ORIGINAL verify artifact - while gate-verify-r2.packet.md froze 3f7aaa40, and its own degraded_reason called 4d5924bc 'the corrected verify artifact', which it was not. Same root cause as the implement correction: author-supplied reviewed-stage in the bootstrap path. Recorded on etude-4ed."
+      },
+      "timestamp": "2026-08-15T20:32:01Z"
     }
   ]
 }
