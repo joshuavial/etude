@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `buildPriorAttemptInputs` always appends a `prior-attempts` artifact, even when there are zero prior `rerun` gates. That means every rerun after an `escalated`-only history receives reserved prior-attempt evidence despite docs saying only `rerun` attempts enter the history.
+OPTIONAL: 1. Check import cleanup in `internal/liverun/gate.go` after removing `firstCheckoutGitlink`; stale `bytes`, `errors`, or `os/exec` imports would fail compilation if unused.
+CONFIDENCE: medium

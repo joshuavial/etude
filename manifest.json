@@ -779,6 +779,103 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T05:52:39.168763Z"
+    },
+    {
+      "gate_id": "implement.r10",
+      "phase": "implement",
+      "round": 10,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r9",
+          "role": "diff",
+          "artifact": "b866122e5c5de262e7671a9fe25fd46cc707ada7561725018d92a010e2add5f2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `ExecRunner` decides whether to read the session sidecar from `req.Producer.Harness.Name` while `Engine.runAndCaptureStage` decides whether to record it from `res.Producer.Harness.Name`; a runner that rewrites the harness to \"shell\" in its result would have a validly-parsed session silently dropped rather than rejected — worth collapsing to one predicate. 2. `buildPriorAttemptInputs` hard-fails the run with \"artifact %s is not materialized\" if a prior stage output/log/transcript is absent from `as.Files()`; on the resume path only the refs are re-registered in `refByPath`, so a resumed rerun depends on the artifact store being rebuilt with content — a targeted resume-then-rerun test would pin that. 3. `stageByName` scans backwards and returns the last name match; harmless today because rerun stages are `<stage>.r<N>`-unique, but a comment or a uniqueness assert would keep it that way. 4. Stage-log artifact roles are derived as `<stageName>-log`, yielding roles like `plan.r2-log`; if artifact-ref role validation ever tightens to workflow role tokens this becomes a latent break."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "1e20dcb7754632cbc86ace26d54275f7a35300a775ecfeea11098f1167da725c",
+            "path": "artifacts/sha256/1e/1e20dcb7754632cbc86ace26d54275f7a35300a775ecfeea11098f1167da725c",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1255
+          },
+          "session": {
+            "session_id": "opus-8f68aaf82d2840d0",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "8f68aaf82d2840d00b1a6e17d4394f5baa0daa8cd3207d54bd1a5c01a0eaab1d",
+              "path": "artifacts/sha256/8f/8f68aaf82d2840d00b1a6e17d4394f5baa0daa8cd3207d54bd1a5c01a0eaab1d",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1157
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:56:14.53756Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `buildPriorAttemptInputs` always appends a `prior-attempts` artifact, even when there are zero prior `rerun` gates. That means every rerun after an `escalated`-only history receives reserved prior-attempt evidence despite docs saying only `rerun` attempts enter the history."
+          ],
+          "optional": [
+            "1. Check import cleanup in `internal/liverun/gate.go` after removing `firstCheckoutGitlink`; stale `bytes`, `errors`, or `os/exec` imports would fail compilation if unused."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "eb33d604d8b574dd61143e590a69e1830ceba554638a72bac8fa411c2bc3d27b",
+            "path": "artifacts/sha256/eb/eb33d604d8b574dd61143e590a69e1830ceba554638a72bac8fa411c2bc3d27b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 601
+          },
+          "session": {
+            "session_id": "codex-a7cf1081f9cab9d7",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "a7cf1081f9cab9d7a079d12dc5baa34e3b2a35df23929c7256afc17e87ea2a34",
+              "path": "artifacts/sha256/a7/a7cf1081f9cab9d7a079d12dc5baa34e3b2a35df23929c7256afc17e87ea2a34",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 505
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:56:40.82043Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T05:56:40.821784Z"
     }
   ]
 }
