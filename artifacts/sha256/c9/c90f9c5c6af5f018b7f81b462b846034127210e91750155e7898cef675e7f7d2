@@ -1,0 +1,6 @@
+## Final Review — etude-dpz (recommendation: close)
+
+Reviewed: plan, implementation diff, verify (pass), docs (no-docs-needed). Findings: none.
+Behavior preservation confirmed by source trace: IsValidRunID valid-condition is the exact De Morgan negation of the original reject expression; all 4 error sites keep exact text/wrapping; run.go two-call structure preserves empty 'run id is required'; predicates pure (validate-before-git intact); capture timing unchanged.
+Gates re-run green: go test ./... -race ok; vet clean; gofmt clean.
+Commit hygiene: exactly internal/runmanifest/manifest.go, internal/cli/run.go, internal/cli/capture.go, internal/runmanifest/predicates_test.go (new); staged by name so untracked .claude/scheduled_tasks.lock is excluded; no secrets/debug.
