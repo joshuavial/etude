@@ -1261,6 +1261,52 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T13:54:19.750004Z"
+    },
+    {
+      "gate_id": "verify.r7",
+      "phase": "verify",
+      "round": 7,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify",
+          "artifact": "ea641e95c3cde1c585667d2fbf9b40ffa69205168779268cf389f1cee68a96fd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T14:28:42Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T14:28:42Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO on the artifact that actually SHIPS. This round exists because the final review gate found the earlier verify pass certified bd2d9d94, while optionals folded after that verdict produced ea641e95 - so the shipped revision had never been gated. A pass pointing at a superseded revision is not a pass on what lands, and re-pointing the old record would have been the dishonest fix; the revision was gated for real instead, with the deterministic checks re-run live by etude gate at verify.r6 (both go, codex go) and the opus seat run in-harness per the documented registry exception. Five optionals folded: the subdirectory row now carries the same caveat as the dogfood-audit row (its exit code depends on whether this bead's own run ref is pushed at that instant, and root vs subdirectory output is byte-identical); the last-N-closed window is now disclosed as a limitation, since a bead whose refs are never pushed stops being audited once nine more close, which bounds the 'only detectors' claim to a window; and three unpinned-but-harmless behaviors gained cases - the no-args default, --help, and allowlist comment/blank-line skipping, the last mattering because the shipped allowlist is comment-heavy. One guard is now commented as defense-in-depth rather than load-bearing, because removing it still fails closed downstream and it therefore carries no test signal. Suite 45 -> 49."
+      },
+      "timestamp": "2026-08-15T14:28:42Z"
     }
   ]
 }
