@@ -1,0 +1,37 @@
+# Documentation verification
+
+The rebased issue branch retains and composes the user-facing documentation for
+both features:
+
+- `docs/run.md` documents optional producer session evidence, stage-log capture,
+  digest-bound prior-attempt rerun inputs, the no-session state, resumed-session
+  non-replayability, entry-reserved roles, caller-workspace provenance, and
+  `read_checkout` behavior.
+- `docs/gates.md` documents the prior-attempt index and evidence roles, killing
+  verdict, transcript failure behavior, per-seat original-SHA checkout isolation,
+  and manifest version behavior.
+- `docs/replay.md` states replay uses the run's original Git SHA, documents the
+  session sidecar and captured log contract, and explains recorded transcript
+  handling.
+- `docs/plans/product/V1-SCOPE.md` reflects the delivered issue scope without
+  presenting unimplemented plans as shipped behavior.
+
+The conflict resolution deliberately describes manifest v4 as one capability
+level used when either caller provenance or stage logs appear. Caller runs require
+`original_git_sha`; log-only v4 runs do not; combined runs carry both in one v4
+document. The broader choice between writer-version and feature-bit semantics is
+left to the already-filed issue #24.
+
+Observed documentation checks on this tree:
+
+```text
+$ make docs-check
+generated 26 command docs into /var/folders/.../tmp...
+
+$ make docs-reality
+docs-reality: OK — 16 commands; docs match the shipped CLI.
+```
+
+No new user-facing behavior was introduced by the integration-only regression
+test, so no additional documentation file is required beyond preserving the
+composed descriptions above.
