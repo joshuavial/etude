@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-1od",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -32,6 +32,53 @@
         "size": 3153
       },
       "timestamp": "2026-08-15T08:12:20.848565Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:15:11Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:15:11Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO, including on the central question: the plan deliberately does NOT patch the file the bead names, because bead .3 deletes it, and resolves the defect in the supervised model instead. Both seats were asked to judge that reframing hard as a possible convenient reading; both accepted it, noting the bead itself allows \"add docs-stage capture OR define a lossless supported mapping\". Four optionals folded, all guarding against hollow work: the negative half is already covered by an existing test so the new one must pin the role-vs-stage-name divergence and the nothing-written path or it is a rename; the runbook already lists docs-diff so the callout must be a literal copy-pasteable command; the tracker needs the reframing recorded so the bead text does not contradict the shipped commit; and the acceptance now names the stage/role mismatch explicitly."
+      },
+      "timestamp": "2026-08-15T08:15:11Z"
     }
   ]
 }
