@@ -1021,6 +1021,39 @@
         "degraded_reason": "LATE RECORD, filed at the final review gate, which found it missing. This is the in-harness opus verdict on the FIRST verify artifact (sha 8b1382a7, stage 'verify') - the revision verify.r1 reviewed. verify.r1 recorded that seat as 'failed' because 'etude gate' could not invoke it as a subprocess; the seat was then run in-harness per the documented registry exception and returned this BLOCK, but the verdict was never appended, so a real BLOCK that changed the work left no durable record. The round number is the next free attempt counter, not the chronological position: reviewed_stages names the artifact actually reviewed, which is what identifies the revision. Recording it after verify.r5 passed does not reopen the phase; the pass stands on artifact 114d7907, a later revision. A gate whose findings live only in a transcript is the exact defect this epic exists to remove, so the gap is closed rather than disclosed."
       },
       "timestamp": "2026-08-15T10:39:37Z"
+    },
+    {
+      "gate_id": "verify.r7",
+      "phase": "verify",
+      "round": 7,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r2",
+          "role": "verify",
+          "artifact": "9d9a4d42f7323716dd462c6b7f82599d525fb483c7863ed6c0cafbd51d8781c2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T10:40:06Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "LATE RECORD, filed at the final review gate. This is the in-harness opus verdict (GO, with four optionals) on the SECOND verify artifact, sha 9d9a4d42, stage 'verify.r2'. verify.r3 reviewed that same artifact and recorded opus as 'failed' plus codex 'block'; the seat was then run in-harness and returned GO, so the round genuinely SPLIT - opus GO, codex BLOCK - and did not pass under unanimous quorum, which is why the work continued. The attempt is recorded rerun rather than pass because that is what the panel produced: a split is not a pass. Its optionals were folded at the time (the Makefile comment carrying the same retracted core.hooksPath claim; the negative-control counts being out of 18 rather than 19; and the sweep accounting saying '12 tracked plus 1' when the new file is staged and so tracked). Status quo before this record: the codex BLOCK was durable and the opus GO was not, which misrepresents a split as a one-sided round."
+      },
+      "timestamp": "2026-08-15T10:40:06Z"
     }
   ]
 }
