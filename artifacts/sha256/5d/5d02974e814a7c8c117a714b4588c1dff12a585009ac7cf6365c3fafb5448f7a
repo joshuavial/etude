@@ -1,0 +1,6 @@
+# Verify — etude-phase-prep.2 (Refresh dogfood docs) — PASS
+- Docs-only refresh across 7 files (README, docs/README, BRIEF, dogfood/README, capture-protocol, backlog-operating-model, phase0-critical-path). No code.
+- make docs-reality now EXITS 0 ("docs match the shipped CLI") — the phase-prep.5 guard passes after this refresh. make docs-check stays green.
+- Shipped/planned split exact: bench/gc/reindex/capture-gate/replay/gate-visibility + eval LIBRARY marked shipped; standalone etude eval CLI + retros (etude-14r) + batch (etude-jb7) + import (phase1) kept planned. No over/under-claim (verified by all 3 seats).
+- All README links resolve; capture-gate usage flags match the real command; Session Boot list renumbered cleanly.
+- Acceptance: capture-protocol no longer says capture unimplemented ✓; Session Boot inspects runs ✓; backlog reflects shipped + roadmap ✓; shipped vs planned distinguished ✓; retro/gate-visibility framing updated ✓.
