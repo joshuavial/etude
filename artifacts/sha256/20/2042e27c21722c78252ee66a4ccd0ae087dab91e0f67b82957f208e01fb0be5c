@@ -1,0 +1,298 @@
+## Plan
+
+**Premise-check (P2, the gate WILL probe this):** etude-2ku deliberately made the
+retro-meta sidecar SCHEMA-FREE — `retro capture --meta-file` validates only
+`json.Valid` and stores the bytes verbatim as a 2nd `retro-meta` stage
+(`internal/cli/retro.go:535` rejects non-JSON; `:626` `AddContent("retro-meta",
+"application/json", ...)`; `:722-724` appends the stage). docs/retro.md:56 states
+"The schema of the JSON is not interpreted by etude." review-gate-runbook.md:747-758
+(P2) and the deferred etude-9ey turn on preserving exactly this posture. THEREFORE
+this bead must NOT add schema validation to etude core (no change to the Go manifest
+layer or `retro capture`). The canonical convention is a **DOGFOOD-LAYER** convention:
+documented + an example file + ENFORCED by the dogfood completeness audit, which is a
+process-side script that reads the retro's manifest from git. etude core stays
+schema-agnostic. This is a BUILD (the convention's prerequisite data — a documented
+shape + a check — is exactly what 9ey was deferred waiting for), scoped to docs + the
+audit script + a fixture. NOT a DEFER.
+
+**Approach:** (1) Pin ONE canonical cadence retro-meta schema and document it in
+docs/retro.md (replacing the thin 2-key "Recommended convention" at lines 61-80) and
+in the dogfood cadence docs, clearly marked as a DOGFOOD convention, not an
+etude-core schema. (2) Ship one committed example sidecar file that capture examples
+reference. (3) Extend the dogfood completeness audit's cadence check (c) so a cadence
+retro is verified to carry a `retro-meta` stage whose JSON has the required fields,
+reading the stage by role and the artifact blob by path straight from git (no CLI
+`--json` flag is needed or exists — confirmed docs/retro.md:283). (4) Update the
+dogfood cadence rule so capturing a cadence retro going forward MUST pass `--meta-file`
+with this convention.
+
+**The canonical schema (decision):** A cadence retro-meta sidecar is a JSON object:
+
+| Key | Type | Required | Meaning |
+|-----|------|----------|---------|
+| `retro_type` | string, value `"cadence"` | required | marks this as a cadence retro sidecar |
+| `original_event_date` | string `YYYY-MM-DD` | required | the date the retro's events actually occurred (distinct from capture/backfill time) |
+| `failure_modes` | array of strings | required (may be empty `[]`) | distinct failure modes identified |
+| `root_causes` | array of strings | required (may be empty `[]`) | underlying process/skill/tool/context causes |
+| `follow_up_beads` | array of strings (bead ids) | required (may be empty `[]`) | beads spun off by the retro |
+| `decisions` | array of strings | required (may be empty `[]`) | decisions/rule-changes the retro landed |
+
+Pinned plurals: `failure_modes`, `root_causes` (resolves the `root_cause` vs
+`root_causes` contradiction flagged in review-gate-runbook.md P2 corollary, line 755).
+Required = the KEY must be PRESENT and the right type; arrays MAY be empty (a clean
+cohort can legitimately have no failure modes, but the absence must be asserted, not
+implied). Additional keys remain allowed and ignored — consistent with etude core
+storing the bytes verbatim. The audit checks PRESENCE + TYPE only, never values
+(e.g. it does not parse the date beyond "non-empty string"), keeping the dogfood
+layer light and forward-compatible with etude-9ey's eventual index.
+
+**Where documented (decision):**
+- `docs/retro.md` — rewrite the "Recommended convention" subsection (lines 61-80) into
+  a "Cadence retro-meta convention (dogfood)" subsection: state explicitly it is the
+  RECOMMENDED shape for this project's CADENCE retros and is a dogfood-process
+  convention, NOT an etude-core schema (etude still stores any well-formed JSON
+  verbatim). Document all six keys + a full example. Keep the existing "etude does not
+  enforce a sidecar schema" sentence — the convention sits on top of that, it does not
+  replace it.
+- `docs/plans/dogfood/retro-ledger.md` — in the "Retro cadence" section (~line 401-410),
+  extend the dual-output rule: the `etude retro capture cohort ... --trigger
+  cadence-retro` artifact MUST be captured WITH `--meta-file` carrying the convention
+  (so future cadence retros are META=Y), and point to the example file + docs/retro.md.
+- `docs/plans/dogfood/capture-protocol.md` — add a one-line pointer in the retro
+  capture section so the manual capture contract references the cadence sidecar
+  requirement (small addition; main rule lives in retro-ledger.md).
+
+**Example sidecar file (decision):** ship one committed fixture,
+`scripts/retro-meta-cadence.example.json`, containing a fully-populated example of the
+six-key shape. docs/retro.md and retro-ledger.md reference it; the audit can also use
+it indirectly (the check validates real cadence retros, not the example, but the
+example is the single source of truth for the shape). Placing it under `scripts/`
+keeps it next to the audit that enforces it.
+
+**The enforcement check (decision):** extend check (c) in
+`scripts/dogfood-completeness-audit.sh` (currently lines 347-406, WARN-only, batch
+mode only). Today (c) walks `refs/etude/retros/*`, reads each `manifest.json` via
+`git cat-file -p "$retro_ref:manifest.json"`, and for `trigger==cadence-retro` retros
+collects covered subject runs. Add, within that same loop, for each cadence retro:
+  1. Find the stage whose `output.role == "retro-meta"` (the manifest serializes
+     `stages[].output.role`/`.path`/`.media_type` — confirmed
+     internal/runmanifest/manifest.go:854-858; role-based detection matches retro.go's
+     `findRetroMetaStage`, retro.go:234-240). If absent → the cadence retro has NO
+     sidecar (META=N).
+  2. If present, read the sidecar bytes: `git cat-file -p "$retro_ref:<output.path>"`
+     where path is e.g. `artifacts/sha256/xx/<hash>` (confirmed real B17 manifest
+     layout). Parse with python3; verify it is a JSON object with all six required
+     keys present and of the right type.
+This needs NO new etude CLI surface — the audit already reads retro manifests straight
+from git this way (lines 358-388), and `retro list`/`show` have no `--json` flag
+(docs/retro.md:283), so going through git is the only mechanism and it is already the
+established one.
+
+**Block vs WARN (decision): WARN.** Consistent with the existing cadence check (c),
+which is WARN-only in batch and not run in `--bead` mode (audit.sh:29, 349). A missing
+or malformed cadence sidecar is reported as a `log_warn` finding (new category, e.g.
+`cadence-sidecar`), included in the `warnings[]` JSON array, and does NOT change the
+exit code. Rationale: (a) it stays inside check (c)'s established WARN posture so it
+does not destabilize the close/push hard gate wired by etude-8hq.1; (b) the backlog of
+existing META=N cadence retros (B8-B17, every current cadence retro) is backfilled by
+the SEPARATE dependent bead etude-8hq.5 — promoting to BLOCK before that backfill would
+red the gate on day one. The WARN names each offending cadence retro id + which
+required field is missing/mistyped so 8hq.5 (and future captures) have a precise
+worklist. (Promotion to BLOCK can be a later, post-backfill bead if desired; out of
+scope here.)
+
+**"Require going forward":** the retro-ledger.md cadence rule update (above) makes
+`--meta-file` mandatory for new cadence retros; the WARN surfaces any lapse the same
+way the cadence-overdue WARN surfaced B17. No change to dogfood-close.sh is required —
+the sidecar check lives in batch check (c), which dogfood-close's per-bead `--bead`
+terminal gate does not run (and should not: a closing bead is not itself a cadence
+retro).
+
+**Files (1 bead = 1 commit):**
+- `scripts/dogfood-completeness-audit.sh` — extend check (c) loop with the role-based
+  sidecar presence + required-field validation; add `cadence-sidecar` WARN category.
+- `scripts/dogfood-completeness-audit_test.sh` — add a `seed_cadence_retro_with_meta`
+  helper (writes a 2nd tree entry: a sidecar blob under `artifacts/sha256/...` + a
+  `retro-meta` stage in the manifest) and tests: (1) cadence retro WITH a valid 6-key
+  sidecar → no `cadence-sidecar` WARN; (2) cadence retro with NO meta stage → WARN
+  naming the retro; (3) cadence retro with a meta stage missing a required key →
+  WARN naming the field; (4) WARN never changes exit code (still 0).
+- `scripts/retro-meta-cadence.example.json` — new; the canonical 6-key example.
+- `docs/retro.md` — rewrite the convention subsection (lines 61-80) to the dogfood
+  cadence 6-key shape, marked as a dogfood (not core) convention, with full example.
+- `docs/plans/dogfood/retro-ledger.md` — extend the "Retro cadence" dual-output rule to
+  require `--meta-file` going forward; reference the example + docs/retro.md.
+- `docs/plans/dogfood/capture-protocol.md` — one-line pointer to the cadence sidecar
+  requirement.
+
+**Out of scope (explicit):** (a) backfilling existing META=N cadence retros — that is
+the dependent bead etude-8hq.5; (b) ANY schema validation in etude core / the Go
+manifest layer / `retro capture` (preserves etude-2ku's verbatim posture); (c) the
+other etude-8hq beads (8hq.2 event-time, 8hq.8 subject-consistency, etc.); (d)
+promoting the sidecar check from WARN to BLOCK (a possible later, post-backfill bead).
+
+**Tests:**
+- The four audit test cases listed above (valid sidecar, missing meta stage, missing
+  required key, WARN-not-exit), via the bats-style harness in
+  dogfood-completeness-audit_test.sh (run with `bash scripts/dogfood-completeness-audit_test.sh`).
+- Edge cases: cadence retro whose meta stage holds well-formed JSON that is an ARRAY or
+  scalar (not an object) → WARN; a required key present but wrong type (e.g.
+  `failure_modes` a string not array) → WARN. Verify the existing TEST 1 complete
+  fixture still passes (its seeded cadence retro has no meta stage, so it must EITHER
+  gain a meta stage in the fixture OR the complete-fixture test must tolerate the new
+  WARN without failing exit 0 — pick: give TEST 1's cadence retro a valid sidecar so
+  "complete" stays clean).
+- Manual: build the binary, capture a throwaway cadence retro with `--meta-file` using
+  the example, confirm `retro list` shows META=Y and the audit reports no
+  cadence-sidecar WARN; then capture one without and confirm the WARN fires (run in a
+  throwaway repo per the ref-mutating-tests rule).
+
+**Docs:**
+- docs/retro.md convention subsection (user-facing; hand-written, NOT gen-docs —
+  confirmed docs/cli/*.md carry the gen-docs banner, docs/retro.md does not, so `make
+  docs` will not clobber it).
+- retro-ledger.md + capture-protocol.md (dogfood planning docs).
+- No generated CLI reference changes (no etude CLI surface changes), so `make docs` /
+  TestDriftGuard are unaffected.
+
+**Risks:**
+- Reading the sidecar blob from git in bash/python must handle a cadence retro that has
+  a meta stage but an unreadable/garbled blob — treat read failure as a WARN (malformed),
+  not a script crash; mirror the existing `|| continue` / `2>/dev/null` defensiveness in
+  check (c). Watch the `grep -c … || true` footgun called out in B17 (avoid `|| echo 0`).
+- The new test helper must write a valid content-addressed artifact path + a manifest
+  whose `output.path` matches the tree entry, or `git cat-file` in the audit will miss
+  it; model it on the real B17 manifest layout (artifacts/sha256/<2>/<hash>).
+- Premise risk (mitigated above): must NOT drift into etude-core schema enforcement —
+  keep all validation in the dogfood script. This is the single most likely gate BLOCK
+  target; the plan asserts it explicitly.
+
+**Capture:**
+- inputs: bd show etude-8hq.3; docs/retro.md (esp. lines 44-80, 283);
+  scripts/dogfood-completeness-audit.sh (check (c), lines 347-406; manifest-read pattern
+  358-388); scripts/dogfood-completeness-audit_test.sh (seed_cadence_retro 164-195);
+  scripts/dogfood-completeness-allow.txt; scripts/dogfood-close.sh; internal/cli/retro.go
+  (findRetroMetaStage 234-240, meta capture 525-535/623-628/719-724);
+  internal/runmanifest/manifest.go (stage/output JSON tags 854-858);
+  docs/plans/dogfood/retro-ledger.md (Retro cadence 401-447, B17 448-481);
+  docs/plans/dogfood/review-gate-runbook.md (P2 747-758); real B17 cadence retro manifest
+  (refs/etude/retros/retro-cohort-etude-8hq.4-20260526T234335Z).
+- output: bead etude-8hq.3 --design field.
+
+## AMENDMENT (plan gate r1 — codex BLOCK + gemini BLOCK adopted; opus GO)
+
+Plan gate split 2 BLOCK (codex, gemini) / 1 GO (opus). Both blockers raised the
+SAME two concrete defects (opus flagged #1 as a recommendation). Both adopted:
+
+### Fix 1 — add `durable_changes[]` (schema is now 7 keys)
+
+wide-retro-analysis.md:155 explicitly mandates the sidecar capture "the durable
+process/docs changes landed" — and `decisions[]`/`follow_up_beads[]` do NOT prove
+anything LANDED (a decision is an intent; a follow-up bead is future work). Add a
+7th required-present key. **Pinned schema (7 keys, all required-as-present; arrays
+may be empty; presence+type checked only, never values):**
+
+```json
+{
+  "retro_type": "cadence",
+  "original_event_date": "YYYY-MM-DD",
+  "failure_modes": [],
+  "root_causes": [],
+  "follow_up_beads": [],
+  "decisions": [],
+  "durable_changes": []
+}
+```
+
+`durable_changes[]` = the concrete skill/formula/doc/script edits that landed as a
+result of the retro (e.g. "runbook P3 added", "audit check (f) added"). This
+mirrors the B17 ledger entry's separate "Changes/Landed" line vs its "Decision".
+
+### Fix 2 — WARN is insufficient for "REQUIRE": cutoff-date BLOCK (gemini option 1)
+
+The acceptance says new cadence retros must INCLUDE the sidecar and missing ones be
+"caught". A pure WARN is telemetry, not a requirement, and "promote to BLOCK in a
+future bead" lets the omission persist — the exact failure mode this phase exists to
+kill. Adopt the **cutoff-date** design (most faithful to "require NOW", no
+dependency-slip risk):
+
+The new audit check (call it **check (f) `cadence-sidecar`**) iterates every retro
+ref whose manifest `refs.trigger == "cadence-retro"` (the SAME discriminator check
+(c) already uses, audit.sh:360-366) and compares the retro's capture instant — the
+manifest `created` field (a full ISO-8601 timestamp like
+`2026-05-26T23:43:35.669544Z`) — to a constant:
+
+```
+CADENCE_SIDECAR_CUTOFF="2026-05-27T00:00:00Z"   # convention-adoption instant (UTC)
+```
+
+**The comparison MUST parse both sides as datetimes — NOT lexical string compare**
+(resolves the plan-gate-r3 BLOCK; see below). The check already shells into python
+per retro, so parse there, e.g.:
+
+```python
+from datetime import datetime, timezone
+def _parse(ts):  # tolerant of trailing 'Z' across python versions
+    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+created_dt = _parse(created)
+cutoff_dt  = _parse(CADENCE_SIDECAR_CUTOFF)
+is_post_convention = created_dt >= cutoff_dt
+```
+
+- **BLOCK (hard gap, contributes to exit 1):** a `is_post_convention` cadence retro
+  that lacks a `retro-meta` stage OR whose sidecar is missing any of the 7 required
+  keys / has a wrong type. Every FUTURE cadence retro is mechanically required.
+- **WARN (worklist, never blocks):** a pre-convention (`created_dt < cutoff_dt`)
+  cadence retro lacking/with-malformed sidecar = the existing META=N backlog.
+  These WARNs are the explicit backfill worklist for etude-8hq.5.
+
+**Why parse, not lexical-compare (plan-gate-r3 BLOCK, raised by BOTH codex and
+gemini):** Go's RFC3339Nano trims trailing zeros and `created` carries fractional
+seconds, so lexical string comparison against a fixed cutoff is BROKEN at the
+boundary. Concretely, a post-convention retro `created="2026-05-27T00:00:00.000001Z"`
+compared lexically to `"2026-05-27T00:00:00Z"` sorts BEFORE the cutoff (because `.`
+= 0x2E < `Z` = 0x5A) and would WRONGLY slip to WARN. Parsing both to `datetime`
+instants makes the comparison chronological and immune to fractional-precision /
+trailing-zero / format variation. (audit.sh:383's existing lexical `>` is only used
+to track the "latest" label for display and is not load-bearing for a gate decision;
+check (f)'s comparison is load-bearing and therefore must parse.)
+
+**Why this cutoff value:** EMPIRICALLY VERIFIED — every existing
+`trigger==cadence-retro` ref (17 of them) has `created` on 2026-05-26 (the latest is
+B17 at `2026-05-26T23:43:35.669544Z`, ~16 min before the cutoff). So the entire
+backlog is pre-convention (WARN) and every cadence retro from `2026-05-27T00:00:00Z`
+onward is hard-required (BLOCK). The cutoff is the convention-adoption instant, set
+immediately after the last pre-convention cadence retro.
+
+This satisfies both blockers: the requirement is mechanically enforced immediately
+(BLOCK) for anything post-convention; the backlog stays a WARN worklist for 8hq.5;
+and with datetime parsing there is NO boundary/format case where a post-convention
+retro slips to WARN or a backlog retro wrongly BLOCKs. (codex's alternative — a
+legacy-ref allowlist — remains available if a specific later ref ever needs
+grandfathering, but the parsed-instant cutoff makes it unnecessary now.)
+
+### Fix 3 — shipped-doc clarity (gemini NIT #5, opus NIT)
+
+The `docs/retro.md` convention subsection MUST state explicitly that the 7-key
+schema is a **dogfood process convention enforced by `dogfood-completeness-audit.sh`,
+NOT validated by `etude retro capture`** (which only checks `json.Valid`). This
+prevents users assuming etude core catches malformed sidecars. Preserve the existing
+docs/retro.md:55-56 "schema is not interpreted by etude" statement.
+
+### Test addendum (opus NIT (a), still applies)
+
+The `seed_cadence_retro_with_meta` test helper MUST write the artifact blob tree
+entry whose path matches the manifest stage's `output.path` (content-addressed),
+not just `manifest.json` — otherwise the blob read fails. Add cases for: (1)
+post-cutoff cadence retro WITH a valid 7-key sidecar → PASS; (2) post-cutoff MISSING
+sidecar → BLOCK (exit 1); (3) post-cutoff sidecar missing one required key → BLOCK;
+(4) pre/on-cutoff missing sidecar → WARN (exit 0); (5) unreadable/garbled blob →
+WARN-not-crash. Avoid the `grep -c … || echo 0` footgun (use `|| true`).
+
+### Scope delta
+
+Unchanged file list. `etude-8hq.5` remains the bead that backfills the pre-cutoff
+backlog sidecars (which clears the WARNs) — its description already covers backfill;
+no WARN→BLOCK flip is needed there because the cutoff already hard-requires future
+retros. No etude-core change. `CADENCE_SIDECAR_CUTOFF` is a single documented
+constant at the top of the audit script.

@@ -1,0 +1,32 @@
+# Final Review — etude-8hq.3
+
+## Gate summary
+PLAN gate — **4 rounds**, tier 2 (codex/gemini/opus + pilms-down). Each round
+caught a real defect (the gate working as intended):
+- r1: codex BLOCK + gemini BLOCK (opus GO). Two defects: (1) schema omitted the
+  phase doc's mandated "durable changes landed" → added `durable_changes[]` (7
+  keys); (2) WARN-only doesn't satisfy "REQUIRE" → adopted a cutoff-date BLOCK.
+- r2: codex STILL BLOCKED — a DATE-granular cutoff is ambiguous (full-timestamp vs
+  date). gemini malfunctioned (called a nonexistent tool; no verdict). → switched
+  to a precise-instant cutoff.
+- r3: codex BLOCK + gemini BLOCK (same defect) — LEXICAL comparison of fractional
+  timestamps breaks at the boundary (`...00.000001Z` sorts before `...00Z` because
+  `.`<`Z`). → switched to datetime PARSING (codex's stated sufficient condition).
+- r4: codex GO + gemini GO.
+
+IMPLEMENT gate — tier 2, **unanimous GO** (codex/gemini/opus). All three confirmed:
+no post-convention violation can wrongly PASS/WARN, no valid/pre-convention retro
+wrongly BLOCKs, datetime parse holds, sidecar validation fails CLOSED, check (f)
+skips `--bead`, shell-safe. Reasoned caveat (both external seats, non-blocking):
+a naive `created` would fail-open to 'pre', but etude's manifest writer always
+emits Z-suffixed UTC (manifest.go:938) so it can't occur from the normal path.
+NIT folded in: capture-protocol.md now documents check (f).
+
+## Scope
+6 files, 1 commit (903cc2c): audit script + its test, `retro-meta-cadence.example.json`,
+`docs/retro.md`, `retro-ledger.md`, `capture-protocol.md`. ZERO etude-core change
+(the schema-free retro-meta posture from etude-2ku is preserved; enforcement is
+dogfood-layer only). Backfill of the 17 pre-cutoff retros is the dependent bead
+etude-8hq.5 (the WARN worklist).
+
+## Verdict: GO — ready to close.

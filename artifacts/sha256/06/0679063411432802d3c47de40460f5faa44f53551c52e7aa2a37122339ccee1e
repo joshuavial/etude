@@ -1,0 +1,29 @@
+# Verify — etude-8hq.3 (cadence retro-meta sidecar convention + enforcement)
+
+## Automated tests
+- `make dogfood-audit-test` → **44 passed, 0 failed** (28 existing + 16 new across
+  the 7 new check-(f) groups: post-valid→PASS, post-missing-stage→BLOCK,
+  post-missing-key→BLOCK, post-wrong-type→BLOCK, fractional-seconds boundary
+  `2026-05-27T00:00:00.000001Z`→BLOCK (locks the r3 datetime-parse fix),
+  pre-cutoff→WARN+exit0, garbled-blob→BLOCK-not-crash).
+- `bash -n scripts/dogfood-completeness-audit.sh` → clean.
+
+## Adoption precondition / behavior
+- `make dogfood-audit` (`--last 9`) → **exit 0**: check (f) emits ONE
+  `[cadence-sidecar] pre-cutoff` WARN naming all 17 existing cadence retros
+  (the backfill worklist for etude-8hq.5). No BLOCK — the entire backlog is
+  pre-cutoff (all `created` on 2026-05-26), so the live 8hq.1 pre-push hook is
+  unaffected.
+
+## Runtime verification
+- datetime-parse classification probed directly: B17 (2026-05-26T23:43:35Z)→PRE;
+  `2026-05-27T00:00:00.000001Z`→POST (the r3 fix; a lexical compare would wrongly
+  say PRE); `+10:00`-offset instants compare aware-vs-aware with no TypeError.
+- check (f) confirmed SKIPPED in `--bead` mode (guarded by `mode != bead`), so the
+  hook's `--bead` close path never triggers it; only batch `--last 9` does.
+- Sidecar validation fails CLOSED: a post-convention retro whose sidecar errors
+  yields a non-'ok' status → hard gap. Only an exact 7-key valid dict → PASS.
+
+## Result: PASS
+No defects open. Implement-gate NIT folded in before commit: capture-protocol.md
+"what BLOCKS vs WARNS" list now documents check (f).
