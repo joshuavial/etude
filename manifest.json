@@ -959,6 +959,51 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T07:27:04.071325Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:31:35Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T07:31:35Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO. This attempt is recorded by hand because the stage gate.checks (make test / make lint) could not run under etude gate until this bead fixed them: execCheckRunner ignored env_allowlist, so the checks died on a missing Go module cache. The literal --stage verify run that a seat asked for is what exposed it. Five optionals raised, all actioned: two drifted counts refreshed; a genuine OVERCLAIM corrected (the artifact said the in-harness fallback is machine-honored, but a seat verified live that etude gate never reaches it — it is expressed in config, not consumed, tracked as etude-5f6); a scope note added to contract item 3 about --workflow; and a stray gate attempt the seat s own probing left on the unrelated ref refs/etude/runs/etude-04i was discarded by restoring that ref to origin. The seat also warned that the round-8 regression file was untracked and would be lost on commit — staged by name."
+      },
+      "timestamp": "2026-08-15T07:31:35Z"
     }
   ]
 }
