@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-2pc.3",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,41 @@
         "size": 1580
       },
       "timestamp": "2026-06-30T02:34:45.661166Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-8"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-8"
+          },
+          "verdict": "go",
+          "optional": [
+            "harmonize proof-by-diff placeholder naming"
+          ],
+          "timestamp": "2026-06-30T02:30:28Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-30T02:30:28Z"
     }
   ]
 }
