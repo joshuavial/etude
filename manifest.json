@@ -385,6 +385,55 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T06:15:29.952672Z"
+    },
+    {
+      "gate_id": "implement.r3",
+      "phase": "implement",
+      "round": 3,
+      "tier": 3,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "the adapter still writes a go envelope for VERDICT: go / mixed-case variants because it uppercases the token before the case statement, so GO is not literal-only as claimed."
+          ],
+          "timestamp": "2026-08-15T06:17:32Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "seat unreachable: registry invoke cannot authenticate as a subprocess under a Claude Code orchestrator; the in-harness sub-agent fallback returned no verdict across five attempts; the agy substitute returned Individual quota reached, resets in ~7 days. Tracked as etude-zc3 (P0 blocker).",
+          "timestamp": "2026-08-15T06:17:32Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Gate did NOT pass. codex BLOCKed on a real overclaim; opus unreachable. No degraded pass was taken."
+      },
+      "timestamp": "2026-08-15T06:17:32Z"
     }
   ]
 }
