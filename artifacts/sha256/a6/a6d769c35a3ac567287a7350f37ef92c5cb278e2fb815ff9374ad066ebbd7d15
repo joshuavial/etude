@@ -1,0 +1,6 @@
+# Final Review — etude-5ft (extract shared manifest-load helper)
+Verdict: GO (Tier 2, unanimous Opus+codex). Commit 80c6ec6.
+- Closes the #1 refactor finding from the review audit: the loop TrimPrefix(prefix)→ReadFile(manifest.json)→ParseJSON→wrap "<kind> %q: %w" was duplicated 4× (run list, retro list, log buildEvents runs+retros). Extracted into loadManifestForRef(ctx, store, ref, prefix, kind) in a new internal/cli/manifest_load.go; the 4 sites now call it, each preserving its exact return shape + error format + site body.
+- Pure refactor, zero behavior change: error strings byte-identical (verified), id named on the error path, output rows/ordering/empties unchanged, corrupt-manifest + happy-path tests green, full go test ./... green (both seats ran it). Imports cleaned (log.go dropped runmanifest). No docs/CLI change.
+- Scope: 4 files; show paths (Resolve-first) correctly untouched. 1-bead=1-commit.
+- Gate: Tier-2 plan + implement both UNANIMOUS GO (codex + in-harness Opus), both ran the suite + verified behavior-identity.

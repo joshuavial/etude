@@ -1,0 +1,6 @@
+# Verify — etude-5ft (extract shared manifest-load helper)
+Result: PASS. Pure refactor, zero behavior change. Tier 2.
+- go build ./... clean; go test ./... fully green (both gate seats ran the full suite). Corrupt-manifest guard tests pass: TestRunListCorruptManifestFails, TestRetroListCorruptManifest, TestLogMalformedManifest (the preserved "<kind> %q: %w" format keeps the offending id in the error). Happy-path run-list/retro-list/log tests pass with no output/ordering drift. go vet + gofmt clean.
+- Behavior-identical confirmed: loadManifestForRef emits fmt.Errorf("%s %q: %w", kind, id, err) reproducing the original "run %q: %w"/"retro %q: %w" byte-for-byte; both error branches return the id (not "") so the ref is named; list sites return err, log sites return nil,err (shapes preserved); each body consumes only id+manifest.
+- Imports clean: log.go dropped now-unused runmanifest; run.go/retro.go retain it for other uses. No unused vars.
+Scope: internal/cli/manifest_load.go (new) + run.go + retro.go + log.go. No docs (internal refactor). 1-bead=1-commit.

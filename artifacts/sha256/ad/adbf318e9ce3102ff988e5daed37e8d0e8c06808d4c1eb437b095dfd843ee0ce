@@ -1,0 +1,36 @@
+## Plan
+
+**Approach:** Extract the duplicated per-item manifest-load loop body (4 copies across run/retro/log) into one unexported helper in package cli. The helper trims the ref prefix to recover the id, reads manifest.json, ParseJSONs it, and wraps any error as fmt.Errorf("%s %q: %w", kind, id, err) — reproducing the EXACT current wording at every site. Each caller keeps its own return shape (list paths return err; log paths return nil, err) and its own site-specific row/event body. Pure read refactor, no behavior change.
+
+**Helper signature + home:**
+- Signature: func loadManifestForRef(ctx context.Context, store refstore.Store, ref, prefix, kind string) (id string, m runmanifest.Manifest, err error)
+- Body: id = strings.TrimPrefix(ref, prefix); manifestBytes, err = store.ReadFile(ctx, ref, "manifest.json"); if err -> return id, runmanifest.Manifest{}, fmt.Errorf("%s %q: %w", kind, id, err); m, err = runmanifest.ParseJSON(manifestBytes); if err -> return id, runmanifest.Manifest{}, fmt.Errorf("%s %q: %w", kind, id, err); return id, m, nil
+- Home: new tiny file internal/cli/manifest.go (package cli). Justified: the helper is shared by three command files (run.go, retro.go, log.go); putting it in any one of them couples the others to that file. A dedicated manifest.go keeps it discoverable and prefix/kind-neutral. (Alternatively run.go would work, but a neutral home reads better for a 3-consumer helper.)
+
+**Kind decision — param, not derived:** Keep kind as an explicit string parameter rather than deriving it from prefix. The 1:1 mapping (runsPrefix->run, retrosPrefix->retro) is real, but deriving inside the helper needs a map/switch — more code and a hidden coupling — whereas an explicit kind makes the exact error word "run"/"retro" obvious at each call site and trivially preserves the current strings. The wrap format "%s %q: %w" with kind = "run"/"retro" reproduces the existing "run %q: %w" / "retro %q: %w" byte-for-byte.
+
+**Call-site rewrites (4):**
+1. run.go list (~85-94), kind=run, prefix=runsPrefix: id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run"); if err != nil { return err }; then existing Fprintf row using id + manifest (Workflow, Created, len(Stages)).
+2. retro.go list (~180-189), kind=retro, prefix=retrosPrefix: id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro"); if err != nil { return err }; then existing retroSubjectsList/findRetroMetaStage + Fprintf row using id + manifest.
+3. log.go buildEvents runs loop (~153-162), kind=run, prefix=runsPrefix: id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run"); if err != nil { return nil, err }; then existing summary build + append logEvent using id + manifest.
+4. log.go buildEvents retros loop (~181-189), kind=retro, prefix=retrosPrefix: id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro"); if err != nil { return nil, err }; then existing summaryParts + append logEvent using id + manifest.
+The helper returns id, so each site body still has the trimmed id it needs; manifest replaces the local manifest var. The run/retro show paths (run.go ~122-129, retro.go ~224-231) are NOT touched — they Resolve first and are out of scope.
+
+**Behavior-identical guarantee:** Error text per site is preserved exactly ("run %q: %w" / "retro %q: %w" via kind param). Output rows, column order, sort order, tabwriter flush semantics (mid-list failure leaves stdout empty) and return shapes are unchanged. No CLI surface or flag changes.
+
+**Tests (existing, unchanged — must pass):**
+- TestRunListCorruptManifestFails (run_test.go ~155): asserts error names "bad-run" + empty stdout — exercises helper ParseJSON error path for kind=run.
+- TestRetroListCorruptManifest (retro_test.go ~494): asserts error names "bad-retro" + empty stdout — kind=retro path.
+- TestLogMalformedManifest (log_test.go ~522): asserts error names "bad-log-run" + empty stdout — kind=run path through buildEvents.
+- Plus the happy-path run list / retro list / log tests confirm row + ordering output is unchanged.
+These pin the id-in-error and empty-stdout contract the helper must reproduce; all assert substring of the id (embedded by %q), so the format preservation keeps them green. No new test strictly required (error paths for both run + retro and success paths are already covered); add one only if a reviewer wants a direct unit test of loadManifestForRef.
+
+**Files:** internal/cli/manifest.go (new, the helper) + internal/cli/run.go + internal/cli/retro.go + internal/cli/log.go. 1 bead = 1 commit.
+
+**Docs:** None. Internal refactor with no CLI/behavior/error-text change -> no user docs, no generated command-reference regen.
+
+**Risks:** None — pure read-path extraction, identical error wording and return shapes, covered by existing corrupt-manifest + happy-path tests.
+
+**Capture:**
+- inputs: bead etude-5ft description; run.go list (85-94); retro.go list (180-189); log.go buildEvents (153-162, 181-189); run_test.go/retro_test.go/log_test.go corrupt-manifest tests; refstore.Store + runmanifest.ParseJSON signatures
+- output: bead --design field

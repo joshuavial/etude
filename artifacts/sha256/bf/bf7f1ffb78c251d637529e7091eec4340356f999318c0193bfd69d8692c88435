@@ -1,0 +1,126 @@
+commit 80c6ec6007353c7db65f6404fbd179d7c4890353
+Author: joshuavial <git@codewithjv.com>
+Date:   Tue May 26 23:49:24 2026 +0800
+
+    extract shared manifest-load helper for run retro and log
+
+diff --git a/internal/cli/log.go b/internal/cli/log.go
+index afae1aa..c4692fb 100644
+--- a/internal/cli/log.go
++++ b/internal/cli/log.go
+@@ -10,7 +10,6 @@ import (
+ 	"time"
+ 
+ 	"github.com/joshuavial/etude/internal/refstore"
+-	"github.com/joshuavial/etude/internal/runmanifest"
+ 	"github.com/spf13/cobra"
+ )
+ 
+@@ -151,14 +150,9 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
+ 		return nil, err
+ 	}
+ 	for _, ref := range runRefs {
+-		id := strings.TrimPrefix(ref, runsPrefix)
+-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
++		id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run")
+ 		if err != nil {
+-			return nil, fmt.Errorf("run %q: %w", id, err)
+-		}
+-		manifest, err := runmanifest.ParseJSON(manifestBytes)
+-		if err != nil {
+-			return nil, fmt.Errorf("run %q: %w", id, err)
++			return nil, err
+ 		}
+ 		summary := fmt.Sprintf("%s (%d stages)", manifest.Workflow, len(manifest.Stages))
+ 		if len(manifest.Gates) > 0 {
+@@ -178,14 +172,9 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
+ 		return nil, err
+ 	}
+ 	for _, ref := range retroRefs {
+-		id := strings.TrimPrefix(ref, retrosPrefix)
+-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
+-		if err != nil {
+-			return nil, fmt.Errorf("retro %q: %w", id, err)
+-		}
+-		manifest, err := runmanifest.ParseJSON(manifestBytes)
++		id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro")
+ 		if err != nil {
+-			return nil, fmt.Errorf("retro %q: %w", id, err)
++			return nil, err
+ 		}
+ 		subjects := retroSubjectsList(manifest.Refs)
+ 		// Build summary: scope=<v> trigger=<v> subjects=<v>, trimming trailing
+diff --git a/internal/cli/manifest_load.go b/internal/cli/manifest_load.go
+new file mode 100644
+index 0000000..ea15b84
+--- /dev/null
++++ b/internal/cli/manifest_load.go
+@@ -0,0 +1,26 @@
++package cli
++
++import (
++	"context"
++	"fmt"
++	"strings"
++
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// loadManifestForRef trims prefix from ref to recover the id, reads and parses
++// the ref's manifest.json, and wraps any error as "<kind> %q: %w". It centralizes
++// the read+parse loop shared by run list, retro list, and log.
++func loadManifestForRef(ctx context.Context, store refstore.Store, ref, prefix, kind string) (string, runmanifest.Manifest, error) {
++	id := strings.TrimPrefix(ref, prefix)
++	manifestBytes, err := store.ReadFile(ctx, ref, "manifest.json")
++	if err != nil {
++		return id, runmanifest.Manifest{}, fmt.Errorf("%s %q: %w", kind, id, err)
++	}
++	m, err := runmanifest.ParseJSON(manifestBytes)
++	if err != nil {
++		return id, runmanifest.Manifest{}, fmt.Errorf("%s %q: %w", kind, id, err)
++	}
++	return id, m, nil
++}
+diff --git a/internal/cli/retro.go b/internal/cli/retro.go
+index fa82143..3d9d0db 100644
+--- a/internal/cli/retro.go
++++ b/internal/cli/retro.go
+@@ -178,14 +178,9 @@ func (r *retroShowListRunner) list(ctx context.Context) error {
+ 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
+ 	fmt.Fprintln(w, "RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tMETA\tCREATED")
+ 	for _, ref := range refs {
+-		id := strings.TrimPrefix(ref, retrosPrefix)
+-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
++		id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro")
+ 		if err != nil {
+-			return fmt.Errorf("retro %q: %w", id, err)
+-		}
+-		manifest, err := runmanifest.ParseJSON(manifestBytes)
+-		if err != nil {
+-			return fmt.Errorf("retro %q: %w", id, err)
++			return err
+ 		}
+ 		subjects := retroSubjectsList(manifest.Refs)
+ 		metaCol := "N"
+diff --git a/internal/cli/run.go b/internal/cli/run.go
+index 691d155..3608f54 100644
+--- a/internal/cli/run.go
++++ b/internal/cli/run.go
+@@ -83,14 +83,9 @@ func (r *runShowListRunner) list(ctx context.Context) error {
+ 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
+ 	fmt.Fprintln(w, "RUN ID\tWORKFLOW\tCREATED\tSTAGES")
+ 	for _, ref := range refs {
+-		id := strings.TrimPrefix(ref, runsPrefix)
+-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
++		id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run")
+ 		if err != nil {
+-			return fmt.Errorf("run %q: %w", id, err)
+-		}
+-		manifest, err := runmanifest.ParseJSON(manifestBytes)
+-		if err != nil {
+-			return fmt.Errorf("run %q: %w", id, err)
++			return err
+ 		}
+ 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
+ 			id,
