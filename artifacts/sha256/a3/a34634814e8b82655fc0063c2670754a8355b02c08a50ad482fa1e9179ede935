@@ -1,0 +1,105 @@
+diff --git a/internal/artifactstore/store.go b/internal/artifactstore/store.go
+index d37fed2..742fd73 100644
+--- a/internal/artifactstore/store.go
++++ b/internal/artifactstore/store.go
+@@ -11,9 +11,13 @@ import (
+ 	"unicode"
+ )
+ 
++// StorageType identifies how an artifact's content is stored.
++// The wire values are "content" and "pointer".
++type StorageType string
++
+ const (
+-	StorageContent = "content"
+-	StoragePointer = "pointer"
++	StorageContent StorageType = "content"
++	StoragePointer StorageType = "pointer"
+ 
+ 	pointerVersion = 1
+ )
+@@ -40,7 +44,7 @@ type Pointer struct {
+ type ManifestArtifact struct {
+ 	Role      string
+ 	MediaType string
+-	Storage   string
++	Storage   StorageType
+ 	SHA256    string
+ 	Path      string
+ 	// Size is the raw content length for content artifacts. For pointer
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 345803f..0d7eb18 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -60,7 +60,7 @@ type ArtifactRef struct {
+ 	Artifact  string
+ 	Path      string
+ 	MediaType string
+-	Storage   string
++	Storage   artifactstore.StorageType
+ 	Size      int64
+ }
+ 
+@@ -285,7 +285,7 @@ func verifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes ma
+ 	return nil
+ }
+ 
+-func expectedArtifactPath(storage, sum string) string {
++func expectedArtifactPath(storage artifactstore.StorageType, sum string) string {
+ 	switch storage {
+ 	case artifactstore.StorageContent:
+ 		return "artifacts/sha256/" + sum[:2] + "/" + sum
+@@ -436,12 +436,12 @@ type skillJSON struct {
+ }
+ 
+ type artifactJSON struct {
+-	Role      string `json:"role"`
+-	Artifact  string `json:"artifact"`
+-	Path      string `json:"path"`
+-	MediaType string `json:"media_type"`
+-	Storage   string `json:"storage"`
+-	Size      int64  `json:"size"`
++	Role      string                    `json:"role"`
++	Artifact  string                    `json:"artifact"`
++	Path      string                    `json:"path"`
++	MediaType string                    `json:"media_type"`
++	Storage   artifactstore.StorageType `json:"storage"`
++	Size      int64                     `json:"size"`
+ }
+ 
+ func (m Manifest) toJSON() manifestJSON {
+diff --git a/internal/runmanifest/manifest_test.go b/internal/runmanifest/manifest_test.go
+index 3a4de4d..329752b 100644
+--- a/internal/runmanifest/manifest_test.go
++++ b/internal/runmanifest/manifest_test.go
+@@ -254,6 +254,30 @@ func TestValidateRejectsInvalidManifests(t *testing.T) {
+ 	}
+ }
+ 
++func TestParseJSONRejectsUnknownStorageValue(t *testing.T) {
++	// Build a valid manifest, serialise it, then replace the storage value with
++	// an unknown string. ParseJSON must return an error wrapping ErrInvalidManifest
++	// (validateStage wraps ErrInvalidManifest with %w; the inner ErrInvalidArtifact
++	// is included via %v so errors.Is reaches ErrInvalidManifest but not the inner
++	// sentinel — this locks that named-string-type fields do NOT loosen decode-time
++	// validation: the typed field accepts any string during unmarshal, but Validate
++	// rejects it).
++	output := contentArtifact("output", "text/plain", []byte("out"))
++	manifest := validManifest(output)
++	content, err := manifest.JSON()
++	if err != nil {
++		t.Fatalf("JSON returned error: %v", err)
++	}
++	payload := strings.Replace(string(content), `"storage": "content"`, `"storage": "remote"`, 1)
++	_, err = ParseJSON([]byte(payload))
++	if err == nil {
++		t.Fatal("ParseJSON returned nil error for unknown storage value")
++	}
++	if !errors.Is(err, ErrInvalidManifest) {
++		t.Fatalf("ParseJSON error = %v, want error wrapping ErrInvalidManifest", err)
++	}
++}
++
+ func TestValidateAllowsZeroInputStage(t *testing.T) {
+ 	output := contentArtifact("output", "text/plain", []byte("out"))
+ 	manifest := validManifest(output)

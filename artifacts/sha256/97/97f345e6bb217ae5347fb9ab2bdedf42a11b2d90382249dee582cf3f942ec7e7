@@ -1,0 +1,64 @@
+## Plan
+
+**Approach:** Replace the untyped `Storage string` discriminator with `type StorageType string` defined in internal/artifactstore (the package that owns the StorageContent/StoragePointer constants), and promote those two constants to that type. The field lives in TWO structs (artifactstore.ManifestArtifact.Storage and runmanifest.ArtifactRef.Storage) plus runmanifest's internal artifactJSON wire struct; all three adopt StorageType so the compiler catches invalid discriminator assignments across both packages. The JSON wire format stays the strings content/pointer.
+
+VERIFIED EMPIRICALLY (scratch test, since removed): a struct with `Storage StorageType json:"storage"` marshals byte-identically to the current string form for both values ({"storage":"content"} and {"storage":"pointer"}), and an existing on-disk {"storage":"pointer"} unmarshals cleanly into the typed field. So stored manifests round-trip unchanged. Also confirmed an untyped string literal ("remote") remains assignable to a StorageType field, so the existing bad-storage validation test compiles unchanged. DisallowUnknownFields is unaffected (it gates unknown JSON keys, not field types); the existing validateArtifactRef switch on the discriminator is preserved exactly (no tightening — bead does not imply it).
+
+**Files:**
+- internal/artifactstore/store.go - add `type StorageType string`; retype the two consts to StorageContent StorageType = "content" / StoragePointer StorageType = "pointer"; change ManifestArtifact.Storage to StorageType (assignments at AddContent/AddPointer already use the consts, so unchanged)
+- internal/runmanifest/manifest.go - change ArtifactRef.Storage and artifactJSON.Storage to artifactstore.StorageType; the validation compare (line 256), expectedArtifactPath switch (line 288-297), and the three toJSON/toArtifactRef/ArtifactFromManifestArtifact assignments work unchanged once the types line up
+- internal/cli/run.go - no change needed: storage=%s printf with StorageType prints content/pointer identically (verify go vet stays clean; use %s)
+
+**Tests:**
+- Add a focused marshal/round-trip test in internal/runmanifest/manifest_test.go locking the wire strings ("storage": "content"/"pointer") — the existing inline golden test (lines 58-103) and TestParseJSONRoundTrips already cover this; extend/keep them green
+- Existing tests already use the typed consts (store_test.go, manifest_test.go lines 271/534/546) so they compile as-is; the bad-storage case (line 242, literal "remote") and ExampleStore_AddContent (prints `content`) remain valid
+- Run full suite + go vet; confirm artifactstore example_test golden output ("content") unchanged
+
+**Docs:** None. docs/run.md (lines 75-76) and the sample output document storage as content/pointer — displayed values are unchanged. capture.md does not show the discriminator. No generated command reference touches it.
+
+**Risks:** Low. Wire format is empirically proven identical (string-backed named type marshals to same bytes). Only risk is a missed call site that assigns a raw string to a typed field in another package — grep covered internal/cli, internal/artifactstore, internal/runmanifest; build passes today.
+
+**Capture:**
+- inputs: bead etude-cr2 description + parent etude-artifact-store; internal/artifactstore/store.go, internal/runmanifest/manifest.go, internal/cli/run.go; test files store_test.go/manifest_test.go/example_test.go; docs/run.md, docs/capture.md; empirical scratch serialization test (removed)
+- output: bead --design field
+
+
+NOTES
+
+
+## Implement
+
+**Implemented:**
+- Added `type StorageType string` to internal/artifactstore/store.go with a doc comment noting the wire values are "content" and "pointer"
+- Retyped `StorageContent` and `StoragePointer` constants to `StorageType`
+- Changed `ManifestArtifact.Storage` field from `string` to `StorageType`
+- Changed `ArtifactRef.Storage` and `artifactJSON.Storage` in internal/runmanifest/manifest.go from `string` to `artifactstore.StorageType`
+- Retyped `expectedArtifactPath` first parameter from `string` to `artifactstore.StorageType` (the critical attempt-1 block fix)
+- Added `TestParseJSONRejectsUnknownStorageValue` to manifest_test.go locking that ParseJSON rejects manifests with unknown storage values after unmarshal (asserts `ErrInvalidManifest`)
+- Applied gofmt to manifest.go after struct tag alignment adjustment
+
+**Key decisions:**
+- `artifactJSON.Storage` wire struct also typed to `StorageType` so the unmarshal path is also type-safe end-to-end
+- New test asserts `ErrInvalidManifest` (not `ErrInvalidArtifact`) because `validateStage` wraps with `%w` for the outer sentinel and `%v` for the inner — comment in test explains the wrapping chain
+
+**Checks run:**
+- `go build ./...`: pass
+- `gofmt -l cmd internal`: clean (no unformatted files)
+- `go vet ./...`: pass
+- `go test ./... -count=1`: all 5 packages pass
+
+**Changed files:**
+- /Users/jv/projects/etude/internal/artifactstore/store.go
+- /Users/jv/projects/etude/internal/runmanifest/manifest.go
+- /Users/jv/projects/etude/internal/runmanifest/manifest_test.go
+
+**Plan deviations:** None. All four plan changes implemented. Optional test fixture included. Wire format unchanged (named string type marshals identically). internal/cli/run.go untouched as planned.
+
+**Capture:**
+- inputs: approved plan (attempt 2, 4/4 GO) and Plan gate notes in bead etude-cr2 --design; internal/artifactstore/store.go, internal/runmanifest/manifest.go, internal/runmanifest/manifest_test.go, internal/cli/run.go
+- output: working tree diff and bead notes
+## Implement gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (golden test confirms wire format unchanged; new test exercises Validate path, ErrInvalidManifest correct); pi/pilms: GO; GPT-5.5 xhigh (codex): GO (after recovering from a module-cache sandbox spiral; golden + round-trip tests confirmed passing).
+Files: artifactstore/store.go (StorageType + retyped consts + doc comment), runmanifest/manifest.go (ArtifactRef/artifactJSON.Storage + expectedArtifactPath param retyped), manifest_test.go (TestParseJSONRejectsUnknownStorageValue). cli/run.go untouched. Build/vet/gofmt/tests green; wire format byte-identical.
+Process note: codex over-invests in isolated build-env reconstruction on gate prompts that say 'build yourself' (2nd occurrence) — tighten remaining codex gate prompts to review from diff + provided results, no module-cache rebuild.
+
