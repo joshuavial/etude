@@ -127,6 +127,54 @@
         ]
       },
       "timestamp": "2026-08-16T00:25:00Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Confirm no non-Go validator independently enumerates gate keys.",
+            "Add near-miss-key and non-boolean strict-decode regressions.",
+            "Comment that the manifest codec test directly constructs the grant until runtime wiring lands in the dependent child."
+          ],
+          "timestamp": "2026-08-16T01:02:00Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T01:02:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:02:00Z"
     }
   ]
 }
