@@ -1,0 +1,934 @@
+commit f1d8f1a768282e74981a0eed442ae628a0b5b02b
+Author: joshuavial <git@codewithjv.com>
+Date:   Sun Jun 7 17:00:18 2026 +0800
+
+    add bench corpus run-ref source
+
+diff --git a/internal/bench/corpus.go b/internal/bench/corpus.go
+new file mode 100644
+index 0000000..3dce626
+--- /dev/null
++++ b/internal/bench/corpus.go
+@@ -0,0 +1,105 @@
++// Package bench provides cohort selection and corpus sourcing for the etude
++// bench command.
++//
++// Decoupling contract: this file defines the CorpusSource interface and its
++// supporting value types as a pure contract. No I/O or storage logic lives
++// here. The built-in default implementation (RunRefsSource) lives in
++// corpus_runrefs.go and yields ONE final-plan-TEXT fixture per qualifying run,
++// with multi-round gate-progression data carried solely as LabelHint values.
++// The limitation — only the last-captured plan text per run, not per-round plan
++// text — is intentional and stated explicitly: per-round plan texts require the
++// separate beads/Dolt adapter (a future bead), which core must not import.
++//
++// Adapter selection (mirror of replay.Runner / resolveRunner) lands in aul.4;
++// until then, intra-core callers construct or receive RunRefsSource directly.
++package bench
++
++import "context"
++
++// CorpusSource yields Fixtures for the gate bench pipeline.
++// Implementations may source fixtures from run refs (RunRefsSource), a
++// beads/Dolt history store, or any other backend — core only defines the seam.
++type CorpusSource interface {
++	Fixtures(ctx context.Context, sel CohortSelector) ([]Fixture, error)
++}
++
++// CohortSelector carries the selection axes for corpus retrieval.
++// It is a small tracker-neutral value type so that non-run-ref adapters can
++// implement their own selection logic without inheriting run-ref semantics.
++type CohortSelector struct {
++	// Stage is the workflow stage name to filter on (e.g. "plan").
++	Stage string
++	// Last is the maximum number of fixtures to return (must be positive).
++	Last int
++}
++
++// Fixture is one corpus entry: an artifact plus its provenance and an optional
++// label hint derived from gate history.
++type Fixture struct {
++	// Artifact holds the raw artifact bytes (e.g. plan text).
++	Artifact []byte
++	// MediaType is the MIME type of Artifact (e.g. "text/markdown").
++	MediaType string
++	// Provenance records where the fixture came from.
++	Provenance Provenance
++	// Label is an optional weak hint from the source's observable gate history.
++	// It is a HINT only — scoring logic is aul.3. May be zero-valued.
++	Label LabelHint
++}
++
++// Provenance records the origin of a Fixture.
++type Provenance struct {
++	// RunID is the source run identifier.
++	RunID string
++	// Phase is the workflow phase name (e.g. "plan").
++	Phase string
++	// Round is the gate round from which the hint was derived.
++	// For RunRefsSource this is the round number of the final (highest) gate
++	// attempt; it is not the round at which the artifact was produced.
++	Round int
++	// SourceCommit is the resolved git commit OID of the run ref at fixture
++	// read time; it pins the snapshot consistently.
++	SourceCommit string
++	// Stage is the matched runmanifest.Stage name (same as Phase for plan stages).
++	Stage string
++}
++
++// LabelHint is an optional weak hint derived from the source's observable gate
++// history. It is a passthrough of observable facts only; no scoring logic here.
++// A zero-valued LabelHint (Status == "") means no hint is available.
++type LabelHint struct {
++	// Status is the aggregate gate status of the most recent gate attempt for
++	// this phase (e.g. "pass", "rerun"). Empty when no gates are recorded.
++	Status GateHintStatus
++	// Rounds is the total number of gate attempts recorded for this phase.
++	// For RunRefsSource, Rounds > 1 means the artifact required reruns before
++	// passing (or is still in rerun state).
++	Rounds int
++	// FinalRound is the Round field of the highest-round GateAttempt for this
++	// phase. This is distinct from Rounds (attempt count): with a gapped,
++	// non-contiguous, or partial round sequence they diverge. Zero when no
++	// gates are recorded.
++	FinalRound int
++	// Seats holds per-seat verdict summaries from the final gate attempt.
++	Seats []SeatHint
++}
++
++// GateHintStatus mirrors runmanifest.GateStatus but is defined here so the
++// contract file has no dependency on the manifest package.
++type GateHintStatus string
++
++const (
++	GateHintPass      GateHintStatus = "pass"
++	GateHintRerun     GateHintStatus = "rerun"
++	GateHintEscalated GateHintStatus = "escalated"
++)
++
++// SeatHint is a per-seat verdict summary within a LabelHint.
++type SeatHint struct {
++	// Seat is the reviewer seat identifier (e.g. "opus", "codex").
++	Seat string
++	// Verdict is the seat's verdict (e.g. "go", "block").
++	Verdict string
++	// RequiredCount is the number of required-change items surfaced by this seat.
++	RequiredCount int
++}
+diff --git a/internal/bench/corpus_runrefs.go b/internal/bench/corpus_runrefs.go
+new file mode 100644
+index 0000000..9a3394a
+--- /dev/null
++++ b/internal/bench/corpus_runrefs.go
+@@ -0,0 +1,130 @@
++package bench
++
++import (
++	"context"
++	"fmt"
++
++	"github.com/joshuavial/etude/internal/refstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// RunRefsSource implements CorpusSource over a refstore.Store.
++//
++// It delivers ONE plan-TEXT fixture per qualifying run — the final captured
++// plan artifact — annotated with the multi-round gate progression as LabelHint
++// values. It does NOT reconstruct per-round plan text: dogfood capture
++// overwrites the plan stage with the final artifact, so only one plan text
++// exists per run ref. Per-round plan texts require the separate beads/Dolt
++// adapter (a future bead), which core must not import.
++//
++// This is the built-in default; adapter selection (mirror of resolveRunner)
++// lands in aul.4. Until then, intra-core callers construct RunRefsSource
++// directly and pass it where a CorpusSource is expected.
++type RunRefsSource struct {
++	Store refstore.Store
++}
++
++// Fixtures implements CorpusSource.
++//
++// It calls SelectCohort with sel.Stage and sel.Last to enumerate eligible runs,
++// then for each CohortRun:
++//  1. Reads the plan output bytes via Store.ReadCommitFile.
++//  2. Reads the manifest to harvest GateAttempts for the phase matching the
++//     stage name, building a LabelHint from the final round's status and seats.
++func (r RunRefsSource) Fixtures(ctx context.Context, sel CohortSelector) ([]Fixture, error) {
++	cohort, err := SelectCohort(ctx, r.Store, sel.Stage, sel.Last)
++	if err != nil {
++		return nil, fmt.Errorf("corpus runrefs: select cohort: %w", err)
++	}
++
++	fixtures := make([]Fixture, 0, len(cohort.Selected))
++	for _, cr := range cohort.Selected {
++		f, err := r.fixtureFromRun(ctx, sel.Stage, cr)
++		if err != nil {
++			return nil, fmt.Errorf("corpus runrefs: run %s: %w", cr.RunID, err)
++		}
++		fixtures = append(fixtures, f)
++	}
++	return fixtures, nil
++}
++
++// fixtureFromRun builds a single Fixture for the given CohortRun.
++func (r RunRefsSource) fixtureFromRun(ctx context.Context, phase string, cr CohortRun) (Fixture, error) {
++	// Read the plan artifact bytes from the pinned commit.
++	artifactBytes, err := r.Store.ReadCommitFile(ctx, cr.Commit, cr.Stage.Output.Path)
++	if err != nil {
++		return Fixture{}, fmt.Errorf("read output artifact: %w", err)
++	}
++
++	// Re-read the manifest from the same pinned commit to harvest GateAttempts.
++	// (cohort.go already parsed it for classification, but does not expose it;
++	// re-reading from the same commit OID is correct and consistent.)
++	manifestBytes, err := r.Store.ReadCommitFile(ctx, cr.Commit, "manifest.json")
++	if err != nil {
++		return Fixture{}, fmt.Errorf("read manifest: %w", err)
++	}
++	manifest, err := runmanifest.ParseJSON(manifestBytes)
++	if err != nil {
++		return Fixture{}, fmt.Errorf("parse manifest: %w", err)
++	}
++
++	// Harvest using cr.Stage.Name (the matched stage name) rather than the
++	// sel.Stage/phase parameter so the filter matches the contract directly.
++	hint := harvestLabelHint(cr.Stage.Name, manifest.Gates)
++
++	return Fixture{
++		Artifact:  artifactBytes,
++		MediaType: cr.Stage.Output.MediaType,
++		Provenance: Provenance{
++			RunID:        cr.RunID,
++			Phase:        phase,
++			Round:        hint.FinalRound, // highest recorded Round number, 0 when no gates
++			SourceCommit: cr.Commit,
++			Stage:        cr.Stage.Name,
++		},
++		Label: hint,
++	}, nil
++}
++
++// harvestLabelHint builds a LabelHint from the GateAttempts matching phase.
++// Rounds is the count of matching attempts; FinalRound is the highest Round
++// field observed (not the count — they diverge for gapped or non-contiguous
++// round sequences). Returns a zero-valued LabelHint when no gates match.
++func harvestLabelHint(phase string, gates []runmanifest.GateAttempt) LabelHint {
++	// Collect all gate attempts for this phase.
++	var phaseGates []runmanifest.GateAttempt
++	for _, g := range gates {
++		if g.Phase == phase {
++			phaseGates = append(phaseGates, g)
++		}
++	}
++	if len(phaseGates) == 0 {
++		return LabelHint{}
++	}
++
++	// Find the gate attempt with the highest round number.
++	// Equal-round tie-break keeps first-seen (stable for well-formed manifests
++	// where Validate enforces unique (phase, round) pairs).
++	latest := phaseGates[0]
++	for _, g := range phaseGates[1:] {
++		if g.Round > latest.Round {
++			latest = g
++		}
++	}
++
++	seats := make([]SeatHint, 0, len(latest.Seats))
++	for _, s := range latest.Seats {
++		seats = append(seats, SeatHint{
++			Seat:          s.Seat,
++			Verdict:       string(s.Verdict),
++			RequiredCount: len(s.Required),
++		})
++	}
++
++	return LabelHint{
++		Status:     GateHintStatus(latest.Status),
++		Rounds:     len(phaseGates),
++		FinalRound: latest.Round,
++		Seats:      seats,
++	}
++}
+diff --git a/internal/bench/corpus_runrefs_test.go b/internal/bench/corpus_runrefs_test.go
+new file mode 100644
+index 0000000..9df9399
+--- /dev/null
++++ b/internal/bench/corpus_runrefs_test.go
+@@ -0,0 +1,578 @@
++package bench
++
++import (
++	"context"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/joshuavial/etude/internal/artifactstore"
++	"github.com/joshuavial/etude/internal/runmanifest"
++)
++
++// ---------------------------------------------------------------------------
++// Gate-building helpers (synthetic tests only)
++// ---------------------------------------------------------------------------
++
++// makeGate builds a minimal valid GateAttempt for the given phase and round.
++// It references the supplied stageNames for reviewed_stages (required by Validate).
++func makeGate(phase string, round int, status runmanifest.GateStatus, stageNames []string, seats []runmanifest.SeatResult) runmanifest.GateAttempt {
++	refs := make([]runmanifest.ReviewedRef, 0, len(stageNames))
++	for _, s := range stageNames {
++		refs = append(refs, runmanifest.ReviewedRef{Stage: s})
++	}
++	return runmanifest.GateAttempt{
++		GateID:         phase + "-gate-r" + itoa(round),
++		Phase:          phase,
++		Round:          round,
++		Tier:           1,
++		Status:         status,
++		ReviewedStages: refs,
++		Seats:          seats,
++		Timestamp:      time.Now().UTC(),
++	}
++}
++
++// makeGoSeat returns a seat with a "go" verdict (no required changes).
++func makeGoSeat(seat string) runmanifest.SeatResult {
++	return runmanifest.SeatResult{
++		Seat:      seat,
++		Harness:   runmanifest.Harness{Name: "claude-code", Version: "1.0"},
++		Provider:  runmanifest.Provider{Name: "anthropic", Model: "claude-opus-4"},
++		Verdict:   runmanifest.SeatVerdictGo,
++		Timestamp: time.Now().UTC(),
++	}
++}
++
++// makeBlockSeat returns a seat with a "block" verdict and the supplied required items.
++func makeBlockSeat(seat string, required []string) runmanifest.SeatResult {
++	return runmanifest.SeatResult{
++		Seat:      seat,
++		Harness:   runmanifest.Harness{Name: "claude-code", Version: "1.0"},
++		Provider:  runmanifest.Provider{Name: "anthropic", Model: "claude-opus-4"},
++		Verdict:   runmanifest.SeatVerdictBlock,
++		Required:  required,
++		Timestamp: time.Now().UTC(),
++	}
++}
++
++// makeManifestWithGates extends makeManifest by appending gate attempts.
++func makeManifestWithGates(runID string, created time.Time, stages []runmanifest.Stage, gates []runmanifest.GateAttempt) runmanifest.Manifest {
++	m := makeManifest(runID, created, stages)
++	m.Gates = gates
++	return m
++}
++
++// ---------------------------------------------------------------------------
++// Synthetic tests
++// ---------------------------------------------------------------------------
++
++// TestRunRefsSourceSingleRunNoGates verifies that a run with a plan stage but
++// no plan gates produces one fixture with an empty (zero-valued) LabelHint.
++func TestRunRefsSourceSingleRunNoGates(t *testing.T) {
++	planText := []byte("# Plan\nDo something.")
++	stage := makeStage("plan", nil, planText)
++	files := map[string][]byte{stage.Output.Path: planText}
++	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
++	manifest := makeManifest("run-nogates", ts, []runmanifest.Stage{stage})
++	store, _ := seedRun(t, manifest, files)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 1 {
++		t.Fatalf("len(fixtures) = %d, want 1", len(fixtures))
++	}
++	f := fixtures[0]
++	if string(f.Artifact) != string(planText) {
++		t.Errorf("Artifact = %q, want %q", f.Artifact, planText)
++	}
++	if f.Provenance.RunID != "run-nogates" {
++		t.Errorf("Provenance.RunID = %q, want %q", f.Provenance.RunID, "run-nogates")
++	}
++	if f.Provenance.Phase != "plan" {
++		t.Errorf("Provenance.Phase = %q, want %q", f.Provenance.Phase, "plan")
++	}
++	if f.Provenance.Stage != "plan" {
++		t.Errorf("Provenance.Stage = %q, want %q", f.Provenance.Stage, "plan")
++	}
++	if f.Provenance.Round != 0 {
++		t.Errorf("Provenance.Round = %d, want 0 (no gates)", f.Provenance.Round)
++	}
++	// LabelHint should be zero-valued when no gates exist.
++	if f.Label.Status != "" {
++		t.Errorf("Label.Status = %q, want empty (no gates)", f.Label.Status)
++	}
++	if f.Label.Rounds != 0 {
++		t.Errorf("Label.Rounds = %d, want 0", f.Label.Rounds)
++	}
++}
++
++// TestRunRefsSourceSingleRunWithGates verifies provenance and label hint for a
++// run with a multi-round plan gate (2 reruns → 1 pass).
++func TestRunRefsSourceSingleRunWithGates(t *testing.T) {
++	planText := []byte("# Plan\nV3 plan text.")
++	stage := makeStage("plan", nil, planText)
++	files := map[string][]byte{stage.Output.Path: planText}
++	ts := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
++
++	gates := []runmanifest.GateAttempt{
++		makeGate("plan", 1, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"fix A", "fix B"}),
++			makeGoSeat("codex"),
++		}),
++		makeGate("plan", 2, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"fix A"}),
++			makeBlockSeat("codex", []string{"fix C"}),
++		}),
++		makeGate("plan", 3, runmanifest.GateStatusPass, []string{"plan"}, []runmanifest.SeatResult{
++			makeGoSeat("opus"),
++			makeGoSeat("codex"),
++		}),
++	}
++
++	manifest := makeManifestWithGates("run-gates", ts, []runmanifest.Stage{stage}, gates)
++	store, commit := seedRun(t, manifest, files)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 1 {
++		t.Fatalf("len(fixtures) = %d, want 1", len(fixtures))
++	}
++	f := fixtures[0]
++
++	// Artifact bytes.
++	if string(f.Artifact) != string(planText) {
++		t.Errorf("Artifact = %q, want %q", f.Artifact, planText)
++	}
++	if f.MediaType != stage.Output.MediaType {
++		t.Errorf("MediaType = %q, want %q", f.MediaType, stage.Output.MediaType)
++	}
++
++	// Provenance.
++	if f.Provenance.RunID != "run-gates" {
++		t.Errorf("Provenance.RunID = %q", f.Provenance.RunID)
++	}
++	if f.Provenance.Phase != "plan" {
++		t.Errorf("Provenance.Phase = %q", f.Provenance.Phase)
++	}
++	if f.Provenance.Stage != "plan" {
++		t.Errorf("Provenance.Stage = %q", f.Provenance.Stage)
++	}
++	if f.Provenance.SourceCommit != commit {
++		t.Errorf("Provenance.SourceCommit = %q, want %q", f.Provenance.SourceCommit, commit)
++	}
++	// Round is the highest recorded GateAttempt.Round (= 3, the final round number).
++	if f.Provenance.Round != 3 {
++		t.Errorf("Provenance.Round = %d, want 3 (highest gate round number)", f.Provenance.Round)
++	}
++
++	// LabelHint: derived from the final (round 3 = pass) gate attempt.
++	if f.Label.Status != GateHintPass {
++		t.Errorf("Label.Status = %q, want %q", f.Label.Status, GateHintPass)
++	}
++	if f.Label.Rounds != 3 {
++		t.Errorf("Label.Rounds = %d, want 3 (attempt count)", f.Label.Rounds)
++	}
++	if f.Label.FinalRound != 3 {
++		t.Errorf("Label.FinalRound = %d, want 3 (highest round number)", f.Label.FinalRound)
++	}
++	if len(f.Label.Seats) != 2 {
++		t.Fatalf("len(Label.Seats) = %d, want 2", len(f.Label.Seats))
++	}
++	for _, seat := range f.Label.Seats {
++		if seat.Verdict != "go" {
++			t.Errorf("seat %q: Verdict = %q, want go", seat.Seat, seat.Verdict)
++		}
++		if seat.RequiredCount != 0 {
++			t.Errorf("seat %q: RequiredCount = %d, want 0", seat.Seat, seat.RequiredCount)
++		}
++	}
++}
++
++// TestRunRefsSourceMultipleRuns verifies one fixture per eligible run and
++// correct ordering (most-recent first, same as SelectCohort).
++func TestRunRefsSourceMultipleRuns(t *testing.T) {
++	store := newMultiRunStore(t)
++
++	times := []time.Time{
++		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
++		time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
++		time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
++	}
++	runIDs := []string{"run-multi-a", "run-multi-c", "run-multi-b"}
++
++	for i, id := range runIDs {
++		text := []byte("plan for " + id)
++		stage := makeStage("plan", nil, text)
++		files := map[string][]byte{stage.Output.Path: text}
++		manifest := makeManifest(id, times[i], []runmanifest.Stage{stage})
++		seedRunInto(t, store, manifest, files)
++	}
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 3 {
++		t.Fatalf("len(fixtures) = %d, want 3", len(fixtures))
++	}
++
++	// Expect newest first: run-multi-c (Mar), run-multi-b (Feb), run-multi-a (Jan).
++	wantOrder := []string{"run-multi-c", "run-multi-b", "run-multi-a"}
++	for i, want := range wantOrder {
++		if fixtures[i].Provenance.RunID != want {
++			t.Errorf("fixtures[%d].Provenance.RunID = %q, want %q", i, fixtures[i].Provenance.RunID, want)
++		}
++	}
++}
++
++// TestRunRefsSourceNoStageMissing verifies that runs without the requested
++// stage are excluded (SelectCohort skips them) — no fixture is produced.
++func TestRunRefsSourceNoStageMissing(t *testing.T) {
++	out := []byte("other output")
++	stage := makeStage("other-stage", nil, out)
++	files := map[string][]byte{stage.Output.Path: out}
++	manifest := makeManifest("run-noplan", time.Now().UTC(), []runmanifest.Stage{stage})
++	store, _ := seedRun(t, manifest, files)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 0 {
++		t.Errorf("len(fixtures) = %d, want 0 (stage missing run excluded)", len(fixtures))
++	}
++}
++
++// TestRunRefsSourcePointerOutputSkipped verifies that runs whose plan stage
++// uses pointer output are excluded by SelectCohort — no fixture produced.
++func TestRunRefsSourcePointerOutputSkipped(t *testing.T) {
++	ctx := context.Background()
++	dir := initRepo(t)
++	store := newStore(dir)
++
++	as := artifactstore.New()
++	size := int64(512)
++	ma, err := as.AddPointer("output", "application/octet-stream", artifactstore.Pointer{
++		URI:    "https://example.com/out",
++		SHA256: strings.Repeat("c", 64),
++		Size:   &size,
++	})
++	if err != nil {
++		t.Fatalf("AddPointer: %v", err)
++	}
++	ptrRef := runmanifest.ArtifactFromManifestArtifact(ma)
++	ptrFile := as.Files()[ma.Path]
++
++	stage := runmanifest.Stage{
++		Name:       "plan",
++		ProducedBy: "test-agent",
++		GitSHA:     strings.Repeat("a", 40),
++		Skill:      runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
++		Timestamp:  time.Now().UTC(),
++		Output:     ptrRef,
++	}
++	manifest := makeManifest("run-ptrout-corpus", time.Now().UTC(), []runmanifest.Stage{stage})
++	_, err = runmanifest.Writer{Store: store}.Write(ctx, manifest, map[string][]byte{ptrRef.Path: ptrFile}, runmanifest.WriteOptions{})
++	if err != nil {
++		t.Fatalf("Write: %v", err)
++	}
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(ctx, CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 0 {
++		t.Errorf("len(fixtures) = %d, want 0 (pointer output run excluded)", len(fixtures))
++	}
++}
++
++// TestRunRefsSourceAmbiguousStageSkipped verifies that runs with two plan
++// stages (ambiguous) are excluded — no fixture produced.
++func TestRunRefsSourceAmbiguousStageSkipped(t *testing.T) {
++	out1 := []byte("output-ambig-1")
++	out2 := []byte("output-ambig-2")
++	stage1 := makeStage("plan", nil, out1)
++	stage2 := makeStage("plan", nil, out2)
++	files := map[string][]byte{
++		stage1.Output.Path: out1,
++		stage2.Output.Path: out2,
++	}
++	manifest := makeManifest("run-ambig-corpus", time.Now().UTC(), []runmanifest.Stage{stage1, stage2})
++	store, _ := seedRun(t, manifest, files)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 0 {
++		t.Errorf("len(fixtures) = %d, want 0 (ambiguous stage run excluded)", len(fixtures))
++	}
++}
++
++// TestRunRefsSourceLastTruncation verifies that the Last selector is honoured.
++func TestRunRefsSourceLastTruncation(t *testing.T) {
++	store := newMultiRunStore(t)
++
++	for i := 0; i < 5; i++ {
++		ts := time.Date(2024, time.Month(i+1), 1, 0, 0, 0, 0, time.UTC)
++		id := "run-corpus-trunc-" + string(rune('a'+i))
++		text := []byte("plan for " + id)
++		stage := makeStage("plan", nil, text)
++		files := map[string][]byte{stage.Output.Path: text}
++		manifest := makeManifest(id, ts, []runmanifest.Stage{stage})
++		seedRunInto(t, store, manifest, files)
++	}
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 2})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 2 {
++		t.Errorf("len(fixtures) = %d, want 2", len(fixtures))
++	}
++	// The two most-recent: run-corpus-trunc-e (May) and run-corpus-trunc-d (Apr).
++	if fixtures[0].Provenance.RunID != "run-corpus-trunc-e" {
++		t.Errorf("fixtures[0].RunID = %q, want run-corpus-trunc-e", fixtures[0].Provenance.RunID)
++	}
++	if fixtures[1].Provenance.RunID != "run-corpus-trunc-d" {
++		t.Errorf("fixtures[1].RunID = %q, want run-corpus-trunc-d", fixtures[1].Provenance.RunID)
++	}
++}
++
++// TestRunRefsSourceEmptyStore verifies that an empty store returns no fixtures
++// without error.
++func TestRunRefsSourceEmptyStore(t *testing.T) {
++	dir := initRepo(t)
++	store := newStore(dir)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 0 {
++		t.Errorf("len(fixtures) = %d, want 0", len(fixtures))
++	}
++}
++
++// ---------------------------------------------------------------------------
++// harvestLabelHint unit tests
++// ---------------------------------------------------------------------------
++
++// TestHarvestLabelHintNoGates verifies zero-valued hint when no gates match.
++func TestHarvestLabelHintNoGates(t *testing.T) {
++	hint := harvestLabelHint("plan", nil)
++	if hint.Status != "" {
++		t.Errorf("Status = %q, want empty", hint.Status)
++	}
++	if hint.Rounds != 0 {
++		t.Errorf("Rounds = %d, want 0", hint.Rounds)
++	}
++}
++
++// TestHarvestLabelHintPhaseFilter verifies that only gates matching the
++// requested phase contribute to the hint.
++func TestHarvestLabelHintPhaseFilter(t *testing.T) {
++	gates := []runmanifest.GateAttempt{
++		makeGate("implement", 1, runmanifest.GateStatusPass, []string{"implement"}, []runmanifest.SeatResult{
++			makeGoSeat("opus"),
++		}),
++		makeGate("plan", 1, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"fix X"}),
++		}),
++		makeGate("plan", 2, runmanifest.GateStatusPass, []string{"plan"}, []runmanifest.SeatResult{
++			makeGoSeat("opus"),
++		}),
++	}
++
++	hint := harvestLabelHint("plan", gates)
++	if hint.Status != GateHintPass {
++		t.Errorf("Status = %q, want pass", hint.Status)
++	}
++	if hint.Rounds != 2 {
++		t.Errorf("Rounds = %d, want 2", hint.Rounds)
++	}
++}
++
++// TestHarvestLabelHintSeatSummary verifies that RequiredCount reflects the
++// number of Required items on the final round's seat results.
++func TestHarvestLabelHintSeatSummary(t *testing.T) {
++	gates := []runmanifest.GateAttempt{
++		makeGate("plan", 1, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"req1", "req2", "req3"}),
++			makeGoSeat("codex"),
++		}),
++	}
++	hint := harvestLabelHint("plan", gates)
++	if hint.Rounds != 1 {
++		t.Errorf("Rounds = %d, want 1", hint.Rounds)
++	}
++	if len(hint.Seats) != 2 {
++		t.Fatalf("len(Seats) = %d, want 2", len(hint.Seats))
++	}
++	opusSeat := hint.Seats[0]
++	if opusSeat.Verdict != "block" {
++		t.Errorf("opus Verdict = %q, want block", opusSeat.Verdict)
++	}
++	if opusSeat.RequiredCount != 3 {
++		t.Errorf("opus RequiredCount = %d, want 3", opusSeat.RequiredCount)
++	}
++	codexSeat := hint.Seats[1]
++	if codexSeat.Verdict != "go" {
++		t.Errorf("codex Verdict = %q, want go", codexSeat.Verdict)
++	}
++	if codexSeat.RequiredCount != 0 {
++		t.Errorf("codex RequiredCount = %d, want 0", codexSeat.RequiredCount)
++	}
++}
++
++// TestRunRefsSourceNonContiguousRounds verifies that Provenance.Round is the
++// highest recorded GateAttempt.Round — NOT the attempt count — so gapped or
++// non-contiguous round sequences (e.g. {2, 5}) are handled correctly.
++// With rounds {2, 5}: FinalRound=5 (highest Round field), Rounds=2 (count).
++func TestRunRefsSourceNonContiguousRounds(t *testing.T) {
++	planText := []byte("# Plan\nNon-contiguous rounds.")
++	stage := makeStage("plan", nil, planText)
++	files := map[string][]byte{stage.Output.Path: planText}
++	ts := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
++
++	// Deliberately non-contiguous: rounds 2 and 5 (skipping 1, 3, 4).
++	gates := []runmanifest.GateAttempt{
++		makeGate("plan", 2, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"fix A"}),
++		}),
++		makeGate("plan", 5, runmanifest.GateStatusPass, []string{"plan"}, []runmanifest.SeatResult{
++			makeGoSeat("opus"),
++		}),
++	}
++
++	manifest := makeManifestWithGates("run-noncontig", ts, []runmanifest.Stage{stage}, gates)
++	store, _ := seedRun(t, manifest, files)
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(fixtures) != 1 {
++		t.Fatalf("len(fixtures) = %d, want 1", len(fixtures))
++	}
++	f := fixtures[0]
++
++	// FinalRound must be the highest Round field (5), not the attempt count (2).
++	if f.Provenance.Round != 5 {
++		t.Errorf("Provenance.Round = %d, want 5 (highest Round field, not attempt count)", f.Provenance.Round)
++	}
++	if f.Label.FinalRound != 5 {
++		t.Errorf("Label.FinalRound = %d, want 5", f.Label.FinalRound)
++	}
++	// Rounds is the attempt count (2), distinct from FinalRound (5).
++	if f.Label.Rounds != 2 {
++		t.Errorf("Label.Rounds = %d, want 2 (attempt count, not highest round number)", f.Label.Rounds)
++	}
++	if f.Label.Status != GateHintPass {
++		t.Errorf("Label.Status = %q, want pass", f.Label.Status)
++	}
++}
++
++// TestHarvestLabelHintNonContiguousRounds is a direct unit test of the
++// harvestLabelHint function with gapped rounds {2, 5}.
++func TestHarvestLabelHintNonContiguousRounds(t *testing.T) {
++	gates := []runmanifest.GateAttempt{
++		makeGate("plan", 2, runmanifest.GateStatusRerun, []string{"plan"}, []runmanifest.SeatResult{
++			makeBlockSeat("opus", []string{"fix A"}),
++		}),
++		makeGate("plan", 5, runmanifest.GateStatusPass, []string{"plan"}, []runmanifest.SeatResult{
++			makeGoSeat("opus"),
++		}),
++	}
++	hint := harvestLabelHint("plan", gates)
++	if hint.FinalRound != 5 {
++		t.Errorf("FinalRound = %d, want 5 (highest Round field)", hint.FinalRound)
++	}
++	if hint.Rounds != 2 {
++		t.Errorf("Rounds = %d, want 2 (attempt count)", hint.Rounds)
++	}
++	if hint.Status != GateHintPass {
++		t.Errorf("Status = %q, want pass", hint.Status)
++	}
++}
++
++// ---------------------------------------------------------------------------
++// Real ref assertion (loose: the one-plan-per-run limitation is the invariant)
++// ---------------------------------------------------------------------------
++
++// TestRunRefsSourceRealRef_EtudeRun asserts against the real captured run
++// refs/etude/runs/etude-2bm.1, which has one plan stage and four plan gate
++// rounds (3 rerun → 1 pass). This locks in the documented one-plan-per-run
++// limitation as an explicit test.
++//
++// The assertion is intentionally LOOSE: we assert exactly ONE fixture and that
++// the hint surfaces a multi-round progression (Rounds >= 2 followed by a final
++// pass), so that future captures with more rounds do not break this test.
++func TestRunRefsSourceRealRef_EtudeRun(t *testing.T) {
++	// Use the actual repo's refstore (same path pattern as other real-ref tests).
++	store := newStore("../..") // internal/bench/../../ = repo root
++
++	ctx := context.Background()
++
++	// Verify the ref exists; skip if not (e.g. fresh clone without run refs).
++	if _, err := store.Resolve(ctx, "refs/etude/runs/etude-2bm.1"); err != nil {
++		t.Skipf("refs/etude/runs/etude-2bm.1 not found in repo: %v", err)
++	}
++
++	src := RunRefsSource{Store: store}
++	fixtures, err := src.Fixtures(ctx, CohortSelector{Stage: "plan", Last: 100})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++
++	// Find the fixture for etude-2bm.1 specifically (other runs may also be present).
++	var found *Fixture
++	for i := range fixtures {
++		if fixtures[i].Provenance.RunID == "etude-2bm.1" {
++			found = &fixtures[i]
++			break
++		}
++	}
++	if found == nil {
++		t.Fatal("no fixture found for etude-2bm.1")
++	}
++
++	// The real run has 4 plan gate rounds (3 rerun + 1 pass).
++	// Assert: at least 2 rounds (multi-round progression), final status is pass.
++	if found.Label.Rounds < 2 {
++		t.Errorf("Label.Rounds = %d, want >= 2 (multi-round progression)", found.Label.Rounds)
++	}
++	if found.Label.Status != GateHintPass {
++		t.Errorf("Label.Status = %q, want pass (final gate passed)", found.Label.Status)
++	}
++
++	// The artifact must be non-empty (a real plan text).
++	if len(found.Artifact) == 0 {
++		t.Error("Artifact is empty, want non-empty plan text")
++	}
++
++	// Provenance sanity.
++	if found.Provenance.RunID != "etude-2bm.1" {
++		t.Errorf("Provenance.RunID = %q, want etude-2bm.1", found.Provenance.RunID)
++	}
++	if found.Provenance.Phase != "plan" {
++		t.Errorf("Provenance.Phase = %q, want plan", found.Provenance.Phase)
++	}
++	if found.Provenance.SourceCommit == "" {
++		t.Error("Provenance.SourceCommit is empty")
++	}
++}
+diff --git a/internal/bench/corpus_test.go b/internal/bench/corpus_test.go
+new file mode 100644
+index 0000000..4a1bf3f
+--- /dev/null
++++ b/internal/bench/corpus_test.go
+@@ -0,0 +1,91 @@
++package bench
++
++import (
++	"context"
++	"testing"
++)
++
++// fakeCorpusSource is a minimal non-core CorpusSource implementation that
++// proves the interface seam is satisfiable without core importing an adapter.
++// It stands in for the future beads/Dolt adapter.
++type fakeCorpusSource struct {
++	fixtures []Fixture
++	err      error
++}
++
++func (f *fakeCorpusSource) Fixtures(_ context.Context, _ CohortSelector) ([]Fixture, error) {
++	return f.fixtures, f.err
++}
++
++// Compile-time assertion: fakeCorpusSource satisfies CorpusSource.
++var _ CorpusSource = (*fakeCorpusSource)(nil)
++
++// TestCorpusSourceSeam verifies that a non-core implementation can satisfy the
++// CorpusSource interface without importing any core adapter package, and that
++// the interface contract (Fixtures returns the injected fixtures) is upheld.
++func TestCorpusSourceSeam(t *testing.T) {
++	want := []Fixture{
++		{
++			Artifact:  []byte("plan text"),
++			MediaType: "text/markdown",
++			Provenance: Provenance{
++				RunID:        "fake-run-1",
++				Phase:        "plan",
++				Round:        2,
++				SourceCommit: "aaaa",
++				Stage:        "plan",
++			},
++			Label: LabelHint{
++				Status: GateHintPass,
++				Rounds: 2,
++				Seats: []SeatHint{
++					{Seat: "opus", Verdict: "go", RequiredCount: 0},
++				},
++			},
++		},
++	}
++
++	var src CorpusSource = &fakeCorpusSource{fixtures: want}
++	got, err := src.Fixtures(context.Background(), CohortSelector{Stage: "plan", Last: 10})
++	if err != nil {
++		t.Fatalf("Fixtures: %v", err)
++	}
++	if len(got) != len(want) {
++		t.Fatalf("len(Fixtures) = %d, want %d", len(got), len(want))
++	}
++	g := got[0]
++	w := want[0]
++	if string(g.Artifact) != string(w.Artifact) {
++		t.Errorf("Artifact = %q, want %q", g.Artifact, w.Artifact)
++	}
++	if g.MediaType != w.MediaType {
++		t.Errorf("MediaType = %q, want %q", g.MediaType, w.MediaType)
++	}
++	if g.Provenance != w.Provenance {
++		t.Errorf("Provenance = %+v, want %+v", g.Provenance, w.Provenance)
++	}
++	if g.Label.Status != w.Label.Status {
++		t.Errorf("Label.Status = %q, want %q", g.Label.Status, w.Label.Status)
++	}
++	if g.Label.Rounds != w.Label.Rounds {
++		t.Errorf("Label.Rounds = %d, want %d", g.Label.Rounds, w.Label.Rounds)
++	}
++	if len(g.Label.Seats) != len(w.Label.Seats) {
++		t.Errorf("len(Label.Seats) = %d, want %d", len(g.Label.Seats), len(w.Label.Seats))
++	}
++}
++
++// TestLabelHintZeroValue confirms that a zero-valued LabelHint is distinguishable
++// (Status == "") so callers can tell when no gate history is available.
++func TestLabelHintZeroValue(t *testing.T) {
++	var hint LabelHint
++	if hint.Status != "" {
++		t.Errorf("zero LabelHint.Status = %q, want empty string", hint.Status)
++	}
++	if hint.Rounds != 0 {
++		t.Errorf("zero LabelHint.Rounds = %d, want 0", hint.Rounds)
++	}
++	if len(hint.Seats) != 0 {
++		t.Errorf("zero LabelHint.Seats = %v, want nil/empty", hint.Seats)
++	}
++}

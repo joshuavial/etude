@@ -1,0 +1,55 @@
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Inputs:
+- bead: etude-aul.1 - bench-gate: corpus extraction from Dolt history + run refs
+- implementation artifact: dirty working tree files internal/bench/corpus.go, internal/bench/corpus_runrefs.go, internal/bench/corpus_test.go, internal/bench/corpus_runrefs_test.go
+- approved plan: bd design field for etude-aul.1
+- implement gate evidence: tmp/gates-aul.1/implement.r1.json and tmp/gates-aul.1/implement.r2.json
+- started git SHA: ed5e37e2a08f7d21485203cd04e5010c9ad5f9ca
+- started dirty state: unrelated .gitignore, .claude/skills/etude-review, .etude/gates.yaml, tmp; bead files under internal/bench/corpus*
+
+Automated tests:
+- changes: new focused tests in internal/bench/corpus_test.go and internal/bench/corpus_runrefs_test.go
+- state: dirty/uncommitted, scoped to this bead
+- commands:
+  - make build: PASS
+  - go test -count=1 ./internal/bench/...: PASS
+  - make lint: PASS
+  - make test: first run FAIL only because the gate snapshot copied Go files under tmp/gates-aul.1/snapshot-r2, causing go test ./... to compile the scratch snapshot as a package
+  - rm -rf tmp/gates-aul.1/snapshot-r2: completed
+  - make test: PASS
+  - make build: PASS
+  - make lint: PASS
+- result: pass after removing the review snapshot from the module tree; no implementation code changes were needed during Verify
+
+Manual tests:
+- required: no
+- reason: this bead adds an internal bench CorpusSource interface, a RunRefsSource implementation, and unit tests only. It does not add or change a runnable CLI command; etude bench --gate CLI wiring is a later bead, etude-aul.4.
+- result: not applicable
+
+Docs:
+- changed: no user-facing docs
+- style guide: docs/plans/dogfood writing/docs policy checked
+- result: no docs change required for this internal package seam; user-facing bench --gate docs belong with CLI behavior in etude-aul.4
+
+QA findings:
+- correctness: pass. RunRefsSource composes SelectCohort, pinned Store.ReadCommitFile artifact reads, pinned manifest reads, and GateAttempt harvest. The implement r1 blocker was fixed by separating LabelHint.Rounds (attempt count) from LabelHint.FinalRound and setting Provenance.Round to the highest recorded GateAttempt.Round.
+- coverage: pass. Tests cover interface substitutability, zero-value hints, no-gate fixtures, multi-round gates, non-contiguous round numbers, phase filtering, seat summaries, multiple-run ordering, missing/pointer/ambiguous stages, Last truncation, empty stores, and a loose real run-ref fixture for etude-2bm.1.
+- regressions: no material regression found. Full repo test/build/lint pass after removing scratch snapshot files from tmp.
+- code quality: pass. Core remains decoupled from beads/Dolt and imports only context in corpus.go, plus refstore/runmanifest in corpus_runrefs.go.
+- risks: no material risk blocks progress. Optional future cleanup: harvestLabelHint can avoid the intermediate slice; Provenance.Phase could be revisited if selectors later support aliases. Both are non-blocking.
+
+Provenance:
+- verify artifact created at: 2026-06-07T08:51:21Z
+- runner: Codex
+- approval surface: local file tmp/gates-aul.1/verify-artifact.md
+
+Review gate:
+- required: yes
+- phase: verify
+- tier: L2
+- attempt: 1
+- result: pending

@@ -1,0 +1,102 @@
+## Plan
+
+**Approach:**
+Add a CORE corpus-source seam to internal/bench that yields plan-round "fixtures"
+for the gate bench, and ship the run-refs implementation of it. Core stays
+decoupled from beads/Dolt: it defines the interface + a registration seam (mirror
+of the existing replay.Runner / `--runner` / `git config etude.runner` adapter
+pattern) and a future beads/Dolt adapter plugs in WITHOUT core importing it.
+
+1. CorpusSource interface (new internal/bench/corpus.go), e.g.:
+     type CorpusSource interface {
+         Fixtures(ctx, sel CohortSelector) ([]Fixture, error)
+     }
+   - Fixture = { Artifact []byte (the plan text), MediaType string,
+     Provenance{ RunID, Phase, Round, SourceCommit, Stage }, Label LabelHint }.
+   - LabelHint is an OPTIONAL weak hint carried from what the source can see
+     (run-refs: gate status per round — rerun=had-issues, pass=clean; plus seat
+     verdicts + required-change counts). It is a HINT only; real scoring/labels
+     are aul.3. Keep the type minimal (e.g. GateStatus + per-seat verdict summary),
+     no scoring logic here.
+   - CohortSelector reuses the existing selection inputs (stage/phase name + last N).
+     The corpus source COMPOSES with cohort selection rather than duplicating it:
+     the run-refs source calls SelectCohort(stage="plan") to pick eligible runs,
+     then reads the plan artifact + plan GateAttempts from each selected run.
+
+2. Core run-refs source (new internal/bench/corpus_runrefs.go):
+     type RunRefsSource struct { Store refstore.Store }
+   - Implements CorpusSource by: SelectCohort over refs/etude/runs/* for the phase
+     stage; for each CohortRun read the output artifact bytes via
+     Store.ReadCommitFile(commit, stage.Output.Path); harvest the phase's
+     GateAttempts (runmanifest.Gates filtered by Phase) for round + status + seat
+     verdicts as the LabelHint. No beads, no Dolt, no SQLite-index dependency
+     (cohort already reads manifests directly; keep that path).
+   - HONEST LIMITATION (state plainly, do not paper over): the run ref holds ONE
+     plan artifact per run (the final/captured plan), because dogfood capture
+     OVERWRITES the plan stage. Verified on refs/etude/runs/etude-2bm.1: manifest
+     has a single `plan` stage but FOUR plan gate rounds (3 rerun + 1 pass, each
+     with opus/codex seat verdicts + required counts). So RunRefsSource yields, per
+     run: ONE plan-text fixture, annotated with the multi-round GATE progression
+     as label hints. It does NOT reconstruct the per-round plan TEXT — that rich
+     multi-round plan-text corpus comes from the SEPARATE beads/Dolt adapter
+     (dolt_history_issues), which is its own bead and which core must not import.
+
+3. Registration seam (mirror replay.Runner): CorpusSource is an interface in core;
+   the run-refs source is the built-in default. A future beads adapter satisfies
+   CorpusSource in its own package and is selected at the CLI/config boundary
+   (aul.4), exactly like ExecRunner is chosen from --runner / git config
+   etude.runner in internal/cli/bench.go resolveRunner. Core defines ONLY the
+   interface + the run-refs default; it does not name or import any beads adapter.
+
+**Files:**
+- internal/bench/corpus.go - new: CorpusSource interface, Fixture, Provenance,
+  LabelHint, CohortSelector types. Pure contract, no I/O.
+- internal/bench/corpus_runrefs.go - new: RunRefsSource implementing CorpusSource
+  over refstore.Store, composing SelectCohort + ReadCommitFile + GateAttempt harvest.
+- internal/bench/corpus_test.go / corpus_runrefs_test.go - new: tests.
+- (No CLI/index/runmanifest changes in this bead. cohort.go reused as-is; if a
+  small accessor is needed to map a CohortSelector onto SelectCohort args, add it
+  in corpus_runrefs.go, not by editing cohort.go.)
+
+**Tests:**
+- RunRefsSource.Fixtures against a synthetic in-repo refstore (mirror the
+  refstore/cohort test harness): build runs with a `plan` stage + multiple plan
+  GateAttempts, assert one Fixture per eligible run, correct artifact bytes,
+  provenance (RunID/Phase/Stage/SourceCommit), and a LabelHint that reflects the
+  final gate status + per-round seat verdicts.
+- Edge cases: run with no plan stage (skipped via SelectCohort), run with a plan
+  stage but no plan gates (Fixture with empty/neutral LabelHint), pointer-output
+  plan (skipped, mirrors existing SkipPointerOutput), ambiguous stage.
+- Fixture against the REAL captured run refs/etude/runs/etude-2bm.1: assert exactly
+  ONE plan fixture is produced and that its LabelHint surfaces the 4-round
+  progression (3 rerun -> 1 pass) — locking in the documented one-plan-per-run
+  limitation as an explicit test, not a surprise.
+- Interface-level: a tiny fake CorpusSource to prove the seam is satisfiable by a
+  non-core implementation (stands in for the future beads adapter) without core
+  importing it.
+
+**Docs:**
+- None user-facing in this bead (internal package, no CLI yet). Add a package-doc
+  comment on corpus.go stating the decoupling contract and the one-plan-per-run
+  limitation. User-facing `etude bench --gate` docs land with the CLI in aul.4.
+
+**Risks:**
+- Decoupling trap: core must NOT import a beads/Dolt adapter. Mitigated by keeping
+  CorpusSource a pure interface and selecting adapters at the CLI boundary (aul.4),
+  mirroring resolveRunner. Verified the existing seam in internal/cli/bench.go.
+- One-plan-per-run limitation is real and load-bearing: verified empirically on
+  refs/etude/runs/etude-2bm.1 (1 plan stage, 4 plan gate rounds). Core yields the
+  final plan + gate progression hints only; multi-round plan TEXT is the beads
+  adapter's job (separate bead). Stated plainly above and pinned by a test.
+- Reuse vs duplication of cohort selection: compose with SelectCohort, do not
+  reimplement eligibility. Keep label/scoring logic OUT (that is aul.3); LabelHint
+  is a passthrough of observable gate facts only.
+
+**Capture:**
+- inputs: bead etude-aul.1 + epic etude-aul (ARCH DECISION note); internal/bench/
+  cohort.go, run.go; internal/runmanifest/manifest.go (Stage, GateAttempt,
+  ReviewedRef, SeatResult); internal/index/index.go (RunRow/GateRow/LatestGate
+  read path); internal/cli/bench.go resolveRunner seam; internal/refstore/store.go
+  (Store, ReadCommitFile, List, Resolve); the real refs/etude/runs/etude-2bm.1
+  manifest (4 plan gate rounds, 1 plan artifact).
+- output: bead --design field
