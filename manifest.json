@@ -386,6 +386,41 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:16:00Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Make the complete changed-file and test inventory explicit in the final packet.",
+            "Audit GateConfig copy sites in etude-n9b.2.",
+            "Document one-way manifest compatibility with the runtime behavior."
+          ],
+          "timestamp": "2026-08-16T01:23:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:23:00Z"
     }
   ]
 }
