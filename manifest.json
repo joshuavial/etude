@@ -1488,6 +1488,45 @@
         "degraded_reason": "CORRECTION RECORD, and it exposes something worse than a mislabel. This attempt CORRECTS the reviewed_stages of an earlier passing record on this same run. It does not re-run any seat and grants no new approval; it exists so the manifest names the bytes the seats were actually handed. plan.r2 recorded a two-seat panel against artifact 1551aa66, but the seats did not review the same bytes: codex was handed gate-plan-r2.packet.md frozen at 96c0efd0, and only THEN were its optionals folded to produce 1551aa66, which is what the opus packet froze. So the recorded panel is an assembly of two seats reading two different revisions - which is not a panel at all. Unanimous quorum over seats that saw different artifacts means nothing, and the record gave no sign of it. This attempt records the codex verdict against what codex actually read; the opus verdict on 1551aa66 stands as recorded in plan.r2. Root cause is structural to the bootstrap path: a hand-assembled panel takes its seats as arguments, so nothing forces them to share a prompt. etude gate CANNOT make this mistake - it composes one prompt and runs every seat against it, which is the whole basis of the redundancy. Written onto etude-4ed as the strongest argument for verdict injection yet found: the manual path can silently produce a panel that is not a panel."
       },
       "timestamp": "2026-08-15T20:32:26Z"
+    },
+    {
+      "gate_id": "review.r2",
+      "phase": "review",
+      "round": 2,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "90545b89d5a8f83d3f085f7b0bb5d32765ffe58ec56c219718b9957e30fe2c37"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. 'The passing verdicts are still honest - each names in reviewed_stages the artifact it actually reviewed' is FALSE for 2 of the 4 passes. implement.r4 (pass) records 67a23225 but the seats were handed a packet frozen at e54ff6f8, and codex's envelope landed 13 minutes before 67a23225 existed; verify.r3 (pass) records 4d5924bc while the seats were handed 3f7aaa40, and its own degraded_reason calls 4d5924bc 'the corrected verify artifact', which it is not. plan.r2 has the same shape for the codex seat. Only docs.r7 is clean.",
+            "2. Consequently the ungated table is wrong in both directions and understates: implement.r4/e54ff6f8 WAS reviewed by both seats, and verify.r2/3f7aaa40 WAS reviewed - while implement.r5/67a23225, the FINAL implement artifact, was read by no seat yet is the artifact the manifest marks passed. The run ref does not return a partial answer to 'which artifacts did a seat approve', it returns a wrong one.",
+            "3. 'Every one is a revision captured after a gate had passed' is false for 4 of 5: plan.r2, implement.r4 and verify.r2 each follow a RERUN, and verify.r3 precedes its phase's pass.",
+            "4. 'six across .3 and .4' is not reproducible from any manifest. The holes are three, worth five seat slots; the landed runbook says three."
+          ],
+          "timestamp": "2026-08-15T20:34:01Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, and the most serious finding of the epic - about my own record-keeping, on the bead offered as proof of the model. The seat did not trust the manifest: it recomputed seat-envelope timestamps against stage capture times and found that THREE of four passing attempts named an artifact the seats had never been handed. implement.r4 named a stage captured 13 minutes AFTER codex's envelope. verify.r3 named the original artifact while calling it 'the corrected' one. Worst, plan.r2's two seats did not read the same bytes at all - codex was handed the revision frozen at 96c0efd0, its optionals were folded to produce 1551aa66, and the opus packet froze that - so the record shows a unanimous two-seat panel assembled from seats reviewing different artifacts. Unanimous quorum over different artifacts is not quorum, and nothing in the record signalled it. Corrections appended as plan.r4, implement.r5 and verify.r4, each naming what its seats actually read, re-running nothing and granting no new approval; the originals stay because deleting them would make the record tidier and less true. Root cause is structural: the bootstrap path takes reviewed-stage, artifact and seats as author-supplied arguments, so nothing forces a panel to share a prompt or to name what it read - and etude gate cannot make either mistake, since it composes one prompt, runs every seat against it, and resolves the reviewed stage itself. Written onto etude-4ed as the strongest argument for verdict injection this epic has produced. Two further self-corrections folded: 'captured after a gate had passed' was false for four of five (they follow RERUNS), and 'six unrecorded verdicts' is not reproducible - three holes, five seat slots - a figure I carried from retro 3 without recomputing, in an artifact about recomputing."
+      },
+      "timestamp": "2026-08-15T20:34:01Z"
     }
   ]
 }
