@@ -115,6 +115,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:16:04Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "fa4a668b3e5b51f3f53df84df45b53695293fa87182f16d4f0412b922860979c"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "Show or prove that caller ancestry checks disable refs/replace overlays."
+          ],
+          "optional": [
+            "Consider reducing raw-untracked strictness if ignored artifact creation must be supported.",
+            "Note shallow-repository ancestry behavior."
+          ],
+          "timestamp": "2026-08-17T07:21:39Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Disable refs/replace overlays during ancestry validation.",
+            "Validate every resulting caller commit against trusted original A, not only the preceding recorded caller SHA."
+          ],
+          "timestamp": "2026-08-17T07:21:39Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:21:39Z"
     }
   ]
 }
