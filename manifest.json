@@ -205,6 +205,37 @@
         "degraded_reason": "Tier 2 (codex+opus; gemini/pilms not seated) for a read-only dogfood script. Both GO: premise now holds (13 META=Y sidecars), dogfood-script layer preserves core's schema-agnostic posture, supersession-skip reuses the audit's logic. Both flagged exact-string recurrence = mostly singletons → present honestly (adopted)."
       },
       "timestamp": "2026-05-27T18:41:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T19:05:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 2 read-only dogfood script: single in-harness Opus RUNTIME seat (ran the tests + real index). GO — 35/35 tests; make retro-index exit 0, 13 indexed; supersession exclusion confirmed empirically (superseded predecessors absent, successors present, 40-17=13); no git-mutation ops; not wired into hook/close-gate; deterministic; recurrence presented honestly."
+      },
+      "timestamp": "2026-05-27T19:06:00Z"
     }
   ]
 }
