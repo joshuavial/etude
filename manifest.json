@@ -453,6 +453,74 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T03:38:00Z"
+    },
+    {
+      "gate_id": "plan.r5",
+      "phase": "plan",
+      "round": 5,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r5",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-plan-r5",
+            "artifact": "2fbde381805111de263d07909206d83f9a531ac24476b4b14307c4f56b841758",
+            "path": "artifacts/sha256/2f/2fbde381805111de263d07909206d83f9a531ac24476b4b14307c4f56b841758",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 319
+          },
+          "timestamp": "2026-08-16T03:45:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "block",
+          "required": [
+            "admit the no-Session-record state as not applicable",
+            "reject programmatic reserved-role collisions at Engine entry before stage invocation"
+          ],
+          "optional": [
+            "pin detailed Tests as regression declaration",
+            "accept prior-attempt near-miss role",
+            "track aggregate handoff growth"
+          ],
+          "raw_output": {
+            "role": "opus-plan-r5",
+            "artifact": "d6bb7fceb36be849951acf1a48278b6e50863a9606b2b4a8571346d4e7322926",
+            "path": "artifacts/sha256/d6/d6bb7fceb36be849951acf1a48278b6e50863a9606b2b4a8571346d4e7322926",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 585
+          },
+          "timestamp": "2026-08-16T03:45:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:45:00Z"
     }
   ]
 }
