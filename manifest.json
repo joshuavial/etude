@@ -2071,6 +2071,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T07:35:15.473687Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "63e35a2b216a508f0b91098f0417a5f49e7d9571ef91cc73c8924761a05b1718"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. The summary asserts \"all gates pass\" as a precondition for updating the PR but does not name the outstanding gate(s) by name; a one-line list would make the readiness condition checkable. 2. The accepted risk (stage logs not secret-scanned while transcripts are) is named but not tied to a follow-on bead reference in the artifact."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "d5ef09ce0f54c9b310326d92e897a256f67aaa526d40f12b63d7ddb33a1f9177",
+            "path": "artifacts/sha256/d5/d5ef09ce0f54c9b310326d92e897a256f67aaa526d40f12b63d7ddb33a1f9177",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 481
+          },
+          "session": {
+            "session_id": "opus-8740461127ce1db1",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "8740461127ce1db15fa90e5ca17f69463a4a1746d5113edbd3b31df4590588b4",
+              "path": "artifacts/sha256/87/8740461127ce1db15fa90e5ca17f69463a4a1746d5113edbd3b31df4590588b4",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 391
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T07:35:39.69072Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T07:35:39.691672Z"
     }
   ]
 }
