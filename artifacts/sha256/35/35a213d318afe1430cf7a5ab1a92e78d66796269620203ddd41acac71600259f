@@ -1,0 +1,37 @@
+## Plan
+
+**Approach:** Pure mechanical refactor of the skill-runner seam in internal/replay. Rename the Skill-typed fields on RunRequest/RunResult/StubRunner to Producer-typed fields (runmanifest.Producer = {Harness, Model, Skill}), preserving the exact stub semantics (echo req.Producer unless ProducerOverride is non-zero). The zero-value override check carries over unchanged because Producer is fully comparable (Harness{Name,Version}, Model string, Skill{ID,Repo,Version} — no slices/maps), so producer != (runmanifest.Producer{}) is valid. All doc comments referencing Skill/req.Skill/SkillOverride are load-bearing contract docs and must be rewritten to Producer. Scope confirmed by grep: ONLY runner.go and runner_test.go reference these types; resolve_test.go uses runmanifest.Skill for an unrelated ResolvedStage and is NOT touched.
+
+**Files:**
+- internal/replay/runner.go — field/type/comment renames:
+  - L46 RunRequest.Skill runmanifest.Skill -> Producer runmanifest.Producer
+  - L53-58 RunResult doc + L58 field RunResult.Skill -> Producer runmanifest.Producer; comment 'skill identity actually used (MAY differ from req.Skill)' -> 'producer identity actually used (MAY differ from req.Producer)'
+  - L75-77 StubRunner doc: 'echoes req.Skill into RunResult.Skill (unless SkillOverride is non-zero)' -> Producer wording
+  - L88-89 SkillOverride runmanifest.Skill -> ProducerOverride runmanifest.Producer; comment updated
+  - L101-104 Run(): skill := req.Producer; if s.ProducerOverride != (runmanifest.Producer{}) { producer = s.ProducerOverride }
+  - L126-130 return RunResult{..., Producer: producer}
+- internal/replay/runner_test.go — test updates:
+  - L11 testSkill -> testProducer = runmanifest.Producer{Harness:{Name:"claude-code",Version:"v1.2"}, Model:"claude-opus-4-7", Skill:{ID:"test-skill",Repo:"test-repo",Version:"v1"}} (populate ALL THREE axes so tests exercise the new fields, not just skill)
+  - L20 testReq: Skill: testSkill -> Producer: testProducer
+  - L43-44, L146-147 res.Skill assertions -> res.Producer vs testProducer
+  - L151 TestStubRunner_SkillOverride -> TestStubRunner_ProducerOverride; override = runmanifest.Producer with DISTINCT harness+model+skill (e.g. Harness{cursor,v9}, Model gpt-x, Skill{newskill,r,v2}) so it discriminates from the echoed producer; assertions res.Skill -> res.Producer, SkillOverride -> ProducerOverride
+  - TestStubRunner_SkillEcho (L139) -> rename to TestStubRunner_ProducerEcho and upgrade to assert FULL producer round-trip (Harness.Name, Harness.Version, Model, Skill all equal testProducer) — satisfies the test-quality requirement that all three axes are proven to carry through the stub
+
+**Tests:**
+- Full producer round-trip: stub echoes req.Producer with harness name+version, model, and skill all intact (upgraded ProducerEcho test asserts each axis, or the whole struct via == which covers all).
+- ProducerOverride discriminates: override producer differs on all three axes from the echoed one; assert res.Producer != req.Producer AND res.Producer == override.
+- Existing canned/concat/error/passthrough/media-type tests unchanged except testReq now carries a Producer.
+- go build ./... and go test ./internal/replay/... must pass; go vet for unused field/rename safety.
+
+**Docs:**
+- No user-facing docs. This is an internal package contract with no current consumers (exec runner etude-phase2.4 and replay command etude-phase2.5 not yet built) and no command-reference output. The doc comments inside runner.go ARE the documentation surface and are updated as part of deliverable #1. No generated references to regenerate.
+
+**Risks:** None significant. Mechanical rename within a single internal package; grep-confirmed zero external callers. Only subtle point: the zero-value override guard must use runmanifest.Producer{} (not Skill{}) — verified comparable, stated above.
+
+**Tier:** Tier 2 (lightened 2-seat review). Internal package only; no schema change, no storage change, no shipped/observable behavior change, zero current consumers.
+
+**Capture:**
+- inputs: bead etude-roadmap.1.3 description + deps, internal/replay/runner.go, internal/replay/runner_test.go, internal/runmanifest/manifest.go (Producer/Skill/Harness defs L60-85), repo-wide grep for RunRequest/RunResult/StubRunner/SkillOverride
+- output: bead --design field
+
+
