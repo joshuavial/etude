@@ -1,0 +1,2200 @@
+# Final review packet: etude-q396 — terminate runner subprocess descendants on timeout
+
+You are one of two independent L2 reviewers (Astra, Fable). Review ONLY this packet; it is self-contained (tools are
+disabled / read-only). Return the verdict format the gate expects. Block only on concrete defects with a trigger,
+consequence and evidence; deferrable suggestions are optional findings.
+
+## Requirements (bead etude-q396, P1 bug, audit A03 from etude-jhnk)
+
+Fix audit A03: cancel the managed subprocess group and prevent late descendant writes before timeout returns. Share
+behavior across producer/check/judge/generator execution with explicit supported-platform semantics; regression tests
+must check child lifecycle, not only prompt return.
+
+Design constraints from the bead: shared internal exec helper with OS-specific files used in replay/exec_runner.go
+(producers and seats), liverun/gate.go checks, eval/exec_judge.go, retro/exec_generator.go. Unix: Setpgid, Cancel
+SIGKILLs the group, bounded WaitDelay retained, ESRCH = already exited, deferred group cleanup after Run (no delayed
+timer). Guarantee ordinary descendants remaining in the group receive termination before the command returns; not a
+sandbox; do not claim all OS descendants or instant zombie disappearance; document Windows/other fallback as
+direct-child cancellation + WaitDelay; keep supported targets compiling. Tests: grandchild-writes-marker-after-deadline
+with parent waiting; wrapper exits early while child holds pipes; child redirects stdio and outlives wrapper; helper
+integration at all four entrypoints; preserve timeout classification, diagnostics and success output; bounded polling.
+
+Revision: uncommitted working tree on base e1770dacc9c525477121deaad2ef48c6ba6415da. The exact diff and full new files
+are inlined below; sha256 of every changed/new file is at the end.
+
+## Approved plan (passed L2 plan gate round 2: Astra GO, Fable GO)
+
+# Plan: etude-q396 — terminate runner subprocess descendants on timeout
+
+Bead: etude-q396 (P1 bug, audit A03 from etude-jhnk). Base: e1770dacc9c525477121deaad2ef48c6ba6415da.
+Lane: etude-q396-dev-claude, profile dev-claude, lead claude-fable-5-1.
+Risk class: subprocess lifecycle change across four execution entrypoints → high-risk; L2 plan gate + L2 final review.
+
+## Problem (verified against current code)
+
+All four external-command sites build `exec.CommandContext`, set `cmd.WaitDelay = 10s`, and call `cmd.Run()`:
+
+- `internal/replay/exec_runner.go:186-196` (`ExecRunner.Run`; used for producers AND reviewer seats via `liverun/resolve.go`)
+- `internal/liverun/gate.go:153-160` (`execCheckRunner.RunCheck`)
+- `internal/eval/exec_judge.go:179-188` (`ExecJudge.Judge`)
+- `internal/retro/exec_generator.go:136-145` (`ExecGenerator.Generate`)
+
+`CommandContext`'s default cancel is `Process.Kill()` on the direct child only. Descendants (a backgrounded helper, a wrapper script's real worker, a child that redirected its stdio) survive:
+
+1. timeout/cancel: the direct child dies, its children keep running and can write into the caller worktree / output file after `Run` returns (audit A03: returned after 51 ms, descendant wrote later);
+2. wrapper exits early while a child holds the inherited pipes: `WaitDelay` bounds the hang but nothing kills the pipe holder;
+3. child redirects stdio and outlives the wrapper: `Run` returns promptly and nothing is ever signalled.
+
+No process-group handling exists anywhere in the repo (`grep Setpgid|Cancel` → none). The CLI installs no signal handler (`cmd.Context()` is `context.Background()`), which matters once children leave the terminal's foreground group (see invariant I5).
+
+## Design
+
+### New package `internal/subproc` (OS-specific files)
+
+```go
+// subproc.go (all platforms)
+// Run configures cmd for group-scoped cancellation and cleanup, then runs it.
+// cmd must have been created with exec.CommandContext (exec.Start rejects a
+// non-nil Cancel otherwise). waitDelay is assigned to cmd.WaitDelay.
+func Run(cmd *exec.Cmd, waitDelay time.Duration) error {
+    cmd.WaitDelay = waitDelay
+    configure(cmd)          // OS-specific
+    err := cmd.Run()
+    if cmd.Process != nil { // Start succeeded
+        cleanup(cmd)        // OS-specific; runs on success, error, and cancel paths
+    }
+    return err
+}
+```
+
+`subproc_unix.go` (`//go:build unix`):
+
+- `configure`: set `cmd.SysProcAttr.Setpgid = true` (allocating `SysProcAttr` if nil, preserving other fields); set `cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }`.
+- `killGroup(pid)`: `syscall.Kill(-pid, syscall.SIGKILL)`. With `Setpgid` the child's pgid == its pid. `ESRCH` → return `os.ErrProcessDone` (Go's documented sentinel so `Wait` does not turn an already-exited process into a spurious cancel error). Any other errno → fall back to `cmd.Process.Kill()` on the direct child and return the original error.
+- `cleanup`: `killGroup(cmd.Process.Pid)` again after `Run` returns, ignoring the result. This is what handles cases 2 and 3: by the time `Wait` returns, the direct child is reaped, but the group id lives as long as any member does, so the kill reaches every ordinary descendant still in the group. No timer, no goroutine, no post-return work.
+
+`subproc_other.go` (`//go:build !unix`): `configure` and `cleanup` are no-ops. Behavior is exactly today's: `CommandContext` kills the direct child; `WaitDelay` bounds pipe draining. Job objects are out of scope; documented as the fallback.
+
+### Call-site change (mechanical, all four)
+
+Replace `cmd.WaitDelay = X; runErr := cmd.Run()` with `runErr := subproc.Run(cmd, X)`. Keep the per-package `*WaitDelay` vars/const (tests override them). Error classification, stderr diagnostics, bounded streams and output reading are untouched.
+
+### CLI signal handling (`internal/cli/root.go`, ~5 lines)
+
+`ExecuteWithWriters` creates `ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` with `defer stop()` immediately after, so signal interception is released unconditionally when `ExecuteContext` returns on every path (success, error, panic-unwind). It then calls `cmd.ExecuteContext(ctx)`. A helper goroutine `go func() { <-ctx.Done(); stop() }()` makes a second Ctrl-C take the default action; because `stop()` also cancels ctx, the deferred `stop()` guarantees that goroutine exits when `ExecuteWithWriters` returns, so a successful run leaves neither the interception nor the goroutine active. The retro nudge keeps `context.Background()` as today. Rationale: once children run in their own process group, a terminal SIGINT no longer reaches them. Without this, Ctrl-C on `etude gate` would kill etude and orphan the seat CLI (a regression versus today). With it, SIGINT cancels the context → `Cancel` SIGKILLs the group → etude exits non-zero. `syscall.SIGTERM` is defined on all supported GOOS including windows (never delivered there; harmless).
+
+## Acceptance criteria → verification
+
+| # | Criterion | Evidence |
+|---|---|---|
+| AC1 | Timeout: shell spawns a grandchild that writes a marker after the deadline and the parent `wait`s; `Run` returns a timeout-classified error, the grandchild is gone, no marker ever appears. | `subproc` unit test + one integration test per entrypoint (replay/liverun/eval/retro). Failing-before evidence: run the replay integration test on base e1770da (expected: marker appears / pid alive). |
+| AC2 | Wrapper exits early while the child holds inherited pipes: `Run` returns within `WaitDelay`+margin and the pipe-holding child is gone afterwards. | `subproc` unit test; existing `*_SpawnsSurvivingChild` tests keep passing (they now also stop leaking `sleep 300`). |
+| AC3 | Child redirects stdio to /dev/null and outlives the wrapper: `Run` returns promptly (exit 0) and the child is gone, no marker. | `subproc` unit test. This is the case `CommandContext` cannot handle at all. |
+| AC4 | Ordinary successful output, exit-status errors, `ctx` cancellation (non-deadline) and stderr diagnostics are preserved at all four sites. | Existing suites for the four packages (they exercise every branch) + `subproc` success/cancel tests. |
+| AC5 | Shared helper is used at all four entrypoints; no `cmd.Run()` on a managed command remains outside the helper. | `grep -n "cmd.Run()" internal/replay internal/liverun/gate.go internal/eval internal/retro` → only inside `subproc`. |
+| AC6 | Supported-platform semantics are explicit: Unix guarantee + Windows/other fallback documented; all targets compile. | `GOOS=windows go build ./...` and `GOOS=linux go vet ./...`; docs below. |
+| AC7 | Ctrl-C / SIGTERM cancels a running managed command and its group. | Fresh-binary manual check: run `etude replay`/`etude gate` with a runner that backgrounds a marker-writer, send SIGINT to etude, confirm non-zero exit, group gone, no marker. |
+
+Planned regressions (test names):
+
+- `internal/subproc/subproc_test.go`: `TestRun_TimeoutKillsWaitingGrandchild`, `TestRun_WrapperExitsEarlyChildHoldsPipes`, `TestRun_DetachedStdioChildOutlivesWrapper`, `TestRun_SuccessAndOutputPreserved`, `TestRun_ContextCancelClassification`, `TestRun_RequiresCommandContext`, `TestKillGroup_ESRCHIsProcessDone` (unix-only).
+- `internal/replay/exec_runner_test.go`: `TestExecRunner_TimeoutKillsDescendants` (covers producers and seats; both use `ExecRunner.Run`).
+- `internal/liverun/gate_test.go`: `TestExecCheckRunner_TimeoutKillsDescendants`.
+- `internal/eval/exec_judge_test.go`: `TestExecJudge_TimeoutKillsDescendants`.
+- `internal/retro/exec_generator_test.go`: `TestExecGenerator_TimeoutKillsDescendants`.
+- `internal/cli/root_test.go` (or existing root test file): `TestExecuteWithWriters_ContextIsCancellable` is NOT planned — signal delivery is verified manually against the built binary (AC7); a unit test would have to signal the test process itself.
+
+Test mechanics: scripts write `$!` of the backgrounded subshell to a pidfile. Termination is asserted WITHOUT depending on reaping: a descendant counts as terminated when `kill(pid, 0)` returns `ESRCH` OR `ps -o stat= -p <pid>` reports a `Z` (zombie) state — a zombie has already been killed and can never write. Polling is bounded (≤3 s, 20 ms steps). Marker absence is the end-to-end observable: it is asserted after termination is observed and again after a bounded wait past the child's scheduled write time (child sleeps ~1 s; the check waits until ≥1.3 s after launch), so a survivor would be caught even if the liveness probe were wrong. No sleeps longer than ~1 s in any test; all scripts are `#!/bin/sh`, skipped on Windows like the existing tests.
+
+## Invariants
+
+- I1: On Unix, a SIGKILL of the command's process group is attempted before `subproc.Run` returns, on every return path (success, non-zero exit, deadline, cancel, WaitDelay abort). Ordinary descendants still in the group receive it. Error handling differs by path: a `Cancel`-time kill failure other than `ESRCH` falls back to killing the direct child and surfaces through `Wait`'s error; the post-run cleanup kill is best effort and its result is ignored (`ESRCH` is the normal case; `EPERM` would mean a descendant changed uid, which is outside the ordinary-descendant guarantee).
+- I2: Pipe draining stays bounded by `WaitDelay`; a group kill on cancel typically makes `Wait` return sooner than today because the pipe holders die.
+- I3: Timeout precedence is unchanged: callers still test `ctx.Err()` before `runErr`; `os.ErrProcessDone` from `Cancel` on an already-exited group never surfaces as a caller-visible error.
+- I4: No delayed timer or background goroutine touches a pgid after `Run` returns (pgid reuse safety).
+- I5: Interactive cancel still works: SIGINT/SIGTERM to etude cancels the root context, which cancels the group. Second signal → default action.
+- I6: Env handling, `Dir`, stream buffers and the reserved-env skip logic at each site are byte-for-byte unchanged apart from the two replaced lines.
+
+## Edge cases and known limitations (disclosed for adjudication)
+
+- Not a sandbox: a child that calls `setsid`/`setpgid` leaves the group and is not reached. Documented, out of scope.
+- Zombies: a killed descendant may linger as a zombie until its parent/init reaps it. We guarantee termination was delivered, not disappearance. Tests treat `ESRCH` or a zombie (`ps` state `Z`) as terminated and rely on marker absence as the end-to-end observable.
+- pgid reuse after `Wait`: `cleanup` runs immediately after `Wait` reaps the direct child. If the whole group had already exited, the pid could in principle have been reused by a new process that also made itself a group leader in that microsecond window. The window is bounded to the synchronous cleanup call (no timer), which is the trade-off the ticket explicitly accepts. A pgid still in use cannot be reused (POSIX), so the guarantee for surviving descendants is unaffected.
+- `EPERM` from `kill(-pgid)` (a descendant changed uid): fall back to killing the direct child; surfaced only via the existing error path.
+- `Setpgid` moves the child out of the terminal foreground group. Stdin is `/dev/null` (Cmd.Stdin nil) and stdout/stderr are pipes or `/dev/null` at all four sites, so no SIGTTIN/SIGTTOU stops occur. A seat adapter that opens `/dev/tty` directly would be affected; none does.
+- `exec.Start` returns an error for a non-`CommandContext` cmd with `Cancel` set; the helper documents the contract and a test pins the loud failure.
+- Windows/other: `configure`/`cleanup` are no-ops; existing direct-child kill + `WaitDelay` remains. Compiles via `GOOS=windows go build ./...`.
+- Concurrency: seats/checks may run concurrently; each command has its own group, no shared state in `subproc`. `go test -race` on the five packages.
+
+## Files
+
+Touch: `internal/subproc/{subproc.go,subproc_unix.go,subproc_other.go,subproc_test.go}` (new), `internal/replay/exec_runner.go`, `internal/liverun/gate.go`, `internal/eval/exec_judge.go`, `internal/retro/exec_generator.go`, `internal/cli/root.go`, the four `*_test.go` files above, docs listed below, `.etude/run-map.tsv` (add `etude-q396 etude-q396-dev-claude`).
+Concerns: (1) group-scoped cancellation + post-run cleanup, (2) interactive signal propagation made necessary by (1), (3) docs, (4) the `USER` seat-allowlist repair in `.etude/registry.yaml` needed for the Fable review seat to authenticate in this lane (see "Process repair"). Anything else is a split.
+
+Post-run cleanup semantics for adapter authors (goes into run.md): no process left in the command's group survives `Run`, including after a successful exit — a runner that deliberately backgrounds a helper must expect it to be killed when the stage returns.
+
+Retro nudge: `emitRetroNudge` keeps `context.Background()` with its own 2 s timeout; its only child is a plain `exec.CommandContext` `git rev-parse`, which is not routed through `subproc` and is unchanged by this bead. The AC7 manual check exercises SIGINT on `etude replay`/`etude gate` AND on `etude retro generate` (ExecGenerator path).
+
+## Documentation
+
+- `docs/run.md`: new `### Subprocess lifecycle` section under Live run: process group per command on Unix; SIGKILL of the group on timeout/cancel and again after exit; 10 s pipe-drain grace; not a sandbox (setsid escapes); Windows/other fallback = direct child + grace; Ctrl-C/SIGTERM behavior.
+- `docs/replay.md` (`--timeout` row), `docs/bench.md` (`--timeout` row), `docs/retro.md` (Generator timeout section), `docs/gates.md` (checks paragraph ~L328): state that the process group is terminated and link to the run.md section instead of the "small grace period" wording alone.
+- Package doc comment on `internal/subproc` carries the same contract for maintainers.
+- `docs/cli/*` unchanged (no flag changes) → `make docs-check` must stay green; `make docs-reality` must stay green.
+- Planning notes: none reference this behavior; audit bead etude-jhnk A03 is the source and gets the fix noted in the bead on close by the parent.
+
+## Process repair in this lane (disclosed)
+
+Plan gate round 1: the Fable seat failed with "model CLI exited non-zero". Diagnosis (delta-debugged against `claude auth status` from a stripped environment): the claude CLI reads its OAuth credential from the macOS keychain and needs `USER` in addition to `CLAUDE_CONFIG_DIR` to find the entry; with only `HOME`+`PATH`+`CLAUDE_CONFIG_DIR` it reports "Not logged in". No `CLAUDE_CODE_OAUTH_TOKEN` is exported in this lane (the earlier lane evidently had one). Repair: add `USER` to the `fable` and `sonnet` seats' `env_allowlist` in `.etude/registry.yaml`. `USER` is an account name, not a credential; the change widens nothing about review policy and is part of the reviewed commit. Reported to the parent as a shared-config finding.
+
+## Verification plan
+
+Implementation worker (Opus) owns: `make test`, `make lint`, `go test -race ./internal/subproc ./internal/replay ./internal/liverun ./internal/eval ./internal/retro`, `GOOS=windows go build ./...`, `GOOS=linux go vet ./...`, `make docs-check`, `make docs-reality`, `make shell-test` (process behavior changed), and the failing-before run of the replay integration test on base.
+Lead: inspects actual logs/exit codes and file hashes; `make build` then exercises `bin/etude replay`/`gate` in a disposable repo with a runner that backgrounds a marker-writer past the timeout (and the SIGINT case, AC7); confirms no marker and no surviving pid.
+Fresh QA worker (Opus): reads requirements, code, tests and docs; may add focused tests; returns pass/fail/blocked with evidence.
+Final: L2 review gate (Astra + Fable) on a self-contained packet with requirements, full source of the new package and the four changed functions, exact diff, docs diff and verify record.
+
+## Exact diff (production + tests; new files inlined in full)
+
+```diff
+diff --git a/.etude/registry.yaml b/.etude/registry.yaml
+index 5266f39..cbbaef5 100644
+--- a/.etude/registry.yaml
++++ b/.etude/registry.yaml
+@@ -5,7 +5,7 @@ seats:
+   fable:
+     provider: anthropic/claude-fable-5-1
+     harness: claude-code
+-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
+     invoke: 'scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools='
+   astra:
+     provider: openai/gpt-6-astra
+@@ -20,7 +20,7 @@ seats:
+   sonnet:
+     provider: anthropic/claude-sonnet-5
+     harness: claude-code
+-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
++    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
+     invoke: 'scripts/seat-adapter.sh sonnet claude -p --model claude-sonnet-5 --effort high --no-session-persistence --tools='
+ tiers:
+   L2:
+diff --git a/.etude/run-map.tsv b/.etude/run-map.tsv
+index 3d910a4..ae8cb15 100644
+--- a/.etude/run-map.tsv
++++ b/.etude/run-map.tsv
+@@ -1,3 +1,4 @@
+ # Bead ID followed by its active run ID; explicit mapping overrides legacy runs.
+ etude-3343 etude-3343-dev-claude
+ etude-l8tz etude-l8tz-dev-codex
++etude-q396 etude-q396-dev-claude
+diff --git a/internal/cli/root.go b/internal/cli/root.go
+index fe06a6e..5ba2365 100644
+--- a/internal/cli/root.go
++++ b/internal/cli/root.go
+@@ -6,8 +6,10 @@ import (
+ 	"io"
+ 	"os"
+ 	"os/exec"
++	"os/signal"
+ 	"path/filepath"
+ 	"strings"
++	"syscall"
+ 	"time"
+ 
+ 	"github.com/joshuavial/etude/internal/nudge"
+@@ -70,7 +72,19 @@ func Execute() error {
+ func ExecuteWithWriters(out, errOut io.Writer, args []string) error {
+ 	cmd := NewRootCommand(out, errOut)
+ 	cmd.SetArgs(args)
+-	err := cmd.Execute()
++	// Managed subprocesses run in their own process group (internal/subproc), so
++	// a terminal SIGINT no longer reaches them; without this handler Ctrl-C
++	// would kill etude and orphan the running command. Cancelling the root
++	// context kills the command's group instead. stop() is deferred so the
++	// interception is released on every return path, and the goroutine below
++	// restores the default action for a second signal.
++	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
++	defer stop()
++	go func() {
++		<-ctx.Done()
++		stop()
++	}()
++	err := cmd.ExecuteContext(ctx)
+ 	if err != nil {
+ 		fmt.Fprintln(errOut, err)
+ 	}
+diff --git a/internal/eval/exec_judge.go b/internal/eval/exec_judge.go
+index 4ddef82..1d93439 100644
+--- a/internal/eval/exec_judge.go
++++ b/internal/eval/exec_judge.go
+@@ -12,6 +12,8 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
++
++	"github.com/joshuavial/etude/internal/subproc"
+ )
+ 
+ // judgeWaitDelay is the grace period after context cancellation or process
+@@ -106,9 +108,11 @@ type findingWire struct {
+ // command, reads the output file, and validates the result per method.
+ //
+ // When Timeout > 0, the execution context is wrapped with a per-invocation
+-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+-// the process exits or the context fires, preventing hangs from backgrounded
+-// grandchild processes that hold inherited pipe write-ends open.
++// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
++// pipe-drain after the process exits or the context fires, and on Unix confines
++// the command to its own process group that is killed on cancellation and again
++// after it exits, so backgrounded grandchildren neither hang the run nor
++// outlive it.
+ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+ 	if len(e.Command) == 0 {
+ 		return JudgeResponse{}, ErrJudgeNotConfigured
+@@ -180,12 +184,13 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
+ 	cmd.Dir = scratch
+ 	cmd.Env = env
+ 	cmd.Stderr = &stderrBuf
+-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+-	// open can cause cmd.Run to hang indefinitely.
+-	cmd.WaitDelay = judgeWaitDelay
+-
+-	runErr := cmd.Run()
++	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
++	// process exits — without it, a backgrounded grandchild holding inherited
++	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
++	// also runs the command in its own process group and SIGKILLs that group on
++	// cancellation and again after the command exits, so descendants do not
++	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
++	runErr := subproc.Run(cmd, judgeWaitDelay)
+ 
+ 	// Context cancellation/timeout takes precedence over generic exit-status errors.
+ 	if ctx.Err() != nil {
+diff --git a/internal/liverun/gate.go b/internal/liverun/gate.go
+index 1d222d6..681c067 100644
+--- a/internal/liverun/gate.go
++++ b/internal/liverun/gate.go
+@@ -19,6 +19,7 @@ import (
+ 	"github.com/joshuavial/etude/internal/replay"
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+ 	"github.com/joshuavial/etude/internal/sessionevidence"
++	"github.com/joshuavial/etude/internal/subproc"
+ 	"github.com/joshuavial/etude/internal/workflow"
+ 	"github.com/joshuavial/etude/internal/worktree"
+ )
+@@ -155,9 +156,10 @@ func (r *execCheckRunner) RunCheck(ctx context.Context, req replay.RunRequest) (
+ 	cmd.Env = env
+ 	cmd.Stdout = &stdoutBuf
+ 	cmd.Stderr = &stderrBuf
+-	cmd.WaitDelay = checkWaitDelay
+-
+-	runErr := cmd.Run()
++	// subproc.Run sets WaitDelay and, on Unix, runs the check in its own process
++	// group that is SIGKILLed on cancellation and again after the check exits,
++	// so descendants do not outlive the check (docs/run.md#subprocess-lifecycle).
++	runErr := subproc.Run(cmd, checkWaitDelay)
+ 	combined := append(append([]byte(nil), stdoutBuf.Bytes()...), stderrBuf.Bytes()...)
+ 
+ 	if ctx.Err() != nil {
+diff --git a/internal/replay/exec_runner.go b/internal/replay/exec_runner.go
+index 2447aa5..089803e 100644
+--- a/internal/replay/exec_runner.go
++++ b/internal/replay/exec_runner.go
+@@ -17,6 +17,7 @@ import (
+ 
+ 	"github.com/joshuavial/etude/internal/runmanifest"
+ 	"github.com/joshuavial/etude/internal/sessionevidence"
++	"github.com/joshuavial/etude/internal/subproc"
+ )
+ 
+ // Sentinel errors for ExecRunner.
+@@ -69,9 +70,11 @@ var _ Runner = (*ExecRunner)(nil)
+ // the output from <ScratchDir>/output.
+ //
+ // When Timeout > 0, the execution context is wrapped with a per-invocation
+-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+-// the process exits or the context fires, preventing hangs from backgrounded
+-// grandchild processes that hold inherited pipe write-ends open.
++// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
++// pipe-drain after the process exits or the context fires, and on Unix confines
++// the command to its own process group that is killed on cancellation and again
++// after it exits, so backgrounded grandchildren neither hang the run nor
++// outlive it.
+ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+ 	// Step 1: command must be configured.
+ 	if len(r.Command) == 0 {
+@@ -188,12 +191,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
+ 	cmd.Env = env
+ 	cmd.Stdout = stdoutBuf
+ 	cmd.Stderr = stderrBuf
+-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+-	// open can cause cmd.Run to hang indefinitely.
+-	cmd.WaitDelay = runnerWaitDelay
+-
+-	runErr := cmd.Run()
++	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
++	// process exits — without it, a backgrounded grandchild holding inherited
++	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
++	// also runs the command in its own process group and SIGKILLs that group on
++	// cancellation and again after the command exits, so descendants do not
++	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
++	runErr := subproc.Run(cmd, runnerWaitDelay)
+ 
+ 	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
+ 	if ctx.Err() != nil {
+diff --git a/internal/retro/exec_generator.go b/internal/retro/exec_generator.go
+index 2ab624d..9e054e1 100644
+--- a/internal/retro/exec_generator.go
++++ b/internal/retro/exec_generator.go
+@@ -11,6 +11,8 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
++
++	"github.com/joshuavial/etude/internal/subproc"
+ )
+ 
+ // Sentinel errors for ExecGenerator.
+@@ -66,9 +68,11 @@ var _ Generator = (*ExecGenerator)(nil)
+ // Generate implements Generator for ExecGenerator.
+ //
+ // When Timeout > 0, the execution context is wrapped with a per-invocation
+-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+-// the process exits or the context fires, preventing hangs from backgrounded
+-// grandchild processes that hold inherited pipe write-ends open.
++// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
++// pipe-drain after the process exits or the context fires, and on Unix confines
++// the command to its own process group that is killed on cancellation and again
++// after it exits, so backgrounded grandchildren neither hang the run nor
++// outlive it.
+ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
+ 	if len(g.Command) == 0 {
+ 		return GenerateResult{}, ErrGeneratorNotConfigured
+@@ -137,12 +141,13 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
+ 	cmd.Dir = scratch
+ 	cmd.Env = env
+ 	cmd.Stderr = &stderrBuf
+-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+-	// open can cause cmd.Run to hang indefinitely.
+-	cmd.WaitDelay = generatorWaitDelay
+-
+-	runErr := cmd.Run()
++	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
++	// process exits — without it, a backgrounded grandchild holding inherited
++	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
++	// also runs the command in its own process group and SIGKILLs that group on
++	// cancellation and again after the command exits, so descendants do not
++	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
++	runErr := subproc.Run(cmd, generatorWaitDelay)
+ 
+ 	// Context cancellation/timeout takes precedence over generic exit-status errors.
+ 	if ctx.Err() != nil {
+
+=== NEW FILE internal/subproc/subproc.go ===
+// Package subproc runs a managed external command so that its descendants do
+// not outlive the invocation.
+//
+// # Contract
+//
+// On Unix the command is started in its own process group (Setpgid) and the
+// whole group is SIGKILLed on context cancellation and again after the command
+// exits. Consequently no process left in the group survives Run — including
+// after a successful exit — so a runner that deliberately backgrounds a helper
+// must expect that helper to be killed when Run returns. This is a lifecycle
+// guarantee, not a sandbox: a child that calls setsid/setpgid leaves the group
+// and is not reached, and a killed descendant may linger as a zombie until its
+// parent reaps it.
+//
+// On non-Unix platforms Run is exactly today's behavior: exec.CommandContext
+// kills the direct child and WaitDelay bounds pipe draining. Windows job
+// objects are out of scope.
+//
+// cmd MUST have been created with exec.CommandContext: exec.Start rejects a
+// command with a non-nil Cancel that has no context.
+package subproc
+
+import (
+	"os/exec"
+	"time"
+)
+
+// Run assigns waitDelay to cmd.WaitDelay, configures group-scoped cancellation,
+// runs the command to completion, and terminates any surviving group member
+// before returning the run error unchanged.
+func Run(cmd *exec.Cmd, waitDelay time.Duration) error {
+	cmd.WaitDelay = waitDelay
+	configure(cmd)
+	err := cmd.Run()
+	if cmd.Process != nil {
+		// Start succeeded, so a process group exists (or existed) for this pid.
+		// cleanup runs on every path: success, non-zero exit, deadline, cancel
+		// and WaitDelay abort.
+		cleanup(cmd)
+	}
+	return err
+}
+
+=== NEW FILE internal/subproc/subproc_unix.go ===
+//go:build unix
+
+package subproc
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+var errInvalidPID = errors.New("subproc: process group pid must be positive")
+
+// configure puts the child in its own process group and makes context
+// cancellation kill that whole group rather than the direct child alone.
+func configure(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		err := killGroup(cmd.Process.Pid)
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			// The group kill failed for a reason other than "already gone"
+			// (EPERM, for instance, when a descendant changed uid). Fall back
+			// to at least killing the direct child; the original error is what
+			// cmd.Wait reports.
+			_ = cmd.Process.Kill()
+		}
+		return err
+	}
+}
+
+// cleanup kills any group member still alive once the command has been waited
+// for. The direct child is already reaped at this point; the group id stays
+// valid while any member lives, so this reaches descendants that outlived the
+// command (a backgrounded helper, a wrapper's worker, a child with redirected
+// stdio). Best effort: ESRCH is the normal case and there is nothing to report.
+func cleanup(cmd *exec.Cmd) {
+	_ = killGroup(cmd.Process.Pid)
+}
+
+// killGroup SIGKILLs the process group led by pid. With Setpgid the child's
+// pgid equals its pid. ESRCH means the group is already gone, which is reported
+// as os.ErrProcessDone — Go's documented sentinel — so cmd.Wait does not turn
+// an already-exited process into a spurious cancellation error. Any other
+// errno is returned unchanged.
+func killGroup(pid int) error {
+	if pid <= 0 {
+		// kill(0, ...) and kill(-0, ...) signal the CALLER's own group. Callers
+		// only pass a started child's pid, so this is unreachable insurance.
+		return errInvalidPID
+	}
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+=== NEW FILE internal/subproc/subproc_other.go ===
+//go:build !unix
+
+package subproc
+
+import "os/exec"
+
+// configure is a no-op off Unix: there is no portable process-group primitive
+// here, so the fallback is exactly today's behavior — exec.CommandContext kills
+// the direct child and cmd.WaitDelay bounds pipe draining. Windows job objects
+// are out of scope.
+func configure(cmd *exec.Cmd) {}
+
+// cleanup is a no-op off Unix; see configure.
+func cleanup(cmd *exec.Cmd) {}
+
+=== NEW FILE internal/subproc/subproc_test.go ===
+//go:build unix
+
+package subproc
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// writeScript writes a POSIX sh script to path, makes it executable, and runs
+// it once so its leading guard trips. The warm-up matters because macOS scans a
+// newly written executable on its first exec, which can cost about a second —
+// more than the sub-second timeouts these tests use — while a second exec of
+// the same file costs milliseconds. Every script here therefore starts with a
+// guard that makes the first execution a no-op.
+func writeScript(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	warm := filepath.Join(dir, name+".warm")
+	guard := fmt.Sprintf("if [ ! -f %q ]; then : > %q; exit 0; fi\n", warm, warm)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+guard+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(path).Run(); err != nil {
+		t.Fatalf("warm-up run of %s: %v", path, err)
+	}
+	return path
+}
+
+// assertDescendantGone waits (bounded) for the pid recorded in pidfile to be
+// terminated and then asserts the marker file was never written. A zombie
+// counts as terminated: it has already been killed and can never write.
+func assertDescendantGone(t *testing.T, pidfile, marker string, launched time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !descendantTerminated(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running 3s after Run returned", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if wait := time.Until(launched.Add(1300 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	if marker == "" {
+		return
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("marker %s exists: descendant outlived the invocation", marker)
+	}
+}
+
+// descendantTerminated reports whether pid is gone (ESRCH) or already a zombie.
+func descendantTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+// TestRun_TimeoutKillsWaitingGrandchild covers the audited failure: a script
+// that backgrounds a helper and waits for it. Killing the direct child alone
+// leaves the helper running, and it writes into the caller's tree after Run has
+// already returned.
+func TestRun_TimeoutKillsWaitingGrandchild(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	pidfile := filepath.Join(dir, "pidfile")
+	script := writeScript(t, dir, "wait.sh", fmt.Sprintf(
+		"( sleep 1; echo survived > %q ) &\necho $! > %q\nwait", marker, pidfile))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	launched := time.Now()
+	err := Run(cmd, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("want an error from the killed command, got nil")
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("ctx.Err() = %v, want context.DeadlineExceeded", ctx.Err())
+	}
+	assertDescendantGone(t, pidfile, marker, launched)
+}
+
+// TestRun_WrapperExitsEarlyChildHoldsPipes covers a wrapper that exits
+// immediately while a backgrounded child keeps the inherited pipe write-ends
+// open. WaitDelay bounds the wait; the post-run group kill removes the child.
+func TestRun_WrapperExitsEarlyChildHoldsPipes(t *testing.T) {
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "pidfile")
+	script := writeScript(t, dir, "pipes.sh", fmt.Sprintf(
+		"sleep 5 &\necho $! > %q\nexit 0", pidfile))
+
+	cmd := exec.CommandContext(context.Background(), script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	launched := time.Now()
+	err := Run(cmd, 200*time.Millisecond)
+	if elapsed := time.Since(launched); elapsed > 3*time.Second {
+		t.Fatalf("Run took %v; WaitDelay did not bound the pipe drain", elapsed)
+	}
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("want nil or exec.ErrWaitDelay, got %v", err)
+	}
+	assertDescendantGone(t, pidfile, "", launched)
+}
+
+// TestRun_DetachedStdioChildOutlivesWrapper covers the case exec.CommandContext
+// cannot handle at all: the wrapper exits 0 promptly and its child redirected
+// its stdio, so nothing about the command is pending and nothing would ever be
+// signalled. Only the post-run group kill reaches the child.
+func TestRun_DetachedStdioChildOutlivesWrapper(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	pidfile := filepath.Join(dir, "pidfile")
+	script := writeScript(t, dir, "detached.sh", fmt.Sprintf(
+		"( sleep 1; echo survived > %q ) </dev/null >/dev/null 2>&1 &\necho $! > %q\nexit 0",
+		marker, pidfile))
+
+	cmd := exec.CommandContext(context.Background(), script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	launched := time.Now()
+	if err := Run(cmd, 200*time.Millisecond); err != nil {
+		t.Fatalf("want a clean exit, got %v", err)
+	}
+	assertDescendantGone(t, pidfile, marker, launched)
+}
+
+// TestRun_SuccessAndOutputPreserved proves the ordinary path is untouched:
+// exit status, stdout and stderr all survive the group handling.
+func TestRun_SuccessAndOutputPreserved(t *testing.T) {
+	dir := t.TempDir()
+	script := writeScript(t, dir, "ok.sh", "printf 'out'\nprintf 'err' >&2\nexit 0")
+
+	cmd := exec.CommandContext(context.Background(), script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := Run(cmd, 10*time.Second); err != nil {
+		t.Fatalf("want success, got %v", err)
+	}
+	if stdout.String() != "out" {
+		t.Errorf("stdout = %q, want %q", stdout.String(), "out")
+	}
+	if stderr.String() != "err" {
+		t.Errorf("stderr = %q, want %q", stderr.String(), "err")
+	}
+
+	// A non-zero exit is still reported as an ExitError, unchanged.
+	failing := writeScript(t, dir, "fail.sh", "exit 3")
+	cmd = exec.CommandContext(context.Background(), failing)
+	err := Run(cmd, 10*time.Second)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 3 {
+		t.Fatalf("want exit status 3, got %v", err)
+	}
+}
+
+// TestRun_ContextCancelClassification proves an explicit cancel (not a
+// deadline) still reports as a failed command with ctx.Err() == Canceled, so
+// callers that test ctx.Err() before the run error classify it as before.
+func TestRun_ContextCancelClassification(t *testing.T) {
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "pidfile")
+	script := writeScript(t, dir, "cancel.sh", fmt.Sprintf("echo $$ > %q\nsleep 5", pidfile))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, script)
+	err := Run(cmd, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("want an error from the cancelled command, got nil")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("ctx.Err() = %v, want context.Canceled", ctx.Err())
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("os.ErrProcessDone leaked to the caller: %v", err)
+	}
+}
+
+// TestRun_RequiresCommandContext pins the documented contract: a command built
+// with exec.Command rather than exec.CommandContext fails loudly at Start
+// instead of silently losing group cancellation.
+func TestRun_RequiresCommandContext(t *testing.T) {
+	dir := t.TempDir()
+	script := writeScript(t, dir, "noctx.sh", "exit 0")
+
+	cmd := exec.Command(script)
+	err := Run(cmd, time.Second)
+	if err == nil {
+		t.Fatal("want an error for a command built without a context, got nil")
+	}
+	if !strings.Contains(err.Error(), "Cancel") {
+		t.Errorf("want the exec Cancel/Context contract error, got %v", err)
+	}
+	if cmd.Process != nil {
+		t.Error("no process should have started")
+	}
+}
+
+// TestKillGroup_RejectsNonPositivePid pins the guard that keeps a zero or
+// negative pid from turning kill(-pid) into a kill of etude's own group.
+func TestKillGroup_RejectsNonPositivePid(t *testing.T) {
+	for _, pid := range []int{0, -1} {
+		if err := killGroup(pid); !errors.Is(err, errInvalidPID) {
+			t.Errorf("killGroup(%d) = %v, want errInvalidPID", pid, err)
+		}
+	}
+}
+
+// TestKillGroup_ESRCHIsProcessDone proves an already-gone group is reported as
+// os.ErrProcessDone, which is what keeps cmd.Wait from turning a race between
+// exit and cancellation into a spurious error.
+func TestKillGroup_ESRCHIsProcessDone(t *testing.T) {
+	dir := t.TempDir()
+	script := writeScript(t, dir, "quick.sh", "exit 0")
+
+	cmd := exec.CommandContext(context.Background(), script)
+	if err := Run(cmd, time.Second); err != nil {
+		t.Fatalf("want success, got %v", err)
+	}
+	// The command has been waited for and its group killed, so the group id is
+	// gone: kill(-pgid) reports ESRCH.
+	if err := killGroup(cmd.Process.Pid); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("killGroup on a finished group = %v, want os.ErrProcessDone", err)
+	}
+}
+
+=== NEW FILE internal/replay/exec_runner_group_unix_test.go ===
+//go:build unix
+
+package replay
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// TestExecRunner_TimeoutKillsDescendants proves that a timed-out runner leaves
+// no ordinary descendant behind: the script backgrounds a subshell that writes
+// a marker one second later and then waits for it, so with direct-child-only
+// cancellation the marker still appears after Run returns.
+func TestExecRunner_TimeoutKillsDescendants(t *testing.T) {
+	orig := runnerWaitDelay
+	runnerWaitDelay = 200 * time.Millisecond
+	defer func() { runnerWaitDelay = orig }()
+
+	worktree, scratch := makeSiblingDirs(t)
+	marker := filepath.Join(scratch, "marker")
+	pidfile := filepath.Join(scratch, "pidfile")
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, descendantScript(scratch, marker, pidfile))
+	warmScript(t, scriptPath)
+
+	r := &ExecRunner{
+		Command: []string{scriptPath},
+		Timeout: 200 * time.Millisecond,
+	}
+	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
+
+	launched := time.Now()
+	_, err := r.Run(context.Background(), req)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+
+	assertDescendantGone(t, pidfile, marker, launched)
+}
+
+// descendantScript returns a script body that backgrounds a subshell writing
+// marker after a second, records the subshell pid in pidfile, and waits. The
+// paths are written literally into the script because the child environment is
+// strict (PATH plus the ETUDE_* names only). The leading guard makes the first
+// execution a no-op: see warmScript.
+func descendantScript(dir, marker, pidfile string) string {
+	warm := filepath.Join(dir, "warm")
+	return fmt.Sprintf("if [ ! -f %q ]; then : > %q; exit 0; fi\n"+
+		"( sleep 1; echo survived > %q ) &\necho $! > %q\nwait", warm, warm, marker, pidfile)
+}
+
+// warmScript executes the script once so its guard trips. macOS scans a newly
+// written executable on its first exec, which can cost a second — far more than
+// the sub-second timeouts these tests use — while a second exec of the same
+// file costs milliseconds. Without this the timed invocation would be killed
+// before the script ran a single command and the test would prove nothing.
+func warmScript(t *testing.T, path string) {
+	t.Helper()
+	if err := exec.Command(path).Run(); err != nil {
+		t.Fatalf("warm-up run of %s: %v", path, err)
+	}
+}
+
+// assertDescendantGone waits (bounded) for the pid in pidfile to be terminated
+// and then asserts the marker file was never written. A zombie counts as
+// terminated: it has already been killed and can never write.
+func assertDescendantGone(t *testing.T, pidfile, marker string, launched time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !descendantTerminated(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running 3s after Run returned", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if wait := time.Until(launched.Add(1300 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("marker %s exists: descendant outlived the invocation", marker)
+	}
+}
+
+// descendantTerminated reports whether pid is gone (ESRCH) or already a zombie.
+func descendantTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+=== NEW FILE internal/liverun/gate_group_unix_test.go ===
+//go:build unix
+
+package liverun
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/joshuavial/etude/internal/replay"
+)
+
+// TestExecCheckRunner_TimeoutKillsDescendants proves that a timed-out check
+// leaves no ordinary descendant behind: the check backgrounds a subshell that
+// writes a marker one second later and then waits for it.
+func TestExecCheckRunner_TimeoutKillsDescendants(t *testing.T) {
+	worktree := t.TempDir()
+	scratch := t.TempDir()
+	marker := filepath.Join(scratch, "marker")
+	pidfile := filepath.Join(scratch, "pidfile")
+	warm := filepath.Join(scratch, "warm")
+
+	// The paths are written literally into the script because the check env is
+	// strict (PATH plus the ETUDE_* names only). The leading guard makes the
+	// first execution a no-op: macOS scans a newly written executable on its
+	// first exec, which can cost about a second — more than this timeout — so
+	// the script is warmed before the timed invocation.
+	script := filepath.Join(scratch, "check.sh")
+	body := fmt.Sprintf("#!/bin/sh\nif [ ! -f %q ]; then : > %q; exit 0; fi\n"+
+		"( sleep 1; echo survived > %q ) &\necho $! > %q\nwait\n", warm, warm, marker, pidfile)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(script).Run(); err != nil {
+		t.Fatalf("warm-up run of %s: %v", script, err)
+	}
+
+	r := &execCheckRunner{command: []string{script}, timeout: 200 * time.Millisecond}
+	launched := time.Now()
+	passed, _, detail := r.RunCheck(context.Background(), replay.RunRequest{
+		WorktreeDir: worktree,
+		ScratchDir:  scratch,
+	})
+	if passed {
+		t.Fatal("want the timed-out check to block")
+	}
+	if !strings.Contains(detail, "check timed out after") {
+		t.Errorf("want a timeout detail, got %q", detail)
+	}
+
+	assertCheckDescendantGone(t, pidfile, marker, launched)
+}
+
+// assertCheckDescendantGone waits (bounded) for the pid in pidfile to be
+// terminated and then asserts the marker file was never written. A zombie
+// counts as terminated: it has already been killed and can never write.
+func assertCheckDescendantGone(t *testing.T, pidfile, marker string, launched time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !checkDescendantTerminated(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running 3s after RunCheck returned", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if wait := time.Until(launched.Add(1300 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("marker %s exists: descendant outlived the invocation", marker)
+	}
+}
+
+// checkDescendantTerminated reports whether pid is gone (ESRCH) or a zombie.
+func checkDescendantTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+=== NEW FILE internal/eval/exec_judge_group_unix_test.go ===
+//go:build unix
+
+package eval
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// TestExecJudge_TimeoutKillsDescendants proves that a timed-out judge leaves no
+// ordinary descendant behind: the script backgrounds a subshell that writes a
+// marker one second later and then waits for it.
+func TestExecJudge_TimeoutKillsDescendants(t *testing.T) {
+	orig := judgeWaitDelay
+	judgeWaitDelay = 200 * time.Millisecond
+	defer func() { judgeWaitDelay = orig }()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	pidfile := filepath.Join(dir, "pidfile")
+	warm := filepath.Join(dir, "warm")
+
+	// The paths are written literally into the script because the judge env is
+	// strict (PATH plus the ETUDE_* names only). The leading guard makes the
+	// first execution a no-op: macOS scans a newly written executable on its
+	// first exec, which can cost about a second — more than this timeout — so
+	// the script is warmed before the timed invocation.
+	script := filepath.Join(dir, "judge.sh")
+	writeJudgeScript(t, script, fmt.Sprintf("if [ ! -f %q ]; then : > %q; exit 0; fi\n"+
+		"( sleep 1; echo survived > %q ) &\necho $! > %q\nwait", warm, warm, marker, pidfile))
+	if err := exec.Command(script).Run(); err != nil {
+		t.Fatalf("warm-up run of %s: %v", script, err)
+	}
+
+	j := &ExecJudge{
+		Command: []string{script},
+		Timeout: 200 * time.Millisecond,
+	}
+	launched := time.Now()
+	_, err := j.Judge(context.Background(), JudgeRequest{
+		Method:  "rubric",
+		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+
+	assertJudgeDescendantGone(t, pidfile, marker, launched)
+}
+
+// assertJudgeDescendantGone waits (bounded) for the pid in pidfile to be
+// terminated and then asserts the marker file was never written. A zombie
+// counts as terminated: it has already been killed and can never write.
+func assertJudgeDescendantGone(t *testing.T, pidfile, marker string, launched time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !judgeDescendantTerminated(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running 3s after Judge returned", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if wait := time.Until(launched.Add(1300 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("marker %s exists: descendant outlived the invocation", marker)
+	}
+}
+
+// judgeDescendantTerminated reports whether pid is gone (ESRCH) or a zombie.
+func judgeDescendantTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+=== NEW FILE internal/retro/exec_generator_group_unix_test.go ===
+//go:build unix
+
+package retro
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// TestExecGenerator_TimeoutKillsDescendants proves that a timed-out generator
+// leaves no ordinary descendant behind: the script backgrounds a subshell that
+// writes a marker one second later and then waits for it.
+func TestExecGenerator_TimeoutKillsDescendants(t *testing.T) {
+	orig := generatorWaitDelay
+	generatorWaitDelay = 200 * time.Millisecond
+	defer func() { generatorWaitDelay = orig }()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	pidfile := filepath.Join(dir, "pidfile")
+	warm := filepath.Join(dir, "warm")
+
+	// The paths are written literally into the script because the generator env
+	// is strict (PATH plus the ETUDE_* names only). The leading guard makes the
+	// first execution a no-op: macOS scans a newly written executable on its
+	// first exec, which can cost about a second — more than this timeout — so
+	// the script is warmed before the timed invocation.
+	script := filepath.Join(dir, "gen.sh")
+	writeGenScript(t, script, fmt.Sprintf("if [ ! -f %q ]; then : > %q; exit 0; fi\n"+
+		"( sleep 1; echo survived > %q ) &\necho $! > %q\nwait", warm, warm, marker, pidfile))
+	if err := exec.Command(script).Run(); err != nil {
+		t.Fatalf("warm-up run of %s: %v", script, err)
+	}
+
+	g := &ExecGenerator{
+		Command: []string{script},
+		Timeout: 200 * time.Millisecond,
+	}
+	launched := time.Now()
+	_, err := g.Generate(context.Background(), GenerateRequest{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+
+	assertGenDescendantGone(t, pidfile, marker, launched)
+}
+
+// assertGenDescendantGone waits (bounded) for the pid in pidfile to be
+// terminated and then asserts the marker file was never written. A zombie
+// counts as terminated: it has already been killed and can never write.
+func assertGenDescendantGone(t *testing.T, pidfile, marker string, launched time.Time) {
+	t.Helper()
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !genDescendantTerminated(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running 3s after Generate returned", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if wait := time.Until(launched.Add(1300 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("marker %s exists: descendant outlived the invocation", marker)
+	}
+}
+
+// genDescendantTerminated reports whether pid is gone (ESRCH) or a zombie.
+func genDescendantTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+```
+
+## Full source of the changed functions after the change (context for invariants)
+
+### internal/replay/exec_runner.go — ExecRunner.Run
+```go
+func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	// Step 1: command must be configured.
+	if len(r.Command) == 0 {
+		return RunResult{}, ErrRunnerNotConfigured
+	}
+
+	// Step 2: validate and resolve WorktreeDir.
+	resolvedWorktree, err := resolveDir(req.WorktreeDir)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("%w: %v", ErrInvalidWorktreeDir, err)
+	}
+
+	// Step 2: validate and resolve ScratchDir.
+	resolvedScratch, err := resolveDir(req.ScratchDir)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("%w: %v", ErrInvalidScratchDir, err)
+	}
+
+	// Step 3: ScratchDir must NOT be at or under WorktreeDir.
+	rel, relErr := filepath.Rel(resolvedWorktree, resolvedScratch)
+	if relErr == nil {
+		// rel == "." means ScratchDir IS WorktreeDir (reject).
+		// A path that doesn't start with ".." means ScratchDir is inside WorktreeDir (reject).
+		// A true sibling yields a rel starting with ".." (e.g. "../sibling") and is accepted.
+		if rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..") {
+			return RunResult{}, fmt.Errorf("%w: scratch dir must not be at or under worktree dir", ErrInvalidScratchDir)
+		}
+	}
+
+	// Step 4: validate all input roles BEFORE any filesystem write.
+	for _, inp := range req.Inputs {
+		if !runmanifest.IsValidIdentifier(inp.Role) || inp.Role != filepath.Base(inp.Role) || inp.Role == ".." {
+			return RunResult{}, fmt.Errorf("%w: %q", ErrInvalidInputRole, inp.Role)
+		}
+	}
+
+	// Step 5: scratch hygiene — remove stale output/session and reset inputs dir.
+	outputPath := filepath.Join(resolvedScratch, "output")
+	sessionPath := filepath.Join(resolvedScratch, "session.json")
+	inputsDir := filepath.Join(resolvedScratch, "inputs")
+
+	_ = os.Remove(outputPath) // ignore os.IsNotExist; stale output must not survive
+	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+		return RunResult{}, fmt.Errorf("%w: remove stale session sidecar: %v", ErrInvalidScratchDir, err)
+	}
+
+	if err := os.RemoveAll(inputsDir); err != nil {
+		return RunResult{}, fmt.Errorf("%w: remove inputs dir: %v", ErrInvalidScratchDir, err)
+	}
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return RunResult{}, fmt.Errorf("%w: create inputs dir: %v", ErrInvalidScratchDir, err)
+	}
+
+	// Write each input to <inputs>/<NN>-<role>. Nil/empty Inputs slice is
+	// intentional — range over nil is a no-op.
+	for i, inp := range req.Inputs {
+		name := fmt.Sprintf("%02d-%s", i, inp.Role)
+		path := filepath.Join(inputsDir, name)
+		if err := os.WriteFile(path, inp.Content, 0o644); err != nil {
+			return RunResult{}, fmt.Errorf("%w: write input %s: %v", ErrInvalidScratchDir, name, err)
+		}
+	}
+
+	// Step 6: apply per-invocation timeout when configured.
+	if r.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
+		defer cancel()
+	}
+
+	// Step 7: build strict env — PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE,
+	// then any allowlisted names resolved from the orchestrator's own env.
+	//
+	// Reserved names (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) are always
+	// set from the base vars above; allowlist entries for these names are
+	// silently skipped so the allowlist cannot shadow or duplicate them.
+	// This skip is defense-in-depth: workflow.Validate already rejects
+	// reserved names in env_allowlist at parse time (fail-fast).
+	//
+	// SECURITY: cmd.Env is the ONLY place where allowlisted secret values
+	// cross the process boundary.  NEVER log cmd.Env, cmd.String(), or any
+	// other representation that includes cmd.Env — doing so would leak secret
+	// values to log sinks.  This comment is a durable guardrail for future
+	// maintainers; do not remove it.
+	environ := os.Environ()
+	env := []string{
+		"PATH=" + extractEnv(environ, "PATH"),
+		"ETUDE_INPUTS_DIR=" + inputsDir,
+		"ETUDE_OUTPUT_FILE=" + outputPath,
+		"ETUDE_SESSION_FILE=" + sessionPath,
+	}
+	reservedEnv := map[string]bool{
+		"PATH":               true,
+		"ETUDE_INPUTS_DIR":   true,
+		"ETUDE_OUTPUT_FILE":  true,
+		"ETUDE_SESSION_FILE": true,
+	}
+	for _, name := range r.EnvAllowlist {
+		if reservedEnv[name] {
+			continue // defense-in-depth: cannot shadow the 3 base vars
+		}
+		if val, ok := lookupEnv(environ, name); ok {
+			env = append(env, name+"="+val)
+		}
+		// When a name is listed but not present in os.Environ(), it is silently
+		// skipped — the manifest records the configured NAMES (policy/intent),
+		// not which values were actually delivered.
+	}
+
+	stdoutBuf := newBoundedStream(true, MaxCapturedStreamBytes)
+	stderrBuf := newBoundedStream(false, MaxCapturedStreamBytes)
+	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+	cmd.Dir = resolvedWorktree
+	cmd.Env = env
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, runnerWaitDelay)
+
+	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
+	if ctx.Err() != nil {
+		var base error
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			base = fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
+		} else {
+			base = fmt.Errorf("runner: context done: %w", ctx.Err())
+		}
+		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
+	}
+	if runErr != nil {
+		base := fmt.Errorf("%w: %s: %v", ErrRunnerFailed, r.Command[0], runErr)
+		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
+	}
+
+	var session *SessionInfo
+	if strings.ToLower(strings.TrimSpace(req.Producer.Harness.Name)) != "shell" {
+		session, err = readSessionSidecar(resolvedScratch, sessionPath)
+		if err != nil {
+			return RunResult{}, err
+		}
+	}
+
+	// Step 9: read output (symlink-safe via Lstat).
+	fi, statErr := os.Lstat(outputPath)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return RunResult{}, ErrOutputMissing
+		}
+		return RunResult{}, fmt.Errorf("%w: %v", ErrOutputMissing, statErr)
+	}
+	if !fi.Mode().IsRegular() {
+		return RunResult{}, ErrOutputNotRegular
+	}
+
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if r.MaxOutputBytes > 0 && fi.Size() > r.MaxOutputBytes {
+		return RunResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrOutputTooLarge, fi.Size(), r.MaxOutputBytes, outputPath)
+	}
+
+	// Read via LimitReader for a TOCTOU-safe hard cap: a concurrent writer
+	// (e.g. backgrounded grandchild) cannot sneak bytes past the cap between
+	// the Lstat and the read. An empty-but-present regular file is valid.
+	var data []byte
+	if r.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, r.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
+		}
+		if int64(len(data)) > r.MaxOutputBytes {
+			return RunResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrOutputTooLarge, int64(len(data)), r.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
+		}
+	}
+
+	// Step 10: assemble result and apply defaults.
+	res := RunResult{
+		Output:   data,
+		Log:      frameStageLog(stdoutBuf, stderrBuf),
+		Producer: req.Producer,
+		Session:  session,
+	}
+	applyResultDefaults(req, &res)
+	return res, nil
+}
+```
+
+### internal/liverun/gate.go — execCheckRunner.RunCheck
+```go
+func (r *execCheckRunner) RunCheck(ctx context.Context, req replay.RunRequest) (passed bool, rawOutput []byte, detail string) {
+	if len(r.command) == 0 {
+		return false, nil, "check runner: no command configured"
+	}
+
+	resolvedWorktree, err := resolveGateDir(req.WorktreeDir)
+	if err != nil {
+		return false, nil, fmt.Sprintf("check runner: invalid worktree dir: %v", err)
+	}
+	resolvedScratch, err := resolveGateDir(req.ScratchDir)
+	if err != nil {
+		return false, nil, fmt.Sprintf("check runner: invalid scratch dir: %v", err)
+	}
+
+	// Materialize inputs under <ScratchDir>/inputs/<NN>-<role>.
+	outputPath := filepath.Join(resolvedScratch, "output")
+	inputsDir := filepath.Join(resolvedScratch, "inputs")
+	_ = os.Remove(outputPath)
+	if err := os.RemoveAll(inputsDir); err != nil {
+		return false, nil, fmt.Sprintf("check runner: remove inputs: %v", err)
+	}
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return false, nil, fmt.Sprintf("check runner: mkdir inputs: %v", err)
+	}
+	for i, inp := range req.Inputs {
+		name := fmt.Sprintf("%02d-%s", i, inp.Role)
+		p := filepath.Join(inputsDir, name)
+		if err := os.WriteFile(p, inp.Content, 0o644); err != nil {
+			return false, nil, fmt.Sprintf("check runner: write input %s: %v", name, err)
+		}
+	}
+
+	if r.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.timeout)
+		defer cancel()
+	}
+
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"ETUDE_INPUTS_DIR=" + inputsDir,
+		"ETUDE_OUTPUT_FILE=" + outputPath,
+	}
+	// Append allowlisted NAMES only; values are read here and never stored on the
+	// runner or written to a manifest. The three names above are reserved and are
+	// skipped defensively even though workflow validation already rejects them.
+	for _, name := range r.envAllowlist {
+		switch name {
+		case "PATH", "ETUDE_INPUTS_DIR", "ETUDE_OUTPUT_FILE":
+			continue
+		}
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, r.command[0], r.command[1:]...)
+	cmd.Dir = resolvedWorktree
+	cmd.Env = env
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	// subproc.Run sets WaitDelay and, on Unix, runs the check in its own process
+	// group that is SIGKILLed on cancellation and again after the check exits,
+	// so descendants do not outlive the check (docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, checkWaitDelay)
+	combined := append(append([]byte(nil), stdoutBuf.Bytes()...), stderrBuf.Bytes()...)
+
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, combined, fmt.Sprintf("check timed out after %v", r.timeout)
+		}
+		return false, combined, "check runner: context cancelled"
+	}
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			note := fmt.Sprintf("exit %d", exitErr.ExitCode())
+			if s := strings.TrimSpace(stderrBuf.String()); s != "" {
+				if len(s) > 200 {
+					s = s[:200] + "..."
+				}
+				note += ": " + s
+			}
+			return false, combined, note
+		}
+		return false, combined, fmt.Sprintf("check runner: launch failed: %v", runErr)
+	}
+	return true, combined, ""
+}
+```
+
+### internal/eval/exec_judge.go — ExecJudge.Judge
+```go
+func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+	if len(e.Command) == 0 {
+		return JudgeResponse{}, ErrJudgeNotConfigured
+	}
+
+	// Apply per-invocation timeout when configured.
+	if e.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.Timeout)
+		defer cancel()
+	}
+
+	// Create a fresh temp dir for this invocation; clean it up on return.
+	scratch, err := os.MkdirTemp("", "etude-judge-*")
+	if err != nil {
+		return JudgeResponse{}, fmt.Errorf("%w: create scratch dir: %v", ErrJudgeFailed, err)
+	}
+	defer os.RemoveAll(scratch)
+
+	inputsDir := filepath.Join(scratch, "inputs")
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return JudgeResponse{}, fmt.Errorf("%w: create inputs dir: %v", ErrJudgeFailed, err)
+	}
+
+	// Materialise targets as <NN>-target-<role>.
+	// filepath.Base(inp.Role) prevents a role like "a/b" from creating a subdir.
+	for i, inp := range req.Targets {
+		name := fmt.Sprintf("%02d-target-%s", i, filepath.Base(inp.Role))
+		path := filepath.Join(inputsDir, name)
+		if err := os.WriteFile(path, inp.Content, 0o644); err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: write target %s: %v", ErrJudgeFailed, name, err)
+		}
+	}
+
+	// Materialise context inputs as <NN>-context-<role>.
+	// filepath.Base(inp.Role) prevents a role like "a/b" from creating a subdir.
+	for i, inp := range req.Context {
+		name := fmt.Sprintf("%02d-context-%s", i, filepath.Base(inp.Role))
+		path := filepath.Join(inputsDir, name)
+		if err := os.WriteFile(path, inp.Content, 0o644); err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: write context %s: %v", ErrJudgeFailed, name, err)
+		}
+	}
+
+	outputPath := filepath.Join(scratch, "output")
+
+	// Materialise rubric bytes when present.
+	rubricPath := filepath.Join(scratch, "rubric")
+	if req.Rubric != nil {
+		if err := os.WriteFile(rubricPath, req.Rubric, 0o644); err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: write rubric: %v", ErrJudgeFailed, err)
+		}
+	}
+
+	// Build strict env: extract PATH via exact-key match (mirrors exec_runner.go).
+	pathVal := extractPATHFromEnv(os.Environ())
+	env := []string{
+		"PATH=" + pathVal,
+		"ETUDE_INPUTS_DIR=" + inputsDir,
+		"ETUDE_OUTPUT_FILE=" + outputPath,
+		"ETUDE_MODEL=" + e.Model,
+	}
+	if req.Rubric != nil {
+		env = append(env, "ETUDE_RUBRIC_FILE="+rubricPath)
+	}
+
+	var stderrBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, e.Command[0], e.Command[1:]...)
+	cmd.Dir = scratch
+	cmd.Env = env
+	cmd.Stderr = &stderrBuf
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, judgeWaitDelay)
+
+	// Context cancellation/timeout takes precedence over generic exit-status errors.
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return JudgeResponse{}, fmt.Errorf("judge: timed out after %v: %w", e.Timeout, ctx.Err())
+		}
+		return JudgeResponse{}, fmt.Errorf("judge: context done: %w", ctx.Err())
+	}
+	if runErr != nil {
+		stderr := strings.TrimSpace(stderrBuf.String())
+		return JudgeResponse{}, fmt.Errorf("%w: %s: %v: %s", ErrJudgeFailed, e.Command[0], runErr, stderr)
+	}
+
+	// Read output (symlink-safe via Lstat).
+	fi, statErr := os.Lstat(outputPath)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return JudgeResponse{}, ErrJudgeOutputMissing
+		}
+		return JudgeResponse{}, fmt.Errorf("%w: %v", ErrJudgeOutputMissing, statErr)
+	}
+	if !fi.Mode().IsRegular() {
+		return JudgeResponse{}, ErrJudgeOutputNotRegular
+	}
+
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if e.MaxOutputBytes > 0 && fi.Size() > e.MaxOutputBytes {
+		return JudgeResponse{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrJudgeOutputTooLarge, fi.Size(), e.MaxOutputBytes, outputPath)
+	}
+
+	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
+	// regular file is valid.
+	var data []byte
+	if e.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, e.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
+		}
+		if int64(len(data)) > e.MaxOutputBytes {
+			return JudgeResponse{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrJudgeOutputTooLarge, int64(len(data)), e.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
+		}
+	}
+
+	// Decode with DisallowUnknownFields + trailing-data check (reuses ensureEOF).
+	var wire judgeOutputJSON
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return JudgeResponse{}, fmt.Errorf("%w: decode: %v", ErrJudgeOutputInvalid, err)
+	}
+	if err := ensureEOFJudge(dec); err != nil {
+		return JudgeResponse{}, err
+	}
+
+	// Per-method output validation.
+	if err := validateJudgeOutput(req.Method, wire); err != nil {
+		return JudgeResponse{}, err
+	}
+
+	// Map wire -> JudgeResponse.
+	resp := JudgeResponse{
+		Value:      wire.Value,
+		Max:        wire.Max,
+		Winner:     Winner(wire.Winner),
+		Passed:     wire.Passed,
+		Confidence: wire.Confidence,
+	}
+	if len(wire.Findings) > 0 {
+		resp.Findings = make([]Finding, 0, len(wire.Findings))
+		for _, fw := range wire.Findings {
+			resp.Findings = append(resp.Findings, Finding{
+				Severity: Severity(fw.Severity),
+				Message:  fw.Message,
+				Pointer:  fw.Pointer,
+			})
+		}
+	}
+	return resp, nil
+}
+```
+
+### internal/retro/exec_generator.go — ExecGenerator.Generate
+```go
+func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
+	if len(g.Command) == 0 {
+		return GenerateResult{}, ErrGeneratorNotConfigured
+	}
+
+	// Apply per-invocation timeout when configured.
+	if g.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.Timeout)
+		defer cancel()
+	}
+
+	// Create a fresh temp dir for this invocation; clean it up on return.
+	scratch, err := os.MkdirTemp("", "etude-generator-*")
+	if err != nil {
+		return GenerateResult{}, fmt.Errorf("%w: create scratch dir: %v", ErrGeneratorFailed, err)
+	}
+	defer os.RemoveAll(scratch)
+
+	inputsDir := filepath.Join(scratch, "inputs")
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return GenerateResult{}, fmt.Errorf("%w: create inputs dir: %v", ErrGeneratorFailed, err)
+	}
+
+	outputPath := filepath.Join(scratch, "output")
+
+	// Materialize subject artifacts into ETUDE_INPUTS_DIR.
+	// Each subject contributes:
+	//   <NN>-<runid>-output  (the stage output)
+	//   <NN>-<runid>-input-<role>  (each stage input)
+	// The NN index disambiguates multiple subjects with the same role names.
+	for i, subj := range req.Subjects {
+		// Sanitize runID for use in filenames: replace characters unsafe for
+		// filesystem names with '-'. The runID charset is [a-z0-9-] per
+		// runmanifest.IsValidRunID, so this is defensive only.
+		safeRunID := sanitizeForFilename(subj.RunID)
+
+		// Output artifact.
+		outputName := fmt.Sprintf("%02d-%s-output", i, safeRunID)
+		outPath := filepath.Join(inputsDir, outputName)
+		if err := os.WriteFile(outPath, subj.OutputContent, 0o644); err != nil {
+			return GenerateResult{}, fmt.Errorf("%w: write subject output %s: %v", ErrGeneratorFailed, outputName, err)
+		}
+
+		// Input artifacts.
+		for _, inp := range subj.Inputs {
+			safeRole := filepath.Base(inp.Role)
+			inpName := fmt.Sprintf("%02d-%s-input-%s", i, safeRunID, safeRole)
+			inpPath := filepath.Join(inputsDir, inpName)
+			if err := os.WriteFile(inpPath, inp.Content, 0o644); err != nil {
+				return GenerateResult{}, fmt.Errorf("%w: write subject input %s: %v", ErrGeneratorFailed, inpName, err)
+			}
+		}
+	}
+
+	// Build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
+	pathVal := extractPATH(os.Environ())
+	env := []string{
+		"PATH=" + pathVal,
+		"ETUDE_INPUTS_DIR=" + inputsDir,
+		"ETUDE_OUTPUT_FILE=" + outputPath,
+	}
+
+	var stderrBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, g.Command[0], g.Command[1:]...)
+	cmd.Dir = scratch
+	cmd.Env = env
+	cmd.Stderr = &stderrBuf
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, generatorWaitDelay)
+
+	// Context cancellation/timeout takes precedence over generic exit-status errors.
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return GenerateResult{}, fmt.Errorf("generator: timed out after %v: %w", g.Timeout, ctx.Err())
+		}
+		return GenerateResult{}, fmt.Errorf("generator: context done: %w", ctx.Err())
+	}
+	if runErr != nil {
+		stderr := strings.TrimSpace(stderrBuf.String())
+		return GenerateResult{}, fmt.Errorf("%w: %s: %v: %s", ErrGeneratorFailed, g.Command[0], runErr, stderr)
+	}
+
+	// Read output (symlink-safe via Lstat).
+	fi, statErr := os.Lstat(outputPath)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return GenerateResult{}, ErrGeneratorOutputMissing
+		}
+		return GenerateResult{}, fmt.Errorf("%w: %v", ErrGeneratorOutputMissing, statErr)
+	}
+	if !fi.Mode().IsRegular() {
+		return GenerateResult{}, ErrGeneratorOutputNotRegular
+	}
+
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if g.MaxOutputBytes > 0 && fi.Size() > g.MaxOutputBytes {
+		return GenerateResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrGeneratorOutputTooLarge, fi.Size(), g.MaxOutputBytes, outputPath)
+	}
+
+	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
+	// regular file is valid.
+	var data []byte
+	if g.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, g.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
+		}
+		if int64(len(data)) > g.MaxOutputBytes {
+			return GenerateResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrGeneratorOutputTooLarge, int64(len(data)), g.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
+		}
+	}
+
+	return GenerateResult{
+		Body:      data,
+		MediaType: "text/markdown; charset=utf-8",
+		Producer:  req.Producer,
+	}, nil
+}
+```
+
+### internal/cli/root.go — ExecuteWithWriters
+```go
+func ExecuteWithWriters(out, errOut io.Writer, args []string) error {
+	cmd := NewRootCommand(out, errOut)
+	cmd.SetArgs(args)
+	// Managed subprocesses run in their own process group (internal/subproc), so
+	// a terminal SIGINT no longer reaches them; without this handler Ctrl-C
+	// would kill etude and orphan the running command. Cancelling the root
+	// context kills the command's group instead. stop() is deferred so the
+	// interception is released on every return path, and the goroutine below
+	// restores the default action for a second signal.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	err := cmd.ExecuteContext(ctx)
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+	}
+	// Run the best-effort retro-nudge AFTER the subcommand finishes — including
+	// on subcommand failure (acceptance criterion 4). The emitter itself is
+	// silent-no-op on any internal error so it never alters err or the parent
+	// command's output beyond a single stderr reminder line.
+	emitRetroNudge(context.Background(), cmd, args, errOut)
+	return err
+}
+```
+
+### internal/liverun/resolve.go — seat/runner construction (proves seats use replay.ExecRunner)
+```go
+	if r == nil {
+		return nil, fmt.Errorf("stage %q: no runner configured; set stage.runner or workflow.default_runner", stage.Name)
+	}
+	var cmd string
+	if r.Command != "" {
+		cmd = r.Command
+	} else {
+		seat, ok := reg.Seats[r.Name]
+		if !ok {
+			return nil, fmt.Errorf("stage %q: runner name %q not found in registry", stage.Name, r.Name)
+		}
+		cmd = seat.Invoke
+	}
+	return &replay.ExecRunner{
+		Command:        strings.Fields(cmd),
+		Timeout:        timeout,
+		MaxOutputBytes: 64 << 20,
+		EnvAllowlist:   envAllowlist,
+	}, nil
+}
+
+...
+				ProviderName:           providerName,
+				Model:                  model,
+				RequireSessionEvidence: requiresSessionEvidence(providerName, inv.Harness),
+			},
+		}
+		if !c.InHarness {
+			c.Runner = &replay.ExecRunner{
+				Command:        strings.Fields(inv.Invoke),
+				Timeout:        timeout,
+				MaxOutputBytes: 64 << 20,
+				EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
+			}
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates, nil
+}
+
+func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) (replay.Runner, SeatMeta, error) {
+	seat, ok := reg.Seats[seatName]
+	if !ok {
+		return nil, SeatMeta{}, fmt.Errorf("seat %q not found in registry", seatName)
+	}
+	providerName, model := splitProvider(seat.Provider)
+	meta := SeatMeta{
+		HarnessName:            seat.Harness,
+		ProviderName:           providerName,
+		Model:                  model,
+		RequireSessionEvidence: requiresSessionEvidence(providerName, seat.Harness),
+	}
+	runner := &replay.ExecRunner{
+		Command:        strings.Fields(seat.Invoke),
+		Timeout:        timeout,
+		MaxOutputBytes: 64 << 20,
+		EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
+	}
+	return runner, meta, nil
+}
+
+func requiresSessionEvidence(providerName, harnessName string) bool {
+	provider := strings.ToLower(strings.TrimSpace(providerName))
+```
+
+## Documentation diff
+
+```diff
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4ba17e7..48f2c6a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -32,6 +32,13 @@ mechanics.
+   same-named stage occurrence's output, log, or input rather than only the
+   newest, so recapturing a stage under the same name (`--expect append`) keeps
+   earlier gates valid.
++- Stage runners, gate seats, gate checks, bench judges and retro generators
++  now run in their own Unix process group, which is killed on timeout or
++  cancellation and again after the command exits, so backgrounded descendants
++  can no longer keep writing after etude has returned (A03). `Ctrl-C` and
++  `SIGTERM` cancel the running command and its group. Non-Unix platforms keep
++  the previous direct-child cancellation. See
++  [Subprocess lifecycle](docs/run.md#subprocess-lifecycle).
+ 
+ ---
+ 
+diff --git a/docs/bench.md b/docs/bench.md
+index 6c06746..f709131 100644
+--- a/docs/bench.md
++++ b/docs/bench.md
+@@ -201,7 +201,7 @@ that failed mid-benchmark. A `CACHED` marker flags rows served from the cache.
+ | `--judge <command>` | Judge command spec (whitespace-split into argv). Falls back to `git config etude.judge`. Required (via flag or config). |
+ | `--judge-model <model>` | Model passed to the judge process as `ETUDE_MODEL`. Falls back to `git config etude.judgeModel`. Empty is allowed (the judge command may encode its own model). This is the **referee** model and is independent of `--model`. |
+ | `--seed <n>` | Seed for per-pair presentation randomisation (position-bias mitigation). Replay mode only. |
+-| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process is killed when the timeout elapses. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. Runner and judge output is also read through a hard size cap (default 64 MiB). |
++| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process and its whole process group is killed when the timeout elapses, so backgrounded descendants do not outlive the invocation; each group is killed again after its process exits, even on success. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. See [Subprocess lifecycle](run.md#subprocess-lifecycle). Runner and judge output is also read through a hard size cap (default 64 MiB). |
+ | `--no-cache` | Force re-evaluation; skip the eval-result cache. Replay mode only. |
+ | `--model`, `--skill-id`, `--skill-repo`, `--skill-version`, `--harness`, `--harness-version` | Override the corresponding field in the **contestant** (replay) producer. These describe the new skill being benchmarked; they never affect the judge. Replay mode only. |
+ 
+diff --git a/docs/gates.md b/docs/gates.md
+index 6ae1bf5..b4f9424 100644
+--- a/docs/gates.md
++++ b/docs/gates.md
+@@ -327,7 +327,10 @@ regardless of output. All three carry a `failure_note` in the stored
+ **Check runners** do not write an output envelope. Their verdict is the
+ process exit code: 0 = pass, nonzero = hard BLOCK. A check that cannot
+ launch, times out, or exits nonzero is always a hard veto, independent of seat
+-votes.
++votes. A check runs in its own process group, and that group is terminated when
++the check times out or is cancelled, and again after it exits (even on a passing
++exit, so a check must not leave helpers running) — see
++[Subprocess lifecycle](run.md#subprocess-lifecycle).
+ 
+ ### Synthesis and the stored record
+ 
+@@ -393,7 +396,10 @@ degraded-gate policy), see
+ ## Reviewer-only authentication environment
+ 
+ A registry seat may declare `env_allowlist` containing environment variable
+-names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
++names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]`. The
++`claude` CLI needs `USER` in addition to `CLAUDE_CONFIG_DIR` to locate its
++keychain credential, so a seat that authenticates through the keychain rather
++than an OAuth token must list it. The gate
+ resolver combines these names with the workflow allowlist for that seat's
+ primary and fallback subprocesses. Values come from the calling environment at
+ execution time; do not put credential values in YAML or captured artifacts.
+diff --git a/docs/replay.md b/docs/replay.md
+index 6a41088..f71ece4 100644
+--- a/docs/replay.md
++++ b/docs/replay.md
+@@ -31,7 +31,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
+ |------|-------------|
+ | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
+ | `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. The file is opened without following symlinks (on Unix, atomically via `O_NOFOLLOW`): a non-existent path is created, an existing regular file is overwritten, but an existing symlink (or other non-regular file) is rejected rather than followed — so `--output` cannot clobber a file the symlink points at. |
+-| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
++| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner's whole process group is killed when the timeout elapses and the command returns a "timed out" error, so backgrounded descendants do not outlive the invocation; the group is killed again after the runner exits, even on success. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. See [Subprocess lifecycle](run.md#subprocess-lifecycle). |
+ | `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording-record). |
+ | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+ | `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
+diff --git a/docs/retro.md b/docs/retro.md
+index 56194f3..dd15b31 100644
+--- a/docs/retro.md
++++ b/docs/retro.md
+@@ -284,9 +284,13 @@ neither is set.
+ ### Generator timeout and output limits
+ 
+ `--timeout <duration>` bounds each generator invocation (default `10m`; `0`
+-disables). The generator process is killed when the timeout elapses and the
+-command returns a "timed out" error; a small grace period bounds cleanup even if
+-the generator backgrounds a child that holds its output pipe open. The
++disables). The generator's whole process group is killed when the timeout
++elapses and the command returns a "timed out" error, so backgrounded descendants
++do not outlive the invocation; the group is killed again after the generator
++exits, even on success (see
++[Subprocess lifecycle](run.md#subprocess-lifecycle)). A small grace period bounds
++cleanup even if the generator backgrounds a child that holds its output pipe
++open. The
+ generator's output file is read through a hard size cap (default 64 MiB) — an
+ output exceeding the cap is rejected rather than read into memory unbounded.
+ 
+diff --git a/docs/run.md b/docs/run.md
+index 7803f18..118f324 100644
+--- a/docs/run.md
++++ b/docs/run.md
+@@ -621,6 +621,38 @@ etude replay <run-id> <stage> --allow-env
+ 
+ `--allow-env` and `--record` cannot be combined (rejected with a clear error).
+ 
++### Subprocess lifecycle
++
++On Unix, every command etude manages — a stage runner, a gate model seat, a gate
++check, a bench judge, and the retro generator — runs in its own process group.
++The whole group is killed with `SIGKILL` when the command's timeout fires or its
++context is cancelled, and again after the command exits.
++
++The consequence is that **no process left in the group survives the invocation,
++including after a successful exit**. Backgrounded helpers, a wrapper script's
++real worker, and children that redirected their stdio are all terminated, so
++none of them can keep writing into the worktree or the output file after etude
++has moved on. A runner that deliberately backgrounds a helper must expect that
++helper to be killed when the stage returns.
++
++Pipe draining stays bounded by a 10 s grace period after the command exits or is
++cancelled, so a child holding the inherited stdout/stderr write-ends cannot hang
++the run.
++
++This is a lifecycle guarantee, not a sandbox:
++
++- a child that calls `setsid` or `setpgid` leaves the group and is not reached;
++- a terminated descendant may linger as a zombie until its parent reaps it —
++  etude guarantees the signal was delivered, not that the pid disappears.
++
++On Windows and other non-Unix platforms there are no process groups here: the
++direct child is killed and the same drain grace applies, so descendants of the
++command may survive.
++
++`Ctrl-C` (SIGINT) or SIGTERM cancels the running command and its process group,
++and etude exits non-zero. A second signal takes the default action and exits
++immediately.
++
+ ### Forward replay
+ 
+ Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
+```
+
+## Docs impact assessment
+
+# Docs impact: etude-q396
+
+## Long-lived docs checked
+
+- docs/run.md — CHANGED: new `### Subprocess lifecycle` section (process group per managed command, SIGKILL on timeout/cancel and again after exit including success, 10 s drain grace, not-a-sandbox limits, non-Unix fallback, Ctrl-C/SIGTERM behavior).
+- docs/replay.md — CHANGED: `--timeout` row states group kill, success-path kill, links to run.md#subprocess-lifecycle.
+- docs/bench.md — CHANGED: `--timeout` row, same.
+- docs/retro.md — CHANGED: "Generator timeout and output limits", same.
+- docs/gates.md — CHANGED: check-runner paragraph (group terminated on timeout/cancel and after exit, even passing); "Reviewer-only authentication environment" example allowlist now includes `USER` with the reason (claude CLI keychain lookup).
+- CHANGELOG.md — CHANGED: `[Unreleased] / Fixed` entry for A03, matching the A01/A15 precedent.
+- docs/development.md — unchanged: development contract; no process change.
+- docs/cli/*.md — unchanged: generated; no flag added or altered (`make docs-check` green).
+- README.md — unchanged: no command added; `make docs-reality` green.
+- docs/gc.md, docs/sync.md, docs/capture.md, docs/init.md, docs/doctor.md, docs/import.md, docs/log.md — unchanged: no subprocess-lifecycle behavior described there.
+- docs/plans/** — unchanged: no planning note describes the previous descendant behavior; the audit source is bead etude-jhnk (A03), to be annotated by the parent at close.
+
+## Cross-consistency check
+
+Capabilities vs limits read against each other: run.md claims "no process left in the group survives" and immediately
+limits it to the group (setsid/setpgid escape), signal delivery (zombies), and Unix. The per-command rows only restate the
+group-kill claim and defer to run.md. QA reproduced the setsid escape and verified the 10 s constant at all four sites.
+
+## Checks
+
+- `make docs-check`: exit 0 (26 generated command docs identical).
+- `make docs-reality`: exit 0 ("OK — 16 commands; docs match the shipped CLI").
+
+## Diff
+
+The exact docs diff is `.etude/tmp/docs.diff` and is inlined in the review packet.
+
+## Verification record (lead) with independent QA findings
+
+# Verification record: etude-q396 — terminate runner subprocess descendants on timeout
+
+Evaluated revision: working tree on base e1770dacc9c525477121deaad2ef48c6ba6415da (uncommitted change set;
+exact file hashes listed at the end and recorded again in the review packet).
+Environment: darwin/arm64, Go 1.26.1, /bin/sh, git 2.47.1.
+Status: **pass** (see "Known non-blocking findings").
+
+## Ownership
+
+- Implementation worker: Claude Opus 5 (claude-opus-5), fresh context, brief `.etude/tmp/implement-brief.md`. Owned the
+  full required suites and the failing-before demonstrations.
+- Independent QA: Claude Opus 5 (claude-opus-5), fresh context, did not accept the implementer's summary; re-derived
+  failing-before on a `git archive` of base with the new tests copied in; drove the fresh binary for AC7 and I5.
+- Lead (claude-fable-5-1): read the full production diff against the gated plan; independent race run; fresh build and
+  disposable-repo harness; folded QA hardening; reran affected checks on the folded bytes.
+
+## Acceptance criteria → evidence
+
+| # | Criterion | Evidence |
+|---|---|---|
+| AC1 | Timeout: grandchild writes a marker after the deadline, parent waits; call returns timeout-classified error, descendant terminated, no marker | `TestRun_TimeoutKillsWaitingGrandchild` (subproc) + `TestExecRunner_TimeoutKillsDescendants`, `TestExecCheckRunner_TimeoutKillsDescendants`, `TestExecJudge_TimeoutKillsDescendants`, `TestExecGenerator_TimeoutKillsDescendants`. Failing-before: implementer ran each with production files stashed → all FAIL "marker … exists: descendant outlived the invocation"; QA independently reproduced the four failures on a `git archive` of e1770da. Lead CLI-level failing-before on the base binary: `.etude/tmp/manual-before.log` (replay-timeout marker=PRESENT, retro-timeout marker=PRESENT). |
+| AC2 | Wrapper exits early while child holds pipes: returns within WaitDelay bound, child terminated | `TestRun_WrapperExitsEarlyChildHoldsPipes`; existing `*_SpawnsSurvivingChild` tests still pass (and no longer leak `sleep 300`). |
+| AC3 | Child redirects stdio and outlives wrapper: prompt exit 0, child terminated, no marker | `TestRun_DetachedStdioChildOutlivesWrapper`. Spike on base confirmed this case leaked (marker=true) before the change. |
+| AC4 | Success output, exit-status errors, cancel classification, stderr diagnostics preserved | `TestRun_SuccessAndOutputPreserved`, `TestRun_ContextCancelClassification`; call-site diffs are the two replaced lines plus comments (QA line-by-line); full suites green (`make test`). |
+| AC5 | Helper used at all four entrypoints | `grep -rn "\.Run()" internal | grep -v _test` → only `internal/subproc/subproc.go`; git/gh commands out of scope. |
+| AC6 | Platform semantics explicit, all targets compile | `GOOS=windows go build ./...` exit 0; `GOOS=linux go vet ./...` exit 0 (lead, after fold). `subproc_other.go` no-op fallback; docs/run.md "Subprocess lifecycle". |
+| AC7 | Ctrl-C / SIGTERM cancels the running command and its group | Lead harness on fresh `bin/etude` (`.etude/tmp/manual-after.log`, disposable repo, job control on): replay SIGINT → exit 1 "runner: context done: context canceled", descendant terminated, marker absent; retro generate SIGTERM → exit 1 "generator: context done: context canceled", marker absent. Base binary: exit 130/143 and marker PRESENT (`manual-before.log`). QA independently: `etude run` with SIGINT → exit 1, own pgid observed via `ps`, marker absent; second SIGINT during WaitDelay → immediate default death (I5). |
+
+Invariants I1–I6: QA table confirms each against code and `os/exec.watchCtx` semantics; I4 (no post-return work) holds by
+construction (no timer/goroutine in `subproc`).
+
+## Commands and results (exact evaluated bytes = after the QA fold)
+
+| Check | Owner | Exit | Result |
+|---|---|---|---|
+| `make test` | implementer, then lead after fold | 0 | lead rerun on the folded bytes: 21 packages ok, 2 without tests, exit 0 (`.etude/tmp/make-test.log`); implementer: all ok |
+| `make lint` | implementer + lead | 0 | gofmt clean, vet clean (`.etude/tmp/lint.log`) |
+| `go test -race -count=2 ./internal/subproc ./internal/replay ./internal/liverun ./internal/eval ./internal/retro -run 'TimeoutKillsDescendants|TestRun_|TestKillGroup|SpawnsSurvivingChild|TimeoutExceeded'` | lead | 0 | all ok |
+| `go test -race -count=3` same packages, lifecycle tests | QA | 0 | all ok |
+| `go test -race -count=2 ./internal/subproc` (after fold) | lead | 0 | ok (`.etude/tmp/race-subproc.log`) |
+| `-count=5` on the four entrypoint lifecycle tests + subproc | implementer | 0 | no flakes |
+| `GOOS=windows go build ./...` / `GOOS=linux go vet ./...` | implementer, QA, lead | 0 | compiles / clean |
+| `make docs-check` | implementer, QA, lead | 0 | 26 generated docs identical |
+| `make docs-reality` | implementer, QA, lead | 0 | "OK — 16 commands; docs match the shipped CLI" |
+| `make shell-test` | implementer + lead (`.etude/tmp/shell-test.log`) | 0 | 35 passed, 0 failed |
+| `make build` + `make example` | implementer | 0 | fresh-binary walkthrough end to end |
+| Fresh-binary harness `.etude/tmp/manual-harness.sh` | lead | — | before: 4/4 descendant cases leak the marker; after: 0/4 leak, success path exit 0 with correct output |
+
+## Realistic product exercises
+
+Disposable git repo, `etude init`, one captured run, then with the fresh binary by absolute path:
+`etude replay demo summarize --runner <script> --timeout 1s` (ExecRunner), `etude retro generate run --subject-run demo
+--generator <script> --timeout 1s` (ExecGenerator), the same two with a 60 s timeout interrupted by SIGINT / SIGTERM,
+and an ordinary successful replay. Scripts background `( sleep 3; echo survived > marker ) &` and `wait`. Observed
+exit statuses, error text and marker presence are in `manual-before.log` / `manual-after.log`. Not CLI-surface-changing:
+no flags added or altered; `docs/cli` unchanged (docs-check green).
+
+## Independent QA findings and disposition
+
+1. Pre-existing flaky test `TestReviewerEnvironmentDoesNotReachChecksOrStages` (`internal/liverun/resolve_test.go`): fails
+   ~22% under `make test` on BOTH base e1770da and this tree (QA measured 13/60 each). Cause: 1 s runner timeout vs.
+   first-exec latency of a freshly written script on macOS. Out of this bead's declared scope; reported to the parent as a
+   follow-on. Any red `make test` run attributable solely to this test was rerun.
+2. `killGroup` lacked a `pid > 0` guard (kill(-0) would signal etude's own group; unreachable today). FOLDED: guard +
+   `errInvalidPID` + `TestKillGroup_RejectsNonPositivePid`.
+3. Success-path group kill was documented only in run.md. FOLDED: one clause in the replay/bench/retro `--timeout` rows and
+   the gates.md check paragraph. Also added the CHANGELOG `[Unreleased] / Fixed` entry matching the A01/A15 precedent.
+4. The `USER` seat-allowlist repair rides in this commit (disclosed in the plan; adjudicated by the plan gate).
+
+## Known limitations (documented, not defects)
+
+Not a sandbox: a child calling `setsid`/`setpgid` escapes (QA reproduced with `perl setpgrp`). Zombies may linger until
+reaped. Non-Unix keeps direct-child cancellation only. The pgid-reuse window is bounded to the synchronous post-Wait kill.
+
+## File hashes (sha256 of the evaluated bytes)
+
+See `.etude/tmp/hashes.txt` (generated after the fold; regenerated if any byte changes before review).
+
+## Independent QA report (Claude Opus 5, fresh context) — verbatim summary
+
+Status: pass. Failing-before reproduced independently on a `git archive` of e1770da with the four new tests copied in
+(all four fail "marker … exists"). AC7 and the second-signal default action verified on the real binary (own pgid seen
+via ps; setsid escape reproduced and confirmed as the documented limitation). Findings: (1) pre-existing flaky
+`TestReviewerEnvironmentDoesNotReachChecksOrStages` fails ~22% on base AND tree (13/60 each) — out of scope, reported;
+(2) `killGroup` lacked a pid>0 guard — FOLDED (guard + test); (3) success-path kill documented only in run.md — FOLDED
+into the per-command rows; CHANGELOG entry added. No production defect found.
+
+## Manual harness evidence (fresh bin/etude, disposable repo)
+
+Before (base binary): replay-timeout marker=PRESENT; retro-timeout marker=PRESENT; replay SIGINT exit=130 marker=PRESENT;
+retro SIGTERM exit=143 marker=PRESENT.
+After (this tree): replay-timeout exit=1 "timed out after 1s" marker=absent; retro-timeout exit=1 marker=absent;
+replay SIGINT exit=1 "runner: context done: context canceled" marker=absent (descendant pid terminated); retro SIGTERM
+exit=1 "generator: context done: context canceled" marker=absent; replay-success exit=0 output=ok-output.
+
+## Known limitations disclosed for adjudication
+
+Not a sandbox (setsid/setpgid escape); zombies until reaped; non-Unix keeps direct-child cancellation; pgid-reuse window
+bounded to the synchronous post-Wait kill; EPERM fallback path untested (needs privilege change); `USER` seat-allowlist
+repair rides in this commit (needed for the Fable seat to authenticate in this lane; disclosed at plan gate).
+
+## sha256 of every changed/new file
+
+d4dbaeed4c5a258cc0bc399f5faa4360eef3350750d392182ec46884d17b5445  .etude/registry.yaml
+9612e30f62a9ab00396f102af7bf8d9d24716a09a0cee8818db73dfebe1edea5  .etude/run-map.tsv
+4ac1541c0c159de032ceff2de8f7b7e81520d60f4bfb42a147056d0314a5fc7e  CHANGELOG.md
+506d095d5ac7f83cd5e6e61e3a16379ab98c2d4eae8f244c6f5a01b6376fae0e  docs/bench.md
+d1d7a2055348d17fe728beb5bda1e1c8a3247c5d704863bfc9b6b9e5ed0bf5f3  docs/gates.md
+66d3abe28232d5dd4911e1f257d9dd2af5f0a6255f27c3c596c254cf6533ca50  docs/replay.md
+0e07e004b2eec18c34ecc8d3f345297bfedc01b497b38eb79fd8492a3c4eb2a4  docs/retro.md
+9907b233ea99a42c2a27aee2933f2b11e3dbe10b80b8ae70d8c7e87b845f0b4b  docs/run.md
+354bc1d1eb8c76e37ee7f29b1a0bc494e3812b3ae46e9327b969b0dbafae8d11  internal/cli/root.go
+ba3058f767de6b4d5d85661bc7701e0ff77644959eed0b86bd601d782040ec66  internal/eval/exec_judge_group_unix_test.go
+f0dcd11633644bc99677e31fd3bc474f54e452ba93bfdb938c4716e923e76337  internal/eval/exec_judge.go
+5ad19f9a3328ef3f7fa97372422be063f4ac6eb4cb255f9a8711f431233397e4  internal/liverun/gate_group_unix_test.go
+e0b0a1b51940d9461423a0ca0354e19e1af392738a0fd8f9b15b48c51d31b392  internal/liverun/gate.go
+f69438cd2532066555dd45c08813b9d16138dc504a58136f649f2b962e749851  internal/replay/exec_runner_group_unix_test.go
+ff35a8b7e697fda59e10a9d2b6baf9e9283b00aae418ba22bed438e478dba41a  internal/replay/exec_runner.go
+24f634a99b4cd6f60a22a180d60ab61d9fd849a0f432e888ccf61231d663ab11  internal/retro/exec_generator_group_unix_test.go
+929a6187ad13ae3f20d054f242425f174c45761cf6a0784039dd31c5447dbabd  internal/retro/exec_generator.go
+6ad71eeeb3221120c611b2dcfa4b6a9066010461e0c14283c310fbec1ab623d1  internal/subproc/subproc_other.go
+a4ec807099a6b5a86fd12756327017d6b66a2dec1d085f87b86d201c97182621  internal/subproc/subproc_test.go
+40437b71f9f2b20784992096f9e1033d406b0d8e3c25f56512fb277929767ba1  internal/subproc/subproc_unix.go
+63183fcb14d38569eba7eec5d23efa0b0d8be6d3d3dbaf9b0a4ed9ab4ff215d7  internal/subproc/subproc.go
