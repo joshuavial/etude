@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8hq.6",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,52 @@
         "size": 1360
       },
       "timestamp": "2026-05-27T01:47:12.868956Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "exec"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T11:30:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T11:30:30Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only bead; ran 2 seats (codex+opus, above the Tier-3 single-seat minimum) given the meta-importance of refactoring the gate process. gemini+pilms not seated. Both GO: every-seat-all-lenses forced by the runbook's cross-lens catch evidence; PRESERVE constraints additive; naming guard correct."
+      },
+      "timestamp": "2026-05-27T11:31:00Z"
     }
   ]
 }
