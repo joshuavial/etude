@@ -1,0 +1,65 @@
+# Final review — etude-n9b.1 workflow and manifest contract
+
+Recommendation: ready to commit as one bead.
+
+ANCESTOR: etude-n9b (P1) — deliver GitHub issue #16 as opt-in checkout-read
+verification with a manifest record and output-only default.
+
+BLAST RADIUS: four Go files in this worktree only.
+
+## Requirement audit
+
+- Workflow `gate.read_checkout: true` parses, re-encodes to an independent
+  literal, and round-trips: proven by workflow focused tests.
+- Absent and explicit false remain the zero-value output-only default and omit
+  the YAML key: proven by the two-input omission test.
+- `GateAttempt.ReadCheckout=true` emits the independent literal JSON leaf and
+  round-trips through full manifest JSON: proven by the manifest codec test.
+- False omits the manifest key and an existing legacy gate manifest parses with
+  false: proven by the legacy/omission test.
+- Strictness remains intact for near-miss names and non-boolean values in both
+  codecs: proven by package-specific negative tests.
+- One-way forward compatibility is explicit: current code reads older
+  manifests; older strict binaries may reject a future manifest carrying the
+  new leaf. No manifest version bump is intended.
+- Runtime authorization is intentionally absent here and must come from the
+  trusted workflow configuration in etude-n9b.2, never from parsed manifest
+  history.
+
+## Exact diff inventory
+
+The packet contains all four modified files:
+
+1. `internal/workflow/workflow.go`
+2. `internal/workflow/workflow_test.go`
+3. `internal/runmanifest/manifest.go`
+4. `internal/runmanifest/manifest_test.go`
+
+It contains all six added test bodies, with the duplicate strict-test function
+name correctly scoped to two different Go packages. This inventory was checked
+directly against `git status`, `git diff`, and the packet's `diff --git` headers.
+
+## Verification and docs
+
+- Focused tests: pass.
+- `make test`: pass across all packages.
+- `make lint`: pass.
+- `git diff --check`: pass.
+- Manual built-binary testing: not required; no command or runtime changes.
+- Docs: checked with path-specific no-change reasons. Runtime documentation is
+  deliberately owned by dependent child etude-n9b.2 so the PR ships behavior
+  and docs together.
+
+TOPOLOGY: no concurrency change.
+
+DURABILITY CLASS: additive optional codec leaves only; no irreversible or
+delivery operation.
+
+COMPLETE SET / all-sites enumeration: workflow domain/YAML and manifest
+domain/JSON are all four representation sites; focused tests cover each codec
+and the full suite covers downstream consumers.
+
+TRUST BOUNDARY: YAML and JSON remain untrusted through strict decoding. This
+child records no authorization decision and consumes no manifest value as one.
+
+IRREVERSIBLE SEQUENCES: none
