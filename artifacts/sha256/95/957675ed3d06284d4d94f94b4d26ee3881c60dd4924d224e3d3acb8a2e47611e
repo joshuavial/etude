@@ -1,0 +1,168 @@
+✓ etude-roadmap.2.3 · Surface gate reviewer data in etude run show   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: etude run show now renders the manifest's gate reviewer records (2d9f325): printGate adds a gates section (phase/round/tier/status, reviewed stages, per-seat provider/harness/skill/verdict + required/optional/note/raw_output, decision escalation/degraded/deferred), all conditional so gate-less runs are byte-identical. Four-seat gate PASS (3 GO incl Opus mutation+built-binary verification; pilms skipped).
+
+DESCRIPTION
+Expose structured gate reviewer records in run inspection output. Users should be able to see gate rounds, reviewers, verdicts, feedback summaries, provider/model/harness, and aggregate pass/fail without opening raw artifact blobs or bead notes.
+
+Acceptance:
+- run show prints gate attempts in chronological/phase order
+- per-seat lines include verdict plus provider/model/harness where present
+- omitted gate data remains silent for legacy runs
+- output is deterministic and documented
+- tests cover multi-round gates, failures/malfunctions, and missing optional fields
+
+DESIGN
+## Plan
+
+**Approach:** Extend `printRunDetail` in `internal/cli/run.go` to render a gates
+section after the stages loop, only when `len(m.Gates) > 0` (so v0/v2 runs and any
+zero-gate run print byte-identically to today — no empty header). Match the existing
+flat `fmt.Fprintf` + two-space-indent idiom used for stages exactly (no tabwriter;
+that is only used by `run list`). Render gates in manifest/append order (the order
+capture-gate wrote them, which is already chronological per (phase, round)); do not
+re-sort. Keep it a readable, scannable summary: status/tier/reviewed-stages on the
+gate header lines, one block per seat with provider/model/harness + verdict, and
+required-feedback bullets + failure_note + degraded/escalation reasons only when
+present. No `--json`, no verbosity flag (out of scope). Provider/model/harness are
+always set on seats per the schema (validateSeat requires harness.name + provider),
+so render them unconditionally; required/optional/failure_note/decision reasons are
+optional and printed only when non-empty.
+
+Chosen rendering (one gate, mirrors the plan.r1 fixture):
+
+```
+gate: plan.r1
+  phase:    plan
+  round:    1
+  tier:     2
+  status:   rerun
+  reviewed: plan (role=plan)
+  degraded: pilms reproducible 0-CPU hang; resolved on rerun
+  seat: gemini
+    provider: google / gemini-3.1-pro-preview
+    harness:  gemini-cli 3.1
+    verdict:  block
+    required:
+      - backfilling old run != AC#4 new-run
+      - test ref-mutating push script in throwaway repo first
+      - verify local append before push
+  seat: opus
+    provider: anthropic / claude-opus-4-7
+    harness:  claude-code opus-4-7
+    verdict:  go
+  seat: pilms
+    provider: lmstudio / qwen/qwen3.6-35b-a3b
+    harness:  pi x
+    verdict:  disregarded
+    note:     0-CPU client hang; LM Studio backend healthy
+```
+
+Rules per element:
+- Gate header: `\ngate: <gate_id>` then indented `phase`, `round`, `tier`, `status`.
+- `reviewed:` one line per ReviewedRef as `<stage>` plus ` (role=<role>)` when Role
+  set and ` (artifact=<sha>)` when Artifact set; omit empties.
+- Decision: print `escalation:` when EscalationReason set, `degraded:` when
+  DegradedReason set, `deferred:` (comma-joined) when DeferredBeads non-empty;
+  skip the whole block when GateDecision is zero-valued.
+- Per seat: `  seat: <seat>`, then `provider: <name> / <model>`, `harness:
+  <name> <version>` (drop trailing space when version empty, like the stage harness
+  line). `model:` is NOT added separately (provider already carries it). `skill: <id>`
+  IS rendered conditionally when `SeatResult.Skill.ID` is non-empty (a reviewer seat
+  may carry a skill/tool identity; raw model seats like the dogfood reviewers usually
+  leave it empty, so the line is omitted then — mirrors how the stage block treats an
+  empty skill and how `note:`/`raw_output:` are conditional). Then `verdict: <verdict>`;
+  `required:`/`optional:` as ` - ` bulleted sub-lists only when non-empty;
+  `note: <failure_note>` only when set; `raw_output: <path>` only when RawOutput != nil
+  (summarized as the artifact path, not dumped inline).
+
+**Files:**
+- `internal/cli/run.go` - add a gates section to `printRunDetail` after the
+  `for _, stage := range m.Stages` loop, guarded by `if len(m.Gates) > 0`. Add one
+  small helper (e.g. `printGate`) kept in the same file/style; no new imports needed
+  (uses existing `fmt`/`strings`; `strings.Join` for deferred beads / reviewed roles).
+- `internal/cli/run_test.go` - add tests (below). No other files change.
+
+**Tests:** (table/standalone Go tests in run_test.go; build a v3 manifest with gates
+and capture stdout via the existing `execute(...)` helper — seed it directly through
+`refstore`/`runmanifest.Writer` the way `seedRunWithBadManifest`/capture helpers do,
+since `capture-gate` is a separate command and these are cli-package tests)
+- `TestRunShowRendersGates`: v3 run with a multi-round, multi-seat gate set
+  (model the 3-gate fixture: a `rerun` round with `block` verdicts + `required`
+  bullets + a `disregarded` seat with `failure_note` + `degraded_reason`, then a
+  `pass` round). Assert: `gate: plan.r1` and `gate: plan.r2` headers present and in
+  manifest order (idx plan.r1 < plan.r2 < implement.r1); `status:   rerun` /
+  `status:   pass`; per-seat `verdict:  block`/`go`/`disregarded`; a `required:`
+  bullet line; the `note:` for the disregarded seat; the `degraded:` reason;
+  `provider:` shows name/model and `harness:` shows name/version.
+- `TestRunShowNoGatesUnchanged`: a v2/legacy run (zero gates) must print NO `gate:`
+  header and NO `gates`-related lines (assert `!strings.Contains(stdout, "gate:")`),
+  proving backward-compat silence. (The existing TestRunShowExistingRun already
+  pins the no-gates baseline; this adds an explicit negative assertion.)
+- Edge cases covered by the fixture-shaped test: optional fields absent (go seats
+  with no required/note), present (block + required, disregarded + note), and
+  decision reasons (degraded). Escalated/raw_output paths are exercised lightly or
+  noted as low-risk (schema-validated elsewhere). Explicitly assert a `go` seat
+  prints NO `note:` line (failure_note is forbidden on go/block) and a seat with a
+  non-empty Skill renders a `skill:` line while a seat with empty Skill does not.
+- Verify (manual, built binary): `go build -o /tmp/etude ./cmd/etude` then
+  `/tmp/etude run show etude-roadmap.2.4` and confirm the 3 gates (plan.r1 rerun,
+  plan.r2 pass, implement.r1 pass) now render with all four seats incl. the
+  disregarded `pilms` seat, and that the pre-existing stages output is unchanged.
+
+**Docs:** No docs change in this bead. User-facing docs (docs/run.md) are explicitly
+owned by sibling bead etude-roadmap.2.6 ("Document gate reviewer visibility"), which
+depends on this one. The generated CLI reference docs/cli/etude_run_show.md is
+derived from cobra `--help`; this bead adds no flags and changes no Short/Use text,
+so `make docs` would produce no diff — it is intentionally not touched.
+
+**Risks:** Low. Isolated, additive change to one print function behind a
+`len(m.Gates) > 0` guard, so legacy runs are provably unaffected. Only judgment call
+is the exact text layout (alignment/labels) — chosen to mirror the stage block. No
+new dependencies, no schema/capture changes.
+
+**Capture:**
+- inputs: bead etude-roadmap.2.3 description + acceptance; internal/cli/run.go
+  (printRunDetail), internal/cli/run_test.go, internal/runmanifest/manifest.go (Gate
+  types); real fixture refs/etude/runs/etude-roadmap.2.4 manifest gates JSON; sibling
+  bead etude-roadmap.2.6 (docs ownership)
+- output: bead --design field
+
+
+NOTES
+## Plan gate — four-seat: PASS (3 substantive GO, pilms skipped per outage)
+- codex: GO. Correctly scoped additive rendering behind len(m.Gates)>0, plain fmt.Fprintf style, manifest order, no schema/capture/docs/flag creep. (Caveat on omitting Skill — folded in.)
+- gemini: BLOCK→GO. BLOCK: plan omitted SeatResult.Skill (useful reviewer context). Fixed: render `skill: <id>` conditionally when Skill.ID non-empty (like note/raw_output) + test asserts present/absent. Reran → GO.
+- Claude Opus (in-harness): GO. Verified against run.go (printRunDetail flat fmt.Fprintf, tabwriter only in list), run_test.go (substring assertions, no full-output golden → appended block can't break TestRunShowExistingRun), manifest.go field names, and live `/tmp/etude run show etude-roadmap.2.4` (gates absent today; 3-gate fixture present). No nil-deref/blank-line risk. Optionals folded: assert go-seat prints no note: line.
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+Scope: internal/cli/run.go + run_test.go only; docs/run.md is bead .6.
+## Implement
+- internal/cli/run.go: added a gates section to printRunDetail (after the stages loop, guarded by `for _, gate := range m.Gates`) + a printGate helper. Renders gate_id/phase/round/tier/status, reviewed stages (role/artifact when set), decision escalation/degraded/deferred (when set), and per seat: provider, harness, conditional skill (when Skill.ID != ""), verdict, required/optional bullets, note (failure_note), raw_output path. Mirrors the stage-block fmt.Fprintf idiom; no new imports.
+- internal/cli/run_test.go: TestRunShowRendersGates (rich multi-seat/multi-round fixture via capture + capture-gate: block+required, go+skill, disregarded+note, degraded; asserts fields, manifest ordering plan.r1<plan.r2, go-seat-prints-no-note, exactly one skill line) + TestRunShowNoGatesUnchanged (gate-less run prints no "gate:").
+
+## Verify — PASS
+- gofmt clean; go vet clean; `go test ./...` all pass; `make docs-check` no diff (no flag/help change, so generated docs/cli/etude_run_show.md unchanged).
+- Built-binary manual test: `/tmp/etude run show etude-roadmap.2.4` renders all 3 real gates (plan.r1 rerun w/ 2 blocks+required + pilms disregarded+note+degraded; plan.r2 pass; implement.r1 pass w/ multi-stage reviewed + optional bullets) — reads as a clean audit log; pre-existing stages output unchanged. Backward-compat: gate-less runs print no gate section (TestRunShowNoGatesUnchanged + the fixture's stages-only baseline).
+## Implement+Final gate — four-seat: PASS (3 substantive GO, pilms skipped per outage)
+Reviewed: internal/cli/run.go (printGate + gates section in printRunDetail) + run_test.go (2 tests). No schema/capture changes.
+- codex (GPT-5.5 xhigh): GO. Additive; gate-less runs silent (empty loop); optional fields guarded (nil-safe); tests cover rich output, ordering, no-note-on-go, conditional skill, legacy.
+- gemini Pro: BLOCK→GO. BLOCK: test gap (optional/raw_output/escalation/deferred rendering + harness unasserted) + brittle positional go-note assertion. Fixed: added a 3rd gate attempt (plan.r3 escalated) exercising escalation/deferred/optional/raw_output/failed+note + harness assertions; replaced positional check with count-based (note count == 2). Reran → GO.
+- Claude Opus (in-harness): GO. Empirical: go test ./... green; built-binary run show on etude-roadmap.2.4 renders correctly, stages byte-identical; mutation checks on /tmp copy confirmed the Skill.ID and RawOutput!=nil guards are test-covered (removing them fails/panics a test). Style/scope clean. (Flagged the same coverage gaps as gemini — now closed.)
+- pilms: SKIPPED — documented 0-CPU outage; 3 substantive GO per degraded-gate policy.
+
+## Verify — PASS
+gofmt/vet clean; go test ./... green; make docs-check no diff (no flag/help change). Built-binary run show on the real 3-gate fixture etude-roadmap.2.4 renders all gates as a clean audit log; gate-less runs print no gate section.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-roadmap.2: (EPIC) Capture gate reviewer visibility ● P0
+
+DEPENDS ON
+  → ✓ etude-roadmap.2.1: Design gate reviewer record schema ● P0
+  → ✓ etude-roadmap.2.2: Implement gate reviewer capture ● P2
+
+BLOCKS
+  ← ○ etude-roadmap.2.6: Document gate reviewer visibility ● P2
+
