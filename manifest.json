@@ -291,6 +291,52 @@
         "degraded_reason": "Both seats GO on the exhaustive revision. Both independently flagged the same arithmetic error - the inventory is 26 hits in 14 files, not 25 in 13; the wrong count came from a grep that also excluded dogfood-gate-capture, a file that survives and whose comment IS an edit site. opus verified the classification itself was complete, mapping all 26 hits to either the edit table (16) or the no-op table (10) with nothing unclassified, so this was a blemish on a baseline claim rather than a coverage hole. Three optionals folded: the corrected tally; the carry table's missing prerequisites (set -euo pipefail, SCRIPT_DIR, REPO_ROOT), without which the extracted suite aborts on line 1 under set -u; and an explicit instruction that the verification baseline GROWS to cover deliberately reworded lines rather than the grep being narrowed to match, since narrowing a pattern to make a check pass is the exact r2 defect. One optional deliberately not folded and recorded as such: internal/bench/corpus_runrefs.go:15 stays a no-op because it names the protocol rather than the script, the same standard every other no-op is held to. The opus seat ran as an in-harness sub-agent per the documented registry exception; the agy fallback is dead and filed as its own P1 bead."
       },
       "timestamp": "2026-08-15T09:02:11Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff",
+          "artifact": "7722d52fa62e25aabb0b52e7cabc30e530e1a041f64dcbae8f9bc001bb2ebc7d"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T09:18:54Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T09:18:54Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Both seats GO at round 1. Six of seven optionals folded, all the same wrong-pointer class this bead removes: dead code carried across in the extraction (both seats flagged the unused assert_output_* helpers; opus also found an unused INITIAL_SHA); a stale comment block naming DOGFOOD_CLOSE_AUDIT_SCRIPT, a variable of the deleted close script, which also mis-described how the audit sentinel is injected; a lost section banner rule; present-tense prose in the schema doc about a deleted capture path; and the new file's header overstating core.hooksPath, which in a worktree resolves to the MAIN checkout while PRE_PUSH_HOOK is built from this worktree's REPO_ROOT. The sharpest optional was that the artifact's 'verified pre-existing, 22 gaps' claim about make dogfood-audit did not reproduce - the audit scans a MOVING --last 9 window, so a stash-and-compare against it is not reproducible evidence. Re-checking found one gap that was mine and fixable rather than pre-existing (unpushed-ref on this bead's own run ref, because the implement stage was captured after the last gate push); pushing the ref cleared it, leaving 2 pre-existing cadence-sidecar gaps that bead .4 covers. Not folded: shell-test is a deliberate addition the passed plan names. make test, make lint, make docs-check, make docs-reality and make pre-push-test (18/18) all re-run green after the folds. The opus seat ran as an in-harness sub-agent per the documented registry exception."
+      },
+      "timestamp": "2026-08-15T09:18:54Z"
     }
   ]
 }
