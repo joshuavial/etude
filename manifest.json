@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-ojz",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,54 @@
         "size": 1005
       },
       "timestamp": "2026-05-26T04:31:37.741911Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "script create/replace-symlink logic could clobber a future REAL bundled rg-darwin-arch; only manage symlinks, leave a regular file untouched"
+          ],
+          "timestamp": "2026-05-26T01:30:00Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-26T01:30:30Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-05-26T01:30:45Z"
     }
   ]
 }
