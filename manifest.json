@@ -868,6 +868,61 @@
       ],
       "decision": {},
       "timestamp": "2026-08-17T09:57:31.582618Z"
+    },
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "docs",
+          "role": "docs-diff",
+          "artifact": "937ae7169baf586798b69537d8f103c4864a3b6cd789deb94ec8221f285f2d42"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1) docs/replay.md is described as stating replay uses the run's original Git SHA, while log-only v4 manifests are described as carrying no `original_git_sha`; a follow-up should confirm the docs spell out replay behavior for that case. 2) The pasted evidence shows `docs-check` generating 26 command docs while `docs-reality` reports 16 commands; a one-line note on why the counts differ would make the evidence self-explaining. 3) Consider recording the manifest v4 capability-level-vs-writer-version wording decision inline near issue #24 so the docs choice is traceable when that issue is picked up."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "759b020c684ec1f4ad1dcc8706add7aa297ee54a6b5b32748a8b4f131eb99d05",
+            "path": "artifacts/sha256/75/759b020c684ec1f4ad1dcc8706add7aa297ee54a6b5b32748a8b4f131eb99d05",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 747
+          },
+          "session": {
+            "session_id": "opus-c631a8554d2e8007",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "c631a8554d2e800782ba7583a102ce1c311682293554dad17acd3dacc8b66d36",
+              "path": "artifacts/sha256/c6/c631a8554d2e800782ba7583a102ce1c311682293554dad17acd3dacc8b66d36",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 659
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T09:58:24.792152Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-17T09:58:24.792901Z"
     }
   ]
 }
