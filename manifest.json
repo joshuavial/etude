@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-8u3",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -32,6 +32,78 @@
         "size": 4982
       },
       "timestamp": "2026-08-15T23:54:25.097226Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "b008fc61a0af7318578fabc14b59de479152bb4dda1da67561a41a0bbda757e2"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "block",
+          "required": [
+            "Isolate per-run submodule metadata while sharing objects and test concurrent checkouts."
+          ],
+          "timestamp": "2026-08-15T23:58:52Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "block",
+          "required": [
+            "Use isolated per-run submodule gitdirs with shared objects and prove two concurrent pins remain independent.",
+            "Prove the run-invariant git_sha relationship for the recorded submodule map.",
+            "Declare possible network and credential-helper use."
+          ],
+          "timestamp": "2026-08-15T23:58:52Z"
+        },
+        {
+          "seat": "gemini",
+          "harness": {
+            "name": "gemini-cli",
+            "version": ""
+          },
+          "provider": {
+            "name": "google",
+            "model": "gemini-3.1-pro-preview"
+          },
+          "verdict": "failed",
+          "failure_note": "Configured and permitted fallback Gemini CLI invocations failed before review with IneligibleTierError: unsupported client.",
+          "timestamp": "2026-08-15T23:58:52Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-8u3.1"
+        ]
+      },
+      "timestamp": "2026-08-15T23:58:52Z"
     }
   ]
 }
