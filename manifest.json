@@ -517,6 +517,53 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T01:47:04Z"
+    },
+    {
+      "gate_id": "verify.r2",
+      "phase": "verify",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r3",
+          "role": "verify"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Disclose that every live model seat now receives the shared policy-bearing prompt rather than the raw artifact input.",
+            "State that read-only enforcement is trusted prompt and harness policy rather than an OS sandbox."
+          ],
+          "timestamp": "2026-08-16T01:56:13Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.6-sol"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-16T01:56:13Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:56:13Z"
     }
   ]
 }
