@@ -1,0 +1,15 @@
+# Final Review — etude-8t4 (etude retro list + show, read side)
+
+Verdict: GO — ready to commit. No blockers.
+
+1. **Coherence**: delivers the read-side scope as a coherent unit; plan (mirror run list/show) ↔ impl ↔ tests ↔ docs consistent. The round-1 metadata fix is real + well-covered: `printRetroDetail` renders all non-subject/non-known Refs under a sorted `metadata:` header; `TestRetroShowFlatMetadata` asserts gate.1/bench.1/eval.1/custom note appear lexically, no scope dup. retro.go:206 comment now accurate (bead before subject_run, matching the lexical sort).
+
+2. **Code quality**: error-handling parity with run.go faithful — List propagation, Resolve+ErrNotFound->"not found", per-retro ReadFile/ParseJSON errors naming the id, tabwriter flush-on-success (mid-list failure -> empty stdout, asserted). Validation fires before any git call (validateCLIIdentifier + validateRetroIDExtra -> retro.IsValidRetroID). Zero-subject/missing-key paths panic-free. Non-blocking observation: indexed-subject sort/collect logic duplicated between retroSubjectsList and printRetroDetail; empty-stage body renders nothing (acceptable — capture always writes one stage). Follow-up could share the helper + guard empty-stage. Not worth blocking.
+
+3. **Docs accuracy**: docs/retro.md describes only shipped behavior (capture/list/show, no generate); "Current limits" honestly note no query index + no --json. Generated etude_retro_list.md/etude_retro_show.md + etude_retro.md SEE ALSO match the real cobra commands. Repointing docs/README.md to the richer hand-written docs/retro.md is correct (mirrors run.md).
+
+4. **Scope/commit hygiene**: genuine 1-bead = 1-commit; all 8 files belong to the read side; no stray drift. expectedCommands extended with exactly the 2 new pages (did not over-reach into the separate exhaustiveness bead).
+
+5. **Blockers**: none. Non-blocking follow-up: share the subject sort/collect helper + guard the empty-stage body case.
+
+Commit: `add etude retro list and show read commands` (landed as cdacae4).

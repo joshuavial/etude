@@ -115,6 +115,50 @@
         "size": 1866
       },
       "timestamp": "2026-05-25T20:01:43.829995Z"
+    },
+    {
+      "stage": "review",
+      "produced_by": "original",
+      "git_sha": "cdacae4ba871a736cb0d51c250cfaacd4dabce2e",
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "2.1.150 (Claude Code)"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-pr-reviewer",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "diff",
+          "artifact": "221c994ba5a066880625099fb4711a9c30617b013c00ea330a641416c8a7d72b",
+          "path": "artifacts/sha256/22/221c994ba5a066880625099fb4711a9c30617b013c00ea330a641416c8a7d72b",
+          "media_type": "text/x-diff; charset=utf-8",
+          "storage": "content",
+          "size": 29992
+        },
+        {
+          "role": "verify",
+          "artifact": "5649ad616873495a7e138ce1a0f71ad902680690a53391563fb8af130d86dec0",
+          "path": "artifacts/sha256/56/5649ad616873495a7e138ce1a0f71ad902680690a53391563fb8af130d86dec0",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 1866
+        }
+      ],
+      "output": {
+        "role": "review",
+        "artifact": "4fac16f969a08275ce55aeb25e6565239a8e8de1ad0063984866ee990810fc89",
+        "path": "artifacts/sha256/4f/4fac16f969a08275ce55aeb25e6565239a8e8de1ad0063984866ee990810fc89",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 2042
+      },
+      "timestamp": "2026-05-25T20:01:43.969812Z"
     }
   ]
 }
