@@ -1,0 +1,5 @@
+## Verify — etude-nbv (status: pass, recommend proceed to Docs)
+
+Automated: go test ./internal/cli/ -run 'TestSync|TestClassifyFetchBang' -v -> 16/16 PASS; go test ./... -race all packages PASS; vet clean; gofmt clean. No test change (pure dead-code removal).
+Built-binary round-trip (go install; bare remote + 2 clones): clone A capture+sync pushed refs/etude/runs/rt-1; clone B sync fast-forward-fetched it; run show resolved it. Live fetch/classify/push paths unaffected.
+QA: diff = only the dead 'case fetchBangAbort:' arm (2 lines) + guard comment; all 3 abort returns non-nil; classifyErr guard precedes switch => arm was dead. Reachable arms/messages/const/return-sites untouched. Behavior-preserving + minimal.
