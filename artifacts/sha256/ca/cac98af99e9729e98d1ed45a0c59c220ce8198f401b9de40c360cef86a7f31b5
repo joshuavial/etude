@@ -1,0 +1,21 @@
+# Verify — etude-094 (harden capture-run artifact paths against symlink traversal)
+
+Result: PASS.
+
+## Automated
+- `go test ./...` FULLY green (incl. cmd/gen-docs — no flag, no docs/cli drift); `make docs-check` clean; `make docs-reality` OK (13 cmds); `make lint` clean.
+- New `TestCaptureRunArtifactPathSymlinkContainment` (4 subtests, all PASS): symlink→abs-outside REJECTED; symlink→rel-`../`-outside REJECTED; symlink→inside ACCEPTED; relative-spec-path (`specDir=="."`) + abs-target-inside symlink ACCEPTED (the codex-caught absolute-base regression). Existing `TestCaptureRunArtifactPathContainment` (abs + `..` reject) unchanged. `TestCaptureRunErrorCases/nonexistent artifact path` updated to expect `does not exist`.
+
+## Built-binary, throwaway repo (empirical, this verify)
+- Missing artifact path → `artifact path "nope.md" does not exist`, exit 1 (clear typo diagnostic, not masked as a confinement error).
+- Symlink inside spec dir → absolute path OUTSIDE → `path "leak.md" escapes the spec directory`, exit 1; secret marker leaked into refs/etude/runs/*: **0** (no leak).
+- Legit symlink inside → target inside spec dir → ACCEPTED (ref refs/etude/runs/r3 written).
+
+## Implement-gate Opus adversarial probe (empirical, recorded at gate)
+8 escape vectors (abs-target, rel-`../`-target, intermediate-dir symlink, chains, deeper intermediate) ALL REJECTED; secret marker found in ZERO git blobs / nowhere in .git; both legit cases (inside symlink + relative-spec) ACCEPTED; plain file accepted.
+
+## Mechanism
+run() anchors on `absSpecDir = filepath.Abs(specDir)` (fixes relative `specDir=="."`) then `realSpecDir = EvalSymlinks(absSpecDir)`, threaded through buildStage. resolveArtifactPath: reject abs; lexical Rel-confine vs absSpecDir; EvalSymlinks(resolved) — `os.ErrNotExist`→"does not exist", other err→deny "escapes"; Rel-confine realResolved vs realSpecDir; return realResolved (TOCTOU mitigation). EvalSymlinks resolves the FULL path so intermediate-dir symlinks are also caught.
+
+## Scope
+internal/cli/capture_run.go, internal/cli/capture_run_test.go, docs/capture-run.md. No new flag, no docs/cli regen, no schema change.
