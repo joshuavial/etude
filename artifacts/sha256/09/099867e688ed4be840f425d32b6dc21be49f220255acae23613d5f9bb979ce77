@@ -1,0 +1,228 @@
+# Plan — etude-9uf.4: Shrink the completeness audit to its two live ratchets
+
+## What is being replaced
+
+| File | Lines |
+|---|---|
+| `scripts/dogfood-completeness-audit.sh` | 902 |
+| `scripts/dogfood-completeness-audit_test.sh` | 1579 |
+| **total** | **2481** |
+
+Replaced by one script of roughly 60 lines enforcing two checks, plus a focused
+test.
+
+## Why these two survive and the rest do not
+
+The epic's premise: the completeness audit exists because stage records were
+RECONSTRUCTED after the fact, so something had to police whether the
+reconstruction had happened. Under the supervised model each phase is captured
+and gated as it completes, so most of what the audit checks is either
+structurally true or self-imposed bookkeeping.
+
+**Kept:**
+
+- **(d) refs pushed** — every `refs/etude/{runs,retros}/*` matches origin. This
+  is the one check that catches a genuine, silent, unrecoverable loss: an
+  unpushed run ref dies with the worktree. It caught real misses, and it caught
+  one during bead `.3`.
+- **(c) retro cadence** — a retro every 3 closed beads. Self-imposed, but it is
+  the mechanism by which this lane learns anything, and it does not become
+  structurally true under the new model.
+
+**Dropped:**
+
+| Check | Why |
+|---|---|
+| (b) gated run has gates | a run that HAS a ref and advanced through `etude gate` has gates, because gating is how it advanced. Verified: `GateStage` refuses with `ErrNoReviewableStage` and writes nothing when the stage is absent, so a gated phase implies a captured stage. |
+| (e) docs drift | duplicates `make docs-check` / `make docs-reality`, which the verify gate already runs as deterministic checks. WARN-only today, so it blocks nothing. |
+| (f) cadence-sidecar | the 7-key sidecar is bookkeeping about retros, not evidence about work. **See the consequence below — this one is not free.** |
+| (g) retro subject consistency | WARN-only; checks that a retro's title id-list matches its manifest refs. Bookkeeping about bookkeeping. |
+| bypass report + `scripts/dogfood-completeness-allow.txt` (43 entries) | the allowlist exists to exempt beads from (a) and (b). It goes with the checks it serves. |
+| `--bead` and `--since` modes | `--bead` was the per-close mode, and its only caller was `scripts/dogfood-close.sh`, deleted in bead `.3`. Nothing in the tree invokes either now except the audit's own tests. |
+
+## The bead's premise for dropping check (a) does not hold
+
+**This is the most important thing in this plan and it needs a decision before
+implementation.**
+
+The bead says checks (a) and (b) "become structurally true once `etude gate` is
+the only way to advance a phase". For (b) that holds. For (a) it does not,
+because **nothing makes `etude gate` the only way to advance a phase.** Verified:
+no hook, no CLI path, and no `bd close` guard requires a run ref or a gate before
+a bead closes. The pre-push hook blocks code pushes on audit gaps — and check (a)
+IS the audit gap that fires. It is the only detector of a bead closed with no run
+ref at all, i.e. a supervisor who skipped the model entirely.
+
+Check (d) does not cover this: it compares local refs against origin, so a bead
+with no run ref has nothing to compare and passes silently.
+
+So dropping (a) does not remove a check made redundant by the new model. It
+removes the only thing that notices the new model was not used. The epic's own
+complaint about the old world was "2,481 lines of audit policing a skippable
+manual protocol"; deleting the policing while the protocol stays skippable keeps
+the worse half of that trade.
+
+**Recommendation: keep (a) as a third ratchet.** It is roughly five lines — for
+each in-scope closed bead, does `refs/etude/runs/<id>` exist — and it is the
+cheapest check in the file. Concretely: keep (a), (c), (d); drop (b), (e), (f),
+(g), the bypass report and the allowlist.
+
+This contradicts the bead's acceptance, which names two ratchets, so it is raised
+here rather than decided unilaterally. If the plan gate agrees, the bead text is
+updated in this bead with a note, as `etude-1od` was. If the gate disagrees, (a)
+goes and this plan's Risks section records what stopped being detectable.
+
+**Note on the allowlist:** its 43 entries exist to exempt beads from (a) and (b).
+Keeping (a) means either keeping the allowlist or accepting that those 43
+historical beads now GAP. They are all pre-supervised-model beads, so the honest
+treatment is a single dated cutoff — only beads closed after the supervised model
+landed are in scope for (a) — rather than a 43-line list of individual
+exceptions. That is both smaller and more truthful about why they are exempt.
+
+## Two consequences that are NOT free, stated up front
+
+### 1. Dropping (f) leaves a live consumer reading an unenforced convention
+
+`scripts/retro-meta-index.sh` is a surviving, working tool that aggregates the
+7-key retro-meta sidecars across cadence retros. Check (f) is what guarantees
+post-cutoff cadence retros carry a valid sidecar. Drop (f) and the index keeps
+working on what exists, but nothing ensures new retros contribute — so it
+degrades silently as the lane continues.
+
+That is precisely the failure bead `.3` spent nine gate rounds on: a mechanism
+left pointing at something no longer guaranteed. Options:
+
+- **(i) Drop (f) and accept the degradation**, documenting in `docs/retro.md`
+  and the index's own header that sidecars are now best-effort, and filing a bead
+  if the index is to be kept honest.
+- **(ii) Keep a minimal sidecar assertion** inside the new script.
+- **(iii) Drop (f) and move the assertion into `retro-meta-index.sh`**, where the
+  consumer validates its own input.
+
+**Chosen: (i), with the documentation and a filed follow-on.** The bead's
+acceptance names exactly two ratchets and says the rest are dropped; smuggling a
+third in under a different name would be reinterpreting the acceptance, which is
+the failure mode this epic exists to end. (iii) is a real improvement but it is
+work on the index, not on the audit, and belongs in its own bead. What is NOT
+acceptable is dropping (f) silently and leaving `docs/retro.md` still saying the
+convention is "enforced by check (f)".
+
+### 2. The cadence check counts retro REFS, not retro markdown
+
+Check (c) walks `refs/etude/retros/*` for manifests whose `refs.trigger` is
+`cadence-retro`, and counts closed beads not covered by one. But this lane's
+operating instruction is that retros are markdown committed under
+`.etude/retros/`, and the three retros written on this epic are markdown; only
+two cadence retro REFS exist for it (`etude-9uf.2`, `etude-rep`).
+
+So the ratchet and the practice measure different things, and the ratchet is
+currently passing only because it is under its threshold (1 uncovered < 3).
+
+**Chosen: keep the ref-based check unchanged in what it measures.** Reasons: the
+refs are the durable, pushable artifact the audit's sibling check (d) already
+guards; markdown under `.etude/retros/` is committed to the branch and is
+already protected by ordinary code review; and changing what a ratchet measures
+inside a bead whose job is to SHRINK it mixes two changes. The gap is real and
+is documented in the new script's header, with a follow-on filed. This is
+recorded as a known limitation rather than quietly resolved.
+
+## Contract that must not change
+
+The pre-push hook (`.beads/hooks/pre-push`) branches on the audit's exit code and
+**fails closed on anything unexpected**:
+
+- `0` — clean, push allowed
+- `1` — hard gaps, push BLOCKED with the GAP lines shown
+- `2` — usage / environment error, push BLOCKED (fail-closed branch)
+
+The new script preserves all three exactly. The hook also honours
+`DOGFOOD_HOOK_AUDIT_SCRIPT` for injection, and `scripts/pre-push_test.sh`
+(extracted in `.3`) drives that path in 10 of its 20 cases — including B9
+(missing audit script) and B10 (audit exits 2 → hook fails closed). **Those 20
+cases must stay green**, and they are the real regression net for this bead.
+
+`--last <N>` must keep working: the hook invokes `--last 9`, and `make
+dogfood-audit` invokes `--last 9`.
+
+## The sweep
+
+Lesson carried from `.3`: the sweep is the risky half, a replacement pointer is a
+factual claim, and the check must be able to see every form the name takes.
+
+Inventory command, over tracked files:
+
+```
+git ls-files -z | xargs -0 grep -nE 'completeness-audit|completeness-allow|check \([a-g]\)|cadence-sidecar'
+```
+
+Sites to edit:
+
+| File | Treatment |
+|---|---|
+| `Makefile` | `dogfood-audit` / `dogfood-audit-test` targets point at the new script and test; `shell-test` aggregate updated if a name changes. |
+| `.beads/hooks/pre-push` | the comment naming `scripts/dogfood-completeness-audit.sh --last 9`; update only if the path changes. Control flow untouched. |
+| `docs/retro.md` (4 sites) | states the sidecar convention is "enforced by check (f)". After this bead nothing enforces it — rewrite to say so plainly and point at the follow-on. |
+| `docs/plans/dogfood/retro-ledger.md` (~8 sites) | historical ledger entries about checks (f)/(g) and the allowlist. **Mostly no-ops** — a ledger records what happened. Any entry written in the present tense as a live rule gets a dated note; none are rewritten. |
+| `docs/plans/dogfood/review-gate-runbook.md:967` | describes check (f) as hard-requiring a sidecar. Live runbook → must be corrected. |
+| `docs/plans/dogfood/retro-capture.md:32` | describes check (g) as a live guard. Correct. |
+| `docs/plans/dogfood/README.md:67` | one-line description of the audit's job. Update to the two ratchets. |
+| `scripts/retro-meta-cadence.example.json` (2 sites) | example file whose prose says the schema is "enforced by check (f)". Correct. |
+| `scripts/retro-meta-index.sh:97` | a comment citing `check (f) at audit:519` — a line reference into a file being replaced. Correct. |
+
+Verification requires the inventory to return only an enumerated no-op baseline
+plus deliberately reworded lines, and the baseline GROWS rather than the grep
+being narrowed.
+
+## Verification
+
+- New script line count stated exactly (`grep -c ''`), not "about". The
+  acceptance says ~60 for two ratchets; with (a) kept it is a handful more, and
+  the exact number is reported rather than rounded to fit.
+- `make dogfood-audit` exits **0** on the current tree. This is a real change:
+  it fails today on 2 `cadence-sidecar` gaps, and dropping (f) is what clears
+  them. Any other exit is a finding.
+- `make dogfood-audit-test` green.
+- `make pre-push-test` 20/20 — the hook contract is unchanged.
+- `make test`, `make lint`, `make docs-check`, `make docs-reality`, `make
+  shell-test` green.
+- The widened sweep returns only the enumerated baseline.
+- 2481 lines deleted; confirmed by `git show --stat`.
+
+### Negative controls, chosen so their breakage is observable
+
+`.3` taught that a control targeting a branch whose failure is masked downstream
+proves nothing. Each of these is checked to actually fail:
+
+1. **(d) fires** — create a local `refs/etude/runs/<throwaway>` that origin does
+   not have; the audit must exit 1 naming it. Delete the ref afterwards.
+2. **(d) is not vacuous** — with no gap present the audit exits 0, so control 1's
+   failure is attributable to the planted ref rather than to a script that always
+   fails.
+3. **(c) fires** — drive the cadence check past its threshold with a stubbed
+   closed-bead list and confirm exit 1.
+4. **(a) fires, if kept** — a stubbed closed bead with no run ref must exit 1
+   naming it; the same run present must exit 0.
+5. **The hook still fails closed** — point `DOGFOOD_HOOK_AUDIT_SCRIPT` at a
+   script exiting 2 and confirm the hook exits 1. This is B10 and it must still
+   pass against the NEW script's contract, not just the old one's.
+
+## Risks
+
+- **The audit is on the push path for every lane in this checkout.** A new script
+  that errors, hangs, or mis-exits blocks everyone's pushes. Mitigations: the
+  exit-code contract is preserved exactly, `pre-push_test.sh`'s 20 cases are the
+  net, and control 4 exercises the fail-closed branch specifically.
+- **Deleting 2481 lines of checks is irreversible in practice.** Git keeps them,
+  but nobody restores a deleted check. The dropped WARN-only checks blocked
+  nothing. The dropped hard checks are the real risk, and the plan gate should
+  attack the (a) argument above hardest: if (a) is dropped, a bead can close with
+  no run ref and nothing anywhere will say so.
+- **`make dogfood-audit` currently fails**, so "it passes after" is the intended
+  outcome, not a regression to explain away. Stated here so it cannot later look
+  like a check was weakened to make a build green.
+
+## Out of scope
+
+- Rewriting `retro-meta-index.sh` to validate its own input (follow-on).
+- Changing what the cadence ratchet measures (follow-on).
+- The retro markdown vs retro ref divergence beyond documenting it.
