@@ -1,4 +1,5 @@
 {
+  "manifest_version": 2,
   "run_id": "etude-roadmap.1.1",
   "workflow": "default",
   "workflow_version": "v1",
@@ -11,10 +12,12 @@
       "stage": "plan",
       "produced_by": "original",
       "git_sha": "4233f1805401f90dab1f0252840da1a33af1e655",
-      "skill": {
-        "id": "dev-planner",
-        "repo": "manual",
-        "version": "manual"
+      "producer": {
+        "skill": {
+          "id": "dev-planner",
+          "repo": "manual",
+          "version": "manual"
+        }
       },
       "inputs": [
         {
@@ -35,6 +38,37 @@
         "size": 8628
       },
       "timestamp": "2026-05-25T01:58:11.12186Z"
+    },
+    {
+      "stage": "implement",
+      "produced_by": "original",
+      "git_sha": "4233f1805401f90dab1f0252840da1a33af1e655",
+      "producer": {
+        "skill": {
+          "id": "dev-executor",
+          "repo": "manual",
+          "version": "manual"
+        }
+      },
+      "inputs": [
+        {
+          "role": "plan",
+          "artifact": "5e1248e96d34d62a77e3a405d2c7935d430e55698252b02351712106a6fd289d",
+          "path": "artifacts/sha256/5e/5e1248e96d34d62a77e3a405d2c7935d430e55698252b02351712106a6fd289d",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 12258
+        }
+      ],
+      "output": {
+        "role": "diff",
+        "artifact": "dee48e51aad5c623ea221973fe77460c2ec77022e4fd5d0847d19eaf4f859426",
+        "path": "artifacts/sha256/de/dee48e51aad5c623ea221973fe77460c2ec77022e4fd5d0847d19eaf4f859426",
+        "media_type": "text/plain; charset=utf-8",
+        "storage": "content",
+        "size": 20689
+      },
+      "timestamp": "2026-05-25T02:56:19.02706Z"
     }
   ]
 }
