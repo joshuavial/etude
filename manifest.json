@@ -1151,6 +1151,42 @@
         "degraded_reason": "one or more seats produced non-usable results"
       },
       "timestamp": "2026-08-15T19:52:10.655847Z"
+    },
+    {
+      "gate_id": "docs.r5",
+      "phase": "docs",
+      "round": 5,
+      "tier": 4,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "docs.r4",
+          "role": "docs-diff",
+          "artifact": "97afdd259b6d3b6261c8b7aaa5aef8490627c908ddbd5c40a98a83a4cc863299"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Both edited files state a mechanism the repo contradicts. The runbook says of the opus seat 'It skips that candidate, finds no other exec-able one, records the seat failed, and escalates - the reason every gate escalates', and review-gate-process.md says 'it still fails that seat closed'. registry.yaml declares TWO fallbacks for opus: the in-harness rung AND an exec-able agy rung, and agy is on PATH. runSeatLadder skips only InHarness rungs and continues; it records the seat failed solely when every exec-able rung is exhausted. So 'no other exec-able one' is false against the same registry stanza the paragraph cites, and a gate could pass with the opus seat filled by Antigravity. Compounding it, the causal claim is UNMEASURED - no run ref contains IN_HARNESS_CANDIDATE_SKIPPED or CANDIDATE_FAILED, and bin/etude (built 15 Aug 15:37, before 17d0ab5 at 16:11) contains neither marker, so every escalation cited was produced by a pre-ladder binary whose bare adapter failure notes show the ladder was never walked. The measurements are real; the mechanism offered as their explanation is not."
+          ],
+          "timestamp": "2026-08-15T20:00:20Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "BLOCK, and the most consequential finding of this bead. My bin/etude was built at 15:37 and 17d0ab5 - the commit landing the fallback ladder - landed at 16:11, so EVERY escalation this epic measured was produced by a pre-ladder binary. The binary contained neither ladder marker and no run ref in the repo carried one. The measurements are real; the mechanism I had documented as their explanation was not, and I had also asserted the gate 'finds no other exec-able candidate' when registry.yaml declares an exec-able agy rung in the very stanza I was citing. Rather than correct prose to a mechanism I still had not observed, I rebuilt and ran a real gate: docs.r6 on this run records CANDIDATE_FAILED harness=claude-code, then IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent, then CANDIDATE_FAILED harness=agy. All three rungs walk. The conclusion survives - every gate escalates for a Claude Code supervisor - but for a different reason than documented: not because the ladder is unwalked but because its last exec-able rung is dead (etude-8li). Both docs now say that, the runbook warns to rebuild bin/etude first since a stale binary silently gives the old flat-outage behaviour, and it notes that repairing etude-8li means a supervisor must check WHICH harness filled the opus seat rather than assuming. The lesson recorded in the artifact: I documented a mechanism from reading code and a bead id, measured an outcome consistent with it, and was wrong about the causal link for four rounds. Only running it settled that. Four optionals folded, including a pqv/5f6 attribution split and a grep -A3 in the drift snippet that does not reach the stage's own output hash."
+      },
+      "timestamp": "2026-08-15T20:00:20Z"
     }
   ]
 }
