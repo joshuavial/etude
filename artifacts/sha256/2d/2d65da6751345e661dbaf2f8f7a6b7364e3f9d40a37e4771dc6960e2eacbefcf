@@ -1,0 +1,8 @@
+## Final Review — etude-zcq (recommendation: close)
+
+Reviewed: plan, implementation diff, verify (pass; mutation check + real sync round-trip), docs (no-docs). Findings: none.
+Correctness: stderr surfaced ONLY in classifyFetchBang's abort branch with an empty-stderr guard; exit-0/exit-1/non-ExitError branches unchanged; bytes already imported.
+Test: abort path (SHA-256-portable bogus OID dodging isNullOID -> exit 128) asserts result/ref/'merge-base exit 128'/stderr 'not a valid commit name'; benign sibling (child not ancestor of parent -> exit 1) confirms no stderr leak.
+Gates re-run green: go test ./... -race ok; vet clean; gofmt clean.
+Commit hygiene: exactly internal/cli/sync.go + internal/cli/sync_test.go (staged by name); .claude/scheduled_tasks.lock excluded; no secrets/debug.
+Note: pre-existing dead fetchBangAbort branch in fetch() is NOT introduced here (user still gets the enriched classifyFetchBang error); deferred follow-up.
