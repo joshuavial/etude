@@ -1,0 +1,6 @@
+## Final Review — etude-nbv (recommendation: close)
+
+Reviewed: plan, implementation diff, verify (pass), docs (no-docs). Findings: none.
+Correctness: removed 'case fetchBangAbort:' arm was provably dead — all 3 fetchBangAbort returns (sync.go L241/243/247) carry non-nil errors and fetch()'s 'if classifyErr != nil { return classifyErr }' guard precedes the switch. Reachable arms (RealFailure/Benign) + messages + the const + classify-level returns untouched. Guard comment prevents re-introduction.
+Gates re-run green: go test ./... -race ok; vet clean; gofmt clean.
+Commit hygiene: exactly internal/cli/sync.go (2 lines removed + comment); tree clean (scheduler lock gitignored separately); no secrets/debug.

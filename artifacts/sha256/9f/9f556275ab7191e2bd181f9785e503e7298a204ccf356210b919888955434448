@@ -1,0 +1,170 @@
+## Plan
+
+**Approach:** Behavior-preserving dead-code removal in internal/cli/sync.go fetch().
+Verified by reading the actual code: classifyFetchBang returns fetchBangAbort ONLY
+at L242/L244/L248, and ALL THREE carry a non-nil error. fetchBangRealFailure (L218,
+L231) and fetchBangBenign (L237) always return nil error. In fetch() the call site
+(L135-138) does 'result, classifyErr := classifyFetchBang(...); if classifyErr != nil
+{ return classifyErr }' BEFORE the switch, so the 'case fetchBangAbort:' arm (L142-143)
+is provably unreachable: abort always implies non-nil classifyErr, which already
+returned the richer error (incl. merge-base stderr from etude-zcq). No path exists
+where fetchBangAbort reaches the switch with a nil error, so the bead premise holds.
+Delete the dead case arm only; leave the reachable fetchBangRealFailure and
+fetchBangBenign arms and all error messages untouched.
+
+**Files:**
+- internal/cli/sync.go - delete unreachable 'case fetchBangAbort:' arm (L142-143) from
+  the switch in fetch(). Keep fetchBangRealFailure (L140-141) and fetchBangBenign
+  (L144-145) arms unchanged. The fetchBangAbort const (L164) and its three return
+  sites in classifyFetchBang (L242/L244/L248) STAY — they are live and tested. Switch
+  needs no default (Go does not require exhaustiveness; the two reachable results are
+  covered, and an impossible value falls through harmlessly as before).
+
+**Tests:**
+- No new test warranted (dead-code removal, behavior identical).
+- Existing tests must stay green: TestClassifyFetchBangAbortSurfacesStderr already
+  covers the abort path at the classify level (asserts fetchBangAbort + non-nil error
+  carrying merge-base stderr), proving abort always has a non-nil error.
+  TestSyncLockInducedRejectedFF covers fetch() returning the classify error first.
+  Run: go build ./... && go test ./internal/cli/.
+
+**Docs:**
+- None. Internal dead-code removal with no user-facing or behavior change.
+  Confirmed docs/sync.md (L107 generic 'stuck ref lock aborts the sync') does NOT
+  reference the removed error string or the switch arm. No command reference affected.
+
+**Risks:** None - removed branch is provably unreachable and untested at the fetch()
+level; reachable behavior and all error messages are unchanged. Touches git-plumbing
+but the control-flow claim was reproduced by reading the actual code, not assumed.
+
+**Capture:**
+- inputs: bead etude-nbv description, internal/cli/sync.go (fetch + classifyFetchBang),
+  internal/cli/sync_test.go (TestClassifyFetchBangAbortSurfacesStderr,
+  TestSyncLockInducedRejectedFF), docs/sync.md
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (traced all 3 abort returns non-nil + fetch() returns classifyErr before switch => arm genuinely dead); pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Tier rationale: touches git-plumbing code (sync.go). Behavior-preserving dead-code removal.
+Optional folded into Implement (opus): add a one-line comment near the switch noting fetchBangAbort always returns non-nil and is handled by the classifyErr guard above, so nobody re-adds the dead arm.
+## Implement
+
+**Implemented:**
+- Deleted the unreachable `case fetchBangAbort:` arm (2 lines) from the `switch result` in `fetch()` in `internal/cli/sync.go`
+- Added a one-line comment above the switch noting that `fetchBangAbort` always carries a non-nil error and is handled by the `if classifyErr != nil { return classifyErr }` guard above, so no case is needed
+
+**Checks run:**
+- `go build ./...`: pass
+- `gofmt -l cmd internal`: pass (empty output)
+- `go vet ./...`: pass
+- `go test ./internal/cli/ -count=1`: pass (ok 9.002s)
+- `go test ./... -count=1`: pass (all packages ok)
+
+**Changed files:**
+- internal/cli/sync.go
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (gate-approved 4/4 GO) and Plan gate notes
+- output: working tree diff (2 lines deleted, 1 comment added) and bead notes
+## Implement gate (attempt 1 -> 2) — Tier 1 four-seat: PASS 4/4 GO (attempt 2)
+- Attempt 1: 3 GO (Gemini, Opus, pilms — code correct) / 1 codex BLOCK whose ONLY required change was excluding the untracked .claude/scheduled_tasks.lock (a recurring process artifact, code confirmed correct).
+- ROOT-CAUSE FIX (2nd occurrence of this codex lock-file block, per runbook recurring-flake rule): gitignored the transient scheduler files (.claude/scheduled_tasks.lock/.json) in a separate hygiene commit 9f17ebd. git status now clean except the bead diff.
+- Attempt 2 (clean tree): Gemini GO; Claude Opus GO (re-traced return matrix, behavior-preserving); pi/pilms GO; GPT-5.5 xhigh (codex) GO.
+File: internal/cli/sync.go (delete dead case fetchBangAbort arm + guard comment). All tests green; behavior identical.
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes: none — pure dead-code removal (unreachable `case fetchBangAbort:` arm + one guard comment); behavior identical, no new test warranted. Existing tests already prove the abort path classifies and surfaces correctly.
+- commands:
+  - `go test ./internal/cli/ -run 'TestSync|TestClassifyFetchBang' -count=1 -v`
+  - `go test ./... -count=1 -race`
+  - `go vet ./...`
+  - `gofmt -l cmd internal`
+- result: PASS. Targeted run 16/16 PASS (incl. TestSyncLockInducedRejectedFF — fetch() returns classifyErr before the switch; and TestClassifyFetchBangAbortSurfacesStderr — abort returns fetchBangAbort + non-nil error carrying merge-base stderr). Full suite green with -race across all packages (cli, artifactstore, refstore, runmanifest, workflow). `go vet` clean; `gofmt -l` empty.
+
+Manual tests:
+- required: yes
+- reason: bead touches the live git fetch/classify/push paths in sync.go; per workflow rule, CLI beads get a built-binary manual test. Removed arm was unreachable, so this is a regression check on the real paths.
+- result: PASS. `go install ./cmd/etude`, then bare remote + 2 clones with the freshly built binary:
+  - Clone A: `etude capture plan --run rt-1 --output output=plan.md` -> `captured ... / ref refs/etude/runs/rt-1`; `etude sync` -> `fetched refs/etude/* from origin` + `pushed refs/etude/* to origin (refs/etude/runs/rt-1)`.
+  - Bare remote: `f2726cc... commit refs/etude/runs/rt-1` present.
+  - Clone B: `etude sync` -> `fetched refs/etude/* from origin (fast-forwarded: refs/etude/runs/rt-1)` (no abort/error on the live classify path); `etude run list` shows rt-1; `etude run show rt-1` resolves the plan stage + artifact.
+  - Normal sync round-trip intact; no regression from removing the dead arm. Throwaway repos cleaned up.
+
+QA findings:
+- correctness: Matches the approved plan exactly. Independently re-read sync.go: all three fetchBangAbort returns (L241/L243/L247) carry a non-nil error, and the `if classifyErr != nil { return classifyErr }` guard (L136-138) precedes the switch, so the deleted arm was provably unreachable. Reachable arms (fetchBangRealFailure L141, fetchBangBenign L143) and all error messages unchanged. The fetchBangAbort const and its classify-level return sites remain (live, tested).
+- coverage: Adequate. No behavior change to cover; existing tests prove abort classification + fetch()-level error surfacing remain correct. Diff is exactly 2 lines deleted + 1 comment added — minimal as planned.
+- regressions: None. Full suite + race clean; built-binary round-trip confirms live fetch/classify/push paths unaffected.
+- code quality: Guard comment documents why no fetchBangAbort case is needed, preventing future re-introduction of the dead arm. No default added (Go does not require exhaustiveness; impossible value falls through harmlessly as before).
+- risks: None.
+
+Capture:
+- inputs: approved plan (--design, 4/4 GO) and Implement artifact/notes
+- output: append-only Verify note
+## Verify gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO; pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Verify status pass; -race suite green (TestSync* + TestClassifyFetchBangAbortSurfacesStderr); built-binary sync round-trip = no regression; behavior identical (dead-code removal). No required changes.
+## Docs
+
+Changed: no
+Files:
+- none
+
+Rationale:
+- Dead-code removal: deleted the unreachable `case fetchBangAbort:` arm and a one-line guard comment from `internal/cli/sync.go`. No user-facing behavior changed, no error message reachable by users was removed.
+- `docs/sync.md` reviewed: documents sync behavior and error cases generically (e.g. "stuck ref lock aborts the sync before the push with a non-zero `fetch failed: ...` error"). No reference to the removed arm's error string (`"fetch aborted: cannot classify ref %s"`) or the switch arm itself. The doc accurately describes shipped behavior before and after the change.
+- No new docs warranted. No existing docs affected.
+- no shipped docs needed because: internal dead-code removal with zero user-facing or behavior change.
+
+Policy check:
+- policy applied: inferred from repo conventions (docs/ hand-written guides, no generated reference tooling, no CHANGELOG.md)
+- shipped docs describe implemented behavior only
+- planning material remains under planning docs (bead --design field)
+- generated references: not applicable (no generated reference tooling in this repo)
+- generated output was updated through the repo workflow or intentionally left alone: not applicable
+
+Capture:
+- inputs: Verify artifact, docs/sync.md, working tree diff (git diff HEAD -- internal/cli/sync.go)
+- output: no-docs-needed rationale
+## Docs gate (attempt 1) — lightened 2-seat (Opus + Codex): PASS 2/2 GO
+- Claude Opus: GO (docs/sync.md unaffected; removed message undocumented + unreachable); GPT-5.5 xhigh (codex): GO
+Changed: no (dead-code removal, zero user-facing change). Lightened-gate rationale: no code/doc change in Docs phase.
+## Final Review
+
+Recommendation: close
+
+Reviewed:
+- plan artifact (--design): behavior-preserving dead-arm removal, control-flow claim traced
+- implementation diff (git diff HEAD): single file internal/cli/sync.go, 2 lines deleted + 1 guard comment
+- verify artifact: pass, -race suite green + built-binary sync round-trip, no regression
+- docs artifact: no-docs-needed, policy-applied, docs/sync.md unaffected
+
+Docs review:
+- policy applied: repo convention (hand-written docs/, no generated reference tooling, no CHANGELOG)
+- user-facing changes documented: not applicable (zero user-facing/behavior change)
+- shipped docs describe implemented and verified behavior only: pass
+- planned material remains in planning docs: pass (plan lives in --design)
+- generated references handled separately: not applicable
+- docs disposition: close
+
+Findings:
+- None. Independently re-traced: classifyFetchBang returns fetchBangAbort at exactly 3 sites (sync.go L241/L243/L247) and ALL THREE carry a non-nil error; fetchBangRealFailure/fetchBangBenign always return nil. The 'if classifyErr != nil { return classifyErr }' guard (L136-138) precedes the switch (L140), so the removed 'case fetchBangAbort:' arm was provably unreachable. Reachable arms + all error messages untouched; fetchBangAbort const + its classify-level returns remain live/tested. Guard comment prevents re-introduction.
+- Re-ran gates: go test ./... -count=1 -race PASS (cli/artifactstore/refstore/runmanifest/workflow); go vet ./... clean; gofmt -l cmd internal empty.
+
+Commit readiness:
+- One atomic commit appropriate: exactly internal/cli/sync.go modified. git status --porcelain --untracked-files=all shows only that file (transient scheduler lock now gitignored via separate hygiene commit 9f17ebd). No debug code, accidental files, or secrets. Concise commit message fits the dead-code-removal scope.
+
+Capture:
+- inputs: all phase artifacts (Plan/Implement/Verify/Docs) and final diff
+- output: append-only Final Review note
+## Final Review gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO; pi/pilms: GO; GPT-5.5 xhigh (codex): GO
+Recommendation: close. Findings: none. All 5 phase gates passed. File staged by name; tree clean (lock gitignored in separate commit 9f17ebd).
+
