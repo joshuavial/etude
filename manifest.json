@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-3qm",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,51 @@
         "size": 314
       },
       "timestamp": "2026-06-22T22:37:03.996021Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement",
+          "role": "diff"
+        },
+        {
+          "stage": "verify",
+          "role": "verify"
+        },
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "unknown"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "skill": {
+            "id": "dev-pr-reviewer",
+            "repo": "",
+            "version": ""
+          },
+          "verdict": "go",
+          "timestamp": "2026-06-23T00:00:00Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-06-23T00:00:00Z"
     }
   ]
 }
