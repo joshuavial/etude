@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-kb0.2",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,39 @@
         "size": 435
       },
       "timestamp": "2026-05-27T10:00:31.808665Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T16:20:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single in-harness Opus seat reviewed kb0.2+kb0.3 plans together (sibling README beads). GO — README section boundary vs kb0.3 non-colliding, deferred list will match V1-SCOPE, per-command usage mentions preserved (docs-reality safe)."
+      },
+      "timestamp": "2026-05-27T16:21:00Z"
     }
   ]
 }
