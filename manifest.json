@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-5dr.3",
   "workflow": "default",
   "workflow_version": "default-v1",
@@ -41,6 +41,61 @@
         "size": 5759
       },
       "timestamp": "2026-08-16T01:25:13.738305Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "plan.r1",
+      "phase": "plan",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan",
+          "artifact": "c8b40ac08610af0cf3437f4e57a783bd74e399595547a78fb91ac4194662a60e"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "2.1.233"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "Clarify validation for workspace on non-producing runners; current workflow validation rejects workspace on gate runners.",
+            "Clarify caller directories outside the repository; CLI repository discovery is rooted in that same invocation directory.",
+            "Reconsider the extra Git-control snapshots later if operational evidence shows they are noisy.",
+            "packet path .etude/tmp/etude-5dr.3/plan-gate-r1.md sha256 3befc4244fe8f6f027bce6050627b6f44181afdc0163be83fe6adc7b183b7605"
+          ],
+          "timestamp": "2026-08-16T01:28:59Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "0.144.3"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "packet path .etude/tmp/etude-5dr.3/plan-gate-r1.md sha256 3befc4244fe8f6f027bce6050627b6f44181afdc0163be83fe6adc7b183b7605"
+          ],
+          "timestamp": "2026-08-16T01:28:59Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T01:28:59Z"
     }
   ]
 }
