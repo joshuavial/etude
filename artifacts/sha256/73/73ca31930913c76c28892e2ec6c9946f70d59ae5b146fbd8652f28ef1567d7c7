@@ -1,0 +1,41 @@
+○ etude-88o · Consider rejecting stage produces that collides with a reserved special role   [● P4 · OPEN]
+Owner: joshuavial · Type: task
+Created: 2026-05-23 · Updated: 2026-05-24
+
+DESCRIPTION
+Final Review (Claude seat) noted internal/workflow.Validate allows a stage to declare produces: task or produces: repo-state, colliding with the reserved implicit input roles. Harmless today (special roles resolve regardless) but semantically odd. Consider rejecting produces in the specialRoles set. Deferred optional improvement from etude-workflow-schema final gate.
+
+DESIGN
+## Plan
+
+**Approach:** Add one rejection rule to internal/workflow.Validate: a stage's `produces` role must not be a member of the reserved `specialRoles` set (`task`, `repo-state`). These are implicit input roles that resolve regardless of any producing stage, so a stage producing one is semantically meaningless and now rejected. The check is inserted in the per-stage loop right after validateRoleToken succeeds (workflow.go:116) and before the duplicate-produces check (workflow.go:117), mirroring the existing error-wrapping style: `fmt.Errorf("%w: %s produces role %q is reserved", ErrInvalidWorkflow, prefix, s.Produces)`. No refactors beyond this rule.
+
+**Files:**
+- internal/workflow/workflow.go - add the special-role rejection guard between lines 116 and 117 (after the validateRoleToken call, before the seenProducesRoles duplicate check). Reuse the existing package-level specialRoles map; no new helper needed.
+- internal/workflow/workflow_test.go - add two rejection cases to the TestValidateRejectsInvalidWorkflows table (one for `produces: task`, one for `produces: repo-state`).
+
+**Tests:**
+- New table cases in TestValidateRejectsInvalidWorkflows under the 'Role charset' / uniqueness area: `{"produces reserved role task", func(w *Workflow){ w.Stages[0].Produces = "task" }}` and `{"produces reserved role repo-state", func(w *Workflow){ w.Stages[0].Produces = "repo-state" }}`. The shared harness already asserts err != nil and errors.Is(err, ErrInvalidWorkflow), so no per-case assertion code is needed.
+- Confirmed no existing acceptance case in TestValidateAcceptsValidWorkflows uses 'task'/'repo-state' as a produces role (they only appear as inputs), so those stay green.
+- Confirmed Default() produces roles are plan/diff/test-plan/test-diff/review/docs-diff (none reserved), so the golden-bytes test (TestDefaultYAMLIsDeterministicAndExact), TestDefaultValidatesClean, and round-trip tests remain valid. Run: go test ./internal/workflow/.
+
+**Docs:** None needed. Searched shipped docs (README.md, docs/init.md) for any enumeration of workflow.yaml validation rules / produces / special-role semantics: neither documents the validation rules. The only mention of produces/special-role behaviour lives in docs/plans/product/BRIEF.md, which is a planning/design doc not user-facing shipped documentation. The new rule is internal validation behaviour with no documented contract to update.
+
+**Risks:** Backward-compatibility-relevant schema change. A workflow.yaml that previously declared `produces: task` or `produces: repo-state` was accepted by Validate before this change and will now be rejected by Validate/ParseYAML/YAML. This is intentional (the brief decision is to reject), the prior behaviour was a no-op semantic oddity, and the canonical Default() workflow does not use any reserved role as a produces, so init scaffolding is unaffected. No other code path depends on a stage producing a special role.
+
+**Capture:**
+- inputs: bead etude-88o description; internal/workflow/workflow.go (specialRoles map lines 25-28, Validate produces block lines 111-120, Default() lines 264-313); internal/workflow/workflow_test.go (TestValidateRejectsInvalidWorkflows table, TestValidateAcceptsValidWorkflows, golden YAML test, minimalWorkflow helper); README.md and docs/init.md (doc check)
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO
+- Claude Opus (in-harness Task): GO
+- GPT-5.5 xhigh (codex): GO
+- pi/pilms (qwen): GO
+Tier rationale: workflow-schema + backward-compat surface => Tier 1.
+Optional (folded into Implement): assert 'reserved' substring on new test cases; inline comment at guard; later-stage collision test; Stage.Produces doc-comment note.
+
+LABELS: phase:plan
+
