@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-zdl",
   "workflow": "default",
   "workflow_version": "v1",
@@ -159,6 +159,46 @@
         "size": 3513
       },
       "timestamp": "2026-08-15T06:54:07.013886Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "docs.r1",
+      "phase": "docs",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "documentation"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Pin the blank stage-name required error at the only validateStageName call site",
+            "Document that mode values are matched exactly"
+          ],
+          "timestamp": "2026-08-15T06:45:51Z"
+        }
+      ],
+      "decision": {
+        "deferred_beads": [
+          "etude-kcd"
+        ]
+      },
+      "timestamp": "2026-08-15T06:45:51Z"
     }
   ]
 }
