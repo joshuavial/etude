@@ -1,0 +1,75 @@
+✓ etude-example-repo · Create non-beads example repo workflow   [● P3 · CLOSED]
+Owner: joshuavial · Type: task
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: Shipped tracker-agnostic summarize example (eb111a2): runnable walkthrough.sh + v2 runner + content-aware judge + rot-guard smoke test + Makefile example target + doc links. Combined Implement+Final four-seat gate PASS (3 substantive GO, pilms skipped per outage); codex BLOCK on trap-before-build leak fixed and rrun→GO.
+
+DESCRIPTION
+Provide an example workflow that demonstrates etude outside xenota/beads so the project is reusable and clearly not coupled to one tracker.
+
+DESIGN
+## Plan
+
+**Approach:** Ship a runnable, self-contained example directory `examples/summarize/` (form (c): a `walkthrough.sh` plus a short README narrating each step/expected output). The script does `git init` in its OWN throwaway tmp dir, builds etude fresh, then drives init -> capture (original) -> run show/list -> replay -> bench (cohort) -> gc/reindex, then cleans up. Chosen over a prose-only doc because a runnable example is the strongest "reusable, not tracker-coupled" proof AND can be CI-checked so it never rots (mirrors the `docs-check` philosophy). It uses ONLY git + sh + the etude binary: no bd, no xenota, no beads, no LLM, no network.
+
+**Scenario (tracker-agnostic on purpose):** a tiny "summarize a document" workflow, NOT a code task. Stage `summarize` takes `doc` (an input text file) and produces `summary` (output). The runner is a deterministic shell script that reads `$ETUDE_INPUTS_DIR/00-doc` and writes a fixed-rule summary (e.g. first line + word count) to `$ETUDE_OUTPUT_FILE`. Run ids are plain strings (`doc-alpha`, `doc-beta`, `doc-gamma`) — explicitly NOT tracker ids. End-to-end steps:
+1. `etude init` (scaffold .etude/ in the throwaway repo; origin absent so refspec step is skipped — fine).
+2. Commit a doc so HEAD resolves, then `etude capture summarize --run doc-alpha --input doc=alpha.txt --output summary=alpha-summary.txt --workflow summarize --produced-by original`. Repeat for beta/gamma so bench has a cohort >1.
+3. `etude run list` + `etude run show doc-alpha` (show the manifest, content-addressed artifacts).
+4. `etude replay doc-alpha summarize --runner ./summarize-runner.sh` (re-emit; show byte-identical output).
+5. `etude bench summarize --last 3 --runner ./summarize-runner.sh --judge ./pick-longer-judge.sh` (cohort win-rate report).
+6. `etude reindex` then `etude gc` (storage report), demonstrating maintenance commands. Optionally `gc --prune` a leaf run.
+
+**Deterministic content-aware judge (critical caveat):** bench randomises per-pair presentation, materialising the two targets as `<NN>-target-<role>` files (e.g. `00-target-summary`, `01-target-summary`) in `$ETUDE_INPUTS_DIR`. The winner is mapped back to canonical A/B, so a position/fixed-winner judge is NON-deterministic. The example judge `pick-longer-judge.sh` MUST decide from CONTENT: read both `*-target-*` files, pick the longer (more bytes) as the winner, emit `{"winner":"A"|"B"|"tie", "confidence":1.0}` to `$ETUDE_OUTPUT_FILE` keyed to canonical A/B by comparing each presented file's bytes against... — judge cannot see canonical labels, only positions, so it returns the position-relative winner and etude back-maps it; a content rule (longer wins, equal=tie) is stable regardless of which position holds A or B. Document this gotcha in the README. (Note: bench.md prose says `00-target-left`/`-right`; the actual code names files `<NN>-target-<role>` — the judge must glob `*-target-*`, not hard-code names.)
+
+**Runner determinism:** the runner output must be a pure function of its inputs (no timestamps/randomness) so replay/bench are reproducible across machines.
+
+**Files (new):**
+- `examples/summarize/walkthrough.sh` - the driver (git init in mktemp -d, trap-cleanup, set -euo pipefail, build etude from repo, run the sequence, assert exit 0 / grep expected lines).
+- `examples/summarize/summarize-runner.sh` - deterministic runner (reads 00-doc, writes summary).
+- `examples/summarize/pick-longer-judge.sh` - content-aware pairwise judge (longer summary wins; equal=tie).
+- `examples/summarize/docs/alpha.txt`, `beta.txt`, `gamma.txt` - tiny sample docs (committed seed inputs the script copies into the throwaway repo).
+- `examples/summarize/README.md` - narrates each step + expected output; explicit tracker-agnostic framing (plain run ids, plain script runner, NO issue tracker) and a contrast paragraph vs the dogfood beads/xenota usage (`scripts/dogfood-capture.sh`).
+
+**Files (modified):**
+- `Makefile` - add `example` target: build binary then `examples/summarize/walkthrough.sh` against it; add to `.PHONY`.
+- `internal/cli/example_test.go` (new) OR a top-level `example_smoke_test.go` - Go smoke test that runs the walkthrough against a freshly `go build`-ed binary in a tmp dir and asserts exit 0 + key output substrings, so `go test ./...` (and therefore the local CI gate) guards against rot. Decide placement: a new package-less test under repo root `example_test.go` (package main-ish) is awkward in Go; prefer a small `internal/example/example_test.go` that shells out to the script. RECOMMEND the dedicated `internal/example` test package.
+- `docs/README.md` - add an "Example" index link to `examples/summarize/README.md`.
+- `README.md` (root) - one line under CLI pointing at the example as a no-tracker walkthrough.
+
+**Rot-guard decision:** BOTH a `make example` target (manual run) AND a Go smoke test in `internal/example` (so `make test`/`go test ./...` runs it automatically). The smoke test builds etude into a tmp bindir, sets PATH/ETUDE binary path, executes the script with a short timeout, and asserts exit 0 and that the bench headline + `run list` rows appear. This matches the repo's existing pattern of tests that build/exercise the binary and the `docs-check` anti-rot ethos.
+
+**Tests:**
+- `internal/example` smoke test: walkthrough exits 0; output contains `run list` rows for doc-alpha/beta/gamma; bench report headline `bench summarize:`; replay confirmation line; gc storage report line.
+- Determinism check: running the script twice yields byte-identical replay output (the runner is pure) — assert the replayed summary equals the captured one.
+- Judge correctness (optional unit-style within the script): a doc whose summary is strictly longer wins B (or A) consistently regardless of seed; equal-length => tie.
+- Cleanup: the throwaway tmp repo is removed on success AND on failure (trap), and nothing is written under the etude repo's own `refs/etude/*`.
+
+**Docs:** The example README IS the user-facing doc; also add the index link in `docs/README.md` and a root README pointer. No generated CLI reference change (no new commands), so `make docs` is unaffected. Update `docs/README.md` Sections list with an Example entry.
+
+**Risks:**
+- Bench non-determinism if the judge keys off file position — MITIGATED by the content-aware (longer-wins) judge; documented as the headline caveat.
+- bench.md's `00-target-left/right` wording vs actual `<NN>-target-<role>` filenames — judge must glob `*-target-*`; flag a tiny doc-accuracy fix to bench.md if desired (out of scope to fix here, but noted).
+- Shell portability (bash vs sh, macOS vs Linux `mktemp`/`wc`): pin `#!/usr/bin/env bash`, use portable flags, keep scripts minimal.
+- Smoke test runtime: builds + git init + several captures + a replay + bench; keep docs tiny and cohort=3 so it stays fast; give the test a generous timeout.
+
+**Capture:**
+- inputs: bead etude-example-repo description + parent epic etude-phase4; docs/{capture,replay,run,bench,gc,reindex,init}.md; BRIEF.md (goals: reusable git-native primitive, not tracker-coupled); internal/cli/{root,bench}.go; internal/eval/exec_judge.go (judge env + `<NN>-target-<role>` naming + verdict JSON); scripts/dogfood-capture.sh (script + contrast reference); Makefile (build/test/docs-check patterns).
+- output: bead --design field
+
+NOTES
+PLAN gate: design unanimously SOUND (codex GO, Opus GO, gemini BLOCK). gemini's lone BLOCK = the plan's wrong claim that docs/bench.md is inaccurate / targets are '00-target-summary'. EMPIRICALLY REPRODUCED (ran a real bench): the judge sees 00-target-left / 01-target-right (PairwiseEvaluator re-roles to left/right, exec_judge.go:106); docs/bench.md is CORRECT. All seats agree to DROP the claim. Per runbook disputed-factual-claim rule (reproduced + unanimous correction), correcting the plan and proceeding — no re-gate of a deleted wrong sentence. CORRECTIONS/FOLDS for implement: (1) judge globs *-target-* + decides by CONTENT (longer wins, equal=tie), emits position-relative {winner}; do NOT reference 00-target-summary or claim bench.md is wrong. (2) smoke test builds a FRESH etude binary into a tmp bindir + passes its path via ETUDE_BIN env (NOT /Users/jv/.bun/bin:/Users/jv/.bun/bin:/Users/jv/.local/bin:/Users/jv/.antigravity/antigravity/bin:/Users/jv/.antigravity/antigravity/bin:/Users/jv/.nvm/versions/node/v24.15.0/bin:/Users/jv/google-cloud-sdk/bin:/Users/jv/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/Users/jv/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/Cellar/pyenv-virtualenv/1.2.4/shims:/Users/jv/.pyenv/shims:/Users/jv/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/Users/jv/.bun/bin:/Users/jv/.local/bin:/Users/jv/.antigravity/antigravity/bin:/Users/jv/.nvm/versions/node/v24.15.0/bin:/Users/jv/google-cloud-sdk/bin:/Users/jv/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/Users/jv/Library/pnpm:/Users/jv/.cargo/bin:/opt/homebrew/Cellar/pyenv-virtualenv/1.2.4/shims:/Applications/iTerm.app/Contents/Resources/utilities:/Users/jv/.lmstudio/bin:/Users/jv/go/bin:/Users/jv/.lmstudio/bin:/Users/jv/go/bin:/Users/jv/.claude/plugins/cache/claude-hud/claude-hud/0.0.11/bin:/Users/jv/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0/bin); t.Skip if bash/git absent; generous timeout (it builds+git-init+bench — heavier than in-process tests). (3) walkthrough temp repo must set git config user.name+user.email before committing (avoid commit flake). (4) runner output a pure fn of input (no timestamps/rand). -> phase:implement.
+## Implement+Final gate (combined) — Tier 1 four-seat: PASS (3 substantive GO, pilms skipped per outage)
+- codex (GPT-5.5 xhigh): BLOCK→GO. Lone BLOCK: walkthrough.sh created BINDIR before installing the cleanup trap, leaking the temp build dir if `go build` fails under set -e. Fixed: WORK created + single trap installed BEFORE the build block; reran codex → GO.
+- gemini Pro: GO. Isolation via throwaway repo + unified trap; deterministic v1-vs-v2 100% win; rot-guard smoke test sound.
+- Claude Opus (in-harness): GO. Empirically verified — built fresh binary, ran walkthrough/make example/smoke test/full suite all green; per-doc v2 is +11 bytes over v1 (strictly longer invariant holds incl. single-line/no-newline/empty edge cases on /tmp copies); bench B=3 A=0 tie=0 across seeds 0/1/2/7/42/99; judge swap-safe (decides by wc -c; mapWinnerBack reverses on swap); no temp leak (tmp delta 0); no beads/LLM/network coupling.
+- pilms (qwen/lmstudio): SKIPPED — documented 0-CPU client-hang outage all session; proceeded on 3 substantive GO per review-gate-runbook degraded policy.
+Optional incorporated: fixed README expected-headline to include the real "; 0 skipped, 0 failed" suffix (Opus doc-drift note). Optionals left (latent, not example-specific): paths-with-spaces in --runner/--judge; `make example` builds bin/etude (gitignored).
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-phase4: (EPIC) Phase 4: OSS polish and maintenance commands ● P3
+
+DEPENDS ON
+  → ✓ etude-capture-manual: Implement manual capture command ● P1
+
