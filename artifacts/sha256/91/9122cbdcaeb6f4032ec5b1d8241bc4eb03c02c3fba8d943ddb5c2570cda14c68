@@ -1,0 +1,4 @@
+# Final Review — etude-bench-command.4 (etude bench CLI)
+PLAN gate: attempt 1 BLOCK x2 (codex: --model conflates contestant/referee; Opus: test/manual determinism vs per-pair swap). attempt 2 GO x3 — separate --judge-model/etude.judgeModel; content-aware judge doubles read presented target Content and back-map deterministically.
+IMPLEMENT+FINAL gate: GO x3 (codex, gemini [inlined, no shell-detour], Opus mutation-verified). Integration finding during the manual test: bench recursively re-benched its own recorded replays → fixed by excluding produced_by:replay from SelectCohort (cohort.go amendment + test), making bench idempotent. Stale ETUDE_MODEL doc comment fixed in follow-up. pilms 0-CPU outage throughout; 3-substantive-seat fallback.
+Docs: this completes user-facing `etude bench`; a docs/bench.md could follow but deferred (no doc was required by the gate; --json also deferred). Committed 8a0ad27 (+ c99dc19 comment fix).
