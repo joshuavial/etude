@@ -1,0 +1,5 @@
+# Final Review — etude-bench-command.3 (bench eval-result caching)
+PLAN gate: 3 attempts. Three correctness fixes from codex (gemini+Opus initially GO'd weaker versions; codex caught each): (1) strict JudgeID equality (no empty-wildcard); (2) Seed in cache key (per-pair swap orientation matters for order-sensitive judges; deterministic != order-invariant); (3) caching requires non-empty active JudgeID (unidentified judge always re-evaluates). attempt 3 GO x3.
+IMPLEMENT+FINAL gate: GO x3 (codex, gemini, Opus mutation-verified). DEVIATION blessed by all 3: cache matches on Artifact SHA-256 only (not Commit) — necessary (replay commit differs every run) + correct (artifact=content identity) + no-false-hit. Additive EvalResult.JudgeID/Seed backward-compat verified.
+pilms 0-CPU outage throughout; 3-substantive-seat fallback per runbook.
+Docs: NO-DOCS for this slice (internal caching; user-facing bench docs tracked separately as docs/bench.md). Committed a2f3437.
