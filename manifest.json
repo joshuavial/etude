@@ -192,6 +192,37 @@
         "degraded_reason": "Tier 3 docs-only: in-harness Opus accepted the dev-planner design (verified make lint target exists + sync caveat vs docs/sync.md). The plan SURFACED a real v1-blocker — make lint was red from gofmt drift — which was fixed as etude-kb0.5 before this bead's checklist could claim a green gate."
       },
       "timestamp": "2026-05-27T17:21:00Z"
+    },
+    {
+      "gate_id": "implement.r1",
+      "phase": "implement",
+      "round": 1,
+      "tier": 3,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "implement"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus-4-7"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "timestamp": "2026-05-27T18:00:00Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Tier 3 docs-only: single Opus seat. GO — all RELEASING.md green-gate commands exist + pass (Makefile L15/32/38/47), make lint now green (kb0.5), build VERSION=v1.0.0 -> etude v1.0.0; sync caveat accurate vs docs/sync.md+init.md; no tag cut; references V1-SCOPE + README mechanics not duplicated; README bead-id leak removed; docs-reality+reconcile green; scope = 2 files."
+      },
+      "timestamp": "2026-05-27T18:01:00Z"
     }
   ]
 }
