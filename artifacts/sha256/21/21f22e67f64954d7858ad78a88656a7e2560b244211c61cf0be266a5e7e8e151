@@ -1,0 +1,10 @@
+# Verify — etude-kb0.5 (gofmt fix for v1 lint gate)
+## Defect
+`make lint` was FAILING: `gofmt -l cmd internal` flagged internal/cli/log.go + internal/runmanifest/manifest.go (struct-field column alignment broken when 8hq.2 added the Occurred/OccurredAt fields + mid-struct comments). A v1-blocker (release lint gate red). Root cause: Go-bead verification (8hq.2) ran go build + go test but not `make lint`/gofmt — a process gap.
+## Fix
+`gofmt -w internal/cli/log.go internal/runmanifest/manifest.go` — canonical formatting only.
+## Verify (mechanical proof of safety)
+- `git diff -w HEAD -- <both files>` is EMPTY → change is whitespace/alignment ONLY, no token/semantic change.
+- `gofmt -l cmd internal` → empty (clean). `make lint` → exit 0 (gofmt + go vet pass).
+- `go build ./...` OK; `go test ./internal/cli/... ./internal/runmanifest/...` pass.
+## Result: PASS — v1 lint gate is now green.

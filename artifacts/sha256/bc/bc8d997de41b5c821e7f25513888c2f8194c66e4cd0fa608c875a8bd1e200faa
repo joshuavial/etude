@@ -1,0 +1,40 @@
+commit c7bf05a1e807d25c8047b0bba84824ccda47ceb4
+Author: joshuavial <git@codewithjv.com>
+Date:   Wed May 27 18:14:34 2026 +0800
+
+    gofmt log and manifest so make lint passes for v1
+
+diff --git a/internal/cli/log.go b/internal/cli/log.go
+index c7bb160..d4a45e7 100644
+--- a/internal/cli/log.go
++++ b/internal/cli/log.go
+@@ -15,7 +15,7 @@ import (
+ 
+ // logEvent is one timeline entry, built from a single run or retro manifest.
+ type logEvent struct {
+-	Timestamp  time.Time
++	Timestamp time.Time
+ 	// Occurred is the original event time for retros that carry occurred_at.
+ 	// It is zero for runs and retros without occurred_at.
+ 	Occurred   time.Time
+diff --git a/internal/runmanifest/manifest.go b/internal/runmanifest/manifest.go
+index 08fcc25..80789cd 100644
+--- a/internal/runmanifest/manifest.go
++++ b/internal/runmanifest/manifest.go
+@@ -763,11 +763,11 @@ type manifestJSON struct {
+ 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+ 	// 3 = schema with gates.
+ 	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
+-	ManifestVersion int               `json:"manifest_version,omitempty"`
+-	RunID           string            `json:"run_id"`
+-	Workflow        string            `json:"workflow"`
+-	WorkflowVersion string            `json:"workflow_version"`
+-	Created         string            `json:"created"`
++	ManifestVersion int    `json:"manifest_version,omitempty"`
++	RunID           string `json:"run_id"`
++	Workflow        string `json:"workflow"`
++	WorkflowVersion string `json:"workflow_version"`
++	Created         string `json:"created"`
+ 	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
+ 	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
+ 	// which would defeat omitempty and pollute all existing manifests.
