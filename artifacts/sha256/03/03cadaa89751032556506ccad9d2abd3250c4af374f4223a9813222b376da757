@@ -1,0 +1,165 @@
+## Plan
+
+**Approach:** Add a new internal/replay package whose ResolveInputs(ctx, store, runID, stageName) reads a run ref read-only (Resolve -> ReadFile manifest.json -> runmanifest.ParseJSON), locates the named stage, and returns a structured ResolvedStage: stage metadata (name, git_sha, skill) plus a slice of ResolvedInput, one per recorded ArtifactRef in stage.Inputs. This extracts the read+locate logic that run show (internal/cli/run.go:105-132) already does inline, so later replay beads (phase2.2 worktree, 2.3/2.4 runner) and run show share one resolver with no import cycle (replay imports refstore+runmanifest, both lower-level; neither imports cli).
+
+Scope is resolution only: each ResolvedInput carries {Role, ArtifactRef (the recorded Path/SHA256/Storage/MediaType/Size)} and a ReadContent(ctx) method (or the raw bytes) that reads the blob via store.ReadFile(ctx, ref, artifact.Path). For Storage==content the path resolves to the raw bytes; for Storage==pointer the path is a pointer-record JSON, NOT the external object -- the resolver returns the ref/path and flags it as a pointer (does not attempt to fetch the external object; pointer materialization is a later concern). Materializing inputs to worktree files and feeding a runner are explicitly OUT (phase2.2+).
+
+**Files:**
+- internal/replay/resolve.go - NEW. ResolvedStage, ResolvedInput types; ResolveInputs(ctx, store, runID, stageName) function; sentinel errors ErrRunNotFound, ErrStageNotFound, ErrAmbiguousStage. Validates runID via runmanifest.IsValidRunID before any git call.
+- internal/replay/resolve_test.go - NEW. Table-driven unit tests (see Tests).
+- internal/cli/run.go - OPTIONAL/DEFERRED: note that run show could later call replay.ResolveInputs to avoid duplicated read logic; do NOT refactor in this bead (keep scope tight), just leave the resolver shaped so run show can adopt it later.
+
+**Stage selector semantics (grounded in capture.go append behavior):**
+- Select by stage NAME. capture appends stages with no name dedup (capture.go:183), so duplicate names are structurally possible -> if >1 stage matches, return ErrAmbiguousStage naming the stage and count (do not silently pick first/last; replay fidelity demands an explicit choice, which a later bead can add via an index/selector if needed).
+- Stage not found -> ErrStageNotFound listing available stage names.
+- Run not found -> ErrRunNotFound (map refstore.ErrNotFound); invalid run id rejected before git.
+- Read-only: only Resolve + ReadFile; no worktree, no writes (worktree is phase2.2).
+
+**Tests (internal/replay/resolve_test.go, table-driven):** Seed manifests into a t.TempDir() git repo via refstore.WriteCommit (same pattern as run_test.go seedRunWithBadManifest / capture_test.go), NOT the live repo refs (which can change). Cover:
+- single-input stage resolves: role+path+storage match, ReadContent returns the exact recorded bytes (verify sha256 of returned bytes == ArtifactRef.SHA256).
+- multi-input stage (mirror fixture etude-88o verify stage: two inputs plan+diff) resolves all inputs in recorded order.
+- stage-not-found -> ErrStageNotFound, error lists available names.
+- duplicate stage name (seed two stages both named plan) -> ErrAmbiguousStage.
+- run-not-found -> ErrRunNotFound.
+- invalid run id -> rejected before any git call (run in non-repo dir to prove ordering, as run_test.go does).
+- pointer input: seed a manifest with a Storage==pointer ArtifactRef; resolver returns the input flagged as pointer and does not error / does not try to fetch the external object.
+
+**Docs:** None needed. Internal resolver with no CLI surface in this bead; the user-facing replay command and any docs land with etude-replay-command. Confirmed no shipped doc references replay input resolution today.
+
+**Risks:** Low. Net-new internal package over an existing, well-tested manifest+refstore model; no new storage format. One judgment call (error on ambiguous duplicate stage names rather than first/last) is the conservative, fidelity-preserving choice and is revisitable when a stage selector/index is added downstream. Tier 1 (reads refs/etude/* namespace) so storage-path/read claims were verified against artifactstore.go + refstore.go, not assumed.
+
+**Capture:**
+- inputs: bead etude-phase2.1 desc+acceptance, BRIEF.md s4.7 replay, internal/runmanifest/manifest.go (Manifest/Stage/ArtifactRef/ParseJSON), internal/refstore/store.go (Resolve/ReadFile/ReadCommitFile/List, refs/etude/runs layout), internal/artifactstore/store.go (StorageContent/StoragePointer, content vs pointer paths), internal/cli/run.go (run show read+locate), internal/cli/capture.go (stage append, no dedup), fixture manifests (etude-88o et al)
+- output: bead --design field
+
+
+NOTES
+## Plan gate (attempt 1) — Tier 1 four-seat: BLOCK (3 GO / 1 BLOCK)
+- Claude Opus: GO (+ rich optionals); Gemini Pro: GO; pi/pilms: GO (+ surface Refs map, embed runmanifest.Stage).
+- GPT-5.5 xhigh (codex): BLOCK — REQUIRED: bind the resolver to the commit from refstore.Resolve; read manifest.json AND each lazy ReadContent via ReadCommitFile(commit, path), NOT ReadFile(ref, path). Reason: a concurrent capture appends a stage and advances the run ref, so resolving the manifest then later reading artifact bytes from ReadFile(ref) can read a DIFFERENT ref state (TOCTOU). (Opus raised the same as optional #2; converges.)
+
+## PLAN AMENDMENT (incorporated for gate attempt 2)
+1. (codex, REQUIRED) ResolveInputs resolves the ref to a commit ONCE via refstore.Resolve, reads manifest.json via ReadCommitFile(commit, "manifest.json"), and every ResolvedInput.ReadContent reads via ReadCommitFile(commit, path) bound to that same commit snapshot (matches capture.go readExistingRun). No ReadFile(ref,...) after resolution.
+2. (opus) Own invalid-run-id validation IN replay via runmanifest.IsValidRunID -> distinct ErrInvalidRunID sentinel (before any git); reserve ErrRunNotFound for refstore.ErrNotFound. Tests assert the SPECIFIC sentinel.
+3. (opus+pilms) ResolvedStage EMBEDS runmanifest.Stage (Name/ProducedBy/GitSHA/Skill/Timestamp — keeps GitSHA/Skill for phase2.2 worktree + phase2.5 provenance) AND carries the manifest Refs map + the resolved commit + []ResolvedInput.
+4. (opus) Pointer inputs: ResolvedInput exposes Storage; ReadContent returns typed ErrPointerNotMaterialized for pointer artifacts (never hands back pointer-record JSON).
+5. (opus) ErrAmbiguousStage error includes the colliding count + each stage's ProducedBy/Timestamp (upgrade path for a future index/producer selector; do NOT build the selector now). ErrStageNotFound lists available stage names.
+6. (opus) Tests add: zero-inputs stage -> empty (non-nil) slice; content-case ReadContent bytes re-hashed and asserted == ArtifactRef.Artifact (the load-bearing integrity check).
+## Plan gate (attempt 2) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (verified snapshot fix complete, error taxonomy cycle-free, ResolvedStage covers downstream, pointer handling correct); pi/pilms: GO; GPT-5.5 xhigh (codex): GO (snapshot fix satisfied).
+Amendment (commit-snapshot reads + ErrInvalidRunID + embed Stage + pointer typed error + richer errors) incorporated and verified.
+Additional optionals folded into Implement:
+- (codex) Test: advance the run ref AFTER ResolveInputs but BEFORE ReadContent -> assert ReadContent still returns bytes from the ORIGINAL resolved commit (locks the TOCTOU fix).
+- (codex) Avoid embedded Stage.Inputs field-shadow: name the resolved-inputs field non-colliding (e.g. ResolvedInputs []ResolvedInput), document it.
+- (opus) Test: ReadContent propagates underlying read error (e.g. refstore.ErrNotFound) when a content artifact file is absent from the commit.
+- (opus) ReadCommitFile signature is (ctx, commit, path); optional cheap defense: assert manifest.RunID == runID and surface a mismatch.
+## Implement
+
+**Implemented:**
+- Created new package `internal/replay` with `resolve.go` and `resolve_test.go`
+- `ResolveInputs(ctx, store, runID, stageName)` resolves run inputs from a content-addressed git ref in 7 sequential steps: runID validation → ref→commit resolution → manifest read → run-id cross-check → stage lookup → ResolvedInput construction → return
+- Five package-level sentinel errors: `ErrInvalidRunID`, `ErrRunNotFound`, `ErrStageNotFound`, `ErrAmbiguousStage`, `ErrPointerNotMaterialized`
+- `ResolvedStage` embeds `runmanifest.Stage` and adds `Refs`, `Commit`, and `ResolvedInputs` (named to avoid shadowing embedded `Stage.Inputs`)
+- `ResolvedInput.ReadContent` closure binds to the resolved commit OID for snapshot consistency (TOCTOU guard)
+- Pointer artifact `ReadContent` returns typed `ErrPointerNotMaterialized` rather than pointer-record JSON
+- 11 tests covering: single/multi input, content hash round-trip, zero inputs (non-nil slice), ErrStageNotFound (lists available names), ErrAmbiguousStage, ErrRunNotFound, ErrInvalidRunID (table-driven, 6 cases, proven pre-git), ErrPointerNotMaterialized, ReadContent error propagation, and TOCTOU snapshot lock
+
+**Checks run:**
+- `gofmt -l cmd internal`: pass (no output)
+- `go vet ./...`: pass
+- `go build ./...`: pass
+- `go test ./internal/replay/ -count=1 -v`: 11/11 PASS (2.1s)
+- `go test ./... -count=1`: all 6 packages pass
+
+**Changed files:**
+- `internal/replay/resolve.go` (new)
+- `internal/replay/resolve_test.go` (new)
+
+**Plan deviations:** None
+
+**Capture:**
+- inputs: approved plan (Plan attempt 2, 4/4 GO) and Plan gate notes
+- output: working tree diff (two new files in internal/replay/), bead notes
+## Implement gate (attempt 1) — Tier 1 four-seat: BLOCK
+- Claude Opus: GO (impl correct) but flagged the TOCTOU test as non-discriminating (optional).
+- pi/pilms: GO.
+- Gemini Pro: FAILED (empty/malformed model response — a glitch, not a verdict); rerun on attempt 2.
+- GPT-5.5 xhigh (codex): BLOCK — two REQUIRED test-quality fixes:
+  1. TOCTOU test (resolve_test.go ~431): the advanced commit still holds the original input path/content, so a buggy ReadFile(ref) impl would also pass — test does not discriminate the snapshot property.
+  2. TestResolveInputsReadContentPropagatesError (~379): hand-builds a copied closure instead of calling the ReadContent returned by ResolveInputs, so it can pass even if production propagation is broken.
+Implementation itself confirmed CORRECT by Opus+codex (reads bound to resolved commit). Fixing both tests (test-only), then rerunning the full gate (incl. gemini).
+## Implement (rework after gate BLOCK)
+
+**Context:** Implement gate (attempt 1) was BLOCKed by codex on two non-discriminating tests. Production code in `internal/replay/resolve.go` was confirmed correct by all reviewers; only `resolve_test.go` was changed.
+
+**TestResolveInputsTOCTOU fix:**
+The original test advanced the run ref via `runmanifest.Writer.Write` with the SAME bytes at `inputRef.Path`, so a buggy ref-reading impl (`ReadFile(ref, path)` instead of `ReadCommitFile(commit, path)`) would still return the original bytes and the test would vacuously pass.
+
+Fixed by: advancing the ref via `store.WriteCommit` DIRECTLY (bypassing runmanifest.Writer hash validation) with DIFFERENT bytes (`"toctou-input-OVERWRITTEN-by-concurrent-capture"`) at the same `inputRef.Path`. Added assertions that `result.Commit != newCommit` (snapshot pinned to original) and that `ReadContent` returns the ORIGINAL bytes. A ref-reading impl would now read the overwritten bytes and fail the content equality check.
+
+**TestResolveInputsReadContentPropagatesError fix:**
+The original test hand-built a `ResolvedInput` struct with a manually-copied closure and called that closure — never touching the production `ReadContent` returned by `ResolveInputs`. A broken production closure would still have let the test pass.
+
+Fixed by: seeding the run via `store.WriteCommit` directly (omitting `inputRef.Path` from the commit tree — bypassing runmanifest.Writer which rejects missing artifact files), then calling `ResolveInputs` (which reads only manifest.json and succeeds), then calling the PRODUCTION `result.ResolvedInputs[0].ReadContent(ctx)` closure, which hits `ReadCommitFile` and returns `refstore.ErrNotFound`. Removed all hand-built closure code.
+
+Also removed now-unused `"fmt"` import.
+
+**Checks run:**
+- `gofmt -l internal/replay/`: pass (no output)
+- `go vet ./internal/replay/`: pass
+- `go test ./internal/replay/ -count=1 -v`: 11/11 PASS (2.0s)
+- `go test ./... -count=1`: all 6 packages pass
+
+**Changed files:**
+- `internal/replay/resolve_test.go` (only)
+
+**Plan deviations:** None. resolve.go untouched.
+
+**Capture:**
+- inputs: Implement gate BLOCK notes (codex findings), resolve_test.go and resolve.go as-shipped, refstore.WriteOptions, runmanifest.Writer.Write validation logic (verifyArtifactFile enforces all input paths present)
+- output: working tree diff of resolve_test.go, bead notes
+## Implement gate (attempt 2) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO (rerun — attempt-1 empty-response glitch did not recur); Claude Opus: GO (confirmed both fixed tests now genuinely discriminate; resolve.go unchanged+correct); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Test-quality BLOCK resolved (test-only change): TOCTOU test now writes DIFFERENT bytes at the same path post-advance + asserts original bytes + result.Commit!=newCommit (kills a ReadFile(ref) impl); propagation test exercises the production ReadContent closure against an absent path -> errors.Is(refstore.ErrNotFound). resolve.go untouched. All replay tests green.
+## Verify
+
+Status: pass
+Recommendation: proceed to Docs
+
+Automated tests:
+- changes: none added in Verify (dev-test-writer not spawned — implementation already shipped 11 focused tests in resolve_test.go covering all plan contracts; no coverage gap warranted new tests).
+- commands:
+  - go test ./internal/replay/ -count=1 -race -v  -> 11/11 PASS (3.3s)
+  - go test ./... -count=1 -race  -> all 6 packages PASS (artifactstore, cli, refstore, replay, runmanifest, workflow)
+  - go vet ./...  -> clean (exit 0)
+  - gofmt -l cmd internal  -> no output (exit 0)
+- result: pass. All tests green under -race; vet and gofmt clean.
+
+Manual tests:
+- required: no
+- reason: built-binary manual test is N/A for this bead. internal/replay is an INTERNAL package with NO CLI command wired to it. Verified: `grep -rn internal/replay` across cmd/ and internal/cli/ returns zero matches; cmd/etude/main.go does not import it; the only references to internal/replay live inside the package itself. The `etude replay` CLI surface is a later bead (etude-replay-command), so `go install` + running `etude` would expose no replay command. Verification for THIS bead is correctly done via unit tests against seeded temp-repo fixtures (refstore.WriteCommit / runmanifest.Writer in t.TempDir()), not a binary.
+- result: not applicable.
+
+QA findings:
+- correctness: Matches the approved plan (attempt-2, 4/4 GO) including all 5 amendments. Reads are bound to a single resolved commit: ResolveInputs resolves the ref once (resolve.go:66), reads manifest.json via ReadCommitFile(commit, ...) (:75), and every ResolvedInput.ReadContent closure captures the resolved `commit` OID (:136-145) — never re-reads the ref. Five sentinels present (ErrInvalidRunID/ErrRunNotFound/ErrStageNotFound/ErrAmbiguousStage/ErrPointerNotMaterialized). runID validated before any git call (:60). Defense-in-depth manifest.RunID cross-check (:85). ResolvedStage embeds runmanifest.Stage and adds Refs/Commit/ResolvedInputs (non-shadowing name). Pointer inputs return typed ErrPointerNotMaterialized, never pointer-record JSON (:137). Ambiguous-stage error includes per-duplicate produced_by+timestamp; stage-not-found lists sorted available names.
+- coverage: Adequate and load-bearing. Verified the specifically-requested discriminating properties against production code:
+  (a) content hash round-trip — sha256(ReadContent) == ArtifactRef.Artifact, via production closure (resolve_test.go:234-244).
+  (b) TOCTOU discriminates — advances ref via store.WriteCommit (ExpectedOld pin) writing DIFFERENT bytes at the same inputRef.Path, asserts result.Commit != newCommit AND ReadContent returns ORIGINAL bytes (:451-488). A ReadFile(ref) impl would fail this.
+  (c) propagation — seeds via WriteCommit omitting the input blob, calls the PRODUCTION result.ResolvedInputs[0].ReadContent against the absent path -> errors.Is(refstore.ErrNotFound) (:400-424). No hand-built closure.
+  (d) all sentinels asserted via errors.Is.
+  (e) zero-inputs returns non-nil empty slice (:259-264; production uses make(...,0)).
+  Plus: single/multi-input ordered resolution, invalid-run-id table (6 cases) proven pre-git via the "not a git repository" absence check in a non-repo dir, pointer typed error.
+- regressions: none. Net-new internal package; no existing files modified (git status: only untracked internal/replay/). Full suite green under -race.
+- code quality: clean. gofmt/vet clean. Closure captures local copy `inp` to avoid aliasing (:131-132). Read-only (Resolve + ReadCommitFile only); no worktree/writes — scope correctly limited to resolution.
+- risks: none blocking. Minor (deferred, by design): on duplicate stage names the resolver errors (ErrAmbiguousStage) rather than offering a producer/index selector — the conservative fidelity-preserving choice, revisitable in a downstream selector bead per the plan.
+
+Capture:
+- inputs: approved plan (--design, Plan attempt-2 4/4 GO + amendments) and Implement artifact (resolve.go + resolve_test.go as shipped, incl. rework after Implement-gate BLOCK)
+- output: this append-only Verify note
+## Verify gate (attempt 1) — Tier 1 four-seat: PASS 4/4 GO
+- Gemini Pro: GO; Claude Opus: GO (confirmed test discrimination via the refstore infra, no smuggled fix, manual-test-N/A correct); pi/pilms: GO; GPT-5.5 xhigh (codex): GO.
+Verify status pass; -race suite green; tests genuinely discriminate (TOCTOU kills a ReadFile(ref) impl; propagation via production closure). Manual built-binary N/A (no CLI wired to internal/replay yet — independently grep-confirmed). No required changes.
+
+ACCEPTANCE CRITERIA
+Given a run manifest and a stage selector, the resolver returns a structured representation of the original stage inputs. Handles missing/ambiguous stage selectors with clear errors. Unit tested against a recorded manifest fixture.
+

@@ -1,0 +1,6 @@
+## Verify — etude-phase2.1 (status: pass, recommend proceed to Docs)
+
+Automated: go test ./... -count=1 -race all 6 packages PASS; go test ./internal/replay/ -race -v 11/11 PASS; vet clean; gofmt clean. No new tests in Verify.
+Tests discriminate (confirmed against production code): content hash round-trip (sha256==ArtifactRef.Artifact); TOCTOU advances ref with DIFFERENT bytes + asserts ORIGINAL bytes + Commit!=newCommit (kills a ReadFile(ref) impl); propagation via production ReadContent closure against absent path -> errors.Is(refstore.ErrNotFound); all sentinels via errors.Is; zero-inputs non-nil.
+Manual built-binary: N/A — internal/replay has NO CLI command wired yet (grep -rn internal/replay across cmd/+internal/cli/ = zero importers; the only 'replay' token in cli is root_test.go's future-command-rejection test). Verification via unit tests on seeded temp-repo fixtures.
+QA: reads bound to single resolved commit (snapshot); 5 sentinels; runID validated pre-git; pointer->ErrPointerNotMaterialized. No regressions; resolution-only scope.
