@@ -1380,6 +1380,51 @@
       ],
       "decision": {},
       "timestamp": "2026-08-16T04:50:00Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "task"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-4-7"
+          },
+          "verdict": "go",
+          "optional": [
+            "workflow hunk verified present in packet",
+            "minimal sidecar and non-busy timeout tests folded",
+            "etude-wa4 measures log caps",
+            "etude-gp1 deduplicates bounded reads",
+            "etude-d0v evaluates log secret scanning"
+          ],
+          "raw_output": {
+            "role": "opus-review-r1",
+            "artifact": "483dd30df7e893cc7a43d93402aae55d101bded0746f6a942fc14df448173ceb",
+            "path": "artifacts/sha256/48/483dd30df7e893cc7a43d93402aae55d101bded0746f6a942fc14df448173ceb",
+            "media_type": "text/plain",
+            "storage": "content",
+            "size": 5135
+          },
+          "timestamp": "2026-08-16T03:06:10Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T03:06:10Z"
     }
   ]
 }

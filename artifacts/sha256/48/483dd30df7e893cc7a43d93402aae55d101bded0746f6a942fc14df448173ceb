@@ -1,0 +1,35 @@
+## Proportionality
+
+1. **ANCESTOR.** Stated: GitHub issue #17, asks 1–2 — external stage runners must report durable session identity and successful stdout/stderr evidence. Prior-attempt handoff (etude-ps9) and the dev-runner wrapper are explicitly out. The brief states the goal, so proportion is judgeable.
+2. **EXISTING PRIMITIVE.** Considered and none applies: stdlib has no bounded head/tail writer (`bytes.Buffer` is unbounded, `io.LimitedReader` is the wrong side), and the diff correctly reuses what already exists — `artifactstore.AddContent` for storage, `runmanifest.ArtifactFromManifestArtifact` for refs, `sessionevidence.checkedRegularPath` for containment, `encoding/json` + `DisallowUnknownFields` for the sidecar. The one genuinely new mechanism, `boundedStream`, is ~35 lines.
+3. **MEASUREMENT.** Weak but adequate: the ask itself requires "bounded", so the machinery is mandated, not speculative. The *magnitude* (1 MiB/stream, 64 KiB sidecar, 4 KiB/field) has no observed log size behind it — the brief cites only "tests pass". Noted below, not blocking.
+4. **REACHABILITY.** The attacker is the stage runner process itself, which already executes arbitrary code as the same user in the same scratch dir — so the sidecar symlink/FIFO/oversize checks are not a privilege boundary (the runner could put the same bytes in the JSON fields directly). They are still warranted as *liveness and memory* guards: the FIFO check prevents an indefinite blocking open, the read cap prevents an unbounded read into a durable manifest. Cheap and reachable in the deployment. Not disproportionate.
+
+**Bundle cohesion (no verdict effect).** Cannot state without "and": this is (a) a reserved `ETUDE_SESSION_FILE` sidecar contract and (b) a new `Stage.Log` artifact in the manifest. They are separable, but both are purely additive, neither mutates deployed state, and both carry the same proof burden (legacy manifests still parse; new field omitted when absent). Fused, but one risk class — name it and move on.
+
+**Blast radius.** Diff stays inside the declaration: runner contract, replay recording, manifest JSON, live-run storage, `run show`, workflow reserved names, `sessionevidence` reads, tests, docs. No installs, no build-backend change, no writes outside the worktree (test scripts `mkfifo`/`ln -s`/`dd` all target `t.TempDir()` scratch), no privilege change, no per-run large artifact beyond the declared bounded log.
+
+## Review
+
+Adversarial passes run and what held:
+
+- `boundedStream` head/tail arithmetic is correct across the boundary cases (`len(p) >= limit`, exact-fill, incremental refill, drop accounting); `Write` always returns `len(p)`, so both pipes keep draining as documented.
+- Worst-case framing is 131 bytes (both headers with `dropped` at `MaxInt64` plus the separator) against the 256-byte allowance in `MaxStageLogBytes`, and `TestMaximalFramedLogFitsEngineLimit` pins exactly that.
+- The `withStderrDiagnostic` reads of `stderrBuf.Bytes()` after `cmd.Run` are safe: `Wait` waits for the pipe-copy goroutines, and `WaitDelay` force-closes the parent pipe ends to unblock them rather than abandoning them.
+- Sidecar fail-closed set is complete against the documented contract: empty, malformed, trailing JSON, unknown field, missing id, raw invalid UTF-8, unpaired surrogate (caught by the `utf8.RuneError` check), oversize at 65537, symlink, FIFO. TOCTOU is closed by re-`Stat`ing the open fd.
+- Absolute→relative transcript normalization is containment-checked correctly: an out-of-root path yields a `../`-prefixed rel and is left absolute for the existing importer to reject, matching the documented "retrieval marked `failed`, stage still succeeds".
+- Manifest seams are swept consistently in both directions — `ArtifactPaths`, `referencedArtifactPaths`, `WriteManifestTree` verification, `validateStage`, `stageHasArtifact`, `toJSON`/`toStage` — so a log blob can be neither orphaned nor unverified.
+- Engine over-limit check fires before any artifact is stored and before the manifest commit; the test asserts no ref was written.
+
+No defect for which the reviewer could write "input X produces wrong output Y" survived verification.
+
+## Follow-ups (non-blocking)
+
+- The `internal/workflow/workflow.go` hunk `@@ -1097,0 +1102,1 @@` declares one added line but carries no content line. Could not review that line; re-emit the hunk before merge.
+- No end-to-end test for the minimal sidecar the docs bless, `{"session_id":"abc"}` with no `transcript_path` — `retrieval_status` for that case is asserted nowhere.
+- Cap magnitudes (1 MiB/stream) have no measured log size behind them; record an observed size when real runs exist.
+- `ReadRegularFileUnderLimit` duplicates `readCheckedRegularFile`'s open/fstat/read sequence; could collapse to one function with a limit parameter.
+- Stage logs aren't secret-scanned while transcripts are — documented and in scope, but worth revisiting if credentials ever reach a live runner.
+- `TestExecRunner_TimeoutRetainsStderrTail` busy-spins a child for 2s wall time and a full core on every suite run.
+
+**VERDICT: PASS_WITH_FOLLOWUPS**
