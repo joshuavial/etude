@@ -1,0 +1,4 @@
+VERDICT: BLOCK
+BLOCKING: 1. `readSessionSidecar` rejects any control character in `transcript_path`, including path separators on Unix? Actually `/` is not a Unicode control character, so okay; no blocking finding from that. 2. `resolveRecordedTranscriptPath` accepts absolute paths using `filepath.Rel(root, pathValue)` without resolving symlinks or `/var` aliases against the already-resolved runner roots, so a legitimate absolute scratch transcript normalized by `ExecRunner` is handled, but replay/bench runners that report an absolute path through another spelling of the same root can be falsely marked retrieval failed; this contradicts the documented accepted absolute-path contract.
+OPTIONAL: 1. Consider adding a test for absolute `transcript_path` import in `RunRecorder`, including symlink/alias roots, because only relative replay import is covered.
+CONFIDENCE: medium

@@ -655,6 +655,103 @@
         "escalation_reason": "max rounds 3 exhausted"
       },
       "timestamp": "2026-08-17T05:44:31.262934Z"
+    },
+    {
+      "gate_id": "implement.r8",
+      "phase": "implement",
+      "round": 8,
+      "tier": 3,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "implement.r7",
+          "role": "diff",
+          "artifact": "12279a3ba5dad92c0057d0bd0a95da16c6cad0b6563e771a2a48b2a456bf0749"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. `validatePriorTranscriptEvidence` aborts the whole run when a prior attempt's transcript failed the secret scan (`gate.go`), and the bundle is rebuilt from durable history every round — so a resume re-derives the same failure and the run is permanently wedged. The fail-closed choice is documented in `docs/run.md`, but no recovery/escape path is; worth documenting one (or an operator-visible remediation) in a follow-up. 2. `resolveRecordedTranscriptPath` (`internal/replay/record.go`) falls through to the worktree root on *any* `os.Lstat` error at the scratch path, not just ENOENT; a permission/EIO error silently re-roots the import instead of reporting retrieval failure. 3. Stage logs are stored unscanned and re-handed to every later rerun as raw inputs; this is called out honestly in `docs/run.md`, but a future bound (size-capped scan, or opt-in redaction) would keep a leaked credential from crossing attempt boundaries. 4. `manifest.go` accepts a `log` ref at versions 2/3 for dev-build compatibility while always writing 4; consider a stated end date for that compat window so the version allowlist does not stay permanently loose. 5. Neither `engine_test.go` nor `gate_test.go` carries an import hunk despite new `bytes`/`errors`/`encoding/json`/`artifactstore` usage (unlike `run_test.go`, which does) — presumably already imported, but I could not verify under output-only access; a `go build ./...` run is the cheap confirmation."
+          ],
+          "raw_output": {
+            "role": "opus",
+            "artifact": "56300228b69ba05880fe041fb91192d582f674faa875545d560ab366980a9e4b",
+            "path": "artifacts/sha256/56/56300228b69ba05880fe041fb91192d582f674faa875545d560ab366980a9e4b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1606
+          },
+          "session": {
+            "session_id": "opus-a993e5824df43ba1",
+            "transcript_artifact": {
+              "role": "opus-transcript",
+              "artifact": "a993e5824df43ba12766eb6b75b55b6e5d87d6999e208c6f27549f7998f680a3",
+              "path": "artifacts/sha256/a9/a993e5824df43ba12766eb6b75b55b6e5d87d6999e208c6f27549f7998f680a3",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 1510
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:47:14.742815Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. `readSessionSidecar` rejects any control character in `transcript_path`, including path separators on Unix? Actually `/` is not a Unicode control character, so okay; no blocking finding from that. 2. `resolveRecordedTranscriptPath` accepts absolute paths using `filepath.Rel(root, pathValue)` without resolving symlinks or `/var` aliases against the already-resolved runner roots, so a legitimate absolute scratch transcript normalized by `ExecRunner` is handled, but replay/bench runners that report an absolute path through another spelling of the same root can be falsely marked retrieval failed; this contradicts the documented accepted absolute-path contract."
+          ],
+          "optional": [
+            "1. Consider adding a test for absolute `transcript_path` import in `RunRecorder`, including symlink/alias roots, because only relative replay import is covered."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "a385559dbfe27f8dfdbbf09f35d33edb253b0cd3ac1317600d07f895c45a59cb",
+            "path": "artifacts/sha256/a3/a385559dbfe27f8dfdbbf09f35d33edb253b0cd3ac1317600d07f895c45a59cb",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 979
+          },
+          "session": {
+            "session_id": "codex-115c594e8f06167e",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "115c594e8f06167e38d1f6960c46f96cde03b110183aca972c4c416c77cfcfbf",
+              "path": "artifacts/sha256/11/115c594e8f06167e38d1f6960c46f96cde03b110183aca972c4c416c77cfcfbf",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 883
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-17T05:52:39.166685Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "max rounds 3 exhausted"
+      },
+      "timestamp": "2026-08-17T05:52:39.168763Z"
     }
   ]
 }
