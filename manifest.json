@@ -299,6 +299,58 @@
       ],
       "decision": {},
       "timestamp": "2026-08-15T06:26:14Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "plan",
+          "role": "plan"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": "opus"
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "Quote trailing-whitespace YAML so parsing does not normalize the fixture",
+            "Reject case variants",
+            "Use literal identifier fixtures",
+            "Notify etude-9uf.1 that mode names are a schema contract"
+          ],
+          "timestamp": "2026-08-15T06:26:14Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": "gpt-5.5-xhigh"
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "Assert independent primary and fallback invalid-mode field context"
+          ],
+          "timestamp": "2026-08-15T06:26:14Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-15T06:26:14Z"
     }
   ]
 }
