@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "run_id": "etude-ldf.1",
   "workflow": "manual",
   "workflow_version": "manual-v1",
@@ -32,6 +32,71 @@
         "size": 1591
       },
       "timestamp": "2026-08-16T09:26:16.675991Z"
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 2,
+      "status": "pass",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "af3592e86970848b10bbc3f35a0f4bf8f66cd50942a629e6680416c215614ad4"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "opus"
+          },
+          "verdict": "go",
+          "optional": [
+            "A dedicated python3.12. case could make trailing-dot coverage more explicit."
+          ],
+          "raw_output": {
+            "role": "opus-transcript",
+            "artifact": "60586fe863dad9017648be677feaa4aec45255a0cfd6d04d0bb7437b1b30b959",
+            "path": "artifacts/sha256/60/60586fe863dad9017648be677feaa4aec45255a0cfd6d04d0bb7437b1b30b959",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 286
+          },
+          "timestamp": "2026-08-16T09:27:27Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.6-sol"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "codex-transcript",
+            "artifact": "052ad21385222014eb3924a3a4dc098931a6d80f029fc03a697ffe448ccf6d63",
+            "path": "artifacts/sha256/05/052ad21385222014eb3924a3a4dc098931a6d80f029fc03a697ffe448ccf6d63",
+            "media_type": "text/plain; charset=utf-8",
+            "storage": "content",
+            "size": 194
+          },
+          "timestamp": "2026-08-16T09:27:27Z"
+        }
+      ],
+      "decision": {},
+      "timestamp": "2026-08-16T09:27:27Z"
     }
   ]
 }
