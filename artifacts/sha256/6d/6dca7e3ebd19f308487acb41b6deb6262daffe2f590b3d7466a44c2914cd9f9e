@@ -1,0 +1,33 @@
+# etude-o9z verification
+
+Surface classification: CLI-facing. The change adds a reserved runner variable, new durable manifest evidence, and `etude run show` output, so the built CLI was exercised end to end.
+
+Automated results:
+
+- `make test`: PASS after the final scratch-path normalization.
+- `make lint`: PASS after the final scratch-path normalization.
+- `make shell-test`: PASS, 49 audit tests + 20 pre-push tests + seat-adapter and 35 retro-index tests.
+- `make docs-check`: PASS, generated 25 command docs with no diff.
+- `make docs-reality`: PASS, 15 shipped commands match docs.
+- `go test -race ./internal/replay`: PASS.
+- Focused replay/sessionevidence/runmanifest/liverun/workflow/CLI tests: PASS.
+
+Built-binary proof:
+
+1. Built `cmd/etude` from the working diff.
+2. Created a committed one-stage temporary repository whose real inline shell runner wrote `proof artifact` to `ETUDE_OUTPUT_FILE`, atomically published `{"session_id":"proof-session","transcript_path":"<attempt scratch>/transcript.txt"}` to `ETUDE_SESSION_FILE`, and wrote independent stdout/stderr.
+3. Ran `etude run proof --task task.md --run-id o9z-built-proof2` successfully.
+4. `etude run show` reported output size 14, log digest `31a9653588ee482c9a4678971cccc4720f53089a2917e6764c7ab4fb828d688e` size 109, session id `proof-session`, transcript retrieval `imported`, redaction `passed`, and a transcript artifact digest.
+5. Reading the digest-bound artifacts from the run ref produced exact framed log bytes for `proof stdout` then `proof stderr`, plus exact transcript bytes `proof transcript`.
+
+The first proof attempt exposed macOS `/var` versus `/private/var` scratch aliases for absolute transcript paths. ExecRunner now returns a scratch-contained absolute transcript path in relative form; the dedicated regression and the second built proof both pass.
+
+Backward compatibility is pinned by unit tests: absent sidecar/streams returns nil session/log, and legacy manifest JSON omits `log` entirely.
+
+Verify round 1 correction: replay recording now validates `RunResult.Session`
+and stores its session id/URI with not-applicable transcript retrieval metadata;
+the recorder round-trip pins both session and log artifacts. Added direct session
+field-boundary tests, live-engine over-cap log rejection before any run ref,
+worst-case 19-digit framing counters, and docs warning that raw logs are not
+secret-scanned. Final `make test`, `make lint`, `make docs-check`, and
+`make docs-reality` all pass after these changes.
