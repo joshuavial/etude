@@ -1301,6 +1301,41 @@
         "degraded_reason": "Docs PASSES at round 5 of the seat's review. Five rounds, and each BLOCK found something the previous fix had got wrong - a rare and useful shape: r1 measurements attributed to the wrong run; r2 the correction to that misattribution was itself misattributed, plus the gap detector had an unstated false-positive mode; r3 the rewritten seat-exception paragraph conditioned its one operative instruction on a bead already CLOSED, and the same stale claim lived in a second cross-linked file; r4 the supervisor's own bin/etude predated the fallback ladder, so every escalation this epic measured came from a pre-ladder binary and the documented mechanism had never been observed - fixed by rebuilding and RUNNING a gate rather than editing prose; r5 the false-positive discriminator I proposed was itself wrong, because nextPhaseRound maxes over stage names too, so 'is there a stage of that name' dismisses all four holes including the three real ones. The working separator - a later attempt reviewing an OLD stage - is now in both the runbook and etude-a1i. A wrong discriminator is worse than none: it turns a check into a rubber stamp. Five more optionals folded, including make build named explicitly, and two narrative staleness nits of exactly the class this bead is about."
       },
       "timestamp": "2026-08-15T20:10:21Z"
+    },
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 4,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "review",
+          "role": "review",
+          "artifact": "90545b89d5a8f83d3f085f7b0bb5d32765ffe58ec56c219718b9957e30fe2c37"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "agy",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "CANDIDATE_FAILED harness=claude-code invoke=/Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh opus claude -p --model opus verdict=failed; IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task subagent_type=general-purpose model=opus; CANDIDATE_FAILED harness=agy invoke=/Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh opus agy --model opus --print verdict=failed; runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero\n  install         Configure environment paths and shell settings\n  models          List available models\n  plugin          Manage plugins (install, uninstall, list, enable, disable)\n  plugins         Alias for plugin\n  update          Update CLI",
+          "timestamp": "2026-08-15T20:13:24.926601Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 0 need 1",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T20:13:24.926608Z"
     }
   ]
 }
