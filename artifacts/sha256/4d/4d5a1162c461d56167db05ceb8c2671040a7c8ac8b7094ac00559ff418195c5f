@@ -1,0 +1,143 @@
+✓ etude-aqt · Render retro-meta sidecar in retro show/list   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-26 · Updated: 2026-05-26
+Close reason: Closed
+
+DESCRIPTION
+etude-2ku added an optional retro-meta JSON sidecar as a 2nd manifest stage (role:retro-meta, application/json), but retro show/list do not render it. Add read-side display: retro show should surface the sidecar (e.g. a 'meta:' block or pretty-printed JSON) and retro list could note its presence. Pure read-side; no schema change. docs/retro.md + docs/log.md currently state 'retro show does not yet render the sidecar' — update once shipped.
+
+DESIGN
+## Plan
+
+**Scope summary:** Pure read-side change. Render the OPTIONAL retro-meta JSON sidecar (the second manifest stage produced by etude-2ku) in `etude retro show`, and surface its presence in `etude retro list`. NO manifest-schema change, NO write-path change, NO new flag. Treated as Tier 1 (public CLI output surface, per etude-7no precedent). 1 bead = 1 commit.
+
+**Approach:** All work is inside `printRetroDetail` and `(*retroShowListRunner).list` in `internal/cli/retro.go`. The sidecar is detected by scanning `m.Stages` for a stage whose `Output.Role == "retro-meta"` (role-based, not positional). When found in `show`, its artifact bytes are read with the SAME helper the body uses (`store.ReadFile(ctx, ref, stage.Output.Path)`) and printed under a new `--- retro meta ---` section AFTER the body. When absent (the common case) output is byte-for-byte identical to today. In `list`, add a `META` column with value `Y`/`N`.
+
+**Detection predicate (justified):**
+- Add an unexported helper in retro.go:
+  ```go
+  func findRetroMetaStage(m runmanifest.Manifest) (runmanifest.Stage, bool) {
+      for _, s := range m.Stages {
+          if s.Output.Role == "retro-meta" {
+              return s, true
+          }
+      }
+      return runmanifest.Stage{}, false
+  }
+  ```
+- Match by `Output.Role == "retro-meta"` rather than positional `Stages[1]`. Justification: etude-2ku appends retro-meta as Stages[1] today, but the manifest schema permits future stages (e.g. replay/derived stages) that could shift positions; role is the stable, intent-carrying identifier. `Stage.Output.Role` is a confirmed field (runmanifest.ArtifactRef.Role) and etude-2ku's write path sets it to exactly "retro-meta" (assembleAndWriteRetro: AddContent("retro-meta", "application/json", ...) -> ArtifactFromManifestArtifact copies a.Role). Stage.Name is also "retro-meta" and would work, but Role is what the existing tests assert against (Stages[1].Output.Role == "retro-meta") and is the artifact-level contract, so it is the most reliable predicate. Body is still located as today via `m.Stages[0]` (the retro body is invariantly Stages[0]); only sidecar detection becomes role-based.
+
+**show rendering (exact format):**
+- After the existing body block (which ends the `if len(m.Stages) > 0` block), add:
+  ```go
+  if metaStage, ok := findRetroMetaStage(m); ok {
+      fmt.Fprintln(out, "--- retro meta ---")
+      metaBytes, err := store.ReadFile(ctx, ref, metaStage.Output.Path)
+      if err != nil {
+          return fmt.Errorf("retro meta: %w", err)
+      }
+      if metaStage.Output.Storage == artifactstore.StorageContent {
+          var buf bytes.Buffer
+          if json.Indent(&buf, metaBytes, "", "  ") == nil {
+              out.Write(buf.Bytes())
+              if !bytes.HasSuffix(buf.Bytes(), []byte("\n")) { fmt.Fprintln(out) }
+          } else {
+              fmt.Fprint(out, string(metaBytes)) // fall back to raw on indent failure
+          }
+      } else {
+          fmt.Fprintf(out, "artifact: %s\n", metaStage.Output.Path)
+      }
+  }
+  ```
+  (`bytes` and `encoding/json` are already imported in retro.go.)
+- Section header: `--- retro meta ---`, mirroring the existing `--- retro body ---` divider for consistency. Placed AFTER the body so the human-readable narrative comes first and the structured sidecar follows.
+- JSON pretty-printed via `json.Indent` (2-space, matching manifest.JSON's indent), because the stored bytes are guaranteed valid JSON (etude-2ku's json.Valid guard on capture; generator path also produces JSON) and indentation makes a one-line `{...}` sidecar legible. A defensive fall-back prints raw bytes if Indent ever fails (e.g. a future non-JSON sidecar), so rendering never panics or silently drops content. Trailing newline ensured so the section terminates cleanly.
+
+**list rendering (decision + exact format):**
+- Add a `META` column. New header: `RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tMETA\tCREATED`. Per-row value: `Y` when `findRetroMetaStage(manifest)` returns true, else `N`. META is inserted before CREATED so CREATED stays the last (timestamp) column — important because TestRetroListOneRetro asserts the LAST field parses as RFC3339Z.
+- Justification for adding the column (vs leaving list unchanged): the sidecar is the only retro attribute completely invisible in the current list, and the bead explicitly asks list to "indicate its presence." A single fixed-width Y/N column is cheap, keeps the table stable (every row has exactly one of Y/N), and gives a scannable signal of which retros carry structured meta. This is the minimal coherent signal; a richer rendering (e.g. meta size) would bloat the table without clear value.
+- Reviewer-disagreement note: a seat may prefer leaving `list` untouched to preserve column stability for downstream parsers. Mitigation in plan: META is a stable single-char column appended before CREATED, and the change is documented in the list-columns table; if a seat blocks, the fallback is to ship show-only and drop the column (the column is the only separable sub-decision).
+
+**No new flag (decision):** Rendering is UNCONDITIONAL when the sidecar is present (show) and the META column is always present (list). No `--meta`/`--no-meta` flag. Justification: a flag would (a) regenerate docs/cli/etude_retro_show.md and trip the gen-docs drift guard, (b) enlarge the public CLI surface for a read-only convenience, and (c) add no real control — the sidecar is small and only shown when it exists. Because NO flag and NO command are added, `make docs` output (docs/cli/*) is unchanged and the gen-docs TestDriftGuard stays green. Verified: docs/cli/etude_retro_show.md lists only `-h/--help`; this change adds no flag, so that generated file does not change.
+
+**Failure-mode parity:** The sidecar read mirrors the body read exactly. Body uses `store.ReadFile(ctx, ref, stage.Output.Path)` and on error returns `fmt.Errorf("retro body: %w", err)`. The sidecar returns `fmt.Errorf("retro meta: %w", err)` — same wrap style, same propagation (caller surfaces it as the command error; stdout already-written body is acceptable, identical to how a body-read failure behaves). The pointer-storage branch mirrors the body's `else` branch (`artifact: <path>`). No new error style is introduced.
+
+**Files (exact):**
+- `internal/cli/retro.go` — add `findRetroMetaStage` helper; append the `--- retro meta ---` block to `printRetroDetail`; add the `META` column + Y/N value to `(*retroShowListRunner).list`.
+- `internal/cli/retro_test.go` — extend existing etude-2ku tests + add focused tests (below).
+- `docs/retro.md` — replace the line "`retro show` does not yet render the sidecar." (line ~57) with a description of the new `--- retro meta ---` section; add the `META` column to the list-columns table (line ~170) and show its value in the example list output (line ~164); add a `--- retro meta ---` line to the `retro show` example block (line ~203).
+- NO docs/cli/* change (no flag/command added).
+- `docs/log.md` — NO change. Investigated: docs/log.md does NOT contain a "does not yet render the sidecar" statement (the bead/handoff text is inaccurate here); `etude log` only prints a one-line timeline summary (scope/trigger/subjects) and never renders the body or sidecar, so the sidecar is out of scope for log. This is a deliberate no-op with justification, not an omission.
+
+**Tests (extend existing 2ku tests + add):**
+- Update `TestRetroShowWithMetaStageStillRendersSingleBody`: KEEP all existing body assertions (this is the test that currently asserts the body still renders with a meta stage) and ADD assertions that the output contains `--- retro meta ---` and the sidecar JSON content (e.g. the `scope` key value `cohort` appearing after the meta divider; assert meta divider index > body divider index to lock ordering).
+- New `TestRetroShowNoMetaOmitsMetaSection`: capture WITHOUT `--meta-file`, assert `--- retro meta ---` is ABSENT and body still renders (guards the common/no-change path).
+- New `TestRetroShowMetaPrettyPrinted`: capture with a single-line `--meta-file` (`{"scope":"cohort","decision":"accepted"}`), assert the show output contains indented JSON (e.g. a line beginning with two spaces + `"scope"`), proving pretty-printing.
+- Update `TestRetroListOneRetro`: add `META` to the expected header column set; the existing last-field-is-RFC3339 assertion must still pass (META is before CREATED).
+- New `TestRetroListMetaColumn`: capture one retro WITH `--meta-file` and one WITHOUT; assert the list shows `Y` on the meta row and `N` on the no-meta row (match by retro id on each data line). Reuse the existing seeding style (execute "retro" "capture" ... + extractRetroID).
+- Failure-mode test (optional but recommended): `TestRetroShowMetaUnreadable` — seed a manifest whose retro-meta stage points at a missing artifact path and assert show fails with an error mentioning `retro meta` (mirrors how body-read failure is implicitly covered). If seeding a corrupt-but-valid manifest is too heavy, omit and rely on parity argument.
+
+**Docs plan:** Update docs/retro.md only (no docs/cli regen): (1) replace the "does not yet render the sidecar" sentence with the new `--- retro meta ---` rendering description (pretty-printed JSON, after the body); (2) add `META` row to the list-columns table and update the example list/show output blocks. docs/log.md needs no change (justified above). Run `make docs`/`docs-check`/`docs-reality` in the Docs phase to confirm no generated drift.
+
+**Risks:**
+- list-column addition is the one decision a reviewer seat may contest (column-stability vs added signal); it is cleanly separable and documented, with a fall-back to show-only.
+- `json.Indent` on already-stored bytes: guarded with a raw-bytes fall-back, so no failure path is introduced.
+- Trailing-newline handling between body and meta dividers: the body is printed verbatim (may or may not end in newline); the meta divider is printed with Fprintln so it always starts on its own line — confirm body content typically ends with a newline (test fixtures do). Low risk; if a fixture body lacks a trailing newline the divider still prints on a fresh line because the existing body block uses Fprint and the meta block opens with Fprintln of the divider — acceptable.
+
+**Capture:**
+- inputs: bead etude-aqt description + parent etude-2ku context; read internal/cli/retro.go (printRetroDetail ~281, list ~167, show ~201, assembleAndWriteRetro write path), internal/runmanifest/manifest.go (Stage/ArtifactRef structs), internal/cli/retro_test.go (2ku tests), docs/retro.md, docs/log.md, docs/cli/etude_retro_show.md
+- output: bead --design field
+
+---
+## PLAN-GATE CORRECTION (Tier-1 gate, 3-seat: codex BLOCK verified-true, gemini+Opus GO)
+codex caught a real show-format edge, verified at internal/cli/retro.go:381: the body is rendered with `fmt.Fprint(out, string(bodyBytes))` which adds NO trailing newline (only the pointer-storage branch at :383 ends in "\n"). If a retro body lacks a trailing newline, the new `--- retro meta ---` divider (fmt.Fprintln) would glue onto the body's last line:
+    last body line--- retro meta ---
+which violates the section-on-its-own-line format. (Recurring Defect Class #4: output must land at the exact rendered slot.)
+
+REQUIRED FIX in the show-rendering path: before emitting the `--- retro meta ---` divider, guarantee the body output ended with a newline. Concretely: in the content-storage branch, if `len(bodyBytes) > 0 && bodyBytes[len(bodyBytes)-1] != '\n'`, emit a `fmt.Fprintln(out)` (single newline) before the meta divider. The pointer-storage branch already ends in "\n" so no extra newline there. Equivalent: track a `bodyEndedWithNewline` bool and conditionally Fprintln. Do NOT unconditionally add a blank line (would change today's no-meta output for bodies that DO end in "\n" — keep no-meta output byte-identical).
+
+REQUIRED TEST: add `TestRetroShowMetaBodyNoTrailingNewline` — capture a retro with --meta-file whose body file has NO trailing newline, assert the rendered output contains "\n--- retro meta ---\n" (divider on its own line, not glued to the body). Keep the existing no-trailing-newline-WITHOUT-meta behavior unchanged.
+
+Minor (non-blocking) impl note from codex: if using bytes.HasSuffix you must add the `bytes` import; the simple index check above needs no new import. `encoding/json` is already imported.
+
+All other plan decisions stand unchanged (role-based detection, read-pattern parity "retro meta: %w", json.Indent + raw fallback, META-before-CREATED list column keeping CREATED last + RFC3339 assertion intact, no new flag → no docs/cli regen, docs/retro.md-only prose change, docs/log.md no-op).
+
+
+NOTES
+## Implement
+
+**Implemented:**
+- Added `findRetroMetaStage(m runmanifest.Manifest) (runmanifest.Stage, bool)` helper in internal/cli/retro.go that scans Stages by Output.Role == "retro-meta" (role-based, not positional)
+- Updated `printRetroDetail` to render `--- retro meta ---` section after the body when a retro-meta stage is present; reads bytes via store.ReadFile mirroring the body path; pretty-prints JSON via json.Indent (2-space) with raw fallback; includes mandatory PLAN-GATE CORRECTION newline guard (if body content-storage and no trailing newline, emits fmt.Fprintln before the divider)
+- Updated `(*retroShowListRunner).list` to add META column (Y/N) inserted before CREATED so CREATED remains the last column; header is now RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tMETA\tCREATED
+
+**Checks run:**
+- go build ./...: pass
+- go test ./internal/cli/... ./internal/retro/...: pass (all new + existing tests green)
+- go test ./... (full suite including cmd/gen-docs TestDriftGuard): pass
+- gofmt -l: no reformatting needed
+- go vet ./...: clean
+
+**Changed files:**
+- /Users/jv/projects/etude/internal/cli/retro.go
+- /Users/jv/projects/etude/internal/cli/retro_test.go
+
+**Plan deviations:** None. All plan decisions and the mandatory PLAN-GATE CORRECTION honored exactly.
+
+**Tests added/updated:**
+- UPDATED TestRetroShowWithMetaStageStillRendersSingleBody: kept all body assertions, added meta section presence + ordering assertions
+- UPDATED TestRetroListOneRetro: added META to expected header column set
+- ADDED TestRetroShowNoMetaStageNoMetaSection: asserts no meta section for retro without --meta-file
+- ADDED TestRetroShowMetaBodyNoTrailingNewline: regression test for newline-guard correction
+- ADDED TestRetroShowMetaPrettyPrinted: asserts 2-space indented JSON in meta section
+- ADDED TestRetroListMetaColumn: asserts Y/N per-retro and CREATED is still last RFC3339Z field
+
+**Capture:**
+- inputs: approved plan in etude-aqt --design field (including PLAN-GATE CORRECTION), internal/cli/retro.go (full read), internal/cli/retro_test.go (full read)
+- output: working tree diff and bead notes
+
+LABELS: phase:implement
+
+DISCOVERED FROM
+  ◊ ✓ etude-2ku: Add retro-meta JSON sidecar + failure-mode index to retro writes ● P3
+
