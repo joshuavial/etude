@@ -1,0 +1,229 @@
+✓ etude-bench-command.3 · bench: eval-result caching/reuse   [● P3 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-25 · Updated: 2026-05-25
+Close reason: Closed
+
+DESCRIPTION
+OPTIMIZATION (not correctness): reuse an existing persisted EvalResult instead of re-invoking the judge when one exists for byte-identical commit-pinned inputs. Cache key = (method, both targets' Commit+Artifact SHAs, judge identity). v1 hit-detection = linear scan of refs/etude/evals/* (SQLite index deferred). Depends on bench-pipeline.
+
+DESIGN
+## Plan (.3 eval-result caching/reuse — OPTIMIZATION only) — ATTEMPT 3
+
+Revised across three gate reviews. Attempt 1 BLOCKED on (1) JudgeID matching had
+to be STRICT equality (not empty-as-wildcard) and (2) the evaluator SEED had to
+be in the cache key — both fixed in attempt 2 and CONFIRMED SOUND. Attempt 2
+BLOCKED on a residual empty==empty hole — fixed here (FIX 3).
+
+**Scope:** ONLY caching. Skip the expensive Judge call when an existing
+EvalResult covers byte-identical, same-judge, same-seed inputs. NO change to
+cohort (.1), the per-run pipeline boundary (.2), or win-rate/report (.4) beyond a
+--no-cache flag and a CACHED marker. Replay+record still happen on every run
+(boundary below); only the judge call is cached.
+
+### CORE INVARIANT (FIX 3 — gate BLOCK, codex)
+Cache reuse is enabled ONLY for judges with a known (NON-EMPTY) identity; an
+UNIDENTIFIED judge (empty JudgeID) ALWAYS re-evaluates and is NEVER matched.
+  - Attempt 2's strict equality still let empty-active == empty-cached count as a
+    HIT. That is unsound: two DISTINCT unidentified judges (any non-ExecJudge —
+    a stub, or a future identity-less judge) would reuse each other's verdicts
+    via empty==empty. Latent cross-judge false-reuse.
+  - FIX: caching requires a NON-EMPTY active JudgeID.
+      * Active JudgeID EMPTY  => DO NOT perform a cache lookup at all; always run
+        Evaluate. The eval doc is still WRITTEN (judge_id absent/empty) for
+        provenance, but it can never be matched by anyone.
+      * Active JudgeID NON-EMPTY => a hit requires an existing doc whose JudgeID
+        is EXACTLY equal (plus seed + both targets + method).
+  - Net effect: an empty-id doc is NEVER reused (a non-empty query can't equal
+    empty; an empty-active query skips the lookup entirely). This fully closes
+    the empty==empty hole.
+  - In production the judge is always an *ExecJudge whose JudgeIdentity is a
+    non-empty fingerprint, so this only hardens a latent path; normal
+    `etude bench` behavior is unchanged.
+
+### Replay-still-happens boundary (Q3) — CONFIRMED (gate-approved)
+The cache key includes target B's Artifact sha (the REPLAY OUTPUT sha), which
+only exists AFTER Runner.Run + Recorder.Record. So the cache CANNOT be checked
+before replay. BenchRun (run.go) is unchanged through step 6 (resolve,
+materialize, read orig, checkout, run, record). The cache lookup is INSERTED
+between step 6 (record -> recorded.OutputArtifact known) and step 7 (build+run
+pairwise eval). On HIT we skip steps 7-8 (Evaluate + Writer.Write); on MISS we
+proceed exactly as today. This saves the expensive LLM judge call. Replay cost is
+out of scope.
+
+### Cache key (Q1) — correctness-critical (Seed included, gate-approved)
+KEY = (Method="pairwise", Targets[0].Commit, Targets[0].Artifact,
+Targets[1].Commit, Targets[1].Artifact, JudgeID [STRICT, non-empty], Seed). A hit
+requires ALL of these to match exactly. Both targets are commit-pinned +
+content-addressed (Artifact=sha256), so equal (Commit,Artifact) pairs ⇒
+byte-identical inputs.
+
+SEED IN THE KEY (gate BLOCK 2, confirmed): "deterministic" != "order-invariant."
+perPairSwap exists PRECISELY BECAUSE judges may be POSITION-BIASED: a
+deterministic-but-order-sensitive judge can return DIFFERENT canonical winners
+for [A,B] vs [B,A] presentation. The seed chooses which presentation order a pair
+gets (perPairSwap is a deterministic function of (Seed, ArtifactA, ArtifactB);
+artifacts are already in the key), so a verdict cached under seed=X is NOT
+necessarily valid under seed=Y. Different seed => MISS => re-judge. Same
+(targets, judge, seed) => same orientation => same canonical verdict.
+
+### Judge-identity gap (Q1) — record JudgeID; STRICT, non-empty-gated match
+GAP CONFIRMED in code: run.go:203,230 set EvalResult.Producer = res.Producer
+(the REPLAY producer), NOT the judge. Judge identity lives only in the CLI as
+eval.ExecJudge{Command, Model} (bench.go resolveJudge) and reaches the judge
+process as ETUDE_MODEL — it is NEVER persisted. So a persisted eval doc cannot
+supply judge identity unless we add it. RESOLUTION:
+  1. Add optional field EvalResult.JudgeID string (JSON "judge_id,omitempty"),
+     additive to the v1 wire schema (omitempty => byte-identical output when
+     empty). No version bump. Validate: if set, must be non-empty after trim;
+     empty allowed (unidentified judge — provenance only, never matched).
+  2. eval.JudgeIdentity(j Judge) string: for *ExecJudge return
+     sha256("execjudge\x00"+strings.Join(Command,"\x00")+"\x00model="+Model)
+     (full 64-hex). Non-ExecJudge/stub -> "" (no derivable identity). Computed
+     CLI-side, threaded via Pipeline.JudgeID, written onto EvalResult.JudgeID on
+     the MISS path.
+  3. MATCHING — STRICT EQUALITY + NON-EMPTY GATE: lookup happens ONLY when the
+     active JudgeID is non-empty; then a hit requires cachedDoc.JudgeID EXACTLY
+     equal to it. empty active => no lookup (always evaluate). A known id never
+     matches empty (no wildcard) and never matches a different known id.
+     RATIONALE: you cannot safely reuse a verdict whose judge you don't know, and
+     two distinct unidentified judges must not collide; there is NO legacy eval
+     corpus to preserve (the only persisted eval docs were test artifacts, now
+     deleted), so gating on non-empty identity costs nothing in practice and
+     closes all cross-judge false-reuse paths.
+
+### Where the cached doc's Seed comes from (REQUIRED for the seed match)
+The query key carries the CURRENT run's Seed (Pipeline.Seed). To compare, each
+CANDIDATE doc must also expose its Seed — but EvalResult does NOT record the seed
+today. So we ALSO add an additive field:
+  EvalResult.Seed *int64 (JSON "seed,omitempty"; pointer so absent != 0).
+Written on the MISS path from Pipeline.Seed (the same seed passed to
+PairwiseEvaluator{Seed:p.Seed}). Backward-compat: same omitempty additive
+treatment as JudgeID — added to BOTH the Go struct and the evalResultJSON wire
+struct so DisallowUnknownFields (result.go:246) still parses new docs; old docs
+(no "seed" key) decode with Seed=nil. MATCHING w.r.t. seed: the active run always
+has a concrete int64 seed; a candidate with Seed==nil cannot be proven to share
+the orientation, so nil MISSES any concrete-seed query (strict, same spirit as
+JudgeID). Docs written by this code path always carry a Seed, so this only
+excludes pre-seed-field docs (none in practice).
+
+### Soundness for non-deterministic judges (Q1 caveat) — unchanged
+LLM judges are not deterministic; reusing a prior verdict for identical bytes is
+a sampling shortcut. v1 makes caching default-ON, opt-out via --no-cache, and
+docs state it assumes a judge whose canonical verdict is stable for identical
+(inputs, orientation). DoubleJudge is not wired through bench; if a future flag
+enables it, the key must also include a judge-mode marker. Recorded as follow-up.
+
+### Hit detection (Q2) — where it lives + O(N)
+NEW file internal/bench/cache.go (bench owns the bench cache; eval pkg stays
+verdict-only). Signature:
+  func lookupCachedEval(ctx, store refstore.Store, key cacheKey) (eval.EvalResult, bool, error)
+Caller (BenchRun) skips this entirely when the active JudgeID is empty (FIX 3).
+v1 = LINEAR SCAN: store.List(ctx, "refs/etude/evals") -> for each ref,
+store.ReadFile(ctx, ref, "eval_result.json") -> eval.ParseJSON -> evaluate the
+predicate (method + both (Commit,Artifact) pairs + STRICT non-empty JudgeID +
+Seed). First match wins (List is sorted => deterministic). O(N) over all evals;
+SQLite/secondary index DEFERRED and documented. Skip/continue on a single
+malformed doc (one bad ref must not fail the whole bench run). cacheKey holds
+method, the two ArtifactSource (Commit,Artifact) pairs, JudgeID (non-empty
+string), and Seed (int64).
+
+### Hit behavior (Q3) — unchanged
+On HIT: BenchRun does NOT call evaluator.Evaluate and does NOT call Writer.Write
+(no new ref). BenchOutcome is built from the CACHED doc: Winner=
+cached.Score.Winner, Confidence=cached.Score.Confidence, Findings=
+cached.Findings, EvalID=cached.EvalID (the EXISTING id), Result=cached, plus the
+freshly recorded ReplayRunID/ReplayCommit from THIS run's replay. New field
+BenchOutcome.Reused bool (true on hit) feeds .4's CACHED marker.
+On MISS (including every empty-JudgeID run): unchanged — Evaluate, then
+build+Validate+Write a new EvalResult that now also carries JudgeID (maybe empty)
+and Seed; Reused=false.
+
+### --no-cache flag + Pipeline seam (Q4, Q5) — unchanged
+Pipeline gains: Cache bool (default true; false => always evaluate) and JudgeID
+string (active fingerprint). Seed already exists on Pipeline. BenchRun performs a
+lookup only when p.Cache is true AND p.JudgeID != "" (FIX 3). CLI (.4 bench.go):
+add cmd.Flags().BoolVar(&noCache, "no-cache", false, "force re-evaluation; skip
+the eval-result cache"); set Pipeline.Cache = !noCache and Pipeline.JudgeID =
+eval.JudgeIdentity(activeJudge) at the existing construction (bench.go:131). No
+other .4 behavior change; renderReport gains a CACHED indicator fed by
+BenchOutcome.Reused (additive column/marker).
+
+### New/changed files
+- internal/bench/cache.go - NEW: cacheKey (incl. Seed), lookupCachedEval (scan +
+  strict predicate).
+- internal/bench/run.go - EDIT: insert lookup between record (step6) and eval
+  (step7), GATED on p.Cache && p.JudgeID != ""; build query key from
+  targets+JudgeID+Seed; set Reused; set EvalResult.JudgeID and EvalResult.Seed on
+  miss; add Pipeline.Cache + Pipeline.JudgeID fields; add BenchOutcome.Reused.
+- internal/eval/result.go - EDIT: add EvalResult.JudgeID string + EvalResult.Seed
+  *int64 to the Go struct; add judge_id,omitempty + seed,omitempty to the
+  evalResultJSON wire struct (~390-402); thread both through toJSON (~457-526)
+  and toEvalResult; tolerant Validate (empty JudgeID ok, whitespace-only
+  rejected; Seed optional).
+- internal/eval/identity.go - NEW: JudgeIdentity(Judge) string.
+- internal/cli/bench.go - EDIT: --no-cache flag; wire Pipeline.Cache + JudgeID;
+  CACHED marker in renderReport.
+- internal/bench/cache_test.go, run_test.go, internal/eval/result_test.go - tests.
+
+### Tests (Q6) — deterministic, StubRunner + a call-counting Judge
+- MISS (empty store): judge IS called (count==1); result written + re-readable;
+  Reused=false; persisted doc has JudgeID + Seed set.
+- HIT (identified judge): set a NON-EMPTY Pipeline.JudgeID on BOTH the seeding
+  run and the query run; pre-seed a matching EvalResult (same targets, same
+  non-empty JudgeID, same Seed); use a Judge double that increments-and-fails if
+  invoked; assert judge NOT called, outcome from cached doc (same EvalID), NO new
+  ref (List count unchanged), Reused=true.
+- EMPTY active JudgeID (FIX 3): with Pipeline.JudgeID == "", even when an
+  IDENTICAL prior eval doc exists, the cache is NOT consulted and the judge IS
+  called (count==1, Reused=false, a new ref is written). No reuse for
+  unidentified judges; the empty==empty hole stays closed.
+- DIFFERENT targets -> MISS (different replay artifact sha): judge called.
+- DIFFERENT known judge -> MISS: non-empty active id vs a different non-empty
+  cached id => judge called.
+- (also) non-empty active id vs empty-id cached doc -> MISS (no wildcard).
+- DIFFERENT seed -> MISS: same targets + same non-empty JudgeID but different
+  Seed => judge called. Same seed -> HIT.
+- Seed presence: candidate doc with Seed==nil vs concrete-seed query -> MISS.
+- --no-cache / Pipeline.Cache=false -> judge called even with a matching cached
+  doc; new ref written.
+- eval pkg: round-trip EvalResult with/without JudgeID and with/without Seed via
+  JSON/ParseJSON; omitempty keeps pre-field bytes identical (backward-compat
+  gate); Validate accepts empty JudgeID and absent Seed, rejects whitespace-only
+  JudgeID.
+
+### Docs
+- docs/bench.md (lands in .4) - ADD a "Cache" section: key definition (JudgeID
+  strict + non-empty-gated + Seed), the "reuse only for identified judges"
+  invariant, --no-cache, O(N) linear scan + deferred index, seed sensitivity
+  rationale, non-determinism caveat. (Edit .4's docs if merged; else hand the
+  section to .4.)
+
+### Risks
+- Non-deterministic LLM judge => reuse is a sampling shortcut; mitigated by
+  default-on/opt-out + explicit docs.
+- Adding EvalResult.JudgeID + Seed touches the shared eval wire type; mitigated
+  by omitempty (byte-identical pre-field output) + round-trip test as the gate.
+- O(N) scan grows with eval count; acceptable v1, index deferred + documented.
+
+**Capture:**
+- inputs: bead etude-bench-command.3 + parent etude-bench-command + sibling .2
+  designs; gate reviews (a1 BLOCK1 strict-JudgeID, BLOCK2 seed-in-key; a2 BLOCK
+  codex non-empty JudgeID gate); files read: internal/bench/run.go,
+  internal/cli/bench.go, internal/eval/{result,pairwiseevaluator,exec_judge}.go,
+  internal/refstore/store.go (List/ReadFile/ReadCommitFile sigs).
+- output: bead --design field (attempt 3).
+
+NOTES
+PLAN gate attempt 1: BLOCK x2 (codex; gemini+Opus GO but codex's points are more correct). (1) Empty-as-wildcard JudgeID matching is UNSOUND: a known judge could reuse a legacy/unknown (empty-id) verdict, or an unknown custom judge reuse any known verdict. FIX: STRICT JudgeID equality (empty matches empty ONLY; known matches same-known ONLY; never cross known<->empty). The 'reuse legacy corpus' benefit is moot — no real eval docs exist (the only ones were test junk, deleted). (2) SEED must be in the cache key: excluding it assumes order-invariance, but the per-pair presentation swap exists precisely because judges may be POSITION-BIASED — a deterministic-but-order-sensitive judge can give different canonical verdicts for different presentation orders (different seeds). Opus conflated deterministic with order-invariant. FIX: cache key = (method, targetA Commit+Artifact, targetB Commit+Artifact, JudgeID [strict], SEED). -> plan attempt 2.
+PLAN gate attempt 2: codex BLOCK (gemini+Opus GO; Opus reversed attempt-1 to endorse strict-equality + seed-in-key). codex's remaining edge (valid latent defect): even with strict equality, empty-active==empty-cached is a HIT, so two DISTINCT unidentified (non-Exec) judges could reuse each other's verdicts. FIX (attempt 3): caching requires a NON-EMPTY active JudgeID — if Pipeline.JudgeID=='' (unidentifiable judge, e.g. stub), NO cache lookup (always evaluate); empty-id docs may be written for provenance but are NEVER matched (a non-empty query never equals empty; an empty-active query skips the cache). In production the judge is always ExecJudge (non-empty fingerprint), so this only hardens a latent path. -> plan attempt 3.
+PLAN gate attempt 3: PASS (3 substantive GO — codex flipped GO, gemini GO, Opus GO; pilms outage). Three correctness fixes incorporated across the rounds: (1) strict JudgeID equality (no wildcard); (2) Seed in cache key (perPairSwap orientation matters for order-sensitive judges); (3) caching requires non-empty active JudgeID (empty → always re-evaluate; empty-id docs never matched → no cross-judge reuse). Additive EvalResult.JudgeID (json:judge_id,omitempty) + Seed (*int64 json:seed,omitempty) in Go struct AND evalResultJSON wire struct, threaded toJSON/toEvalResult; backward-compat verified (ParseJSON DisallowUnknownFields:246; omitempty → legacy byte-identical; nil-seed misses concrete-seed query). Cache key = (method, both targets Commit+Artifact, JudgeID strict, Seed). Lookup after Record, before Evaluate; only judge call skipped on hit. -> phase:implement.
+IMPLEMENT+FINAL gate: PASS (3 substantive GO — codex, gemini, Opus mutation-verified; pilms outage). DEVIATION explicitly blessed by all 3 seats: cache matches on Artifact SHA-256 ONLY (not Commit) — correct (artifact=content identity; judge verdict depends on content not provenance), necessary (record.go embeds timestamp+run-id so the replay commit differs every run -> commit-inclusive key would never hit), no false-hit (collision needs identical content+judge+seed -> verdict genuinely identical). All 3 fixes verified: strict JudgeID equality, seed in key, non-empty-JudgeID gate (run.go:200). Backward-compat: omitempty round-trip byte-identical, existing tests pass. Tests mutation-verified to have teeth. Committed a2f3437. Full suite green.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-bench-command: Implement etude bench ● P1
+
+DEPENDS ON
+  → ✓ etude-bench-command.2: bench: per-run replay->record->pairwise-eval pipeline ● P2
+
