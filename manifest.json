@@ -142,6 +142,55 @@
         "degraded_reason": "Both seats BLOCK, converging on the completeness-audit exemption. The opus seat ran as an in-harness sub-agent because the registry's claude -p invocation cannot authenticate when the orchestrator is itself Claude Code; the agy fallback is also dead (wrong flags and model id, quota exhausted) and is filed as its own P1 bead. Both verdicts are real verdicts on the identical frozen packet (artifact sha 5380eb98), recorded through the bootstrap path per the runbook."
       },
       "timestamp": "2026-08-15T08:35:23Z"
+    },
+    {
+      "gate_id": "plan.r2",
+      "phase": "plan",
+      "round": 2,
+      "tier": 2,
+      "status": "rerun",
+      "reviewed_stages": [
+        {
+          "stage": "plan.r2",
+          "role": "plan",
+          "artifact": "e75d5e553085bcce6f195a47209838e6dc053a37040d1b404e9836db617aa4d9"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "timestamp": "2026-08-15T08:52:40Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code-subagent",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus-5"
+          },
+          "verdict": "block",
+          "required": [
+            "1. Missed sweep site the plan's own verification cannot catch: docs/plans/dogfood/review-gate-runbook.md:346 is a tracked, live judgement runbook whose present-tense text names dogfood-close extension-less, so after this bead a live runbook instructs against a mechanism that no longer exists. It is absent from the sweep table, and the plan's stated check (grep anchored on .sh) structurally cannot detect it - the plan would report 'hits in no tracked file' while the wrong pointer survives, the exact green-check-over-silent-regression failure both r1 seats blocked on, one level over. Fix: add the row and widen the verification grep to the extension-less mechanism names over tracked files, with the historical mentions enumerated as deliberate no-ops so the widened grep has a known-clean baseline rather than being narrowed back until it passes."
+          ],
+          "timestamp": "2026-08-15T08:52:40Z"
+        }
+      ],
+      "decision": {
+        "degraded_reason": "Seats split: codex GO, opus BLOCK, so the gate does not pass under unanimous quorum. opus is right and the finding was verified independently before folding: the r2 verification grep was anchored on '.sh', so docs/plans/dogfood/review-gate-runbook.md:346 naming 'dogfood-close' extension-less would have survived while the check reported clean. Auditing that site found it stale on two further counts the seat did not report - it asserts docs is not a captured stage and prescribes mapping the docs gate onto the implement diff stage, both of which bead etude-1od reversed two beads ago. opus also correctly showed the Section C rationale was overstated (C1 duplicates B2's flow) and that negative control 2 rested on that overstatement; both are corrected rather than defended. Three of the five recorded corrections are one theme - a verification claim that does not cover what it says it covers - so r3 replaces the narrow grep with an exhaustive tracked-file inventory (25 hits, 13 files) classified into edit sites and an enumerated no-op baseline. The opus seat ran as an in-harness sub-agent per the documented registry exception; the agy fallback is dead and filed as its own P1 bead."
+      },
+      "timestamp": "2026-08-15T08:52:40Z"
     }
   ]
 }
