@@ -1,0 +1,84 @@
+## Plan
+
+**Approach:** This is a TRACKER-side backfill, not a product-code change. The
+retro-ledger (docs/plans/dogfood/retro-ledger.md, shipped in phase-prep.1) is
+the source of truth: it inventories A1/A2/A3/A4, B1-B7, C1, the inclusion
+boundary, and the no-retro-stage finding, each tagged [IMPLEMENTED]/[PLANNED]
+with evidence refs. This bead makes each retro improvement navigable from the
+bead side by: (1) appending retro-backlink NOTES to the existing beads whose
+work IS a retro improvement, and (2) CREATING the one open recommendation still
+left as prose with no tracking bead. For improvements that landed as COMMITS
+with no bead (four-seat expansion, pilms read-only tooling rules, gate-runbook
+rule commits, Forms B1/B3-B7), the ledger record + commit SHA already IS the
+durable link — we do NOT invent beads for those (acceptance is met by the
+ledger, per AC#1's "commit/docs where available"). Be conservative: no
+duplicate or invented beads for already-tracked or already-landed items.
+
+Per ledger-item backlink decision:
+- A1 (early workflow retro): LANDED via runbook commits 9965869/a22cc44/0b71ca8
+  + carried into the workflow skill. Durable link = ledger record (commit-only).
+  The "carry safe-bead-update rule into workflow skill" remaining item is
+  already done (relocated as B5/24d64f2). No bead, no follow-up.
+- A2 (gate-auth + four-seat expansion): LANDED as commits 8f03314 + 7d6b702.
+  No bead exists -> ledger record IS the durable link. No bead to note.
+- A3/A4 (first-class retro artifact + etude retro command): OPEN -> etude-14r;
+  design captured in closed etude-bjn. Both get retro NOTES (AC#4 named item).
+- B1, B3, B4, B5, B6, B7 (runbook-rule retros): LANDED as runbook commits.
+  Durable link = ledger record (commit-only). No beads.
+- B2 (gate-spiral hardening; gemini GrepTool caveat from bf3d755): OPEN follow-up
+  is etude-ojz -> gets a retro NOTE (AC#4 named item).
+- C1 (docs-reality-drift): two landed beads already linked in the ledger
+  (phase-prep.5 commit 7851222, phase-prep.2 commit e16b9b6). The "epic-close
+  holistic docs/reality reconciliation" [PLANNED] convention has NO tracking
+  bead -> CREATE one follow-up bead (AC#3). The named pilms tooling rules
+  (7d6b702 / runbook) are commit-only -> ledger record is the durable link.
+
+**Files:** tracker-only: bd notes on 2 existing beads + 1 new bead. One OPTIONAL
+small repo edit to docs/plans/dogfood/retro-ledger.md C1 "Remaining" line to
+name the new follow-up bead id once created (makes the ledger->bead direction
+resolve). If made, that is the only git file change; otherwise the commit is
+tracker-only (bd dolt commit/push).
+
+**bd operations:**
+Notes to add (bd update <id> --append-notes, file/stdin form):
+- etude-ojz: "Retro-derived (B2 / commit bf3d755): this bead is the open
+  follow-up for the gemini reviewer GrepTool cross-file-bleed caveat documented
+  in review-gate-runbook.md. See docs/plans/dogfood/retro-ledger.md#B2."
+- etude-14r: "Retro-derived: addresses the ledger's 'no retro is captured as an
+  etude run stage' finding (Forms A3/A4). Design in
+  docs/plans/product/retrospectives.md + etude-retro-command.md (closed bead
+  etude-bjn). See docs/plans/dogfood/retro-ledger.md (no-retro-stage section)."
+Beads to create (bd create, AC#3 — exactly one):
+- Title: "Make epic-close docs/reality reconciliation a hard gate" (P3, dogfood
+  label, parent etude-roadmap or etude-kb0). Why: C1 [PLANNED] convention
+  currently folded into the docs-checklist as prose only, no tracking bead;
+  this is the single open recommendation genuinely left untracked. Body cites
+  retro-ledger.md#C1, scripts/docs-reality-check.sh, make docs-reality.
+No other beads created (A2/four-seat, pilms rules, all Form-B runbook rules are
+commit-only; their durable link is the ledger record).
+
+**Tests (verification, since it is tracker state):**
+- `bd show etude-ojz` and `bd show etude-14r` show the new retro NOTES.
+- New bead exists via `bd show <new-id>`; `bd list --all | grep -i reconcil`
+  returns exactly one (no duplicate — confirmed none exists today).
+- Bidirectional resolve: ledger -> bead (the new-bead id named in ledger C1
+  Remaining if the optional edit is made) and bead -> ledger (each note cites a
+  ledger anchor); commit SHAs in notes resolve via `git show`.
+- Conservatism check: no bead created for any [IMPLEMENTED] commit-only item.
+
+**Docs:** No user-facing docs. Optional one-line backlink edit to retro-ledger.md
+(C1 Remaining) is planning-doc maintenance, not user docs. No generated CLI
+reference change.
+
+**Risks:** Low. Main risk is over-creating beads for commit-only improvements —
+mitigated by the explicit conservative rule (only C1's untracked [PLANNED]
+convention gets a bead). Secondary: dolt commit/push must capture the tracker
+state since most of the work is non-git.
+
+**Capture:**
+- inputs: bead etude-phase-prep.4 description + acceptance; retro-ledger.md
+  (A1/A2/A3/A4, B1-B7, inclusion boundary, C1, no-retro-stage); bd show
+  etude-ojz, etude-14r, etude-bjn, etude-jpf, etude-overhaul-dev-workflow-skill;
+  bd ready / bd list --all; git log on review-gate-runbook.md.
+- output: bead --design field (this plan); execution lands as bd notes + 1 new
+  bead (tracker state, dolt commit/push) + optional retro-ledger.md backlink edit.
