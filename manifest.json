@@ -1307,6 +1307,120 @@
         "degraded_reason": "Both seats GO on the artifact that actually SHIPS. This round exists because the final review gate found the earlier verify pass certified bd2d9d94, while optionals folded after that verdict produced ea641e95 - so the shipped revision had never been gated. A pass pointing at a superseded revision is not a pass on what lands, and re-pointing the old record would have been the dishonest fix; the revision was gated for real instead, with the deterministic checks re-run live by etude gate at verify.r6 (both go, codex go) and the opus seat run in-harness per the documented registry exception. Five optionals folded: the subdirectory row now carries the same caveat as the dogfood-audit row (its exit code depends on whether this bead's own run ref is pushed at that instant, and root vs subdirectory output is byte-identical); the last-N-closed window is now disclosed as a limitation, since a bead whose refs are never pushed stops being audited once nine more close, which bounds the 'only detectors' claim to a window; and three unpinned-but-harmless behaviors gained cases - the no-args default, --help, and allowlist comment/blank-line skipping, the last mattering because the shipped allowlist is comment-heavy. One guard is now commented as defense-in-depth rather than load-bearing, because removing it still fails closed downstream and it therefore carries no test signal. Suite 45 -> 49."
       },
       "timestamp": "2026-08-15T14:28:42Z"
+    },
+    {
+      "gate_id": "verify.r8",
+      "phase": "verify",
+      "round": 8,
+      "tier": 2,
+      "status": "escalated",
+      "reviewed_stages": [
+        {
+          "stage": "verify.r4",
+          "role": "verify",
+          "artifact": "867de56a6bad01cea4033c1536adcafca8272cc9babf0182702988de3e16e0fd"
+        }
+      ],
+      "seats": [
+        {
+          "seat": "check.0",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make test"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-0",
+            "artifact": "7caa74e1b9310cee644fecbffa88d2c9309baf90a80e5b10f375b1898b208af6",
+            "path": "artifacts/sha256/7c/7caa74e1b9310cee644fecbffa88d2c9309baf90a80e5b10f375b1898b208af6",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 1252
+          },
+          "timestamp": "2026-08-15T14:31:11.123492Z"
+        },
+        {
+          "seat": "check.1",
+          "harness": {
+            "name": "exec",
+            "version": ""
+          },
+          "provider": {
+            "name": "deterministic",
+            "model": "make lint"
+          },
+          "verdict": "go",
+          "raw_output": {
+            "role": "check-1",
+            "artifact": "a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "path": "artifacts/sha256/a4/a4aa4146d079c4aff13deef4c1dff350fa2c31f11b8889dcc7b616a3f723b75b",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 48
+          },
+          "timestamp": "2026-08-15T14:31:11.401146Z"
+        },
+        {
+          "seat": "opus",
+          "harness": {
+            "name": "claude-code",
+            "version": ""
+          },
+          "provider": {
+            "name": "anthropic",
+            "model": "claude-opus"
+          },
+          "verdict": "failed",
+          "failure_note": "runner failed: runner failed: /Users/jv/projects/etude/.worktrees/epic-9uf/scripts/seat-adapter.sh: exit status 1: seat opus: model CLI exited non-zero",
+          "timestamp": "2026-08-15T14:31:12.446631Z"
+        },
+        {
+          "seat": "codex",
+          "harness": {
+            "name": "codex",
+            "version": ""
+          },
+          "provider": {
+            "name": "openai",
+            "model": "gpt-5.5"
+          },
+          "verdict": "go",
+          "optional": [
+            "1. Track check (c)'s unpinned warning-only coverage under etude-3xt rather than relying on this suite to catch future semantic drift."
+          ],
+          "raw_output": {
+            "role": "codex",
+            "artifact": "49b4a21b3abbce0fa5806dd5dd19e9ce25773bac098d9afdb5e6e3591f2c71e0",
+            "path": "artifacts/sha256/49/49b4a21b3abbce0fa5806dd5dd19e9ce25773bac098d9afdb5e6e3591f2c71e0",
+            "media_type": "application/octet-stream",
+            "storage": "content",
+            "size": 280
+          },
+          "session": {
+            "session_id": "codex-3f9953a3375ac1ac",
+            "transcript_artifact": {
+              "role": "codex-transcript",
+              "artifact": "3f9953a3375ac1ac63adc4dc2401696ce43ad8ef60583908ebfaa669dd672c28",
+              "path": "artifacts/sha256/3f/3f9953a3375ac1ac63adc4dc2401696ce43ad8ef60583908ebfaa669dd672c28",
+              "media_type": "text/plain; charset=utf-8",
+              "storage": "content",
+              "size": 190
+            },
+            "retrieval_status": "imported",
+            "redaction_status": "passed"
+          },
+          "timestamp": "2026-08-15T14:31:33.052841Z"
+        }
+      ],
+      "decision": {
+        "escalation_reason": "insufficient usable seats: got 1 need 2",
+        "degraded_reason": "one or more seats produced non-usable results"
+      },
+      "timestamp": "2026-08-15T14:31:33.052934Z"
     }
   ]
 }
