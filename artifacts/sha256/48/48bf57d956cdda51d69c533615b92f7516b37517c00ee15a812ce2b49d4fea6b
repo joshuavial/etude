@@ -1,0 +1,131 @@
+✓ etude-pairwise-eval · Implement pairwise evaluator   [● P2 · CLOSED]
+Owner: joshuavial · Type: feature
+Created: 2026-05-18 · Updated: 2026-05-25
+Close reason: Closed
+
+DESCRIPTION
+Compare original vs replayed artifacts, randomize order to reduce position bias, optionally support swapped-order judging, and produce win/tie/loss outcomes with reasons.
+
+DESIGN
+## Plan (attempt 2)
+
+**Approach:** Add a library-only PairwiseEvaluator mirroring RubricEvaluator discipline (head-validate EvalRequest, guard nil Judge, build a method-tagged JudgeRequest, call Judge, map JudgeResponse -> eval.Evaluation with Score{Kind:ScorePairwise}). Canonical orientation is PINNED: req.Targets[0]=original=A, req.Targets[1]=replay=B. Position bias is mitigated by randomizing the ORDER targets are PRESENTED to the Judge, then back-mapping the position-relative winner to canonical A/B. CRITICAL FIX (attempt 1 blocker): the swap decision is derived PER-PAIR by mixing the evaluator Seed with a stable per-pair identity, so presentation order varies across a cohort yet stays reproducible. Adds opt-in DoubleJudge mode (bead text: 'optionally support swapped-order judging'). Also fills the validateJudgeOutput 'pairwise' arm.
+
+**Files:**
+- internal/eval/pairwiseevaluator.go - NEW. PairwiseEvaluator + Evaluate + helpers (perPairSwap, mapWinnerBack, combineDouble, buildJudgeRequest).
+- internal/eval/exec_judge.go - EDIT validateJudgeOutput: add 'case "pairwise":' arm before default.
+- internal/eval/pairwiseevaluator_test.go - NEW. Evaluator tests.
+- internal/eval/exec_judge_test.go - EDIT. Add pairwise validateJudgeOutput cases; drop 'pairwise' from TestValidateJudgeOutput_UnsupportedMethod (keep '' and 'foobar').
+
+**New types / signatures:**
+```
+type PairwiseEvaluator struct {
+    Judge       Judge
+    Seed        int64 // folded into per-pair RNG seed; default 0 deterministic, not time-based
+    DoubleJudge bool  // default false = single randomized pass; true = run both orders
+}
+var _ Evaluator = (*PairwiseEvaluator)(nil)
+func (p *PairwiseEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evaluation, error)
+// helpers:
+//   func (p *PairwiseEvaluator) perPairSwap(req EvalRequest) bool
+//   func mapWinnerBack(judged Winner, swapped bool) Winner
+//   func (p *PairwiseEvaluator) buildJudgeRequest(req EvalRequest, swapped bool) JudgeRequest
+//   func combineDouble(aFirst, bFirst JudgeResponse) (Winner, *float64, []Finding)
+```
+No Root field (no rubric/file IO). No CLI.
+
+**Evaluate head-validation (mirrors RubricEvaluator order):**
+1. req.Method != 'pairwise' -> fmt error.
+2. req.Rubric != nil -> error (pairwise forbids rubric config).
+3. req.Assertion != nil -> error.
+4. len(req.Targets) != 2 -> error ('requires exactly 2 targets').
+5. p.Judge == nil -> ErrJudgeNotConfigured.
+
+**PER-PAIR SEED DERIVATION (Change 1 fix):** Use math/rand/v2 (Go 1.26; first use in repo, confirm import path in CI). Build a 128-bit key by hashing the evaluator Seed folded together with the two targets' stable content-addressed identities:
+```
+import "hash/fnv"
+func (p *PairwiseEvaluator) perPairSwap(req EvalRequest) bool {
+    k0 := pairKey(req.Targets[0])  // Source.Artifact if non-empty, else fallback
+    k1 := pairKey(req.Targets[1])
+    hi := fnv.New64a(); writeUint64(hi, uint64(p.Seed)); hi.Write([]byte{0x00}); io.WriteString(hi, k0); hi.Write([]byte{0x1f}); io.WriteString(hi, k1)
+    lo := fnv.New64a(); writeUint64(lo, uint64(p.Seed)); lo.Write([]byte{0x01}); io.WriteString(lo, k1); lo.Write([]byte{0x1f}); io.WriteString(lo, k0)
+    rng := rand.New(rand.NewPCG(hi.Sum64(), lo.Sum64()))
+    return rng.IntN(2) == 1
+}
+```
+- Seed-bytes are folded into BOTH halves so changing Seed reshuffles every pair (8-byte big-endian via writeUint64).
+- Targets[0].Source.Artifact and Targets[1].Source.Artifact (confirmed eval.go:46/56: 64-hex sha256, stable) are the per-pair identity. The two FNV streams use the two artifacts in opposite order so the hi/lo halves differ, giving full 128-bit PCG entropy.
+- FALLBACK pairKey: when Source.Artifact == '' fall back to t.Role + ':' + sha256hex(t.Content) (sha256hex already in rubricevaluator.go) so empty-artifact stubs/tests still vary per-pair and stay reproducible.
+- Per-pair-varying: different (k0,k1) -> different PCG state -> swap differs. Reproducible: same (Seed,k0,k1) -> identical PCG -> identical swap. FNV+PCG are pure, no time/global state.
+
+**Single-pass path (DoubleJudge == false):** swapped := perPairSwap(req); build ONE JudgeRequest in presented order; call Judge once; validate response coherence; winner := mapWinnerBack(resp.Winner, swapped); return Evaluation{Score{Kind:ScorePairwise, Winner:winner, Confidence:resp.Confidence}, resp.Findings}.
+
+**DoubleJudge path (DoubleJudge == true):** ignore random swap (deterministic both-orders). Call Judge TWICE:
+- pass1 = present [Targets[0], Targets[1]] (A first); canonical winner via mapWinnerBack(resp1.Winner, false).
+- pass2 = present [Targets[1], Targets[0]] (B first); canonical winner via mapWinnerBack(resp2.Winner, true).
+Validate coherence on BOTH responses. ERROR PROPAGATION: if EITHER Judge call returns err, Evaluate returns that err immediately (no silent degrade); a coherence failure on either response -> ErrJudgeOutputInvalid.
+COMBINE (combineDouble):
+- winner: if canonical winners AGREE -> that winner; if DISAGREE -> WinnerTie (position bias detected; includes any A-vs-tie/B-vs-tie disagreement collapsing to tie).
+- Confidence: if both responses set Confidence -> pointer to the MIN of the two (conservative: a confident-but-order-sensitive verdict should not look strong); if only one set -> that one; if neither -> nil. (MIN chosen over average so disagreement-driven uncertainty is not averaged away.)
+- Findings: concatenate pass1 then pass2; each finding's Message is prefixed with an order tag ('[A-first] ' / '[B-first] ') so audit trail keeps provenance. Pointer/Severity unchanged.
+Bench will DEFAULT to single-pass (DoubleJudge=false) for cost; the mode exists now.
+
+**buildJudgeRequest:** maps EvalInput->JudgeInput (Role/MediaType/Content/Source) like RubricEvaluator; Method 'pairwise', Rubric nil, Context passthrough, Producer passthrough. Presented JudgeInputs carry NEUTRAL roles 'left'/'right' (NOT original/replay) so the judge cannot infer provenance from role text; Source provenance still travels for audit.
+
+**validateJudgeOutput 'pairwise' arm (-> ErrJudgeOutputInvalid):**
+- w.Winner not in {A,B,tie} -> reject (empty also rejected: winner required).
+- w.Value != nil -> reject ('pairwise must not set value').
+- w.Max != nil -> reject ('pairwise must not set max').
+- w.Confidence optional; if non-nil and out of [0,1] -> reject.
+- findings severity/message validated by the shared loop after the switch.
+
+**Response coherence in Evaluate (belt-and-suspenders, guards StubJudge bypass):** re-check resp.Winner in {A,B,tie}; resp.Value==nil; resp.Max==nil; resp.Confidence (if set) in [0,1]; validateFinding loop. Applied to every Judge response (both passes in DoubleJudge).
+
+**Back-mapping (mapWinnerBack):** not swapped: A->A, B->B, tie->tie. swapped: judge A (=first=canonical B)->B, judge B (=second=canonical A)->A, tie->tie. (Gate-confirmed sound.)
+
+**Tests (pairwiseevaluator_test.go):**
+- EndToEnd single-pass: StubJudge winner A, pinned Seed/targets -> Winner==A, Kind==pairwise; findings pass through.
+- BackMapping table: (swapped {true,false}) x judge {A,B,tie} -> canonical winner.
+- PerPairVariation (NEW, Change-1 proof): with one fixed Seed, a recording StubJudge captures presented order; feed several pairs with DIFFERENT Source.Artifact values and assert NOT all swap decisions are identical (cohort order varies).
+- Determinism: same Seed + same Targets -> identical swap across repeated Evaluate calls; changing Seed reshuffles.
+- FallbackKey: empty Source.Artifact -> still deterministic + per-pair-varying via Role+content hash.
+- NeutralRoles: presented JudgeInputs carry left/right, never original/replay.
+- DoubleJudge agree: both passes agree -> canonical winner; findings concatenated+tagged.
+- DoubleJudge disagree: pass1 says A, pass2 (back-mapped) says B -> WinnerTie.
+- DoubleJudge confidence combine: both set -> min; one set -> that; neither -> nil.
+- DoubleJudge findings combine: order tags '[A-first]'/'[B-first]' present, both passes included.
+- DoubleJudge error propagation: a queued-stub that errors on the 2nd call -> Evaluate returns that err (no degrade); coherence failure on 2nd response -> ErrJudgeOutputInvalid.
+- RequiresPairwiseMethod / RequiresExactly2Targets (0,1,3) / RejectsRubricConfig / RejectsAssertionConfig / NilJudge->ErrJudgeNotConfigured / JudgeErrorPropagates (errors.Is sentinel).
+- MalformedResponse matrix (ErrJudgeOutputInvalid): winner='' , winner='C', value set, max set, confidence=1.5, confidence=-0.1, bad-severity finding.
+- EvalResultValidate: wrap Evaluation into EvalResult{Method:pairwise, Targets:[A,B]} and assert Validate() passes (exercises validateScoreCoherence pairwise arm).
+- Test helper: a recording/queuing StubJudge (captures presented order per call; returns canned responses in sequence) since stdlib StubJudge returns a single canned value.
+exec_judge_test.go: TestValidateJudgeOutput_Pairwise (valid A/B/tie; reject empty/unknown/value/max/conf-out-of-range) + a script-based ExecJudge pairwise success producing winner.
+
+**Docs:** None. Library-only internal package; no user-facing surface, no generated command reference; behavior documented inline (mirrors rubric-eval which added no docs). The bench-command bead owns user-facing win-rate + double-judge-cost docs.
+
+**Risks:** Low-moderate. (1) math/rand/v2 + hash/fnv first use in repo — confirm Go 1.26 import paths build in CI. (2) RNG/PCG mapping must be locked by tests (per-pair variation + determinism) rather than assumed. (3) FNV is non-cryptographic — fine here (we need a stable reproducible mixer, not collision resistance; collisions only mean two distinct pairs share a swap decision, which is harmless). Otherwise isolated, mirrors an established sibling.
+
+**Scope boundary:**
+- IN: PairwiseEvaluator with (a) per-pair-randomized single-pass presentation + back-map, (b) opt-in DoubleJudge both-orders mode with agree/disagree/tie combine, confidence-min, tagged-findings, strict error propagation; validateJudgeOutput pairwise arm; tests.
+- OUT: NO CLI, NO bench wiring (mirrors rubric-eval). Bench defaults DoubleJudge=false. (Swapped-order judging is now IN scope per bead text; prior deferral removed.)
+
+**Capture:**
+- inputs: bead etude-pairwise-eval description + deps/blocks; gate attempt-1 BLOCK (per-pair seed fix + DoubleJudge include); eval.go (Winner/Score/Kind, ArtifactSource.Artifact sha256 id, win_rate); judge.go (Judge/JudgeRequest/JudgeResponse/Stub/sentinels); exec_judge.go (validateJudgeOutput, wire shape); rubricevaluator.go (sibling pattern, sha256hex); result.go (validateScoreCoherence pairwise allows optional confidence + validateFinding); go.mod (go 1.26).
+- output: bead --design field
+
+NOTES
+PLAN gate attempt 1: BLOCK (3 substantive seats). codex BLOCK, gemini BLOCK, Opus BLOCK; pilms tooling outage (hung 0 CPU). Unanimous blocker A: fresh PCG from constant Seed -> every pair gets identical swap -> ZERO within-cohort position-bias mitigation (defeats core requirement). Fix: derive per-pair swap from Seed mixed with stable per-pair identity (hash Targets[0].Source.Artifact + Targets[1].Source.Artifact). Item C (2-1: codex+gemini block, Opus ok-to-defer): bead text 'optionally support swapped-order judging' -> DECISION: implement opt-in DoubleJudge mode in THIS bead (cheap, satisfies literal text + majority). Confirmed sound: back-mapping (B), validateJudgeOutput pairwise rules (D), Score->coherence mapping, no-CLI scope (E). Revising -> plan attempt 2.
+PLAN gate attempt 2: PASS (3 substantive GO — codex, gemini, Opus; pilms established tooling outage, fallback applied). Both blockers resolved: per-pair FNV-1a-64 seed (Seed folded + both Source.Artifact ids, opposite k-order, domain-separated; fallback Role:sha256hex(Content)) confirmed per-pair-varying+reproducible; degenerate hi==lo harmless for PCG/IntN(2). DoubleJudge opt-in combine (agree->winner, disagree->tie, min-confidence, tagged findings, error-propagate) confirmed sound + passes validateScoreCoherence. Non-blocking (fold into impl): PerPairVariation test must use FIXED artifact ids known to flip the swap for the chosen Seed (deterministic), not probabilistic 'several pairs'. -> phase:implement.
+IMPLEMENT+FINAL gate (combined): PASS — 3 substantive GO (codex, gemini, Opus mutation-verified; pilms established tooling outage, fallback applied). Opus empirically confirmed per-pair variation (Seed=0 cohort 10/6), end-to-end swapped trace, error/coherence propagation, Score passes validateScoreCoherence, test teeth (back-mapping table, disagree->tie, PerPairVariation catch constant-swap mutation). codex+Opus non-blocking note: PerPairVariation is cohort-based not pinned-booleans (deterministic, has teeth) — left as-is. Docs: NO-DOCS (internal library, no CLI/user surface; docs land with eval/bench CLI bead). Committed 10a49ba 'add pairwise evaluator'. 95 tests green, gofmt/vet/build clean.
+
+LABELS: phase:plan
+
+PARENT
+  ↑ ○ etude-phase3: (EPIC) Phase 3: evals and bench workflow ● P2
+
+DEPENDS ON
+  → ✓ etude-eval-interface: Define evaluator interface and result format ● P2
+
+BLOCKS
+  ← ○ etude-bench-command: Implement etude bench ● P1
+
