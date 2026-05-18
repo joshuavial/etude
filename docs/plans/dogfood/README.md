@@ -1,7 +1,7 @@
 # Dogfood Plans
 
 These notes describe how this repo is using planned `etude` concepts while the
-product is still being built. They are not shipped user-facing documentation.
+product is still being built. They are not shipped user-facing behavior.
 
 - [Dev workflow audit](dev-workflow-audit.md) - current agent workflow gaps and
   recommended dogfood workflow shape.

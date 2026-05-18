@@ -259,11 +259,13 @@ planning docs, use [Writing Style Guide](writing-style-guide.md).
 ## Open Implementation Notes
 
 - The capture protocol should define the standard provenance envelope referenced
-  by this note.
+  by this note. Follow-up owner: `etude-dogfood-capture-protocol`.
 - The capture protocol should define whether failed Verify attempts become
-  separate captured artifacts or revisions within one phase attempt.
+  separate captured artifacts or revisions within one phase attempt. Follow-up
+  owner: `etude-dogfood-capture-protocol`.
 - The capture protocol should define how to count and reference internal
   test-writer loops, blocked-then-resupplied attempts, and review-gate reruns.
+  Follow-up owner: `etude-dogfood-capture-protocol`.
 - For planning-only beads, Verify can pass without tests when it confirms the
   planning artifact is in the right location, links resolve, and no shipped docs
   claim planned behavior exists, and changed docs follow the applicable writing
