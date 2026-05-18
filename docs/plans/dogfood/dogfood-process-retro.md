@@ -42,10 +42,11 @@ The main root cause was that the dogfood workflow itself was still being
 designed while being used. Process rules existed in chat before they existed in
 repo docs, so artifacts could contradict the latest intent.
 
-A second cause was missing gate-run mechanics. The docs now say every gate
-needs three reviewers, but the process still lacks a small execution checklist
-for how to assemble prompts, capture exact artifacts, track reviewer sessions,
-record results, and decide whether a rerun is needed.
+A second cause was missing gate-run mechanics. The docs said every gate needed
+three reviewers before there was a small execution checklist for how to
+assemble prompts, capture exact artifacts, track reviewer sessions, record
+results, and decide whether a rerun is needed. The review gate runbook now
+fills that gap.
 
 A third cause was brittle command hygiene around long Markdown payloads. Inline
 shell strings are too easy to corrupt when they contain backticks, quotes, or
@@ -68,17 +69,21 @@ treated the panel process as its own responsibility.
 
 ## Recommended Changes
 
+All recommendations below were implemented during this iteration. Only carrying
+the safe bead-update rule into the future workflow skill remains follow-up
+work.
+
 1. Add a gate execution checklist.
 
-   Create a small runbook that defines how to run a gate: gather exact file
-   contents, launch the three reviewers in parallel, wait for all results,
-   classify `GO`/`BLOCK`/tool failure, apply required changes, implement or
-   defer optional improvements, record results in the bead, and rerun when
-   required.
+   Already added to [Review gate runbook](review-gate-runbook.md). The runbook
+   defines how to run a gate: gather exact file contents, launch the three
+   reviewers in parallel, wait for all results, classify `GO`/`BLOCK`/tool
+   failure, apply required changes, implement or defer optional improvements,
+   record results in the bead, and rerun when required.
 
    Artifact: `docs/plans/dogfood/review-gate-runbook.md`.
 
-   Leverage: high. It turns the current policy into repeatable mechanics.
+   Leverage: high. It turned the current policy into repeatable mechanics.
 
 2. Prefer file/stdin updates for long bead notes and designs.
 
@@ -86,8 +91,9 @@ treated the panel process as its own responsibility.
    `--design-file -`, `--body-file -`, or a temporary reviewed file instead of
    inline shell arguments.
 
-   Artifact: add this rule to `docs/plans/dogfood/review-gate-runbook.md` and
-   later to the workflow skill.
+   Artifact: already added to `docs/plans/dogfood/review-gate-runbook.md` in
+   the Safe Bead Updates section. It should also be carried into the workflow
+   skill later.
 
    Leverage: high. It prevents noisy shell interpolation failures.
 
@@ -97,7 +103,7 @@ treated the panel process as its own responsibility.
    digest plus changed excerpts. Summaries are allowed only as orientation, not
    as the sole source of truth.
 
-   Artifact: `docs/plans/dogfood/review-gate-runbook.md`.
+   Artifact: already added to `docs/plans/dogfood/review-gate-runbook.md`.
 
    Leverage: high. It reduces review drift.
 
@@ -119,7 +125,7 @@ treated the panel process as its own responsibility.
    returned. Do not infer failure from silence unless the process has a defined
    timeout or the tool exits with an error.
 
-   Artifact: `docs/plans/dogfood/review-gate-runbook.md`.
+   Artifact: already added to `docs/plans/dogfood/review-gate-runbook.md`.
 
    Leverage: medium. It reduces operator uncertainty.
 
@@ -134,9 +140,9 @@ treated the panel process as its own responsibility.
 
    Leverage: high. It prevents invalid reviewer outputs and expensive reruns.
 
-## Highest-Leverage Next Step
+## Highest-Leverage Step Taken
 
-Create `docs/plans/dogfood/review-gate-runbook.md` before the next gate. It
-should turn the three-reviewer gate policy into an operational checklist with
-prompt assembly, parallel invocation, result capture, optional-improvement
-handling, rerun rules, and safe `bd update` mechanics.
+Created `docs/plans/dogfood/review-gate-runbook.md` before advancing beyond the
+current gate. It turns the three-reviewer gate policy into an operational
+checklist with prompt assembly, parallel invocation, result capture,
+optional-improvement handling, rerun rules, and safe `bd update` mechanics.
