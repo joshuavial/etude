@@ -29,4 +29,4 @@ implemented.
   guides.
 
 The current product brief is planning material, so it lives at
-`docs/plans/BRIEF.md`.
+`docs/plans/product/BRIEF.md`.

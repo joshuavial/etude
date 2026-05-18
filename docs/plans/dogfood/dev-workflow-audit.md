@@ -14,7 +14,8 @@ Use five gated phases for each bead:
 5. **Final review** - review the complete bead including docs.
 
 This is the workflow etude should dogfood while it is being built. Each phase
-needs a reviewable artifact and a human approval gate.
+needs a reviewable artifact and a review gate. The current dogfood gate is the
+three-reviewer process defined in [Review Gate Process](review-gate-process.md).
 
 ## Current Agent Inventory
 
@@ -107,34 +108,39 @@ Minimum provenance per phase:
 - `session_refs`: pointers to actual logs: Claude transcript/session ID, Codex
   conversation/log path, Gemini log path, tmux pane capture, or command log.
 - `outputs`: artifact references produced by the phase.
-- `approval_surface`: where the artifact was presented to the user for the
-  gate, such as a tmux pane, Codex chat message, PR comment, local file, or
-  another user-selected review surface.
+- `approval_surface`: where the artifact and reviewer results were presented,
+  such as a tmux pane, Codex chat message, PR comment, local file, or another
+  configured review surface.
+- `review_results`: Gemini Pro, Claude Opus, and fresh GPT-5.5 xhigh reviewer
+  results for the gate.
 
-The workflow should require presentation for approval, not a specific UI
-surface. In this repo's current dogfood session, tmux pane `.2` can be the
-chosen approval surface, but the protocol should allow other setups to use a
-different target.
+The workflow should require a passing review gate, not a specific UI surface.
+In this repo's current dogfood session, tmux pane `.2` can be the chosen
+approval surface, but the protocol should allow other setups to use a different
+target.
 
 | Phase | Input | Output artifact | Temporary storage |
 |---|---|---|---|
-| Plan | Bead title, description, dependencies, codebase context, starting git state | First implementation plan plus provenance envelope | Bead `--design`; provenance in append-only bead comment; present on the configured approval surface. |
+| Plan | Bead title, description, dependencies, codebase context, starting git state | First implementation plan plus provenance envelope | Bead `--design`; provenance in append-only bead comment; review through the configured gate. |
 | Implement | Approved plan and recorded plan provenance | Diff, implementation summary, commit if code changed, implementation provenance | Git diff/commit, bead `--notes`, append-only provenance comment. |
 | Verify | Implementation artifact, approved plan, implementation provenance | Test output, QA findings, manual test results if relevant, verification provenance | Append-only bead comment. |
 | Docs | Verified implementation, verification output, docs policy | Docs diff, docs summary, docs provenance | Git diff plus append-only bead comment. |
-| Final review | Plan, implementation, verify output, docs diff, all phase provenance | Review findings, close recommendation, review provenance | Append-only bead comment; present on the configured approval surface. |
+| Final review | Plan, implementation, verify output, docs diff, all phase provenance | Review findings, close recommendation, review provenance | Append-only bead comment; review through the configured gate. |
 
 For planning-only beads, the implementation artifact can be a planning note
-under `docs/plans/`. That is still a real artifact, but it must not be promoted
-to user-facing docs.
+under `docs/plans/dogfood/` or `docs/plans/product/`, depending on whether it
+describes the dogfood process or product design. That is still a real artifact,
+but it must not be promoted to user-facing docs.
 
 ## Recommended Workflow Changes
 
 1. Update `dev-workflow` from `PLAN -> EXECUTE -> QA` to
    `PLAN -> IMPLEMENT -> VERIFY -> DOCS -> FINAL REVIEW`.
-2. Add a human gate after every phase, with the review artifact presented on a
-   configured approval surface. For the current dogfood session that surface
-   may be tmux pane `.2`; other users can choose chat, PR comments, files, or
+2. Add a review gate after every phase. For the current dogfood process, the
+   gate requires clear `GO` from Gemini Pro, Claude Opus, and a fresh GPT-5.5
+   xhigh agent. The review artifact and results should be presented on a
+   configured approval surface; for the current session that surface may be
+   tmux pane `.2`, while other setups can choose chat, PR comments, files, or
    another local UI.
 3. Require every phase to write a provenance envelope with reproducible inputs,
    starting git hash, ending git hash, runner identity, and session/log
@@ -149,9 +155,10 @@ to user-facing docs.
 7. Keep `dev-test-writer` and `dev-qa` as separate specialist workers for now,
    but make them internal to one externally visible Verify phase. The Verify
    phase should produce one approval artifact that includes test changes, test
-   output, QA findings, manual test results when used, and a single pass/fail
-   recommendation. Revisit merging the agents only after the unified Verify
-   artifact has been dogfooded.
+   output, QA findings, manual test results when used, a `pass | fail |
+   blocked` status, and a recommendation derived from that status. Revisit
+   merging the agents only after the unified Verify artifact has been
+   dogfooded.
 8. Add manual test integration as a Verify subpath, not a separate top-level
    phase by default.
 

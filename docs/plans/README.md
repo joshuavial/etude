@@ -4,14 +4,36 @@ This section is for notes on things `etude` is expected to build, but has not
 implemented yet.
 
 The source of truth for the current product direction is still the full
-[design brief](BRIEF.md). Use this section for smaller implementation notes,
-component sketches, sequencing notes, and open design decisions that should not
-yet be treated as shipped documentation.
+[design brief](product/BRIEF.md). Use this section for smaller implementation
+notes, component sketches, sequencing notes, and open design decisions that
+should not yet be treated as shipped documentation.
 
-## Planning notes
+## Product Plans
 
-- [Dev workflow audit](dev-workflow-audit.md) - audit of the current Claude dev
-  workflow and recommended dogfood workflow shape for building `etude`.
+- [Product plan index](product/README.md) - product-facing plans and feature
+  design notes.
+- [Design brief](product/BRIEF.md) - current product direction and phased plan.
+- [Retrospectives](product/retrospectives.md) - product planning for first-class
+  retro artifacts, triggers, CLI shape, and manifest integration.
+
+## Dogfood Plans
+
+These notes describe how this repo is currently using planned `etude` concepts
+while the product is still being built. They are not shipped user-facing
+behavior.
+
+- [Dogfood plan index](dogfood/README.md) - dogfood process notes used while
+  building `etude`.
+- [Dev workflow audit](dogfood/dev-workflow-audit.md) - audit of the current
+  Claude dev workflow and recommended dogfood workflow shape for building
+  `etude`.
+- [Review gate process](dogfood/review-gate-process.md) - three-reviewer gate
+  process for advancing dogfood workflow phases without human approval gates.
+- [Verify phase design](dogfood/verify-phase-design.md) - decision and public
+  contract
+  for consolidating test writing, manual testing, and QA under one Verify gate.
+- [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
+  early dogfood workflow issues and recommended process improvements.
 
 ## Planned components
 

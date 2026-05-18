@@ -26,7 +26,7 @@ improved — so a skill change comes with a number, not a vibe.
 ## Status
 
 Design brief — nothing is built yet. The full design is in
-[`docs/plans/BRIEF.md`](docs/plans/BRIEF.md).
+[`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md).
 
 Planning notes for components that do not exist yet live under
 [`docs/plans/`](docs/plans/).
