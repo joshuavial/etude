@@ -1,5 +1,18 @@
 # Agent Instructions
 
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking with embedded Dolt storage.
+Run `bd prime` for current workflow context.
+
+Quick reference:
+
+- `bd ready` - find unblocked work.
+- `bd create "Title" --type task --priority 2` - create an issue.
+- `bd show <id>` - inspect an issue.
+- `bd close <id>` - close completed work.
+- `bd dolt push` - push beads data to the configured remote.
+
 ## Documentation
 
 Treat `docs/` as user-facing documentation for behavior that has actually been
