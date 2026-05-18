@@ -1,0 +1,292 @@
+# Dogfood Capture Protocol
+
+Status: planning note. This defines the temporary manual capture protocol for
+dogfooding `etude` while the product capture commands are not implemented.
+
+## Decision
+
+Use one bead as one provisional `etude` run.
+
+Until `etude capture` exists, the bead, git history, and dogfood planning docs
+are the capture store. Each workflow phase records a first-draft artifact, a
+provenance envelope, and review-gate results in stable locations that can later
+be imported into `etude` as run and stage records.
+
+Captured phase artifacts are append-only after review starts. If a phase fails
+review or must be redone, create a new attempt entry instead of editing the
+reviewed artifact in place.
+
+## Run Mapping
+
+Each bead maps to one future `etude` run:
+
+- run id: bead id
+- run title: bead title
+- run status: bead status
+- run parent: parent bead or epic
+- run dependencies: dependency edges recorded by beads
+- run start: timestamp when the bead is claimed
+- run end: timestamp when the bead is closed or deferred
+- source repo: current git remote and branch
+
+The bead remains the task tracker. `etude` later imports captured artifacts; it
+does not replace bead status, priorities, dependencies, or ownership.
+
+## Stage Names
+
+Use these stage names for dogfood capture:
+
+1. `plan`
+2. `implement`
+3. `verify`
+4. `docs`
+5. `final-review`
+6. `retro`, when a triggered or manual retro is produced
+
+The first five stages are the normal linear bead workflow described in
+[Dev Workflow Audit](dev-workflow-audit.md). `retro` is an optional triggered
+artifact described in the product planning note for
+[Retrospectives](../product/retrospectives.md).
+
+## Storage Rules
+
+Use the most structured existing store for each artifact:
+
+| Artifact | Temporary storage | Mutability |
+|---|---|---|
+| Plan artifact | bead `design` field | mutable until plan review starts, append-only afterward |
+| Capture envelope | bead note/comment | append-only after review starts |
+| Implementation artifact | git diff or commit plus bead note summary | append-only through commits and notes |
+| Verify artifact | bead note/comment | append-only |
+| Docs artifact | git diff or commit plus bead note summary | append-only through commits and notes |
+| Final review artifact | bead note/comment | append-only |
+| Retro artifact | bead note/comment or planning file linked from a note | append-only after capture |
+| Reviewer results | bead note/comment | append-only |
+| Large outputs | file path, screenshot path, log path, or external reference recorded in bead notes | preserve by reference |
+
+Planning-only beads still have an implementation artifact. The artifact is the
+planning note created or changed under `docs/plans/`, not shipped
+documentation.
+
+Do not move planning material into implemented docs just to make it easier to
+capture. The documentation policy in this repo still applies: shipped docs
+describe implemented behavior, and plans live under `docs/plans/`.
+
+## Capture Envelope
+
+Every stage artifact records this envelope before review:
+
+```text
+## Capture: <stage> attempt <n>
+
+Stage: plan | implement | verify | docs | final-review | retro
+Attempt: <integer starting at 1 for this stage>
+Bead: <id and title>
+Runner: <agent, tool, skill, or human>
+Runner version: <model, skill revision, CLI version, or unknown>
+Started at: <ISO-8601 timestamp or best available timestamp>
+Started git SHA: <git rev-parse HEAD>
+Started dirty state:
+<git status --short output, or "clean">
+
+Inputs:
+- <stable references to bead fields, prior artifacts, files, commands, prompts>
+
+Output artifact:
+- <bead field, note, commit, diff, file path, or external reference>
+
+Ended at: <ISO-8601 timestamp or best available timestamp>
+Ended git SHA: <git rev-parse HEAD>
+Ended dirty state:
+<git status --short output, or "clean">
+
+Approval surface:
+- <chat, tmux pane, PR comment, local file, or other surface>
+
+Review gate:
+- required: yes | no
+- attempt: <gate attempt number, when applicable>
+- result: pending | pass | rerun required | escalated | not applicable
+```
+
+The envelope records references rather than copying large artifacts. For exact
+review, the gate prompt must include the full current artifact text or exact
+changed excerpts, following [Review Gate Runbook](review-gate-runbook.md).
+
+Example:
+
+```text
+## Capture: implement attempt 1
+
+Stage: implement
+Attempt: 1
+Bead: etude-dogfood-capture-protocol - Define manual etude capture protocol
+Runner: codex
+Runner version: GPT-5.5
+Started at: 2026-05-19T10:14:00+12:00
+Started git SHA: abc1234
+Started dirty state:
+clean
+
+Inputs:
+- bead description from etude-dogfood-capture-protocol
+- docs/plans/dogfood/dev-workflow-audit.md
+- docs/plans/dogfood/verify-phase-design.md
+
+Output artifact:
+- docs/plans/dogfood/capture-protocol.md
+- docs/plans/README.md
+- docs/plans/dogfood/README.md
+
+Ended at: 2026-05-19T10:42:00+12:00
+Ended git SHA: abc1234
+Ended dirty state:
+ M docs/plans/README.md
+ M docs/plans/dogfood/README.md
+?? docs/plans/dogfood/capture-protocol.md
+
+Approval surface:
+- Codex chat
+
+Review gate:
+- required: yes
+- attempt: 1
+- result: pending
+```
+
+## Attempt Rules
+
+Attempts are counted per stage.
+
+- The first artifact for a stage is attempt `1`.
+- If review blocks and required changes alter the artifact, the next reviewed
+  artifact is attempt `2`.
+- If a tool fails before producing a reviewable artifact, record a short
+  blocked note but do not increment the stage attempt unless the partial output
+  is used as an artifact.
+- Gate reruns are counted separately inside the stage attempt.
+
+This keeps the future import model simple: stage attempts are artifact
+versions; gate attempts are reviews of one artifact version.
+
+## Verify Failure And Blocked Results
+
+Each completed Verify artifact is captured, regardless of status.
+
+- `pass` becomes a Verify stage attempt whose recommendation is to proceed to
+  Docs.
+- `fail` becomes a Verify stage attempt whose recommendation is to return to
+  Implement.
+- `blocked` becomes a Verify stage attempt whose recommendation is to collect
+  missing input and rerun Verify.
+
+When Verify returns `fail`, the subsequent implementation fix is a new
+Implement stage attempt. Do not hide implementation changes inside Verify.
+
+When Verify returns `blocked`, record the missing input in the Verify artifact.
+After the input is supplied, create a new Verify attempt that references the
+prior blocked attempt and the newly supplied input.
+
+## Internal Loops
+
+Internal specialist loops are captured as references inside the parent stage,
+not as top-level stages.
+
+For Verify, record:
+
+- test-writer lane output, including test files changed and commands run
+- QA lane output and status recommendation
+- manual-test lane output, when required
+- internal loop count, when QA sends work back to test-writer before the final
+  Verify artifact
+
+Only the final parent Verify artifact goes through the three-reviewer gate. If
+an internal lane reveals required implementation work, Verify returns `fail`
+and the bead moves back to Implement.
+
+For planning-only beads, Verify may record that test-writer and manual-test
+lanes were not applicable. QA still checks that the planning artifact is in the
+right location, links resolve, changed docs follow the writing style guide, and
+planned behavior is not described as shipped behavior.
+
+## Review Gate Capture
+
+After every phase gate, append reviewer results to the bead notes:
+
+```text
+<Stage> gate attempt <n> for stage attempt <m>:
+- Gemini Pro: GO | BLOCK | failed (<reason>)
+- Claude Opus: GO | BLOCK | failed (<reason>)
+- fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
+- required changes incorporated: <summary or none>
+- optional improvements handled: <summary or deferred bead>
+- result: pass | rerun required | escalated
+```
+
+Optional improvements from `GO` reviewers are handled before advancing or
+explicitly deferred to a named follow-up bead.
+
+Reviewer auth, quota, model access, allowance, timeout, or tooling failures are
+captured as reviewer failures. They do not count as `GO`.
+
+The normal `plan`, `implement`, `verify`, `docs`, and `final-review` stages go
+through the three-reviewer gate. Retro artifacts do not gate the main workflow
+unless a later bead explicitly makes a retro the artifact being advanced.
+
+## Import Path
+
+When `etude import` or equivalent local tooling exists, import dogfood beads as
+runs by reading:
+
+1. bead metadata for run identity, status, ownership, dependencies, and
+   timestamps
+2. bead `design` for the Plan artifact
+3. append-only bead notes for capture envelopes, Verify, Final Review, reviewer
+   results, and retros
+4. git commits and diffs referenced by implementation and docs notes
+5. referenced files for large outputs, screenshots, logs, or manual-test
+   evidence
+
+Import should preserve original timestamps and stage attempt numbers. It should
+store imported artifacts under `refs/etude/*` as immutable blobs and create a
+manifest that links each stage attempt to the exact source reference used
+during manual capture.
+
+If a bead lacks enough data to reconstruct a stage, import should mark that
+stage as incomplete instead of inventing missing artifacts.
+
+## Checklist
+
+At the start of a bead:
+
+- claim the bead
+- record the starting git SHA and dirty state
+- confirm the parent, dependencies, and phase labels
+
+For each phase:
+
+- write the first-draft artifact to its temporary storage location
+- append or update the capture envelope before review starts
+- run the review gate defined in [Review Gate Process](review-gate-process.md)
+- append reviewer results
+- handle optional improvements or defer them to named beads
+- advance to the next phase only after the gate passes
+
+At bead close:
+
+- ensure every completed phase has a capture envelope
+- ensure reviewer results are appended for every gated phase
+- ensure implementation and docs commits are referenced
+- run `git status`
+- commit and push repository changes
+- run `bd dolt push` for bead storage
+
+## Open Questions
+
+- The first `etude import` implementation should decide whether to preserve
+  bead note text verbatim as one artifact per note or parse capture envelopes
+  into separate structured artifacts. Owner: Phase 0 import work.
+- The workflow skill update should decide the exact label transitions for
+  `phase:plan`, `phase:implement`, `phase:verify`, `phase:docs`,
+  `phase:review`, and `phase:complete`. Owner:
+  `etude-overhaul-dev-workflow-skill`.

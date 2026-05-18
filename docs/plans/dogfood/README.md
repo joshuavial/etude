@@ -27,6 +27,8 @@ After a context clear or when starting a new ticket, boot into productive state:
   running the three-reviewer gate.
 - [Verify phase design](verify-phase-design.md) - public Verify phase contract
   and internal test/QA lane design.
+- [Dogfood capture protocol](capture-protocol.md) - temporary manual capture
+  rules for treating one bead as one future `etude` run.
 - [Writing style guide](writing-style-guide.md) - writing expectations for
   dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood-process-retro.md) - retrospective on early

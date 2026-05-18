@@ -34,6 +34,8 @@ behavior.
 - [Verify phase design](dogfood/verify-phase-design.md) - decision and public
   contract for consolidating test writing, manual testing, and QA under one
   Verify gate.
+- [Dogfood capture protocol](dogfood/capture-protocol.md) - temporary manual
+  capture rules for treating one bead as one future `etude` run.
 - [Writing style guide](dogfood/writing-style-guide.md) - writing expectations
   for dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
