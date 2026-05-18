@@ -30,3 +30,10 @@ implemented.
 
 The current product brief is planning material, so it lives at
 `docs/plans/product/BRIEF.md`.
+
+## Dogfood Session Boot
+
+When starting after a context clear or on a new ticket, read
+`docs/plans/dogfood/README.md` after `bd prime`. Its Session Boot section is
+the current entry point for the dogfood workflow, including the review-gate
+process and next-bead flow.
