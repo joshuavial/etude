@@ -32,6 +32,9 @@ and the resulting docs are clearer.
   process was parallel or stalled.
 - The first `bd update` attempt used shell-interpreted backticks in inline
   text, which produced noisy shell errors before the design was corrected.
+- Claude Opus twice interpreted a reviewer-seat prompt as an orchestration
+  prompt and returned an invalid "gate incomplete" result instead of a
+  Claude-seat `GO` or `BLOCK`.
 
 ## Root Causes
 
@@ -47,6 +50,11 @@ record results, and decide whether a rerun is needed.
 A third cause was brittle command hygiene around long Markdown payloads. Inline
 shell strings are too easy to corrupt when they contain backticks, quotes, or
 paths. Gate and bead updates should prefer files or stdin heredocs.
+
+A fourth cause was ambiguous reviewer prompt role framing. The shared process
+language describes the whole three-reviewer gate, but each external model is
+only one reviewer seat. Without an explicit seat-only instruction, Claude Opus
+treated the panel process as its own responsibility.
 
 ## What Worked Well
 
@@ -114,6 +122,17 @@ paths. Gate and bead updates should prefer files or stdin heredocs.
    Artifact: `docs/plans/dogfood/review-gate-runbook.md`.
 
    Leverage: medium. It reduces operator uncertainty.
+
+6. Make reviewer-seat prompts explicit.
+
+   Every reviewer prompt should state near the top that the model is only one
+   reviewer seat, must not invoke other reviewers, and must not escalate because
+   another reviewer is unavailable. It should return only its own `GO`/`BLOCK`
+   verdict.
+
+   Artifact: already added to `docs/plans/dogfood/review-gate-runbook.md`.
+
+   Leverage: high. It prevents invalid reviewer outputs and expensive reruns.
 
 ## Highest-Leverage Next Step
 

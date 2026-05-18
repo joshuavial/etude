@@ -29,9 +29,13 @@ behavior.
   `etude`.
 - [Review gate process](dogfood/review-gate-process.md) - three-reviewer gate
   process for advancing dogfood workflow phases without human approval gates.
+- [Review gate runbook](dogfood/review-gate-runbook.md) - operational checklist
+  for running the three-reviewer gate.
 - [Verify phase design](dogfood/verify-phase-design.md) - decision and public
-  contract
-  for consolidating test writing, manual testing, and QA under one Verify gate.
+  contract for consolidating test writing, manual testing, and QA under one
+  Verify gate.
+- [Writing style guide](dogfood/writing-style-guide.md) - writing expectations
+  for dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
   early dogfood workflow issues and recommended process improvements.
 

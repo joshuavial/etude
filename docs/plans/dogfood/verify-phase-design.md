@@ -47,6 +47,7 @@ The artifact also includes:
 - test change state: committed, staged, dirty, or none
 - automated test commands run and their results
 - manual test plan and results, when manual testing is relevant
+- documentation style-guide findings, when docs changed
 - QA findings about correctness, coverage, regressions, and code quality
 - unresolved risks or explicit statement that no material risks remain
 - provenance envelope for the Verify phase
@@ -129,6 +130,7 @@ Responsibilities:
 
 - review the implementation against the approved plan
 - inspect test adequacy rather than only test pass/fail status
+- check changed docs against the applicable writing style guide
 - check for regressions, edge cases, and integration risks
 - include manual test results when present
 - decide whether unresolved risks block progress
@@ -176,6 +178,11 @@ Manual tests:
 - reason: <why>
 - result: <summary or not applicable>
 
+Docs:
+- changed: yes | no
+- style guide: <path or not applicable>
+- result: <summary or not applicable>
+
 QA findings:
 - correctness:
 - coverage:
@@ -209,8 +216,9 @@ Every Verify result goes through the three-reviewer gate:
   full three-reviewer gate
 - if any reviewer cannot complete because of auth, quota, model access,
   allowance, timeout, or tooling failure, stop and escalate to the user
-- if the same gate receives repeated `BLOCK` results after three reruns,
-  escalate to the user with the reviewer feedback and a proposed resolution
+- if the same gate receives `BLOCK` results through attempt 4 (the initial run
+  plus three reruns), escalate to the user with the reviewer feedback and a
+  proposed resolution
 
 When Verify fails:
 
@@ -244,6 +252,10 @@ Final Review trusts the Verify artifact and does not rerun the test suite by
 default. It may request more verification only when the Verify artifact is
 missing, inconsistent, or contradicted by later changes.
 
+When documentation changes, Verify checks the changed docs against the
+applicable writing style guide before Docs or Final Review. For current dogfood
+planning docs, use [Writing Style Guide](writing-style-guide.md).
+
 ## Open Implementation Notes
 
 - The capture protocol should define the standard provenance envelope referenced
@@ -254,4 +266,5 @@ missing, inconsistent, or contradicted by later changes.
   test-writer loops, blocked-then-resupplied attempts, and review-gate reruns.
 - For planning-only beads, Verify can pass without tests when it confirms the
   planning artifact is in the right location, links resolve, and no shipped docs
-  claim planned behavior exists.
+  claim planned behavior exists, and changed docs follow the applicable writing
+  style guide.

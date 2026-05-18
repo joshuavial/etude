@@ -13,10 +13,11 @@ Every phase gate must pass a three-reviewer panel:
 - Claude Opus
 - a fresh GPT-5.5 xhigh agent
 
-Fresh means the reviewer starts from the supplied gate prompt and artifacts
-without carrying forward conversational context from earlier work on the bead.
-The GPT-5.5 seat is explicitly fresh because it is used as the independent
-cross-check against the two named external reviewers.
+Independent means the reviewer evaluates the supplied gate prompt and artifacts
+without relying on hidden implementation context. For Gemini Pro and Claude
+Opus, use non-interactive prompt invocations that receive only the gate prompt
+and repository files. The GPT-5.5 seat must be fresh: start a new isolated
+agent with no carry-over conversation context from earlier work on the bead.
 
 The gate passes only when all three reviewers give a clear `GO`.
 
@@ -28,10 +29,10 @@ If any reviewer cannot complete because of auth, quota, model access,
 allowance, timeout, or tooling failure, stop and escalate to the user. A failed
 reviewer invocation is not a `GO` and must not be skipped.
 
-If the same gate receives repeated `BLOCK` results after three reruns, escalate
-to the user with the reviewer feedback and a proposed resolution. The user can
-provide direction, but the gate still requires a clean three-reviewer `GO`
-before the workflow advances.
+If the same gate receives `BLOCK` results through attempt 4 (the initial run
+plus three reruns), escalate to the user with the reviewer feedback and a
+proposed resolution. The user can provide direction, but the gate still
+requires a clean three-reviewer `GO` before the workflow advances.
 
 ## Gate Semantics
 
@@ -58,10 +59,12 @@ The orchestrating agent must:
 - count reruns so repeated blocks can be escalated with context
 
 Every rerun is a full re-examination of the updated artifact by all three
-reviewers. Prior `GO` results do not carry over after any artifact change.
+reviewers. Prior `GO` results do not carry over after any required-change
+rerun.
 
 For rerun counting, the same gate means one phase attempt for one bead. The
-counter resets when that phase gate passes.
+initial gate run is attempt 1, and the counter resets when that phase gate
+passes.
 
 ## Human Input
 
