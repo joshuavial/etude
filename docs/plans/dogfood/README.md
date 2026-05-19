@@ -33,3 +33,5 @@ After a context clear or when starting a new ticket, boot into productive state:
   dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood-process-retro.md) - retrospective on early
   dogfood workflow issues and process improvements.
+- [Artifacts](artifacts/) - committed dogfood capture artifacts for external
+  files or large outputs that are referenced from bead notes.
