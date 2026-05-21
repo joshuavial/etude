@@ -10,6 +10,36 @@ it consistently.
 
 Use this runbook for every phase gate while dogfooding `etude`.
 
+## Gate Weight
+
+The three-reviewer gate remains the default authority for product code,
+architecture, workflow contracts, storage formats, command behavior, and any
+change that could affect users or future compatibility.
+
+For low-risk docs/process maintenance, use a lightweight gate artifact while
+keeping the same reviewer authority. A lightweight gate does not remove a
+reviewer seat and does not allow the workflow to advance on partial approval.
+It only narrows the prompt and evidence to the actual changed docs.
+
+Use the lightweight form only when all of these are true:
+
+- the change touches docs or planning notes only;
+- no shipped CLI behavior, schema, storage format, or Go API changed;
+- the artifact includes the full changed files or exact diffs;
+- the phase owner explicitly states why product tests or manual tests are not
+  relevant.
+
+Do not use the lightweight form for:
+
+- product code;
+- public CLI behavior;
+- manifest, artifact, ref, workflow, or eval schema changes;
+- docs that claim new shipped behavior;
+- any change after a reviewer asks for broader evidence.
+
+Lightweight gates should still record reviewer results with the normal gate
+attempt note format.
+
 ## Gate Inputs
 
 Before launching reviewers, collect exact current artifacts:

@@ -36,6 +36,12 @@ behavior.
   Verify gate.
 - [Dogfood capture protocol](dogfood/capture-protocol.md) - temporary manual
   capture rules for treating one bead as one future `etude` run.
+- [Docs freshness checklist](dogfood/docs-checklist.md) - shipped-docs checks
+  for Docs and Final Review phases.
+- [Backlog operating model](dogfood/backlog-operating-model.md) - working rules
+  for choosing the next bead from the issue graph.
+- [Phase 0 critical path](dogfood/phase0-critical-path.md) - current default
+  order for core schema, storage, manual capture, run inspection, and sync.
 - [Writing style guide](dogfood/writing-style-guide.md) - writing expectations
   for dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
