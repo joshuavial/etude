@@ -12,6 +12,7 @@ test:
 	go test ./...
 
 lint:
+	test -z "$$(gofmt -l cmd internal)"
 	go vet ./...
 
 clean:
