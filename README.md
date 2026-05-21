@@ -2,16 +2,18 @@
 
 ## Status
 
-Current implementation: root CLI scaffold plus an internal Git storage package.
+Current implementation: root CLI scaffold plus internal storage packages.
 
 Implemented:
 
 - Go module and `etude` binary entrypoint.
 - Root command help and version output.
 - Internal `refs/etude/*` Git storage package for run and eval refs.
+- Internal content-addressed artifact storage package for run-tree files,
+  external pointer records, and manifest-ready metadata.
 - Local build, test, lint, and clean commands.
 
-The storage package is an internal Go API and is not exposed through CLI
+The storage packages are internal Go APIs and are not exposed through CLI
 commands.
 
 The full design is in
