@@ -152,6 +152,67 @@ func TestJSONNormalizesTimesToUTC(t *testing.T) {
 	}
 }
 
+func TestParseJSONRoundTripsManifestAndArtifactPaths(t *testing.T) {
+	store := artifactstore.New()
+	input, err := store.AddContent("input", "text/plain", []byte("input"))
+	if err != nil {
+		t.Fatalf("AddContent input returned error: %v", err)
+	}
+	output, err := store.AddContent("output", "text/markdown", []byte("output"))
+	if err != nil {
+		t.Fatalf("AddContent output returned error: %v", err)
+	}
+	manifest := validManifest(ArtifactFromManifestArtifact(output))
+	manifest.Stages[0].Inputs = []ArtifactRef{ArtifactFromManifestArtifact(input)}
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+
+	got, err := ParseJSON(content)
+	if err != nil {
+		t.Fatalf("ParseJSON returned error: %v", err)
+	}
+	if got.RunID != manifest.RunID || got.Workflow != manifest.Workflow || len(got.Stages) != 1 {
+		t.Fatalf("parsed manifest = %#v", got)
+	}
+	if !got.Created.Equal(manifest.Created) || !got.Stages[0].Timestamp.Equal(manifest.Stages[0].Timestamp) {
+		t.Fatalf("timestamps changed: %#v", got)
+	}
+	paths := ArtifactPaths(got)
+	wantPaths := []string{input.Path, output.Path}
+	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("ArtifactPaths = %#v, want %#v", paths, wantPaths)
+	}
+}
+
+func TestParseJSONRejectsMalformedUnknownAndInvalidManifest(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	manifest := validManifest(output)
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+
+	cases := map[string]string{
+		"malformed":      `{`,
+		"top unknown":    strings.Replace(string(content), `"run_id"`, `"extra": true, "run_id"`, 1),
+		"stage unknown":  strings.Replace(string(content), `"stage"`, `"extra": true, "stage"`, 1),
+		"skill unknown":  strings.Replace(string(content), `"id"`, `"extra": true, "id"`, 1),
+		"artifact extra": strings.Replace(string(content), `"role"`, `"extra": true, "role"`, 1),
+		"object refs":    strings.Replace(string(content), `"refs": {`, `"refs": {"pr": {"number": 1},`, 1),
+		"invalid value":  strings.Replace(string(content), `"run_id": "run-1"`, `"run_id": ".bad"`, 1),
+		"trailing data":  string(content) + `{}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseJSON([]byte(payload)); err == nil {
+				t.Fatal("ParseJSON returned nil error")
+			}
+		})
+	}
+}
+
 func TestValidateRejectsInvalidManifests(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	cases := []struct {

@@ -10,8 +10,8 @@ import (
 
 var version = "dev"
 
-const rootLong = "etude currently provides a root CLI scaffold with help and version output. " +
-	"Capture, replay, and bench commands are planned but not implemented yet."
+const rootLong = "etude captures stage artifacts as git-native run records. " +
+	"Replay and bench commands are planned but not implemented yet."
 
 // NewRootCommand constructs the root command so tests can execute it without
 // touching process-global stdout, stderr, or argv.
@@ -32,6 +32,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+	cmd.AddCommand(newCaptureCommand(out, errOut))
 
 	return cmd
 }

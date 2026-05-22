@@ -23,10 +23,11 @@ func TestRootHelp(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"etude currently provides a root CLI scaffold",
-		"Capture, replay, and bench commands are planned but not implemented yet.",
+		"etude captures stage artifacts",
+		"Replay and bench commands are planned but not implemented yet.",
 		"Usage:",
 		"etude [flags]",
+		"capture",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
@@ -79,7 +80,6 @@ func TestCommandMetadata(t *testing.T) {
 func TestFutureCommandNamesAreRejected(t *testing.T) {
 	for _, args := range [][]string{
 		{"init"},
-		{"capture"},
 		{"replay"},
 		{"bench"},
 	} {

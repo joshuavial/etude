@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -126,6 +128,42 @@ func (m Manifest) JSON() ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func ParseJSON(content []byte) (Manifest, error) {
+	var payload manifestJSON
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil {
+		return Manifest{}, fmt.Errorf("%w: decode: %v", ErrInvalidManifest, err)
+	}
+	if err := ensureEOF(dec); err != nil {
+		return Manifest{}, err
+	}
+	manifest, err := payload.toManifest()
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := manifest.Validate(); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func ArtifactPaths(manifest Manifest) []string {
+	seen := make(map[string]struct{})
+	for _, stage := range manifest.Stages {
+		for _, input := range stage.Inputs {
+			seen[input.Path] = struct{}{}
+		}
+		seen[stage.Output.Path] = struct{}{}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
@@ -424,4 +462,84 @@ func (a ArtifactRef) toJSON() artifactJSON {
 
 func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func ensureEOF(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("%w: trailing data: %v", ErrInvalidManifest, err)
+	}
+	return fmt.Errorf("%w: trailing data", ErrInvalidManifest)
+}
+
+func (m manifestJSON) toManifest() (Manifest, error) {
+	created, err := parseTime("created", m.Created)
+	if err != nil {
+		return Manifest{}, err
+	}
+	stages := make([]Stage, 0, len(m.Stages))
+	for i, stage := range m.Stages {
+		converted, err := stage.toStage(i)
+		if err != nil {
+			return Manifest{}, err
+		}
+		stages = append(stages, converted)
+	}
+	refs := make(map[string]string, len(m.Refs))
+	for key, value := range m.Refs {
+		refs[key] = value
+	}
+	return Manifest{
+		RunID:           m.RunID,
+		Workflow:        m.Workflow,
+		WorkflowVersion: m.WorkflowVersion,
+		Created:         created,
+		Refs:            refs,
+		Stages:          stages,
+	}, nil
+}
+
+func (s stageJSON) toStage(index int) (Stage, error) {
+	timestamp, err := parseTime(fmt.Sprintf("stage[%d].timestamp", index), s.Timestamp)
+	if err != nil {
+		return Stage{}, err
+	}
+	inputs := make([]ArtifactRef, 0, len(s.Inputs))
+	for _, input := range s.Inputs {
+		inputs = append(inputs, input.toArtifactRef())
+	}
+	return Stage{
+		Name:       s.Stage,
+		ProducedBy: s.ProducedBy,
+		GitSHA:     s.GitSHA,
+		Skill: Skill{
+			ID:      s.Skill.ID,
+			Repo:    s.Skill.Repo,
+			Version: s.Skill.Version,
+		},
+		Inputs:    inputs,
+		Output:    s.Output.toArtifactRef(),
+		Timestamp: timestamp,
+	}, nil
+}
+
+func (a artifactJSON) toArtifactRef() ArtifactRef {
+	return ArtifactRef{
+		Role:      a.Role,
+		Artifact:  a.Artifact,
+		Path:      a.Path,
+		MediaType: a.MediaType,
+		Storage:   a.Storage,
+		Size:      a.Size,
+	}
+}
+
+func parseTime(field, value string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: %s: %v", ErrInvalidManifest, field, err)
+	}
+	return t.UTC(), nil
 }

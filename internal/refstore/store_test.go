@@ -269,6 +269,65 @@ func TestMissingRefAndFileReturnNotFound(t *testing.T) {
 	}
 }
 
+func TestReadCommitFileReadsSnapshotAfterRefMoves(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	first, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{
+		"manifest.json": []byte(`{"version":1}`),
+	}, WriteOptions{})
+	if err != nil {
+		t.Fatalf("first WriteCommit returned error: %v", err)
+	}
+	second, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{
+		"manifest.json": []byte(`{"version":2}`),
+	}, WriteOptions{ExpectedOld: first})
+	if err != nil {
+		t.Fatalf("second WriteCommit returned error: %v", err)
+	}
+
+	oldContent, err := store.ReadCommitFile(ctx, first, "manifest.json")
+	if err != nil {
+		t.Fatalf("ReadCommitFile first returned error: %v", err)
+	}
+	if string(oldContent) != `{"version":1}` {
+		t.Fatalf("first content = %q", oldContent)
+	}
+	newContent, err := store.ReadCommitFile(ctx, second, "manifest.json")
+	if err != nil {
+		t.Fatalf("ReadCommitFile second returned error: %v", err)
+	}
+	if string(newContent) != `{"version":2}` {
+		t.Fatalf("second content = %q", newContent)
+	}
+}
+
+func TestReadCommitFileRejectsInvalidCommitPathAndMissingFile(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	commit, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{
+		"manifest.json": []byte(`{"version":1}`),
+	}, WriteOptions{})
+	if err != nil {
+		t.Fatalf("WriteCommit returned error: %v", err)
+	}
+	if _, err := store.ReadCommitFile(ctx, "not-a-commit", "manifest.json"); !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("invalid commit error = %v, want ErrInvalidRef", err)
+	}
+	if _, err := store.ReadCommitFile(ctx, commit, "../manifest.json"); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("invalid path error = %v, want ErrInvalidPath", err)
+	}
+	if _, err := store.ReadCommitFile(ctx, strings.Repeat("1", 40), "manifest.json"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing commit error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.ReadCommitFile(ctx, commit, "missing.txt"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing file error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestRejectsInvalidRefsPathsAndEmptyFiles(t *testing.T) {
 	ctx := context.Background()
 	repo := initRepo(t)

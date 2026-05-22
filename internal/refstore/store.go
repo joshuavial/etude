@@ -127,6 +127,23 @@ func (s Store) ReadFile(ctx context.Context, ref, filePath string) ([]byte, erro
 	return out, nil
 }
 
+func (s Store) ReadCommitFile(ctx context.Context, commit, filePath string) ([]byte, error) {
+	if err := validateOID(commit); err != nil {
+		return nil, fmt.Errorf("%w: commit: %v", ErrInvalidRef, err)
+	}
+	if err := validateFilePath(filePath); err != nil {
+		return nil, err
+	}
+	if err := s.ensureCommit(ctx, commit); err != nil {
+		return nil, err
+	}
+	out, err := s.gitBytes(ctx, nil, nil, "show", commit+":"+filePath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s:%s", ErrNotFound, commit, filePath)
+	}
+	return out, nil
+}
+
 func (s Store) List(ctx context.Context, prefix string) ([]string, error) {
 	if err := validatePrefix(prefix); err != nil {
 		return nil, err
