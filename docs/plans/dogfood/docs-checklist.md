@@ -14,6 +14,21 @@ Use this checklist during the Docs phase and Final Review for every bead.
 - If only internal Go APIs changed, keep shipped docs limited to current
   implementation status unless there is a real user-facing workflow to explain.
 
+## Check Planning Docs On Close
+
+Shipped-doc checks above keep `README`/`docs/README` accurate. They do not keep
+`docs/plans/` notes fresh, which is how planning docs silently go stale. When a
+bead closes, also reconcile planning notes that referenced the work it just
+landed:
+
+- Search `docs/plans/` for the bead ID and for status language that the close
+  invalidates: "next bead", "until X works", "recommended sequence", "current
+  bias", "completed foundations", "not yet".
+- Move the just-closed work out of any "next" or "pending" list and into the
+  completed/foundations section of the relevant note.
+- If a planning note's whole premise is now satisfied, mark it superseded or
+  delete the stale section rather than leaving misleading guidance.
+
 ## Policy Checks
 
 - Shipped docs describe implemented and verified behavior only.
@@ -40,3 +55,5 @@ Final Review should ask:
 - Does `README.md` match the final diff?
 - Did any user-facing behavior ship without documentation?
 - Did any planned behavior leak into shipped docs?
+- Did closing this bead make any planning note stale (next-bead lists,
+  "until X works", recommended-sequence or status sections)?

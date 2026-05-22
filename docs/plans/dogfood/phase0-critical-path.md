@@ -15,33 +15,42 @@ Phase 0 aims to create a minimal, git-native capture loop:
 - Go CLI scaffold.
 - Internal `refs/etude/*` Git ref storage.
 - Internal content-addressed artifact storage with pointer records.
+- Run manifest: writer plus reader/parser (`ParseJSON`, `ArtifactPaths`).
+- Manual `capture` command (first user-facing capture path).
 
 ## Recommended Sequence
 
-1. `etude-run-manifest`
-   - Defines the JSON record that ties workflow, refs, repo SHAs, stages,
-     artifacts, skills, and timestamps together.
-   - Unblocks manual capture, run list/show, and GitHub import.
-
-2. `etude-workflow-schema`
+1. `etude-workflow-schema`
    - Defines and validates `.etude/workflow.yaml`.
    - Unblocks `etude init`.
 
-3. `etude-init-command`
+2. `etude-init-command`
    - Creates initial workflow config and prepares repo-level etude settings.
    - Should document only behavior that actually works.
 
-4. `etude-capture-manual`
-   - First user-facing capture path.
-   - This is where user-facing docs outside planning notes should start
-     growing materially.
-
-5. `etude-run-show-list`
+3. `etude-run-show-list`
    - Makes captured runs inspectable.
 
-6. `etude-sync-command`
+4. `etude-sync-command`
    - Pushes/fetches the custom ref namespace once there is useful captured
      data to move between clones.
+
+## Schema And Storage Beads Define Read And Write Together
+
+A serialized format is not a finished contract until both sides exist. The run
+manifest shipped writer-only, then the capture bead had to bolt on the parser
+and `refstore.ReadCommitFile` — so "manifest done" overstated reality and the
+read path surfaced implicitly in a downstream consumer.
+
+For any bead that introduces a serialized format (workflow schema, manifest,
+artifact, ref, or eval records):
+
+- define parse/validate alongside write/serialize in the same bead, or
+- explicitly defer the reader to a named follow-up bead in the design.
+
+Do not let the missing half surface implicitly when a later bead needs it.
+`etude-workflow-schema` is the immediate case: ship both validation (read) and
+whatever serialization init relies on, or name the split.
 
 ## Hardening Along The Way
 

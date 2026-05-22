@@ -231,6 +231,11 @@ Avoid inline shell arguments containing Markdown backticks, code fences, quotes,
 or multi-line text. Shell interpolation can corrupt the update before `bd`
 receives it.
 
+Every bead close carries a one-line rationale: what landed and the commit SHA,
+e.g. `bd close <id> --reason "implemented manifest reader, gate passed, f17af3a"`.
+A bare `"Closed"` is not sufficient — the reason is the durable record of why
+the bead is done once the chat is gone.
+
 ## Approval Surface
 
 The approval surface is informational. Use it to show:

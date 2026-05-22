@@ -59,13 +59,15 @@ When the user says "next", use this order:
 
 ## Current Phase 0 Bias
 
-Until manual capture works, the default next bead should usually be one of:
+Manual capture now works: `etude-run-manifest` and `etude-capture-manual` are
+closed, alongside the refstore and artifact-store foundations. The remaining
+Phase 0 product path, in default next-bead order, is:
 
-1. `etude-run-manifest`
-2. `etude-workflow-schema`
-3. `etude-capture-manual`
-4. `etude-run-show-list`
-5. `etude-sync-command`
+1. `etude-workflow-schema` - defines/validates `.etude/workflow.yaml`; unblocks
+   `etude init`.
+2. `etude-init-command` - scaffolds workflow config and repo etude settings.
+3. `etude-run-show-list` - makes captured runs inspectable.
+4. `etude-sync-command` - moves the `refs/etude/*` namespace between clones.
 
-`etude-run-manifest` is especially valuable because it unblocks capture,
-run list/show, and GitHub import.
+`etude-workflow-schema` is the current default next bead: it is the highest
+ready product-path leaf and it directly unblocks `etude-init-command`.
