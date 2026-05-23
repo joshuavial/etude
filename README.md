@@ -2,8 +2,8 @@
 
 ## Status
 
-Current implementation: `etude init` and manual capture CLIs plus internal
-storage, manifest, and workflow-schema packages.
+Current implementation: `etude init`, manual capture, and run inspection CLIs
+plus internal storage, manifest, and workflow-schema packages.
 
 Implemented:
 
@@ -12,6 +12,8 @@ Implemented:
 - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
   and configure `refs/etude/*` fetch/push refspecs on a git remote.
 - Manual `etude capture` command for local file artifacts.
+- `etude run list` to list all stored runs.
+- `etude run show <run-id>` to inspect the detail of one run.
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -21,8 +23,8 @@ Implemented:
 - Local build, test, lint, and clean commands.
 
 The storage, manifest, and workflow-schema packages are Go APIs internal to
-this module. The implemented CLI surface is `etude init`, `etude capture`, and
-the root help and version output.
+this module. The implemented CLI surface is `etude init`, `etude capture`,
+`etude run list`, `etude run show`, and the root help and version output.
 
 The full design is in
 [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
@@ -48,7 +50,10 @@ make clean
 ./bin/etude init --force
 ./bin/etude init --remote upstream
 ./bin/etude capture plan --run run-1 --output output=plan.md
+./bin/etude run list
+./bin/etude run show run-1
 ```
 
 See [Init](docs/init.md) for the init command.
 See [Manual Capture](docs/capture.md) for the capture command.
+See [Runs](docs/run.md) for the run list and run show commands.

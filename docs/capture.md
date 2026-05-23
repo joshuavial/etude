@@ -69,5 +69,4 @@ Not implemented yet:
 
 - workflow config loading
 - pointer/external artifact capture
-- `etude run list` and `etude run show`
 - replay, eval, import, and sync commands

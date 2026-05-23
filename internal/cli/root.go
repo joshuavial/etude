@@ -34,6 +34,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	cmd.AddCommand(newCaptureCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
+	cmd.AddCommand(newRunCommand(out, errOut))
 
 	return cmd
 }
