@@ -111,6 +111,23 @@ Use manual testing when the bead affects:
 - workflows that are hard to validate with unit tests alone
 - visual layout, interaction, or generated artifacts
 - anything with an existing manual test plan
+- a runnable binary or CLI command (see required step below)
+
+### Built-Binary Manual Test (required for CLI/binary beads)
+
+When a bead adds or changes a runnable binary or CLI command, manual testing is
+REQUIRED and must exercise the actually-built, globally-installed binary — not
+just `go test` with in-process wiring. The lane must:
+
+- build and install the binary globally (`make build` then `go install ./cmd/etude`,
+  or the project equivalent);
+- run the installed binary through its real behavior — golden paths and the
+  notable edge/error cases — in a realistic throwaway environment (e.g. a
+  `mktemp -d` git repo), cleaning up afterward;
+- record the exact commands run and observed output as the manual-test evidence.
+
+Automated tests pass with mocked or in-process wiring; only running the
+installed binary proves the shipped command works end to end.
 
 Manual testing should produce the same kind of evidence as automated testing:
 what was tested, how it was tested, observed result, failures, screenshots or
