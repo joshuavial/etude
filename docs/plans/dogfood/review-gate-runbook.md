@@ -104,15 +104,28 @@ Claude Opus:    in-harness Task(subagent_type="general-purpose", model="opus",
                 prompt="<gate prompt>") when Claude orchestrates;
                 otherwise claude --model opus -p "<gate prompt>"
 GPT-5.5 xhigh:  spawn a new fresh GPT-5.5 (codex) agent with reasoning_effort=xhigh
-pi/pilms:       pilms -p --thinking high "<gate prompt>"
+pi/pilms:       pilms --tools read,grep,find,ls,bash -p "<gate prompt>"
 ```
 
 `pilms` is the canonical invocation for the pi seat: it is a shell function that
 pins the local provider and model
 (`pilms () { pi --provider lmstudio --model qwen/qwen3.6-35b-a3b "$@" }`), so it
-runs `pi` against the local LM Studio qwen3.6-35b-a3b model with no API auth. The
-prompt can be passed inline or piped via stdin like the other seats
-(`echo "<gate prompt>" | pilms -p --thinking high`).
+runs `pi` against the local LM Studio qwen3.6-35b-a3b model with no API auth.
+
+**The pi seat MUST run with a read-only tool allowlist — never `--no-tools`.**
+`pi` is an agentic CLI; a reviewer is only useful if it can independently read
+the actual files and run `git diff` / `go test` rather than trust the
+orchestrator's summary. Use `--tools read,grep,find,ls,bash` (read + inspect +
+shell, no edit/write). Two failure modes to avoid:
+
+- Leaving ALL tools enabled (the default) can hang `pi` in `-p` mode. Restrict
+  to the read-only allowlist above.
+- `--no-tools` makes the seat blind, so it rubber-stamps the prompt summary and
+  catches nothing. Do not use it.
+
+The gate prompt for this seat should tell it to USE its tools to read the
+changed files and the diff (it cannot review what it cannot see). The prompt may
+be passed inline as the final arg (shown above) or piped via stdin.
 
 Do not advance until all four reviewers return.
 

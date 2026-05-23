@@ -208,9 +208,9 @@ motivating a 4th independent seat. The gate is now a four-reviewer panel.
    function (`pilms () { pi --provider lmstudio --model qwen/qwen3.6-35b-a3b
    "$@" }`) that runs the local `pi` CLI against a local LM Studio model
    (qwen3.6-35b-a3b), free and with no API auth. Canonical invocation:
-   `pilms -p --thinking high "<gate prompt>"`. The gate now passes only if
-   Gemini Pro, Claude Opus, fresh GPT-5.5 xhigh, and pi/pilms all return clear
-   GO. A pi/pilms failure usually means LM Studio is not running.
+   `pilms --tools read,grep,find,ls,bash -p "<gate prompt>"`. The gate now
+   passes only if Gemini Pro, Claude Opus, fresh GPT-5.5 xhigh, and pi/pilms all
+   return clear GO. A pi/pilms failure usually means LM Studio is not running.
 
    Artifacts: `docs/plans/dogfood/review-gate-runbook.md`,
    `docs/plans/dogfood/review-gate-process.md`,
@@ -218,5 +218,21 @@ motivating a 4th independent seat. The gate is now a four-reviewer panel.
    `docs/plans/dogfood/capture-protocol.md`, and the `dev-workflow` skill at
    `~/.claude/skills/dev-workflow/SKILL.md`.
 
-   Leverage: high. A 4th independent seat caught a real defect the others
-   missed and the local seat adds diversity at no API cost.
+   Leverage: medium, and contingent on tooling. The real cross-model value in
+   this run came from the GPT-5.5 (codex) seat, which caught a trailing-document
+   parse bug on Implement attempt 1 — before pi/pilms was added, while still a
+   three-seat panel. The local pi seat is free and adds a fourth independent
+   read, but only earns its place if it can actually inspect the artifacts.
+
+3. pi/pilms must run with a read-only tool allowlist, never tool-less. On its
+   first use the seat was run with all tools (hung in `-p` mode) and then with
+   `--no-tools` (returned `GO`/none on every gate — a blind rubber stamp that
+   judged only the orchestrator's prompt summary). The fix is
+   `--tools read,grep,find,ls,bash`: the seat then reads the changed files and
+   runs `git diff`/`go test` itself. Lesson: a reviewer seat with no tools adds
+   a vote but no signal; gate prompts must let each seat see the real artifacts.
+
+   Artifact: `docs/plans/dogfood/review-gate-runbook.md` (Invocation, pi seat).
+
+   Leverage: high. It is the difference between a real fourth reviewer and a
+   rubber stamp.
