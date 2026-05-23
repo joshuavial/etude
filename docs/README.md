@@ -4,6 +4,7 @@ This directory holds user-facing documentation for implemented behavior.
 
 ## Sections
 
+- [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
 - [Manual Capture](capture.md) - record local file artifacts into a run ref.
 - [Plans](plans/README.md) - notes on planned components that do not exist yet.
 

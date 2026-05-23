@@ -79,7 +79,6 @@ func TestCommandMetadata(t *testing.T) {
 
 func TestFutureCommandNamesAreRejected(t *testing.T) {
 	for _, args := range [][]string{
-		{"init"},
 		{"replay"},
 		{"bench"},
 	} {

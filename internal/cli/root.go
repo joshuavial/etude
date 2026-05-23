@@ -33,6 +33,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	cmd.AddCommand(newCaptureCommand(out, errOut))
+	cmd.AddCommand(newInitCommand(out, errOut))
 
 	return cmd
 }
