@@ -21,13 +21,12 @@ Phase 0 aims to create a minimal, git-native capture loop:
   (`internal/workflow`: `ParseYAML`, `Validate`, `YAML`, `Default`).
 - `etude init` command: scaffolds `.etude/workflow.yaml` + eval rubric
   placeholders and registers `refs/etude/*` fetch/push refspecs on a git remote.
+- `etude run list` / `etude run show` commands: inspect stored runs by walking
+  `refs/etude/runs/*` directly (no query index yet).
 
 ## Recommended Sequence
 
-1. `etude-run-show-list`
-   - Makes captured runs inspectable.
-
-2. `etude-sync-command`
+1. `etude-sync-command`
    - Pushes/fetches the custom ref namespace once there is useful captured
      data to move between clones.
 
