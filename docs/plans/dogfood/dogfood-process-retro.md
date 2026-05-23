@@ -146,3 +146,77 @@ Created `docs/plans/dogfood/review-gate-runbook.md` before advancing beyond the
 current gate. It turns the three-reviewer gate policy into an operational
 checklist with prompt assembly, parallel invocation, result capture,
 optional-improvement handling, rerun rules, and safe `bd update` mechanics.
+
+## Retro: gate reviewer auth failure and four-seat expansion (2026-05-23)
+
+### Retro Summary
+
+While running the dogfood reviewer gate for bead `etude-workflow-schema`, the
+Claude Opus seat failed to authenticate when invoked as a nested `claude` CLI
+from inside a Claude Code session. The failure is deterministic, not transient.
+The recovery (run the Claude seat as a fresh in-harness Task sub-agent) worked
+and is now an encoded rule. The same session also showed why reviewer diversity
+matters: the codex seat caught a real `BLOCK` that two other seats missed,
+motivating a 4th independent seat. The gate is now a four-reviewer panel.
+
+### What Went Wrong
+
+- The Claude Opus seat invoked as `claude --model opus -p` failed with
+  `401 Invalid authentication credentials`. There is no `ANTHROPIC_API_KEY` in
+  the environment, and a nested `claude` CLI spawned from inside a Claude Code
+  session cannot authenticate headlessly: the host session's credentials are
+  not exposed to the subprocess. This recurs every time the orchestrator is
+  Claude Code.
+
+### Root Causes
+
+- The runbook assumed the Claude seat could always run as the external
+  `claude -p` CLI, regardless of which agent was orchestrating the gate. That
+  assumption holds when codex or gemini drives the gate, but not when Claude
+  Code is the orchestrator, where the nested CLI has no credentials.
+- A three-seat panel left less margin: one seat caught a real defect the other
+  two missed (see below), so reviewer diversity is load-bearing, not redundant.
+
+### What Worked Well
+
+- The user-approved fix substituted the Claude seat with a fresh in-harness
+  sub-agent: `Task(subagent_type="general-purpose", model="opus", prompt=<only
+  the gate prompt>)`. It is authenticated through the host session, genuinely
+  fresh and isolated (only the gate prompt as context), and returned a valid GO
+  verdict with useful optional improvements. It is functionally equivalent to a
+  fresh `claude --model opus -p` seat without the auth problem.
+- On the Implement gate, the codex (GPT-5.5 xhigh) seat returned a real `BLOCK`
+  that both Gemini and the in-harness Claude seat missed: the new `ParseYAML`
+  did not reject trailing YAML documents, unlike the sibling
+  `runmanifest.ParseJSON` it mirrors. This reinforced the value of diverse,
+  independent reviewer seats and motivated adding a 4th.
+
+### Recommended Changes (all implemented this iteration)
+
+1. Encode the in-harness Claude rule. When the orchestrator is Claude Code, the
+   Claude Opus seat must run as a fresh in-harness Task sub-agent
+   (`subagent_type` general-purpose or equivalent, `model: opus`, given only the
+   gate prompt), not the external `claude -p` CLI. The external CLI is used for
+   the Claude seat only when the orchestrator is not Claude.
+
+   Artifacts: `docs/plans/dogfood/review-gate-runbook.md` (Invocation, In-harness
+   Claude rule) and `docs/plans/dogfood/review-gate-process.md` (Decision).
+
+   Leverage: high. It removes a deterministic gate failure.
+
+2. Add `pi`/`pilms` as a 4th independent reviewer seat. `pilms` is a shell
+   function (`pilms () { pi --provider lmstudio --model qwen/qwen3.6-35b-a3b
+   "$@" }`) that runs the local `pi` CLI against a local LM Studio model
+   (qwen3.6-35b-a3b), free and with no API auth. Canonical invocation:
+   `pilms -p --thinking high "<gate prompt>"`. The gate now passes only if
+   Gemini Pro, Claude Opus, fresh GPT-5.5 xhigh, and pi/pilms all return clear
+   GO. A pi/pilms failure usually means LM Studio is not running.
+
+   Artifacts: `docs/plans/dogfood/review-gate-runbook.md`,
+   `docs/plans/dogfood/review-gate-process.md`,
+   `docs/plans/dogfood/verify-phase-design.md`,
+   `docs/plans/dogfood/capture-protocol.md`, and the `dev-workflow` skill at
+   `~/.claude/skills/dev-workflow/SKILL.md`.
+
+   Leverage: high. A 4th independent seat caught a real defect the others
+   missed and the local seat adds diversity at no API cost.

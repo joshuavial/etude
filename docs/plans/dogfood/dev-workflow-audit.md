@@ -15,7 +15,7 @@ Use five gated phases for each bead:
 
 This is the workflow etude should dogfood while it is being built. Each phase
 needs a reviewable artifact and a review gate. The current dogfood gate is the
-three-reviewer process defined in [Review Gate Process](review-gate-process.md).
+four-reviewer process defined in [Review Gate Process](review-gate-process.md).
 
 ## Current Agent Inventory
 

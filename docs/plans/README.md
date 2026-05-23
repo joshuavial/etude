@@ -27,10 +27,10 @@ behavior.
 - [Dev workflow audit](dogfood/dev-workflow-audit.md) - audit of the current
   Claude dev workflow and recommended dogfood workflow shape for building
   `etude`.
-- [Review gate process](dogfood/review-gate-process.md) - three-reviewer gate
+- [Review gate process](dogfood/review-gate-process.md) - four-reviewer gate
   process for advancing dogfood workflow phases without human approval gates.
 - [Review gate runbook](dogfood/review-gate-runbook.md) - operational checklist
-  for running the three-reviewer gate.
+  for running the four-reviewer gate.
 - [Verify phase design](dogfood/verify-phase-design.md) - decision and public
   contract for consolidating test writing, manual testing, and QA under one
   Verify gate.
