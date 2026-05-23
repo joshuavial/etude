@@ -15,6 +15,7 @@ Implemented:
   external pointer records, and manifest-ready metadata.
 - Internal run manifest package for deterministic `manifest.json` records and
   validated writes to run refs.
+- Internal workflow schema package for parsing and validating `.etude/workflow.yaml`.
 - Local build, test, lint, and clean commands.
 
 The storage and manifest packages are Go APIs internal to this module. The
