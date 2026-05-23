@@ -17,21 +17,19 @@ Phase 0 aims to create a minimal, git-native capture loop:
 - Internal content-addressed artifact storage with pointer records.
 - Run manifest: writer plus reader/parser (`ParseJSON`, `ArtifactPaths`).
 - Manual `capture` command (first user-facing capture path).
+- Workflow schema: parse + validate `.etude/workflow.yaml` with read+write
+  (`internal/workflow`: `ParseYAML`, `Validate`, `YAML`, `Default`).
 
 ## Recommended Sequence
 
-1. `etude-workflow-schema`
-   - Defines and validates `.etude/workflow.yaml`.
-   - Unblocks `etude init`.
-
-2. `etude-init-command`
+1. `etude-init-command`
    - Creates initial workflow config and prepares repo-level etude settings.
    - Should document only behavior that actually works.
 
-3. `etude-run-show-list`
+2. `etude-run-show-list`
    - Makes captured runs inspectable.
 
-4. `etude-sync-command`
+3. `etude-sync-command`
    - Pushes/fetches the custom ref namespace once there is useful captured
      data to move between clones.
 
@@ -49,8 +47,10 @@ artifact, ref, or eval records):
 - explicitly defer the reader to a named follow-up bead in the design.
 
 Do not let the missing half surface implicitly when a later bead needs it.
-`etude-workflow-schema` is the immediate case: ship both validation (read) and
-whatever serialization init relies on, or name the split.
+`etude-workflow-schema` followed this rule — it shipped `ParseYAML`/`Validate`
+(read) and `YAML`/`Default` (write) together so `etude-init-command` can
+scaffold and re-validate. Apply the same discipline to any future eval/record
+format.
 
 ## Hardening Along The Way
 
