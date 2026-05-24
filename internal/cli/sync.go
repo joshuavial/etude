@@ -221,6 +221,8 @@ func classifyFetchBang(ctx context.Context, root string, bl bangLine) (fetchBang
 	// Run merge-base --is-ancestor <old> <new>.
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", bl.old, bl.new)
 	cmd.Env = syncEnv()
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 	err := cmd.Run()
 
 	if err == nil {
@@ -235,6 +237,10 @@ func classifyFetchBang(ctx context.Context, root string, bl bangLine) (fetchBang
 			return fetchBangBenign, nil
 		}
 		// Any other exit (e.g. 128) → abort with the exit code for debugging.
+		// Surface stderr when available to aid diagnosis.
+		if stderrStr := strings.TrimSpace(stderrBuf.String()); stderrStr != "" {
+			return fetchBangAbort, fmt.Errorf("fetch aborted: cannot classify ref %s (merge-base exit %d): %s", bl.ref, exitErr.ExitCode(), stderrStr)
+		}
 		return fetchBangAbort, fmt.Errorf("fetch aborted: cannot classify ref %s (merge-base exit %d)", bl.ref, exitErr.ExitCode())
 	}
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -564,6 +565,65 @@ func divergeEvalRef(t *testing.T, repo, id, parentOID, filename, content string)
 	}
 	// Update the eval ref to this new child commit.
 	gitCapture(t, repo, "update-ref", "refs/etude/evals/"+id, oid)
+}
+
+// TestClassifyFetchBangAbortSurfacesStderr verifies that classifyFetchBang returns
+// fetchBangAbort with git's stderr (e.g. "Not a valid commit name") when merge-base
+// exits with a non-0/1 code (e.g. 128 from a bogus OID). It also confirms that
+// the benign (exit 1) path does not leak any stderr into the error.
+func TestClassifyFetchBangAbortSurfacesStderr(t *testing.T) {
+	repo := initCaptureRepo(t)
+
+	// Resolve HEAD so we have a valid resolvable OID for bl.old.
+	headOID := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	if headOID == "" {
+		t.Fatal("could not resolve HEAD OID")
+	}
+
+	// Construct a bogus OID: same length as headOID, syntactically valid hex,
+	// but unresolvable — all d's except last char is 1 (avoids null OID guard).
+	bogusOID := strings.Repeat("d", len(headOID)-1) + "1"
+
+	// Abort path: bl.new is bogus → merge-base exits 128 with "Not a valid commit name".
+	bl := bangLine{old: headOID, new: bogusOID, ref: "refs/etude/runs/abort-1"}
+	result, err := classifyFetchBang(context.Background(), repo, bl)
+
+	if result != fetchBangAbort {
+		t.Errorf("abort path: got result %v, want fetchBangAbort", result)
+	}
+	if err == nil {
+		t.Fatal("abort path: expected non-nil error, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "refs/etude/runs/abort-1") {
+		t.Errorf("abort path: error %q does not contain full ref path", errStr)
+	}
+	if !strings.Contains(errStr, "merge-base exit 128") {
+		t.Errorf("abort path: error %q does not contain 'merge-base exit 128'", errStr)
+	}
+	if !strings.Contains(strings.ToLower(errStr), "not a valid commit name") {
+		t.Errorf("abort path: error %q does not contain git's stderr 'not a valid commit name'", errStr)
+	}
+
+	// Benign path: use two commits where old is NOT an ancestor of new.
+	// Add a second commit to the repo.
+	writeFile(t, repo, "extra.txt", "x")
+	gitCapture(t, repo, "add", "extra.txt")
+	gitCapture(t, repo, "commit", "-m", "second")
+	secondOID := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	firstOID := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD~1"))
+
+	// git merge-base --is-ancestor secondOID firstOID exits 1:
+	// secondOID is NOT an ancestor of firstOID (it's the child, not parent).
+	blBenign := bangLine{old: secondOID, new: firstOID, ref: "refs/etude/runs/benign-1"}
+	resultBenign, errBenign := classifyFetchBang(context.Background(), repo, blBenign)
+
+	if resultBenign != fetchBangBenign {
+		t.Errorf("benign path: got result %v, want fetchBangBenign", resultBenign)
+	}
+	if errBenign != nil {
+		t.Errorf("benign path: expected nil error, got %v", errBenign)
+	}
 }
 
 // seedRunRefInBare creates a new commit directly in the bare repo advancing runID.
