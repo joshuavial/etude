@@ -115,6 +115,8 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
 		if err != nil {
 			return err
 		}
+	} else if err := validateGitSHA(gitSHA); err != nil {
+		return err
 	}
 	skillID := cfg.skillID
 	if strings.TrimSpace(skillID) == "" {
@@ -275,6 +277,22 @@ func validateCLIIdentifier(name, value string) error {
 	for _, r := range value {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
 			return fmt.Errorf("invalid %s %q", name, value)
+		}
+	}
+	return nil
+}
+
+// validateGitSHA requires a user-supplied --git-sha to be a full lowercase hex
+// object id (SHA-1 = 40, SHA-256 = 64) so a recorded stage git sha is a real
+// commit id rather than arbitrary text. An empty --git-sha is resolved from HEAD
+// instead and never reaches here.
+func validateGitSHA(sha string) error {
+	if len(sha) != 40 && len(sha) != 64 {
+		return fmt.Errorf("invalid --git-sha %q: want a 40- or 64-character hex commit id", sha)
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return fmt.Errorf("invalid --git-sha %q: must be lowercase hex", sha)
 		}
 	}
 	return nil

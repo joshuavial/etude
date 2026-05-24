@@ -177,6 +177,66 @@ func TestCaptureRejectsUnresolvedHEADWithoutGitSHA(t *testing.T) {
 	}
 }
 
+func TestCaptureValidatesGitSHA(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "out")
+	chdir(t, repo)
+
+	// A valid 40-char hex sha is accepted and recorded verbatim.
+	sha40 := "0123456789abcdef0123456789abcdef01234567"
+	if _, stderr, err := execute("capture", "plan", "--run", "ok40", "--output", "output=out.md", "--git-sha", sha40); err != nil {
+		t.Fatalf("valid 40-hex --git-sha rejected: %v\nstderr: %s", err, stderr)
+	}
+	if got := readRunManifest(t, repo, "ok40").Stages[0].GitSHA; got != sha40 {
+		t.Fatalf("recorded git sha = %q, want %q", got, sha40)
+	}
+
+	// A valid 64-char hex sha (SHA-256) is accepted.
+	if _, stderr, err := execute("capture", "plan", "--run", "ok64", "--output", "output=out.md", "--git-sha", strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("valid 64-hex --git-sha rejected: %v\nstderr: %s", err, stderr)
+	}
+
+	// Invalid values are rejected with a clear error before the run is written.
+	for _, bad := range []string{"not-a-sha", "12345", strings.ToUpper(sha40), "z" + sha40[1:]} {
+		_, stderr, err := execute("capture", "plan", "--run", "badsha", "--output", "output=out.md", "--git-sha", bad)
+		if err == nil {
+			t.Fatalf("--git-sha %q was accepted, want rejection", bad)
+		}
+		if combined := err.Error() + " " + stderr; !strings.Contains(combined, "invalid --git-sha") {
+			t.Fatalf("--git-sha %q error = %q, want 'invalid --git-sha'", bad, combined)
+		}
+	}
+}
+
+func TestInferMediaType(t *testing.T) {
+	cases := map[string]string{
+		"a.txt":      "text/plain; charset=utf-8",
+		"a.md":       "text/markdown; charset=utf-8",
+		"a.markdown": "text/markdown; charset=utf-8",
+		"a.json":     "application/json",
+		"a.yaml":     "application/yaml",
+		"a.yml":      "application/yaml",
+		"a.diff":     "text/x-diff; charset=utf-8",
+		"a.patch":    "text/x-diff; charset=utf-8",
+		"a.html":     "text/html; charset=utf-8",
+		"a.htm":      "text/html; charset=utf-8",
+		"a.png":      "image/png",
+		"a.jpg":      "image/jpeg",
+		"a.jpeg":     "image/jpeg",
+		"a.gif":      "image/gif",
+		"a.svg":      "image/svg+xml",
+		"a.bin":      "application/octet-stream",
+		"noext":      "application/octet-stream",
+		"a.MD":       "text/markdown; charset=utf-8", // extension match is case-insensitive
+		"dir/x.JSON": "application/json",
+	}
+	for path, want := range cases {
+		if got := inferMediaType(path); got != want {
+			t.Errorf("inferMediaType(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func readRunManifest(t *testing.T, repo, runID string) runmanifest.Manifest {
 	t.Helper()
 	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, "manifest.json")

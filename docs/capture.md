@@ -46,7 +46,9 @@ Useful flags:
 --message <text>
 ```
 
-If `--git-sha` is omitted, `etude` records the current `HEAD`.
+If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
+must be a full lowercase hex commit id (40 characters for SHA-1, 64 for SHA-256);
+any other value is rejected.
 If `--skill-id` is omitted, it defaults to the `<stage>` argument.
 The other metadata defaults are `--workflow manual`,
 `--workflow-version manual-v1`, `--produced-by original`,
