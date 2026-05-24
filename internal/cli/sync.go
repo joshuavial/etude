@@ -136,11 +136,10 @@ func (r syncRunner) fetch(ctx context.Context, root, remote string) error {
 		if classifyErr != nil {
 			return classifyErr
 		}
+		// fetchBangAbort always carries a non-nil error and is returned by the guard above; no case needed here.
 		switch result {
 		case fetchBangRealFailure:
 			return fmt.Errorf("fetch failed: %s", strings.TrimSpace(stderrStr))
-		case fetchBangAbort:
-			return fmt.Errorf("fetch aborted: cannot classify ref %s", bl.ref)
 		case fetchBangBenign:
 			benignRefs = append(benignRefs, bl.ref)
 		}
