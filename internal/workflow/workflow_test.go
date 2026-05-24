@@ -249,6 +249,10 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 		// Stage-name charset (broader [A-Za-z0-9_.-] than roles, but still bounded)
 		{"stage name with space", func(w *Workflow) { w.Stages[0].Name = "my stage" }},
 		{"stage name with slash", func(w *Workflow) { w.Stages[0].Name = "a/b" }},
+
+		// Reserved produces roles
+		{"produces reserved role task", func(w *Workflow) { w.Stages[0].Produces = "task" }},
+		{"produces reserved role repo-state", func(w *Workflow) { w.Stages[0].Produces = "repo-state" }},
 	}
 
 	for _, tc := range cases {
@@ -259,6 +263,43 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 				t.Fatal("Validate returned nil error")
 			} else if !errors.Is(err, ErrInvalidWorkflow) {
 				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsReservedProducesRole is a focused test that checks the
+// "reserved" guard specifically — the table harness only asserts err != nil
+// + errors.Is(ErrInvalidWorkflow); this test also asserts the error message
+// contains "reserved", catching a future regression where another guard
+// shadows this one.
+func TestValidateRejectsReservedProducesRole(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*Workflow)
+	}{
+		{"first stage produces task", func(w *Workflow) { w.Stages[0].Produces = "task" }},
+		{"first stage produces repo-state", func(w *Workflow) { w.Stages[0].Produces = "repo-state" }},
+		{"second stage produces task", func(w *Workflow) {
+			w.Stages = append(w.Stages, Stage{Name: "impl", Produces: "task", Skill: "s", Inputs: []string{"task"}})
+		}},
+		{"second stage produces repo-state", func(w *Workflow) {
+			w.Stages = append(w.Stages, Stage{Name: "impl", Produces: "repo-state", Skill: "s", Inputs: []string{"task"}})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := minimalWorkflow()
+			tc.edit(&w)
+			err := w.Validate()
+			if err == nil {
+				t.Fatal("Validate returned nil error")
+			}
+			if !errors.Is(err, ErrInvalidWorkflow) {
+				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+			}
+			if !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("error does not contain 'reserved': %v", err)
 			}
 		})
 	}

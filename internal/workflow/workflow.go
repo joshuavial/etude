@@ -45,7 +45,8 @@ type Stage struct {
 	// Name is the human-readable identifier for this stage (e.g. "plan").
 	Name string
 	// Produces is the role token that this stage's output artifact carries
-	// (e.g. "plan", "diff").  Must be unique across all stages.
+	// (e.g. "plan", "diff").  Must be unique across all stages and must not
+	// be a reserved special role ("task" or "repo-state").
 	Produces string
 	// Inputs lists the role tokens this stage consumes.  May be nil (zero
 	// inputs is valid — the stage relies solely on implicit repo-state).
@@ -113,6 +114,12 @@ func (w Workflow) Validate() error {
 		}
 		if err := validateRoleToken(prefix+".produces", s.Produces); err != nil {
 			return err
+		}
+		// A reserved special role (task, repo-state) is an implicit input
+		// available to every stage; a stage producing one is meaningless, so
+		// reject it rather than let it slip through as a no-op.
+		if specialRoles[s.Produces] {
+			return fmt.Errorf("%w: %s produces role %q is reserved", ErrInvalidWorkflow, prefix, s.Produces)
 		}
 		if seenProducesRoles[s.Produces] {
 			return fmt.Errorf("%w: duplicate produces role %q", ErrInvalidWorkflow, s.Produces)
