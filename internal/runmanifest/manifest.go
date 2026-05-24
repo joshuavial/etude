@@ -307,13 +307,39 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 	return paths
 }
 
+// IsValidIdentifier reports whether value is a non-empty string using only
+// the [A-Za-z0-9_.-] character set.
+func IsValidIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsValidRunID reports whether value is a valid run identifier: it must
+// satisfy IsValidIdentifier and additionally must not have a leading dot,
+// trailing dot, contain "..", consist entirely of dots, or end with ".lock".
+func IsValidRunID(value string) bool {
+	if !IsValidIdentifier(value) {
+		return false
+	}
+	return !strings.HasPrefix(value, ".") &&
+		!strings.HasSuffix(value, ".") &&
+		!strings.Contains(value, "..") &&
+		strings.Trim(value, ".") != "" &&
+		!strings.HasSuffix(value, ".lock")
+}
+
 func validateRunID(runID string) error {
 	if err := validateIdentifier("run id", runID); err != nil {
 		return err
 	}
-	if strings.HasPrefix(runID, ".") || strings.HasSuffix(runID, ".") ||
-		strings.Contains(runID, "..") || strings.Trim(runID, ".") == "" ||
-		strings.HasSuffix(runID, ".lock") {
+	if !IsValidRunID(runID) {
 		return fmt.Errorf("%w: invalid run id %q", ErrInvalidManifest, runID)
 	}
 	return nil
@@ -323,10 +349,8 @@ func validateIdentifier(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s required", ErrInvalidManifest, name)
 	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
-			return fmt.Errorf("%w: invalid %s %q", ErrInvalidManifest, name, value)
-		}
+	if !IsValidIdentifier(value) {
+		return fmt.Errorf("%w: invalid %s %q", ErrInvalidManifest, name, value)
 	}
 	return nil
 }

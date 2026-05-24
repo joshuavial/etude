@@ -131,13 +131,13 @@ func (r *runShowListRunner) show(ctx context.Context, id string) error {
 	return printRunDetail(r.stdout, manifest)
 }
 
-// validateRunIDExtra enforces the additional rules from runmanifest.validateRunID
-// that are not covered by validateCLIIdentifier: leading/trailing dot, ".." anywhere,
-// all-dots, and ".lock" suffix. This runs before any git call so it works outside a repo.
+// validateRunIDExtra enforces the run id rules from runmanifest that are not
+// covered by validateCLIIdentifier: leading/trailing dot, ".." anywhere,
+// all-dots, and ".lock" suffix. It delegates to runmanifest.IsValidRunID so
+// the shared spec has a single source of truth. This runs before any git call
+// so it works outside a repo.
 func validateRunIDExtra(id string) error {
-	if strings.HasPrefix(id, ".") || strings.HasSuffix(id, ".") ||
-		strings.Contains(id, "..") || strings.Trim(id, ".") == "" ||
-		strings.HasSuffix(id, ".lock") {
+	if !runmanifest.IsValidRunID(id) {
 		return fmt.Errorf("invalid run id %q", id)
 	}
 	return nil

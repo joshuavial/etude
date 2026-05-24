@@ -274,10 +274,8 @@ func validateCLIIdentifier(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is required", name)
 	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
-			return fmt.Errorf("invalid %s %q", name, value)
-		}
+	if !runmanifest.IsValidIdentifier(value) {
+		return fmt.Errorf("invalid %s %q", name, value)
 	}
 	return nil
 }
