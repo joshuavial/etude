@@ -55,6 +55,17 @@ Decide on:
 - Code patterns to follow
 - How it integrates with existing code
 
+**Verify external-tool semantics empirically before finalizing.** If the plan's
+correctness depends on how an external tool behaves — git plumbing (exit codes,
+porcelain output, ref/lock semantics), a CLI, a filesystem edge, an API — do NOT
+assert that behavior from memory. Reproduce it in a throwaway environment (e.g. a
+`mktemp -d` git repo, `git init --object-format=...`, a scratch invocation) and
+cite the OBSERVED result in the plan. State the tool version where it matters.
+Reasoning-from-assumption about external behavior is the most common cause of a
+plan getting blocked through multiple review-gate rounds; a 30-second
+reproduction up front replaces several gate cycles. If a behavior cannot be
+reproduced, flag the uncertainty explicitly so the gate scrutinizes it.
+
 ### 5. Plan Testing
 
 Identify:
@@ -162,6 +173,8 @@ Use ExitPlanMode tool, then present the plan to the user:
 - Focus on approach, not implementation details
 - Acknowledge uncertainty where it exists
 - If requirements are unclear, ask before planning
+- Never assert external-tool behavior (git, CLIs, APIs) from memory — reproduce
+  it in a throwaway environment and cite the observed result in the plan
 
 ## Example
 

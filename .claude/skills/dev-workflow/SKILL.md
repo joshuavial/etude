@@ -88,12 +88,17 @@ artifact and gate result.
 1. Understand requirements from bead description and dependencies.
 2. Explore the codebase and relevant docs.
 3. Design the implementation approach.
-4. Identify files to modify/create.
-5. Plan tests and docs work.
-6. Assess risks.
-7. Write the plan to the bead `--design` field.
-8. Record capture/provenance details.
-9. Run the phase gate before implementation.
+4. When the plan's correctness hinges on external-tool behavior (git plumbing,
+   a CLI, an API, a filesystem edge), reproduce that behavior in a throwaway
+   environment and cite the observed result in the plan — do not assert tool
+   semantics from memory. This is the cheapest place to catch it; assumptions
+   surface as expensive multi-round gate blocks otherwise.
+5. Identify files to modify/create.
+6. Plan tests and docs work.
+7. Assess risks.
+8. Write the plan to the bead `--design` field.
+9. Record capture/provenance details.
+10. Run the phase gate before implementation.
 
 **Output**:
 

@@ -12,33 +12,47 @@ Use this runbook for every phase gate while dogfooding `etude`.
 
 ## Gate Weight
 
-The four-reviewer gate remains the default authority for product code,
-architecture, workflow contracts, storage formats, command behavior, and any
-change that could affect users or future compatibility.
+Match the gate weight to the bead's risk. Pick the tier from the highest-risk
+surface the bead touches; when unsure, go heavier. Every tier still requires a
+UNANIMOUS pass of its seats — no tier advances on partial approval — and every
+seat failure (auth/quota/tool/empty) still escalates per Waiting And Status.
 
-For low-risk docs/process maintenance, use a lightweight gate artifact while
-keeping the same reviewer authority. A lightweight gate does not remove a
-reviewer seat and does not allow the workflow to advance on partial approval.
-It only narrows the prompt and evidence to the actual changed docs.
+**Tier 1 — Full four-seat gate** (Gemini Pro + in-harness Claude Opus + fresh
+GPT-5.5 xhigh + pi/pilms). The default and required tier for anything that can
+affect users, data, or future compatibility:
 
-Use the lightweight form only when all of these are true:
+- product code and public CLI behavior;
+- manifest, artifact, ref, workflow, or eval schema/format/storage changes;
+- anything that reads or writes the `refs/etude/*` namespace or git plumbing;
+- any change that could lose or corrupt data, or break backward compatibility;
+- docs that claim NEW shipped behavior (reviewers must verify docs against code).
 
-- the change touches docs or planning notes only;
-- no shipped CLI behavior, schema, storage format, or Go API changed;
-- the artifact includes the full changed files or exact diffs;
-- the phase owner explicitly states why product tests or manual tests are not
-  relevant.
+Examples this tier caught real bugs on: `etude sync`, refstore hardening.
 
-Do not use the lightweight form for:
+**Tier 2 — Lightened two-seat gate** (in-harness Claude Opus + fresh GPT-5.5
+xhigh — the two highest-signal seats; drop the slower Gemini and pi/pilms seats).
+Use for LOW-RISK code changes that touch none of the Tier-1 surfaces: small
+polish, localized refactors, validation tightening, or test strengthening on an
+existing, already-gated component. Example: tightening `capture --git-sha`
+validation + adding a table test.
 
-- product code;
-- public CLI behavior;
-- manifest, artifact, ref, workflow, or eval schema changes;
-- docs that claim new shipped behavior;
-- any change after a reviewer asks for broader evidence.
+**Tier 3 — Single-seat gate** (in-harness Claude Opus). Use only for changes with
+NO shipping-code change: test-only additions (e.g. godoc `Example` functions) or
+docs/planning-notes-only changes. Examples: internal API examples, a deferred-
+decisions planning note.
 
-Lightweight gates should still record reviewer results with the normal gate
-attempt note format.
+Escalation is mandatory and overrides the tier: if a bead picked for Tier 2/3
+turns out to touch a Tier-1 surface, or ANY reviewer (or the orchestrator) finds
+it changes shipped behavior/schema/storage or could lose data, STOP and rerun at
+Tier 1. Tier choice is recorded in the gate attempt note (e.g. "gate: Tier 2
+(Opus + Codex) — low-risk capture polish, no Tier-1 surface").
+
+**Lightweight artifact (composes with any tier):** for docs/planning-only work,
+narrow the gate prompt and evidence to the actual changed files/diffs and have
+the phase owner state why product/manual tests are not relevant. This is about
+the prompt scope, independent of how many seats the tier uses.
+
+All tiers record reviewer results with the normal gate attempt note format.
 
 ## Gate Inputs
 
@@ -201,6 +215,16 @@ off here: `pi --thinking off`, the qwen `/no_think` token, and
 on this LM Studio build. An occasional truly-empty completion is a model glitch;
 rerun the seat (LM Studio is up) rather than treating one empty run as a verdict.
 
+Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
+hangs, empties, or errors twice in a session, stop blind rerun/kill cycles and
+root-cause it (probe the underlying service directly — e.g. `curl` the model
+endpoint, run the seat's CLI with a trivial prompt, check the process state)
+before any further reruns. Repeatedly re-launching a flaky seat without
+diagnosing it burns gate rounds; one focused investigation usually yields a
+durable fix (and a note in this runbook). This applies the standing rule: when
+you hit recurring friction, investigate the root cause instead of improvising
+around it.
+
 ## Result Classification
 
 After all four reviewers return:
@@ -209,6 +233,15 @@ After all four reviewers return:
 - any `BLOCK`: gate fails; incorporate all required changes and rerun the full
   gate
 - any reviewer failure: gate is incomplete; escalate to the user
+
+When a `BLOCK` rests on a disputed factual claim about tool behavior (e.g. "this
+git command exits 0", "the CLI prints X"), or two reviewers disagree on such a
+fact, the orchestrator REPRODUCES the behavior empirically before reworking — do
+not change code or docs to satisfy a BLOCK that may be wrong. If the claim is
+confirmed, rework and rerun. If it is disproven, do not apply the change; rerun
+the gate with the empirical evidence embedded in the prompt so the panel
+converges on the verified behavior, and record the resolution in the gate note.
+A reviewer's confident assertion is not authoritative over a reproduced result.
 
 Optional improvements are not blockers, but they are not ignored. Before
 advancing, either:

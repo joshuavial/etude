@@ -64,6 +64,14 @@ For shipped docs:
 - Keep it concise.
 - Match local style.
 - Do not mention planned behavior as if shipped.
+- **Any command/CLI output shown in a doc must be CAPTURED from a real run of
+  the built binary — never hand-written from reasoning about what the code
+  prints.** Run the actual command, copy its real stdout/stderr, and label which
+  stream each line came from when a doc shows an error or a mixed-stream case.
+  Account for the full output (e.g. a command that prints a fetch line AND a push
+  line). Hand-written example output that "looks right" is the most common cause
+  of a docs gate getting blocked through multiple rounds — capturing real output
+  is faster and correct.
 
 For generated references:
 
@@ -145,3 +153,5 @@ Ready for Final Review after Docs gate passes.
 - Only document public APIs and user-visible behavior in shipped docs.
 - Keep planning material out of shipped docs.
 - Do not document unchanged code.
+- Capture any shown command output from a real run of the built binary; never
+  hand-write example stdout/stderr.
