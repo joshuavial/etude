@@ -23,12 +23,18 @@ Phase 0 aims to create a minimal, git-native capture loop:
   placeholders and registers `refs/etude/*` fetch/push refspecs on a git remote.
 - `etude run list` / `etude run show` commands: inspect stored runs by walking
   `refs/etude/runs/*` directly (no query index yet).
+- `etude sync` command: non-forced porcelain push/fetch of the `refs/etude/*`
+  namespace to/from a git remote, with ancestry-based fetch classification and
+  push divergence detection (never moves a local ref backward or clobbers a
+  remote ref).
 
 ## Recommended Sequence
 
-1. `etude-sync-command`
-   - Pushes/fetches the custom ref namespace once there is useful captured
-     data to move between clones.
+The Phase 0 product path is complete: workflow declaration, capture, run
+inspection, and `refs/etude/*` sync all exist. The minimal git-native capture
+loop is closed end to end. Remaining work is hardening (`etude-ccj`) and polish
+(`etude-cr2`, `etude-88o`) taken opportunistically, plus the deferred follow-ups
+(`etude-dpz`, `etude-zcq`); net-new product scope belongs to Phase 1.
 
 ## Schema And Storage Beads Define Read And Write Together
 

@@ -59,13 +59,16 @@ When the user says "next", use this order:
 
 ## Current Phase 0 Bias
 
-The schema, capture, init, and run-inspection foundations now exist:
-`etude-run-manifest`, `etude-capture-manual`, `etude-workflow-schema`,
-`etude-init-command`, and `etude-run-show-list` are closed, alongside the
-refstore and artifact-store foundations. The remaining Phase 0 product path is:
+The Phase 0 product path is COMPLETE. `etude-run-manifest`,
+`etude-capture-manual`, `etude-workflow-schema`, `etude-init-command`,
+`etude-run-show-list`, and `etude-sync-command` are all closed, alongside the
+refstore and artifact-store foundations — the minimal git-native capture loop
+(declare workflow, capture, inspect runs, sync `refs/etude/*`) now exists end to
+end.
 
-1. `etude-sync-command` - moves the `refs/etude/*` namespace between clones.
-
-`etude-sync-command` is the current default next bead: with runs now capturable
-and inspectable locally, syncing the `refs/etude/*` namespace between clones is
-the highest ready product-path leaf.
+There is no remaining ready product-path leaf. The default next work is now
+hardening and polish taken opportunistically — `etude-ccj` (refstore edge
+cases), `etude-cr2` (typed artifact discriminator), `etude-88o` — plus the
+deferred follow-ups `etude-dpz` (shared run-id validation) and `etude-zcq`
+(sync fetchBangAbort coverage). Net-new product scope belongs to Phase 1; pick a
+hardening/polish bead by priority unless the user opens Phase 1 planning.

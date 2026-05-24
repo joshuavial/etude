@@ -188,6 +188,19 @@ Default wait heuristic: poll quietly for at least 10 minutes before treating a
 silent reviewer as suspect. If the process is still alive after that, inspect
 the process state and escalate to the user rather than killing or skipping it.
 
+The pi/pilms model `qwen/qwen3.6-35b-a3b` is reasoning-first: it emits a large
+`reasoning_content` chain-of-thought (often 2,500+ tokens) BEFORE any answer
+`content`. In `pi --mode text` nothing prints until the reasoning finishes, so a
+pi/pilms seat legitimately sits at zero output for a long time and looks hung
+when it is not. With `--tools` enabled each agentic round pays that reasoning
+cost again, so a single seat can take many minutes. Do NOT kill it on a short
+(1-5 minute) timeout or assume an empty output file means failure — give it a
+generous budget (~15 minutes) and let it finish. The reasoning cannot be turned
+off here: `pi --thinking off`, the qwen `/no_think` token, and
+`chat_template_kwargs.enable_thinking=false` were all verified NOT to suppress it
+on this LM Studio build. An occasional truly-empty completion is a model glitch;
+rerun the seat (LM Studio is up) rather than treating one empty run as a verdict.
+
 ## Result Classification
 
 After all four reviewers return:
