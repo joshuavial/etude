@@ -33,7 +33,8 @@ choosing "next" work:
 These improve already-built internals. Pick them when the next product bead
 would rely heavily on the weak edge being hardened:
 
-- `etude-ccj` - refstore edge cases
+- `etude-ccj` - refstore edge cases (landed: SHA-1/SHA-256 OID acceptance,
+  empty-old create, stdout/stderr split, control-char path rejection)
 
 ### Polish
 
@@ -67,8 +68,8 @@ refstore and artifact-store foundations — the minimal git-native capture loop
 end.
 
 There is no remaining ready product-path leaf. The default next work is now
-hardening and polish taken opportunistically — `etude-ccj` (refstore edge
-cases), `etude-cr2` (typed artifact discriminator), `etude-88o` — plus the
-deferred follow-ups `etude-dpz` (shared run-id validation) and `etude-zcq`
-(sync fetchBangAbort coverage). Net-new product scope belongs to Phase 1; pick a
-hardening/polish bead by priority unless the user opens Phase 1 planning.
+polish taken opportunistically — `etude-cr2` (typed artifact discriminator),
+`etude-88o` — plus the deferred follow-ups `etude-dpz` (shared run-id
+validation) and `etude-zcq` (sync fetchBangAbort coverage). `etude-ccj`
+(refstore edge cases) has landed. Net-new product scope belongs to Phase 1; pick
+a polish bead by priority unless the user opens Phase 1 planning.

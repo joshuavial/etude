@@ -27,14 +27,18 @@ Phase 0 aims to create a minimal, git-native capture loop:
   namespace to/from a git remote, with ancestry-based fetch classification and
   push divergence detection (never moves a local ref backward or clobbers a
   remote ref).
+- Refstore hardening (`etude-ccj`): validateOID accepts SHA-1 (40-hex) and
+  SHA-256 (64-hex); WriteCommit create uses empty-old (hash-agnostic); gitBytes
+  splits stdout/stderr; validateFilePath rejects control characters in both
+  refstore and runmanifest.
 
 ## Recommended Sequence
 
 The Phase 0 product path is complete: workflow declaration, capture, run
 inspection, and `refs/etude/*` sync all exist. The minimal git-native capture
-loop is closed end to end. Remaining work is hardening (`etude-ccj`) and polish
-(`etude-cr2`, `etude-88o`) taken opportunistically, plus the deferred follow-ups
-(`etude-dpz`, `etude-zcq`); net-new product scope belongs to Phase 1.
+loop is closed end to end. Remaining work is polish (`etude-cr2`, `etude-88o`)
+taken opportunistically, plus the deferred follow-ups (`etude-dpz`, `etude-zcq`);
+net-new product scope belongs to Phase 1.
 
 ## Schema And Storage Beads Define Read And Write Together
 
@@ -57,8 +61,9 @@ format.
 
 ## Hardening Along The Way
 
-Work `etude-ccj` before a product bead if that bead depends on the refstore
-edge being hardened.
+`etude-ccj` (refstore edge cases) has landed. The refstore is now hardened for
+both SHA-1 and SHA-256 repos with clean stdout/stderr separation and
+control-character path rejection.
 
 Work `etude-cr2` opportunistically only if type-safety polish is cheap and does
 not interrupt the Phase 0 path.
