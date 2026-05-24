@@ -183,8 +183,11 @@ func validateEval(prefix string, e *Eval) error {
 }
 
 // validateStageName applies the manifest identifier charset to stage names:
-// [A-Za-z0-9_.-] — the same set the runmanifest package uses, reimplemented
-// locally to avoid importing an unexported function.
+// [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
+// rule is kept as a local per-rune predicate (isIdentChar) rather than calling
+// that exported helper: it is a whole-string check, and adding a sibling
+// workflow->runmanifest import to dedupe one trivial fixed charset is not worth
+// the coupling.
 func validateStageName(field, value string) error {
 	for _, r := range value {
 		if !isIdentChar(r) {
@@ -212,8 +215,9 @@ func validateRoleToken(field, value string) error {
 	return nil
 }
 
-// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier
-// charset, reimplemented locally.
+// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier charset.
+// Kept local (see validateStageName) rather than reusing runmanifest's exported
+// whole-string IsValidIdentifier, to avoid a sibling-package import for one rule.
 func isIdentChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
 }
