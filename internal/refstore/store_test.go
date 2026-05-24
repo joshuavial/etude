@@ -3,6 +3,7 @@ package refstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -506,4 +507,258 @@ func git(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// initRepoFormat creates a temp git repo with the given object format.
+// If git does not support --object-format=<format> the test is skipped.
+func initRepoFormat(t *testing.T, format string) string {
+	t.Helper()
+	dir := t.TempDir()
+	unsetEnv(t, "GIT_AUTHOR_NAME")
+	unsetEnv(t, "GIT_AUTHOR_EMAIL")
+	unsetEnv(t, "GIT_AUTHOR_DATE")
+	unsetEnv(t, "GIT_COMMITTER_NAME")
+	unsetEnv(t, "GIT_COMMITTER_EMAIL")
+	unsetEnv(t, "GIT_COMMITTER_DATE")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "global.gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	cmd := exec.Command("git", "init", "--object-format="+format, dir)
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+filepath.Join(dir, "global.gitconfig"),
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("git init --object-format=%s not supported (git too old?): %v\n%s", format, err, out)
+	}
+	return dir
+}
+
+func TestValidateOIDAcceptsSHA1AndSHA256(t *testing.T) {
+	sha1 := strings.Repeat("a", 40)
+	sha256 := strings.Repeat("b", 64)
+
+	tests := []struct {
+		name    string
+		oid     string
+		wantErr bool
+		errMsg  string
+	}{
+		{"40-hex lowercase", sha1, false, ""},
+		{"64-hex lowercase", sha256, false, ""},
+		{"39 chars", strings.Repeat("a", 39), true, "40 or 64 hex characters"},
+		{"41 chars", strings.Repeat("a", 41), true, "40 or 64 hex characters"},
+		{"63 chars", strings.Repeat("a", 63), true, "40 or 64 hex characters"},
+		{"65 chars", strings.Repeat("a", 65), true, "40 or 64 hex characters"},
+		{"0 chars", "", true, "40 or 64 hex characters"},
+		{"uppercase 40", strings.Repeat("A", 40), true, "lowercase hex"},
+		{"uppercase 64", strings.Repeat("A", 64), true, "lowercase hex"},
+		{"non-hex 40", strings.Repeat("g", 40), true, "lowercase hex"},
+		{"non-hex 64", strings.Repeat("g", 64), true, "lowercase hex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOID(tt.oid)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("validateOID(%q) = nil, want error containing %q", tt.oid, tt.errMsg)
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Fatalf("validateOID(%q) error = %q, want it to contain %q", tt.oid, err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("validateOID(%q) = %v, want nil", tt.oid, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateFilePathRejectsControlChars(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"newline", "bad\npath", true},
+		{"tab", "bad\tpath", true},
+		{"carriage return", "bad\rpath", true},
+		{"SOH control", "bad\x01path", true},
+		{"NUL", "bad\x00path", true},
+		{"DEL control", "bad\x7fpath", true},
+		{"C1 control U+0085", "badpath", true},
+		{"valid manifest.json", "manifest.json", false},
+		{"valid nested path", "artifacts/sha256/ab/cd", false},
+		{"valid artifacts path", "artifacts/sha256/ab/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateFilePath(tt.path)
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidPath) {
+					t.Fatalf("validateFilePath(%q) = %v, want ErrInvalidPath", tt.path, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("validateFilePath(%q) = %v, want nil", tt.path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteCommitRejectsControlCharFilePath(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	_, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{
+		"bad\npath.json": []byte("data"),
+	}, WriteOptions{})
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("WriteCommit with control-char path = %v, want ErrInvalidPath", err)
+	}
+
+	refs := git(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude")
+	if strings.TrimSpace(refs) != "" {
+		t.Fatalf("control-char path write created refs:\n%s", refs)
+	}
+}
+
+func TestWriteCommitAndCASInSHA256Repo(t *testing.T) {
+	repo := initRepoFormat(t, "sha256")
+	ctx := context.Background()
+	store := New(repo)
+
+	// Create: empty-old path must work in a SHA-256 repo.
+	commit1, err := store.WriteCommit(ctx, "refs/etude/runs/sha256-run", map[string][]byte{
+		"manifest.json": []byte(`{"version":1}`),
+	}, WriteOptions{})
+	if err != nil {
+		t.Fatalf("WriteCommit (create) returned error: %v", err)
+	}
+	if len(commit1) != 64 {
+		t.Fatalf("expected 64-hex commit OID, got %q (len %d)", commit1, len(commit1))
+	}
+
+	// Resolve must return the same 64-hex OID.
+	resolved, err := store.Resolve(ctx, "refs/etude/runs/sha256-run")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if resolved != commit1 {
+		t.Fatalf("Resolve = %q, want %q", resolved, commit1)
+	}
+
+	// CAS advance with 64-hex ExpectedOld.
+	commit2, err := store.WriteCommit(ctx, "refs/etude/runs/sha256-run", map[string][]byte{
+		"manifest.json": []byte(`{"version":2}`),
+	}, WriteOptions{ExpectedOld: commit1})
+	if err != nil {
+		t.Fatalf("CAS WriteCommit returned error: %v", err)
+	}
+	if len(commit2) != 64 {
+		t.Fatalf("expected 64-hex commit OID, got %q (len %d)", commit2, len(commit2))
+	}
+	if commit2 == commit1 {
+		t.Fatal("CAS WriteCommit did not advance the commit")
+	}
+
+	// Stale CAS must return ErrStaleRef.
+	_, err = store.WriteCommit(ctx, "refs/etude/runs/sha256-run", map[string][]byte{
+		"manifest.json": []byte(`{"version":3}`),
+	}, WriteOptions{ExpectedOld: commit1})
+	if !errors.Is(err, ErrStaleRef) {
+		t.Fatalf("stale CAS error = %v, want ErrStaleRef", err)
+	}
+
+	// ReadCommitFile with 64-hex commit.
+	content, err := store.ReadCommitFile(ctx, commit1, "manifest.json")
+	if err != nil {
+		t.Fatalf("ReadCommitFile returned error: %v", err)
+	}
+	if string(content) != `{"version":1}` {
+		t.Fatalf("ReadCommitFile content = %q", content)
+	}
+}
+
+// TestMain handles the helper-process pattern for TestStdoutStderrSplit.
+// When GO_WANT_HELPER_PROCESS=1 the binary acts as a fake git stub.
+func TestMain(m *testing.M) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
+		runHelperProcess()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// runHelperProcess is the fake git for the stdout/stderr split test.
+// It prints a warning to stderr and, for "rev-parse", the OID to stdout.
+// All other subcommands succeed silently (needed for validateRef, rejectSymbolicRef, etc).
+func runHelperProcess() {
+	args := os.Args
+	// Find the git subcommand: skip the test binary path and any "--" separator.
+	subArgs := args[1:]
+	for len(subArgs) > 0 && (subArgs[0] == "--" || subArgs[0] == "") {
+		subArgs = subArgs[1:]
+	}
+	if len(subArgs) == 0 {
+		os.Exit(0)
+	}
+	sub := subArgs[0]
+
+	// Emit a warning on stderr for all calls so we can prove it doesn't bleed.
+	fmt.Fprintf(os.Stderr, "warning: fake git stderr noise for %s\n", sub)
+
+	switch sub {
+	case "rev-parse":
+		// Return a valid 40-hex OID on stdout only.
+		fmt.Fprintf(os.Stdout, "aabbccddeeff00112233445566778899aabbccdd\n")
+	case "check-ref-format":
+		// Accept any ref.
+		os.Exit(0)
+	case "symbolic-ref":
+		// Exit non-zero so rejectSymbolicRef passes (no symbolic ref).
+		os.Exit(1)
+	default:
+		// Everything else (read-tree, hash-object, update-index, write-tree,
+		// commit-tree, update-ref, cat-file, config, for-each-ref): exit 0 silently.
+		os.Exit(0)
+	}
+}
+
+func TestStdoutStderrSplit(t *testing.T) {
+	// Build the helper-process path: the current test binary with a flag that
+	// triggers runHelperProcess() in TestMain.
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	// Use a real git repo for RepoDir so validateRef doesn't fail at the FS level.
+	repo := initRepo(t)
+	store := Store{
+		RepoDir: repo,
+		GitPath: selfExe,
+	}
+
+	// Set the env var that triggers the helper-process path.
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	// Resolve calls git rev-parse under the hood; the stub emits stderr noise
+	// but returns a clean OID on stdout.
+	// validateRef calls check-ref-format (exits 0 via helper) and
+	// rejectSymbolicRef calls symbolic-ref (exits 1 via helper, meaning no sym ref).
+	oid, err := store.Resolve(context.Background(), "refs/etude/runs/any")
+	if err != nil {
+		t.Fatalf("Resolve via stub = %v", err)
+	}
+	want := "aabbccddeeff00112233445566778899aabbccdd"
+	if oid != want {
+		t.Fatalf("Resolve = %q, want %q (stderr contamination?)", oid, want)
+	}
 }

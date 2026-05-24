@@ -10,12 +10,11 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	zeroOID    = "0000000000000000000000000000000000000000"
-	oidLength  = 40
 	runsNS     = "refs/etude/runs/"
 	evalsNS    = "refs/etude/evals/"
 	defaultGit = "git"
@@ -78,7 +77,9 @@ func (s Store) WriteCommit(ctx context.Context, ref string, files map[string][]b
 		return "", err
 	}
 
-	old := zeroOID
+	// empty old means "ref must not already exist" per git-update-ref(1) — works
+	// for both SHA-1 and SHA-256 repos, unlike a fixed-width zero string.
+	old := ""
 	staleErr := ErrRefExists
 	if opts.ExpectedOld != "" {
 		old = opts.ExpectedOld
@@ -316,8 +317,14 @@ func validateFilePath(filePath string) error {
 	if filePath == "." || filePath == ".." || filePath == ".git" || strings.HasPrefix(filePath, ".git/") {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, filePath)
 	}
-	if strings.ContainsAny(filePath, "\\:\x00,") {
+	if strings.ContainsAny(filePath, "\\:,") {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, filePath)
+	}
+	// NUL and every other control character are rejected by the IsControl scan.
+	for _, r := range filePath {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s", ErrInvalidPath, filePath)
+		}
 	}
 	for _, segment := range strings.Split(filePath, "/") {
 		if segment == "" || segment == "." || segment == ".." || segment == ".git" {
@@ -328,8 +335,8 @@ func validateFilePath(filePath string) error {
 }
 
 func validateOID(oid string) error {
-	if len(oid) != oidLength {
-		return fmt.Errorf("want 40 hex characters")
+	if len(oid) != 40 && len(oid) != 64 {
+		return fmt.Errorf("want 40 or 64 hex characters")
 	}
 	for _, r := range oid {
 		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
@@ -357,9 +364,11 @@ func (s Store) gitBytes(ctx context.Context, extraEnv []string, stdin *bytes.Rea
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderrBuf.String()))
 	}
-	return out, nil
+	return stdoutBuf.Bytes(), nil
 }

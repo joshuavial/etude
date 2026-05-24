@@ -353,8 +353,14 @@ func validateFilePath(filePath string) error {
 	if filePath == "." || filePath == ".." || filePath == ".git" || strings.HasPrefix(filePath, ".git/") {
 		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
 	}
-	if strings.ContainsAny(filePath, "\\:\x00,") {
+	if strings.ContainsAny(filePath, "\\:,") {
 		return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+	}
+	// NUL and every other control character are rejected by the IsControl scan.
+	for _, r := range filePath {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: path %q", ErrInvalidArtifact, filePath)
+		}
 	}
 	for _, segment := range strings.Split(filePath, "/") {
 		if segment == "" || segment == "." || segment == ".." || segment == ".git" {

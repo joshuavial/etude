@@ -567,6 +567,47 @@ func initGitRepo(t *testing.T) string {
 	return dir
 }
 
+func TestValidateFilePathRejectsControlCharsInRunmanifest(t *testing.T) {
+	// Build a minimal valid artifact ref and mutate its path to contain a
+	// control character; Validate must reject it via ErrInvalidArtifact.
+	base := contentArtifact("output", "text/plain", []byte("out"))
+
+	controlPaths := []struct {
+		name string
+		path string
+	}{
+		{"newline", "artifacts/sha256/ab/bad\npath"},
+		{"tab", "artifacts/sha256/ab/bad\tpath"},
+		{"carriage return", "artifacts/sha256/ab/bad\rpath"},
+		{"SOH", "artifacts/sha256/ab/bad\x01path"},
+		{"NUL", "artifacts/sha256/ab/bad\x00path"},
+		{"DEL", "artifacts/sha256/ab/bad\x7fpath"},
+		{"C1 U+0085", "artifacts/sha256/ab/badpath"},
+	}
+	for _, tc := range controlPaths {
+		t.Run(tc.name, func(t *testing.T) {
+			a := base
+			a.Path = tc.path
+			manifest := validManifest(a)
+			if err := manifest.Validate(); err == nil {
+				t.Fatalf("Validate(%q) = nil, want error", tc.path)
+			}
+		})
+	}
+
+	// Valid ASCII paths must still pass validateFilePath.
+	validPaths := []string{
+		"manifest.json",
+		"artifacts/sha256/ab/cd",
+		base.Path,
+	}
+	for _, p := range validPaths {
+		if err := validateFilePath(p); err != nil {
+			t.Fatalf("validateFilePath(%q) = %v, want nil", p, err)
+		}
+	}
+}
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
