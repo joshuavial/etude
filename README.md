@@ -2,7 +2,7 @@
 
 ## Status
 
-Current implementation: `etude init`, manual capture, and run inspection CLIs
+Current implementation: `etude init`, manual capture, run inspection, and sync CLIs
 plus internal storage, manifest, and workflow-schema packages.
 
 Implemented:
@@ -14,6 +14,7 @@ Implemented:
 - Manual `etude capture` command for local file artifacts.
 - `etude run list` to list all stored runs.
 - `etude run show <run-id>` to inspect the detail of one run.
+- `etude sync` to push and fetch `refs/etude/*` with a git remote.
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -24,7 +25,8 @@ Implemented:
 
 The storage, manifest, and workflow-schema packages are Go APIs internal to
 this module. The implemented CLI surface is `etude init`, `etude capture`,
-`etude run list`, `etude run show`, and the root help and version output.
+`etude run list`, `etude run show`, `etude sync`, and the root help and version
+output.
 
 The full design is in
 [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
@@ -52,8 +54,11 @@ make clean
 ./bin/etude capture plan --run run-1 --output output=plan.md
 ./bin/etude run list
 ./bin/etude run show run-1
+./bin/etude sync
+./bin/etude sync --remote upstream
 ```
 
 See [Init](docs/init.md) for the init command.
 See [Manual Capture](docs/capture.md) for the capture command.
 See [Runs](docs/run.md) for the run list and run show commands.
+See [Sync](docs/sync.md) for the sync command.

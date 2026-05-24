@@ -3,8 +3,10 @@
 ## Overview
 
 `etude init` scaffolds the `.etude/` configuration directory in the current
-repository and registers the `refs/etude/*` refspecs on the named git remote
-so that a future `etude sync` can push and fetch the namespace.
+repository and registers the `refs/etude/*` refspecs on the named git remote so
+that a plain `git fetch` also picks up the namespace. Transferring the namespace
+explicitly is the job of [`etude sync`](sync.md), which passes its own refspecs
+and works whether or not `init` configured the remote.
 
 ## What it creates
 
