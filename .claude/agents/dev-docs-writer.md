@@ -155,3 +155,11 @@ Ready for Final Review after Docs gate passes.
 - Do not document unchanged code.
 - Capture any shown command output from a real run of the built binary; never
   hand-write example stdout/stderr.
+
+## Etude Capture (Dogfood)
+
+After the Docs gate passes, the orchestrator captures this phase into the bead's
+etude run as stage `docs` (output role `docs-diff`, taken from the docs diff or
+the no-docs rationale; input `diff`). Keep the Docs artifact accurate so it
+captures cleanly. You do not run `etude capture` yourself — see dev-workflow
+SKILL "Etude Capture (Dogfood)".

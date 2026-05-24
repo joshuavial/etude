@@ -145,3 +145,12 @@ Before returning:
 - [ ] Bead `--notes` field is updated with the Implement artifact.
 - [ ] Capture/provenance references are recorded.
 - [ ] Prior phase labels are removed and `phase:implement` is attached.
+
+## Etude Capture (Dogfood)
+
+After the Implement gate passes, the orchestrator captures this phase into the
+bead's etude run as stage `implement` (output role `diff`, taken from `git diff
+HEAD`; input `plan`). Leave the implementation uncommitted in the working tree
+so the diff is capturable, and keep your `Capture:` envelope accurate. You do
+not run `etude capture` yourself — see dev-workflow SKILL "Etude Capture
+(Dogfood)".

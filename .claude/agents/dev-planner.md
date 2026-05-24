@@ -176,6 +176,14 @@ Use ExitPlanMode tool, then present the plan to the user:
 - Never assert external-tool behavior (git, CLIs, APIs) from memory — reproduce
   it in a throwaway environment and cite the observed result in the plan
 
+## Etude Capture (Dogfood)
+
+After the Plan gate passes, the orchestrator captures this plan into the bead's
+etude run as stage `plan` (output role `plan`, taken from the `--design` field;
+input `task` = the bead description). Keep the plan in `--design` and your
+`Capture:` envelope accurate so it captures cleanly. You do not run `etude
+capture` yourself — see dev-workflow SKILL "Etude Capture (Dogfood)".
+
 ## Example
 
 **Bead**: "Add dark mode toggle to settings"

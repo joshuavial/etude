@@ -155,3 +155,11 @@ Recommendation: proceed to Docs | return to Implement | needs input
 - Treat inadequate coverage as a Verify issue.
 - Treat production-code fixes as Implement work.
 - Keep the Verify artifact append-only and reviewable.
+
+## Etude Capture (Dogfood)
+
+After the Verify gate passes, the orchestrator captures the Verify artifact into
+the bead's etude run as stage `verify` (output role `verify`; inputs `plan`,
+`diff`). Keep the Verify artifact self-contained and reviewable so it captures
+cleanly. You do not run `etude capture` yourself — see dev-workflow SKILL "Etude
+Capture (Dogfood)".

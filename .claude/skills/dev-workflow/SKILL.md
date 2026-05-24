@@ -10,8 +10,9 @@ Structured development for commit-sized work:
 `PLAN -> IMPLEMENT -> VERIFY -> DOCS -> FINAL REVIEW -> commit/close`
 
 This workflow is currently dogfooding `etude`: every phase produces a
-reviewable artifact, records capture/provenance details, and advances only
-after the configured gate passes.
+reviewable artifact that is captured into a per-bead etude run
+(`refs/etude/runs/<bead-id>`) once its gate passes. The stages are declared in
+`.etude/workflow.yaml`; see "Etude Capture (Dogfood)" below for the mechanics.
 
 ## When to Use
 
@@ -59,13 +60,69 @@ dogfood runbook when present:
 3. Run the configured review gate.
 4. Incorporate required changes and rerun if blocked.
 5. Handle optional improvements or defer them to named beads.
-6. Move to the next phase only after the gate passes.
+6. Once the gate passes, capture the gate-approved artifact into the bead's
+   etude run — see "Etude Capture (Dogfood)" below.
+7. Move to the next phase only after the gate passes and the artifact is
+   captured.
 
 For `/Users/jv/projects/etude`, the gate is the four-reviewer process in
 `docs/plans/dogfood/review-gate-runbook.md`. See that runbook for the seat list
 (Gemini Pro, Claude Opus, fresh GPT-5.5 xhigh, pi/pilms) and the in-harness
 Claude rule: when Claude Code orchestrates the gate, run the Claude Opus seat as
 a fresh in-harness Task sub-agent rather than the external `claude -p` CLI.
+
+## Etude Capture (Dogfood)
+
+This repo dogfoods `etude`: each phase's gate-approved artifact is captured into
+a per-bead etude run under `refs/etude/runs/<bead-id>`, so the workflow produces
+the same immutable stage records the product is built to create. The stages are
+declared in `.etude/workflow.yaml`.
+
+**The orchestrator (the `/dev` runner) performs the capture** — not the phase
+sub-agents. Capture once per phase, *after* that phase's gate passes and
+*before* advancing. Capturing the gate-approved artifact (not the first draft)
+means a gate block + rerun does not append a duplicate stage.
+
+Conventions:
+
+- run id = bead id (e.g. `etude-ccj`); one stage per phase, appended in order
+  `plan -> implement -> verify -> docs -> review`.
+- `--git-sha` defaults to current `HEAD`. The bead's single commit happens after
+  Final Review, so every stage shares the base-commit sha; that is expected.
+- Always pass `--workflow default --workflow-version v1` (consistent value, so
+  appends never conflict on run-level metadata).
+- If `etude` is not installed, skip capture and note the skip in the bead — the
+  gate flow itself does not depend on capture succeeding.
+
+Stage / role / source mapping (mirrors `.etude/workflow.yaml`):
+
+| Stage | Output role | Output source | Captured inputs |
+|---|---|---|---|
+| plan | `plan` | `bd show <bead-id> --design` | `task` = bead description |
+| implement | `diff` | `git diff HEAD` | `plan` |
+| verify | `verify` | the Verify artifact markdown | `plan`, `diff` |
+| docs | `docs-diff` | docs diff, or the no-docs rationale | `diff` |
+| review | `review` | the Final Review artifact markdown | `diff`, `plan`, `verify` |
+
+Materialize each artifact to a temp file, then capture. Plan phase example:
+
+```bash
+d=$(mktemp -d)
+bd show <bead-id> --design > "$d/plan.md"
+bd show <bead-id>          > "$d/task.md"
+etude capture plan --run <bead-id> \
+  --output plan="$d/plan.md" \
+  --input task="$d/task.md" \
+  --ref bead=<bead-id> \
+  --workflow default --workflow-version v1 \
+  --skill-id dev-planner \
+  --message "<bead-id>: plan"
+```
+
+Later phases follow the same shape with the stage's role/inputs from the table
+(`--skill-id` = the phase agent: `dev-executor`, `dev-qa`, `dev-docs-writer`,
+`dev-pr-reviewer`). After Final Review's capture, inspect the run with
+`etude run show <bead-id>`.
 
 ## Auto Mode
 
