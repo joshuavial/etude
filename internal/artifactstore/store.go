@@ -11,9 +11,13 @@ import (
 	"unicode"
 )
 
+// StorageType identifies how an artifact's content is stored.
+// The wire values are "content" and "pointer".
+type StorageType string
+
 const (
-	StorageContent = "content"
-	StoragePointer = "pointer"
+	StorageContent StorageType = "content"
+	StoragePointer StorageType = "pointer"
 
 	pointerVersion = 1
 )
@@ -40,7 +44,7 @@ type Pointer struct {
 type ManifestArtifact struct {
 	Role      string
 	MediaType string
-	Storage   string
+	Storage   StorageType
 	SHA256    string
 	Path      string
 	// Size is the raw content length for content artifacts. For pointer

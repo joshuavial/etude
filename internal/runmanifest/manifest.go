@@ -60,7 +60,7 @@ type ArtifactRef struct {
 	Artifact  string
 	Path      string
 	MediaType string
-	Storage   string
+	Storage   artifactstore.StorageType
 	Size      int64
 }
 
@@ -285,7 +285,7 @@ func verifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes ma
 	return nil
 }
 
-func expectedArtifactPath(storage, sum string) string {
+func expectedArtifactPath(storage artifactstore.StorageType, sum string) string {
 	switch storage {
 	case artifactstore.StorageContent:
 		return "artifacts/sha256/" + sum[:2] + "/" + sum
@@ -436,12 +436,12 @@ type skillJSON struct {
 }
 
 type artifactJSON struct {
-	Role      string `json:"role"`
-	Artifact  string `json:"artifact"`
-	Path      string `json:"path"`
-	MediaType string `json:"media_type"`
-	Storage   string `json:"storage"`
-	Size      int64  `json:"size"`
+	Role      string                    `json:"role"`
+	Artifact  string                    `json:"artifact"`
+	Path      string                    `json:"path"`
+	MediaType string                    `json:"media_type"`
+	Storage   artifactstore.StorageType `json:"storage"`
+	Size      int64                     `json:"size"`
 }
 
 func (m Manifest) toJSON() manifestJSON {

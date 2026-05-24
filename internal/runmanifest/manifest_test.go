@@ -254,6 +254,30 @@ func TestValidateRejectsInvalidManifests(t *testing.T) {
 	}
 }
 
+func TestParseJSONRejectsUnknownStorageValue(t *testing.T) {
+	// Build a valid manifest, serialise it, then replace the storage value with
+	// an unknown string. ParseJSON must return an error wrapping ErrInvalidManifest
+	// (validateStage wraps ErrInvalidManifest with %w; the inner ErrInvalidArtifact
+	// is included via %v so errors.Is reaches ErrInvalidManifest but not the inner
+	// sentinel — this locks that named-string-type fields do NOT loosen decode-time
+	// validation: the typed field accepts any string during unmarshal, but Validate
+	// rejects it).
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	manifest := validManifest(output)
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	payload := strings.Replace(string(content), `"storage": "content"`, `"storage": "remote"`, 1)
+	_, err = ParseJSON([]byte(payload))
+	if err == nil {
+		t.Fatal("ParseJSON returned nil error for unknown storage value")
+	}
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("ParseJSON error = %v, want error wrapping ErrInvalidManifest", err)
+	}
+}
+
 func TestValidateAllowsZeroInputStage(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	manifest := validManifest(output)
