@@ -12,7 +12,7 @@ var version = "dev"
 
 const rootLong = "etude captures stage artifacts as git-native run records. " +
 	"The replay command re-executes a recorded stage end-to-end. " +
-	"The bench command is planned but not implemented yet."
+	"The bench command benchmarks a cohort of runs by replaying and judging replay vs original."
 
 // NewRootCommand constructs the root command so tests can execute it without
 // touching process-global stdout, stderr, or argv.
@@ -33,6 +33,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+	cmd.AddCommand(newBenchCommand(out, errOut))
 	cmd.AddCommand(newCaptureCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
 	cmd.AddCommand(newReplayCommand(out, errOut))

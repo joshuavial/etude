@@ -593,6 +593,35 @@ func TestSelectCohortSkipPointerOutput(t *testing.T) {
 	}
 }
 
+func TestSelectCohortSkipReplayRun(t *testing.T) {
+	// A replay-produced stage (produced_by:"replay") must be excluded so bench
+	// does not re-bench its own recorded replays (recursive cohort growth).
+	outputContent := []byte("replayed plan output")
+	stage := makeStage("plan", nil, outputContent)
+	stage.ProducedBy = "replay"
+	stage.ReplayOf = &runmanifest.ReplayLink{
+		RunID:  "source-run",
+		Stage:  "plan",
+		Commit: strings.Repeat("b", 40),
+	}
+
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	manifest := makeManifest("run-replay", ts, []runmanifest.Stage{stage})
+	files := map[string][]byte{stage.Output.Path: outputContent}
+	store, _ := seedRun(t, manifest, files)
+
+	result, err := SelectCohort(context.Background(), store, "plan", 10)
+	if err != nil {
+		t.Fatalf("SelectCohort: %v", err)
+	}
+	if len(result.Selected) != 0 {
+		t.Errorf("len(Selected) = %d, want 0 (replay run excluded)", len(result.Selected))
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Reason != SkipReplayRun {
+		t.Fatalf("Skipped = %+v, want one SkipReplayRun", result.Skipped)
+	}
+}
+
 func TestSelectCohortZeroRuns(t *testing.T) {
 	dir := initRepo(t)
 	store := newStore(dir)

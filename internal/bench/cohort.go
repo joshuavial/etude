@@ -42,6 +42,12 @@ const (
 	// SkipPointerOutput indicates the output artifact uses pointer storage.
 	// The bench pipeline (.2) must be able to read the output as an eval target.
 	SkipPointerOutput SkipReason = "pointer-output"
+	// SkipReplayRun indicates the stage was produced by a replay (produced_by:
+	// "replay"). Benching replay runs would re-bench bench's own output: each
+	// bench run records new replay runs, which would otherwise become eligible
+	// cohort members on the next run (an ever-growing, recursive cohort). A
+	// bench cohort is the ORIGINAL work, so replay-produced stages are excluded.
+	SkipReplayRun SkipReason = "replay-run"
 )
 
 // CohortResult is the output of SelectCohort.
@@ -184,6 +190,13 @@ func classify(stage string, m runmanifest.Manifest) (runmanifest.Stage, SkipReas
 	}
 
 	s := matches[0]
+
+	// Exclude replay-produced stages: a bench cohort is original work, not
+	// bench's own recorded replays (which would otherwise grow the cohort
+	// recursively across runs).
+	if s.ProducedBy == "replay" {
+		return runmanifest.Stage{}, SkipReplayRun, "", false
+	}
 
 	// Check git SHA: empty → no-git-sha; present but malformed → invalid-git-sha.
 	// Mirrors worktree.go:148–158 validateSHA (the real format gate at checkout).

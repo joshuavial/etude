@@ -24,7 +24,7 @@ func TestRootHelp(t *testing.T) {
 
 	for _, want := range []string{
 		"etude captures stage artifacts",
-		"The bench command is planned but not implemented yet.",
+		"bench",
 		"Usage:",
 		"etude [flags]",
 		"capture",
@@ -77,25 +77,12 @@ func TestCommandMetadata(t *testing.T) {
 	}
 }
 
-func TestFutureCommandNamesAreRejected(t *testing.T) {
-	for _, args := range [][]string{
-		{"bench"},
-	} {
-		output, stderr, err := execute(args...)
-		if err == nil {
-			t.Fatalf("execute(%v) returned nil error and output %q", args, output)
-		}
-		if output != "" {
-			t.Fatalf("execute(%v) wrote stdout %q", args, output)
-		}
-		if !strings.Contains(err.Error(), args[0]) {
-			t.Fatalf("execute(%v) error %q does not name rejected command", args, err.Error())
-		}
-		if !strings.Contains(stderr, args[0]) {
-			t.Fatalf("execute(%v) stderr %q does not name rejected command", args, stderr)
-		}
-		if strings.Count(stderr, "unknown command") != 1 {
-			t.Fatalf("execute(%v) stderr should contain one error, got %q", args, stderr)
-		}
+func TestBenchCommandIsRegistered(t *testing.T) {
+	stdout, stderr, err := execute("bench", "--help")
+	if err != nil {
+		t.Fatalf("bench --help returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "bench") {
+		t.Fatalf("bench --help output does not mention 'bench':\n%s", stdout)
 	}
 }
