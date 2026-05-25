@@ -166,9 +166,17 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 		fmt.Fprintf(out, "\nstage: %s\n", stage.Name)
 		fmt.Fprintf(out, "  produced_by: %s\n", stage.ProducedBy)
 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
-		fmt.Fprintf(out, "  skill id:    %s\n", stage.Skill.ID)
-		fmt.Fprintf(out, "  skill repo:  %s\n", stage.Skill.Repo)
-		fmt.Fprintf(out, "  skill ver:   %s\n", stage.Skill.Version)
+		if stage.Producer.Harness.Name != "" {
+			if stage.Producer.Harness.Version != "" {
+				fmt.Fprintf(out, "  harness:     %s %s\n", stage.Producer.Harness.Name, stage.Producer.Harness.Version)
+			} else {
+				fmt.Fprintf(out, "  harness:     %s\n", stage.Producer.Harness.Name)
+			}
+		}
+		if stage.Producer.Model != "" {
+			fmt.Fprintf(out, "  model:       %s\n", stage.Producer.Model)
+		}
+		fmt.Fprintf(out, "  skill:       %s@%s (%s)\n", stage.Producer.Skill.ID, stage.Producer.Skill.Version, stage.Producer.Skill.Repo)
 		for _, input := range stage.Inputs {
 			fmt.Fprintf(out, "  input:  role=%s path=%s size=%d storage=%s media-type=%s\n",
 				input.Role, input.Path, input.Size, input.Storage, input.MediaType)

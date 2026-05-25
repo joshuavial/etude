@@ -253,11 +253,15 @@ func TestRunShowExistingRun(t *testing.T) {
 	if !strings.Contains(stdout, "produced_by: original") {
 		t.Fatalf("expected 'produced_by: original' in output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "skill id:    plan") {
-		t.Fatalf("expected 'skill id:    plan' in output:\n%s", stdout)
+	if !strings.Contains(stdout, "skill:       plan@manual (manual)") {
+		t.Fatalf("expected 'skill:       plan@manual (manual)' in output:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "skill repo:  manual") {
-		t.Fatalf("expected 'skill repo:  manual' in output:\n%s", stdout)
+	// Legacy capture (no --harness/--model) must not print harness or model lines.
+	if strings.Contains(stdout, "harness:") {
+		t.Fatalf("did not expect 'harness:' line in output for legacy capture:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "  model:") {
+		t.Fatalf("did not expect 'model:' line in output for legacy capture:\n%s", stdout)
 	}
 
 	// Input line: role + exact path + size + storage + media-type all in one substring.
@@ -360,6 +364,83 @@ func TestRunShowInvalidRunIDBeforeGit(t *testing.T) {
 				t.Fatalf("validation ran after git check: %q", combined)
 			}
 		})
+	}
+}
+
+func TestRunShowFullProducer(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "full-producer-run",
+		"--output", "output=out.md",
+		"--harness", "claude-code",
+		"--harness-version", "2.1.150",
+		"--model", "claude-opus-4-7",
+		"--skill-id", "dev-planner",
+		"--skill-repo", "codewithjv-agent-skills",
+		"--skill-version", "v3",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "full-producer-run")
+	if err != nil {
+		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	if !strings.Contains(stdout, "harness:     claude-code 2.1.150") {
+		t.Fatalf("expected 'harness:     claude-code 2.1.150' in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "model:       claude-opus-4-7") {
+		t.Fatalf("expected 'model:       claude-opus-4-7' in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "skill:       dev-planner@v3 (codewithjv-agent-skills)") {
+		t.Fatalf("expected 'skill:       dev-planner@v3 (codewithjv-agent-skills)' in output:\n%s", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+func TestRunShowPartialProducer(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "partial-producer-run",
+		"--output", "output=out.md",
+		"--harness", "claude-code",
+		"--harness-version", "1.0",
+		"--skill-id", "dev-planner",
+		"--skill-repo", "codewithjv-agent-skills",
+		"--skill-version", "v2",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "partial-producer-run")
+	if err != nil {
+		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	if !strings.Contains(stdout, "harness:     claude-code 1.0") {
+		t.Fatalf("expected 'harness:     claude-code 1.0' in output:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "  model:") {
+		t.Fatalf("did not expect 'model:' line when --model not provided:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "skill:       dev-planner@v2 (codewithjv-agent-skills)") {
+		t.Fatalf("expected 'skill:       dev-planner@v2 (codewithjv-agent-skills)' in output:\n%s", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
 	}
 }
 

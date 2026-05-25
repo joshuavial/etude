@@ -54,9 +54,21 @@ refs:
 stage: plan
   produced_by: original
   git sha:     a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
-  skill id:    plan
-  skill repo:  manual
-  skill ver:   manual
+  skill:       plan@manual (manual)
+  input:  role=context path=artifacts/sha256/abc123... size=1024 storage=content media-type=text/plain; charset=utf-8
+  output: role=output path=artifacts/sha256/def456... size=2048 storage=content media-type=text/markdown; charset=utf-8
+```
+
+When a stage was captured by a known harness and model, two additional lines
+appear before `skill:`:
+
+```
+stage: plan
+  produced_by: agent-run
+  git sha:     a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+  harness:     dev-workflow 1.2.0
+  model:       claude-sonnet-4-6
+  skill:       plan@1.0.0 (github.com/example/skills)
   input:  role=context path=artifacts/sha256/abc123... size=1024 storage=content media-type=text/plain; charset=utf-8
   output: role=output path=artifacts/sha256/def456... size=2048 storage=content media-type=text/markdown; charset=utf-8
 ```
@@ -67,7 +79,9 @@ printed in sorted order.
 Per stage, the detail view shows:
 
 - `produced_by`, `git sha`
-- `skill id`, `skill repo`, `skill ver`
+- `harness` — harness name and optional version; omitted for manual/legacy captures that did not record a harness
+- `model` — model name; omitted for manual/legacy captures that did not record a model
+- `skill` — always printed as `id@version (repo)`
 - Each input as `role=… path=… size=… storage=… media-type=…`
 - The output in the same format
 
