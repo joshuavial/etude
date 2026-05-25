@@ -53,7 +53,7 @@ records, and lets you **replay** any stage with a different skill version and
 
 | Concept | Definition |
 |---|---|
-| **Workflow** | An ordered set of stages, declared in `workflow.yaml`. |
+| **Workflow** | An ordered set of stages, declared in `workflow.yaml`. The pipeline itself — not the runtime that executes it. |
 | **Stage** | A unit of work modelled as `(input artifacts) → (output artifact)`. Has a name, declared inputs, an associated skill, and an optional eval config. |
 | **Artifact** | An immutable, content-addressed blob: a plan, a diff, a test plan, a test diff, a review, a docs diff. |
 | **Run** | One pass of a workflow for one unit of work (≈ one PR / bead). A run has a manifest tying each stage to its input artifacts, output artifact, and the git sha of the repo state at that stage. |
@@ -61,6 +61,19 @@ records, and lets you **replay** any stage with a different skill version and
 | **Eval** | Scoring an artifact against a rubric, or comparing two artifacts pairwise, or running deterministic assertions. |
 | **Cohort** | A selected set of runs to operate on as a batch (e.g. "last 10 runs with a `plan` artifact"). |
 | **Bench** | Replay + eval one stage across a cohort to measure the effect of a skill change. The headline use case. |
+
+### Producer identity
+
+Each stage records four distinct provenance axes. Three live inside a `producer` block; the fourth (Workflow) is top-level manifest metadata:
+
+| Axis | Key | Definition | Example |
+|---|---|---|---|
+| **Harness** | `producer.harness` | The agent runtime that executed the stage. | `claude-code 1.0` |
+| **Model** | `producer.model` | The LLM the harness used. | `claude-opus-4-7` |
+| **Skill** | `producer.skill` | The external skill identity: id, repo, and version (git sha or semver in the skill repo). | `{id: dev-planner, repo: codewithjv-agent-skills, version: a1b2c3d}` |
+| **Workflow** | *(top-level)* | The pipeline definition: workflow name + version (hash of `workflow.yaml`). | `default @ <sha>` |
+
+These are intentionally separate axes: the same skill can run under different harnesses or models; the same model can run different skills; a workflow version is independent of any individual skill version. Comparing two runs is unambiguous only when all four axes are recorded.
 
 The single load-bearing abstraction is **stage = (inputs) → output**. Because
 every stage explicitly declares its inputs, those exact inputs can be re-fed
@@ -208,12 +221,13 @@ because objects cannot be pruned while a ref reaches them.
 
 ```json
 {
+  "manifest_version": 2,
   "run_id": "20260517-xc-m6f8",
   "workflow": "default",
   "workflow_version": "<hash of workflow.yaml at capture time>",
   "created": "2026-05-17T09:12:00Z",
   "refs": {
-    "pr": 469,
+    "pr": "469",
     "bead": "xc-m6f8",
     "branch": "harbor/xc-m6f8-reject-dirty-slash-buffers"
   },
@@ -222,15 +236,36 @@ because objects cannot be pruned while a ref reaches them.
       "stage": "plan",
       "produced_by": "original",
       "git_sha": "442755e5...",
-      "skill": {
-        "id": "dev-planner",
-        "repo": "codewithjv-agent-skills",
-        "version": "a1b2c3d"
+      "producer": {
+        "harness": {
+          "name": "claude-code",
+          "version": "1.0"
+        },
+        "model": "claude-opus-4-7",
+        "skill": {
+          "id": "dev-planner",
+          "repo": "codewithjv-agent-skills",
+          "version": "a1b2c3d"
+        }
       },
       "inputs": [
-        { "role": "task", "artifact": "ab/cdef..." }
+        {
+          "role": "task",
+          "artifact": "abcdef...",
+          "path": "artifacts/sha256/ab/abcdef...",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 1234
+        }
       ],
-      "output": "12/3456...",
+      "output": {
+        "role": "plan",
+        "artifact": "123456...",
+        "path": "artifacts/sha256/12/123456...",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 5678
+      },
       "timestamp": "2026-05-17T09:12:00Z"
     }
   ]
@@ -239,15 +274,26 @@ because objects cannot be pruned while a ref reaches them.
 
 Notes:
 
+- `manifest_version` versions the on-disk document format. `0` (absent) is the
+  legacy format with a top-level per-stage `skill` block; `2` is the current
+  format with a nested `producer` block. (Version 1 is never emitted; the
+  transition goes directly 0 → 2.)
 - `produced_by` is `original` or `replay` — replayed stages are recorded the
   same way as captured ones, so a replay is just another stage entry (or
   another run linked to the parent).
-- `skill.version` cannot be a sha in *this* repo, because skills usually live
-  in a separate repo (`~/.claude/skills`, `codewithjv-agent-skills`). The
-  manifest records an **external skill identity**: skill repo + sha (or a
-  semver). This is a deliberate provenance design point.
-- `repo-state` inputs are recorded as a `git_sha`, not an artifact hash — the
-  repo is already perfectly versioned.
+- `producer` records all four provenance axes for the stage (see §3):
+  `harness` is the agent runtime; `model` is the LLM; `skill` is the external
+  skill identity. The top-level workflow + `workflow_version` are the fourth
+  axis.
+- `producer.skill.version` is an **external skill identity** — a sha or semver
+  in the skill repo (`~/.claude/skills`, `codewithjv-agent-skills`), not a sha
+  in this repo. This is a deliberate provenance design point.
+- `refs` values are always strings (e.g. `"pr": "469"`, not `"pr": 469`).
+- `repo-state` inputs are recorded as a `git_sha` on the stage, not an artifact
+  hash — the repo is already perfectly versioned by git.
+- Each artifact entry carries `role`, `artifact` (sha256 hex), `path`
+  (content-addressed path in the run tree), `media_type`, `storage`
+  (`"content"` or `"pointer"`), and `size`.
 
 ### 4.5 Query index (rebuildable cache)
 

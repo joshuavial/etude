@@ -31,6 +31,10 @@ var (
 )
 
 type Manifest struct {
+	// ManifestVersion versions the on-disk document format.
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema.
+	// (No v1 is ever emitted; the transition goes directly 0→2.)
+	ManifestVersion int
 	RunID           string
 	Workflow        string
 	WorkflowVersion string
@@ -43,16 +47,41 @@ type Stage struct {
 	Name       string
 	ProducedBy string
 	GitSHA     string
-	Skill      Skill
-	Inputs     []ArtifactRef
-	Output     ArtifactRef
-	Timestamp  time.Time
+	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
+	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
+	// skill block. Kept so capture.go / run.go / replay compile unmodified.
+	Skill     Skill
+	Producer  Producer
+	Inputs    []ArtifactRef
+	Output    ArtifactRef
+	Timestamp time.Time
 }
 
 type Skill struct {
 	ID      string
 	Repo    string
 	Version string
+}
+
+// Harness identifies the agent runtime that executed a stage (e.g. claude-code).
+type Harness struct {
+	Name    string
+	Version string
+}
+
+// Producer records who produced a stage: the agent runtime (Harness), the LLM
+// (Model), and the skill (Skill). These are three of the four provenance axes;
+// the fourth — Workflow — is recorded at the top level of the manifest:
+//   - Harness: the agent runtime, e.g. "claude-code"
+//   - Model:   the LLM, e.g. "claude-opus-4-7"
+//   - Skill:   the per-stage skill identity {id, repo, version}
+//
+// Harness and Model are populated by the capture adapter (bead 1.2).
+// Empty Harness/Model values are valid for this schema bead (1.1).
+type Producer struct {
+	Harness Harness
+	Model   string
+	Skill   Skill
 }
 
 type ArtifactRef struct {
@@ -411,6 +440,10 @@ func cloneBytes(in []byte) []byte {
 }
 
 type manifestJSON struct {
+	// ManifestVersion versions the on-disk document format.
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema.
+	// (No v1 is ever emitted; the transition goes directly 0→2.)
+	ManifestVersion int               `json:"manifest_version,omitempty"`
 	RunID           string            `json:"run_id"`
 	Workflow        string            `json:"workflow"`
 	WorkflowVersion string            `json:"workflow_version"`
@@ -420,19 +453,33 @@ type manifestJSON struct {
 }
 
 type stageJSON struct {
-	Stage      string         `json:"stage"`
-	ProducedBy string         `json:"produced_by"`
-	GitSHA     string         `json:"git_sha"`
-	Skill      skillJSON      `json:"skill"`
-	Inputs     []artifactJSON `json:"inputs"`
-	Output     artifactJSON   `json:"output"`
-	Timestamp  string         `json:"timestamp"`
+	Stage      string `json:"stage"`
+	ProducedBy string `json:"produced_by"`
+	GitSHA     string `json:"git_sha"`
+	// Skill is present only in legacy manifests (no producer block).
+	// New manifests omit it; the skill travels inside producer.
+	Skill     *skillJSON     `json:"skill,omitempty"`
+	Producer  *producerJSON  `json:"producer,omitempty"`
+	Inputs    []artifactJSON `json:"inputs"`
+	Output    artifactJSON   `json:"output"`
+	Timestamp string         `json:"timestamp"`
 }
 
 type skillJSON struct {
 	ID      string `json:"id"`
 	Repo    string `json:"repo"`
 	Version string `json:"version"`
+}
+
+type harnessJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type producerJSON struct {
+	Harness *harnessJSON `json:"harness,omitempty"`
+	Model   string       `json:"model,omitempty"`
+	Skill   *skillJSON   `json:"skill,omitempty"`
 }
 
 type artifactJSON struct {
@@ -455,21 +502,48 @@ func (m Manifest) toJSON() manifestJSON {
 		for _, input := range stage.Inputs {
 			inputs = append(inputs, input.toJSON())
 		}
+
+		// Derive the canonical skill for the producer block: Producer.Skill is
+		// authoritative; fall back to Stage.Skill when Producer.Skill is empty
+		// so the two fields stay coherent.
+		skillForProducer := stage.Producer.Skill
+		if skillForProducer.ID == "" {
+			skillForProducer = stage.Skill
+		}
+
+		// Encode the harness block only when at least Name is set (avoids emitting
+		// an empty harness object for legacy/partially-populated stages).
+		var harnessBlock *harnessJSON
+		if stage.Producer.Harness.Name != "" {
+			harnessBlock = &harnessJSON{
+				Name:    stage.Producer.Harness.Name,
+				Version: stage.Producer.Harness.Version,
+			}
+		}
+
+		producerBlock := &producerJSON{
+			Harness: harnessBlock,
+			Model:   stage.Producer.Model,
+			Skill: &skillJSON{
+				ID:      skillForProducer.ID,
+				Repo:    skillForProducer.Repo,
+				Version: skillForProducer.Version,
+			},
+		}
+
 		stages = append(stages, stageJSON{
 			Stage:      stage.Name,
 			ProducedBy: stage.ProducedBy,
 			GitSHA:     stage.GitSHA,
-			Skill: skillJSON{
-				ID:      stage.Skill.ID,
-				Repo:    stage.Skill.Repo,
-				Version: stage.Skill.Version,
-			},
+			// Do NOT emit top-level skill — it lives inside producer only.
+			Producer:  producerBlock,
 			Inputs:    inputs,
 			Output:    stage.Output.toJSON(),
 			Timestamp: formatTime(stage.Timestamp),
 		})
 	}
 	return manifestJSON{
+		ManifestVersion: 2,
 		RunID:           m.RunID,
 		Workflow:        m.Workflow,
 		WorkflowVersion: m.WorkflowVersion,
@@ -522,6 +596,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		refs[key] = value
 	}
 	return Manifest{
+		ManifestVersion: m.ManifestVersion,
 		RunID:           m.RunID,
 		Workflow:        m.Workflow,
 		WorkflowVersion: m.WorkflowVersion,
@@ -540,18 +615,54 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 	for _, input := range s.Inputs {
 		inputs = append(inputs, input.toArtifactRef())
 	}
+
+	var skill Skill
+	var producer Producer
+
+	if s.Producer != nil {
+		// New manifest (manifest_version 2): producer is authoritative.
+		// Mirror producer.skill into Stage.Skill so run.go / replay keep working.
+		if s.Producer.Skill != nil {
+			skill = Skill{
+				ID:      s.Producer.Skill.ID,
+				Repo:    s.Producer.Skill.Repo,
+				Version: s.Producer.Skill.Version,
+			}
+		}
+		var harness Harness
+		if s.Producer.Harness != nil {
+			harness = Harness{
+				Name:    s.Producer.Harness.Name,
+				Version: s.Producer.Harness.Version,
+			}
+		}
+		producer = Producer{
+			Harness: harness,
+			Model:   s.Producer.Model,
+			Skill:   skill,
+		}
+	} else if s.Skill != nil {
+		// Legacy manifest: top-level skill block only, no producer.
+		// Lift it into BOTH Stage.Skill AND Stage.Producer.Skill; Harness/Model empty.
+		skill = Skill{
+			ID:      s.Skill.ID,
+			Repo:    s.Skill.Repo,
+			Version: s.Skill.Version,
+		}
+		producer = Producer{
+			Skill: skill,
+		}
+	}
+
 	return Stage{
 		Name:       s.Stage,
 		ProducedBy: s.ProducedBy,
 		GitSHA:     s.GitSHA,
-		Skill: Skill{
-			ID:      s.Skill.ID,
-			Repo:    s.Skill.Repo,
-			Version: s.Skill.Version,
-		},
-		Inputs:    inputs,
-		Output:    s.Output.toArtifactRef(),
-		Timestamp: timestamp,
+		Skill:      skill,
+		Producer:   producer,
+		Inputs:     inputs,
+		Output:     s.Output.toArtifactRef(),
+		Timestamp:  timestamp,
 	}, nil
 }
 

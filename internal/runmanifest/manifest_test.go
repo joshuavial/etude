@@ -55,7 +55,11 @@ func TestManifestJSONIsDeterministicAndExact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JSON returned error: %v", err)
 	}
+	// Intentional format change: skill block is now nested inside producer;
+	// manifest_version:2 is emitted. Top-level skill key is no longer present.
+	// This golden is deliberately updated to lock the new v2 shape.
 	want := fmt.Sprintf(`{
+  "manifest_version": 2,
   "run_id": "20260522-run.1",
   "workflow": "review",
   "workflow_version": "workflow-sha",
@@ -70,10 +74,12 @@ func TestManifestJSONIsDeterministicAndExact(t *testing.T) {
       "stage": "plan",
       "produced_by": "original",
       "git_sha": "abc123",
-      "skill": {
-        "id": "dev-workflow",
-        "repo": "github.com/example/skills",
-        "version": "v1.2.3"
+      "producer": {
+        "skill": {
+          "id": "dev-workflow",
+          "repo": "github.com/example/skills",
+          "version": "v1.2.3"
+        }
       },
       "inputs": [
         {
@@ -520,6 +526,161 @@ func TestWriterForwardsCAS(t *testing.T) {
 	_, err = (Writer{Store: store}).Write(ctx, manifest, files, WriteOptions{ExpectedOld: first})
 	if !errors.Is(err, refstore.ErrStaleRef) {
 		t.Fatalf("stale CAS error = %v, want ErrStaleRef", err)
+	}
+}
+
+// TestLegacyBackCompatFrozenBytes is a FROZEN regression guard: it embeds a
+// real legacy-shaped manifest byte string (top-level per-stage skill{}, no
+// producer, no manifest_version) modelled on refs/etude/runs/etude-88o and
+// asserts that ParseJSON succeeds, ManifestVersion == 0, and that Stage.Skill
+// AND Stage.Producer.Skill are populated while Harness and Model remain empty.
+// This test guards the 8 existing captured runs against future regressions
+// without relying on live git refs.
+func TestLegacyBackCompatFrozenBytes(t *testing.T) {
+	// Frozen bytes: a single-stage legacy manifest with a top-level skill block,
+	// no producer field, no manifest_version. Derived from etude-88o shape.
+	const legacy = `{
+  "run_id": "etude-88o",
+  "workflow": "default",
+  "workflow_version": "v1",
+  "created": "2026-05-24T14:25:42.373947Z",
+  "refs": {
+    "bead": "etude-88o"
+  },
+  "stages": [
+    {
+      "stage": "plan",
+      "produced_by": "original",
+      "git_sha": "7bf2c65fffb00a1e07f0548b15570d3c6f8dcc07",
+      "skill": {
+        "id": "dev-planner",
+        "repo": "manual",
+        "version": "manual"
+      },
+      "inputs": [
+        {
+          "role": "task",
+          "artifact": "73ca31930913c76c28892e2ec6c9946f70d59ae5b146fbd8652f28ef1567d7c7",
+          "path": "artifacts/sha256/73/73ca31930913c76c28892e2ec6c9946f70d59ae5b146fbd8652f28ef1567d7c7",
+          "media_type": "text/markdown; charset=utf-8",
+          "storage": "content",
+          "size": 4352
+        }
+      ],
+      "output": {
+        "role": "plan",
+        "artifact": "7b211635fa52fae93311db2c1a6c4f904988726e928b34d80ab845014c502531",
+        "path": "artifacts/sha256/7b/7b211635fa52fae93311db2c1a6c4f904988726e928b34d80ab845014c502531",
+        "media_type": "text/markdown; charset=utf-8",
+        "storage": "content",
+        "size": 3753
+      },
+      "timestamp": "2026-05-24T14:25:42.373947Z"
+    }
+  ]
+}`
+	got, err := ParseJSON([]byte(legacy))
+	if err != nil {
+		t.Fatalf("ParseJSON(legacy) returned error: %v", err)
+	}
+	if got.ManifestVersion != 0 {
+		t.Fatalf("ManifestVersion = %d, want 0 (legacy)", got.ManifestVersion)
+	}
+	if len(got.Stages) != 1 {
+		t.Fatalf("len(Stages) = %d, want 1", len(got.Stages))
+	}
+	s := got.Stages[0]
+	wantSkill := Skill{ID: "dev-planner", Repo: "manual", Version: "manual"}
+	if s.Skill != wantSkill {
+		t.Fatalf("Stage.Skill = %+v, want %+v", s.Skill, wantSkill)
+	}
+	if s.Producer.Skill != wantSkill {
+		t.Fatalf("Stage.Producer.Skill = %+v, want %+v", s.Producer.Skill, wantSkill)
+	}
+	if s.Producer.Harness != (Harness{}) {
+		t.Fatalf("Stage.Producer.Harness = %+v, want empty", s.Producer.Harness)
+	}
+	if s.Producer.Model != "" {
+		t.Fatalf("Stage.Producer.Model = %q, want empty", s.Producer.Model)
+	}
+}
+
+// TestProducerWinsConflict asserts that when both a top-level skill and a
+// producer.skill are present and differ, producer is authoritative and
+// Stage.Skill mirrors producer.skill (not the legacy top-level value).
+func TestProducerWinsConflict(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	// Build a v2 manifest, serialise it, then inject a conflicting legacy top-level
+	// skill block to simulate a document with both fields.
+	s := Skill{ID: "new-skill", Repo: "github.com/example/skills", Version: "v2"}
+	manifest := validManifest(output)
+	manifest.Stages[0].Producer = Producer{
+		Skill: s,
+	}
+	manifest.Stages[0].Skill = s // keep Skill consistent so Validate passes
+	jsonBytes, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+
+	// Inject a conflicting legacy top-level skill into the stage JSON.
+	conflicting := strings.Replace(
+		string(jsonBytes),
+		`"producer":`,
+		`"skill": {"id": "legacy-skill", "repo": "legacy-repo", "version": "v0"}, "producer":`,
+		1,
+	)
+
+	got, err := ParseJSON([]byte(conflicting))
+	if err != nil {
+		t.Fatalf("ParseJSON(conflicting) returned error: %v", err)
+	}
+	if got.Stages[0].Skill != s {
+		t.Fatalf("Stage.Skill = %+v, want producer's %+v (producer must win)", got.Stages[0].Skill, s)
+	}
+	if got.Stages[0].Producer.Skill != s {
+		t.Fatalf("Stage.Producer.Skill = %+v, want %+v", got.Stages[0].Producer.Skill, s)
+	}
+}
+
+// TestProducerRoundTrip verifies that a Manifest with a fully-populated Producer
+// (Harness name+version, Model, Skill) round-trips through JSON() -> ParseJSON
+// with all fields intact.
+func TestProducerRoundTrip(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	skill := Skill{ID: "dev-planner", Repo: "github.com/example/skills", Version: "v3"}
+	manifest := validManifest(output)
+	manifest.Stages[0].Skill = skill
+	manifest.Stages[0].Producer = Producer{
+		Harness: Harness{Name: "claude-code", Version: "1.0"},
+		Model:   "claude-opus-4-7",
+		Skill:   skill,
+	}
+
+	jsonBytes, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+
+	got, err := ParseJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON returned error: %v", err)
+	}
+	s := got.Stages[0]
+	if s.Skill != skill {
+		t.Fatalf("Stage.Skill = %+v, want %+v", s.Skill, skill)
+	}
+	if s.Producer.Skill != skill {
+		t.Fatalf("Stage.Producer.Skill = %+v, want %+v", s.Producer.Skill, skill)
+	}
+	if s.Producer.Harness != (Harness{Name: "claude-code", Version: "1.0"}) {
+		t.Fatalf("Stage.Producer.Harness = %+v, want {claude-code 1.0}", s.Producer.Harness)
+	}
+	if s.Producer.Model != "claude-opus-4-7" {
+		t.Fatalf("Stage.Producer.Model = %q, want claude-opus-4-7", s.Producer.Model)
+	}
+	if got.ManifestVersion != 2 {
+		t.Fatalf("ManifestVersion = %d, want 2", got.ManifestVersion)
 	}
 }
 
