@@ -79,4 +79,4 @@ Not implemented yet:
 
 - workflow config loading
 - pointer/external artifact capture
-- replay, eval, and import commands
+- eval and import commands

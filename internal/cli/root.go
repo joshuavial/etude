@@ -11,7 +11,8 @@ import (
 var version = "dev"
 
 const rootLong = "etude captures stage artifacts as git-native run records. " +
-	"Replay and bench commands are planned but not implemented yet."
+	"The replay command re-executes a recorded stage end-to-end. " +
+	"The bench command is planned but not implemented yet."
 
 // NewRootCommand constructs the root command so tests can execute it without
 // touching process-global stdout, stderr, or argv.
@@ -34,6 +35,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	cmd.AddCommand(newCaptureCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
+	cmd.AddCommand(newReplayCommand(out, errOut))
 	cmd.AddCommand(newRunCommand(out, errOut))
 	cmd.AddCommand(newSyncCommand(out, errOut))
 

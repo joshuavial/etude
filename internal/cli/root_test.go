@@ -24,7 +24,7 @@ func TestRootHelp(t *testing.T) {
 
 	for _, want := range []string{
 		"etude captures stage artifacts",
-		"Replay and bench commands are planned but not implemented yet.",
+		"The bench command is planned but not implemented yet.",
 		"Usage:",
 		"etude [flags]",
 		"capture",
@@ -79,7 +79,6 @@ func TestCommandMetadata(t *testing.T) {
 
 func TestFutureCommandNamesAreRejected(t *testing.T) {
 	for _, args := range [][]string{
-		{"replay"},
 		{"bench"},
 	} {
 		output, stderr, err := execute(args...)

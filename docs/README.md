@@ -8,6 +8,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [Manual Capture](capture.md) - record local file artifacts into a run ref.
 - [Runs](run.md) - list and inspect stored runs.
 - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.
+- [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
 - [Plans](plans/README.md) - notes on planned components that do not exist yet.
 
 The current implemented state is summarized in the top-level
