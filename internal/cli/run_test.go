@@ -481,6 +481,139 @@ func TestRunShowReplayOfLine(t *testing.T) {
 	}
 }
 
+// TestRunShowRendersGates verifies run show prints a gates section: per-attempt
+// header + status, per-seat provider/verdict, conditional skill/required/note/
+// degraded lines, manifest ordering, and that a go seat prints no note line.
+func TestRunShowRendersGates(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan",
+		"--run", "gates-run", "--output", "output=out.md",
+		"--skill-id", "dev-planner", "--skill-repo", "r", "--skill-version", "v1",
+	); err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// A rich first attempt: a block seat with required feedback, a go seat that
+	// carries a skill identity, and a disregarded seat with a failure note +
+	// a decision degraded reason.
+	rich := `{
+  "gate_id": "plan.r1", "phase": "plan", "round": 1, "tier": 2, "status": "rerun",
+  "reviewed_stages": [{"stage":"plan","role":"plan"}],
+  "seats": [
+    {"seat":"gemini","harness":{"name":"gemini-cli","version":"3.1"},"provider":{"name":"google","model":"gemini-3.1-pro-preview"},"verdict":"block","required":["specify the validation rule"],"timestamp":"2026-05-26T01:00:00Z"},
+    {"seat":"opus","harness":{"name":"claude-code","version":"o47"},"provider":{"name":"anthropic","model":"claude-opus-4-7"},"skill":{"id":"dev-pr-reviewer","repo":"codewithjv-agent-skills","version":"v3"},"verdict":"go","timestamp":"2026-05-26T01:01:00Z"},
+    {"seat":"pilms","harness":{"name":"pi","version":"x"},"provider":{"name":"lmstudio","model":"qwen/qwen3.6-35b-a3b"},"verdict":"disregarded","failure_note":"0-CPU client hang","timestamp":"2026-05-26T01:02:00Z"}
+  ],
+  "decision": {"degraded_reason":"pilms outage; 3 substantive GO"},
+  "timestamp": "2026-05-26T01:05:00Z"
+}`
+	writeFile(t, repo, "g1.json", rich)
+	if _, stderr, err := execute("capture-gate", "--run", "gates-run", "--gate-file", "g1.json"); err != nil {
+		t.Fatalf("capture-gate r1 error: %v\nstderr: %s", err, stderr)
+	}
+	// A second, simpler attempt (pass) to exercise ordering + multiple gates.
+	g2 := writeGateJSON(t, repo, "g2.json", "plan.r2", "plan", 2, "")
+	if _, stderr, err := execute("capture-gate", "--run", "gates-run", "--gate-file", g2); err != nil {
+		t.Fatalf("capture-gate r2 error: %v\nstderr: %s", err, stderr)
+	}
+	// A third attempt exercising the remaining render branches: escalated status
+	// + escalation_reason + deferred_beads (decision), a go seat with optional
+	// feedback, and a failed seat with a note + a raw_output transcript artifact.
+	writeFile(t, repo, "codex-transcript.txt", "codex transcript bytes")
+	esc := `{
+  "gate_id": "plan.r3", "phase": "plan", "round": 3, "tier": 1, "status": "escalated",
+  "reviewed_stages": [{"stage":"plan","role":"plan"}],
+  "seats": [
+    {"seat":"opus","harness":{"name":"claude-code","version":"o47"},"provider":{"name":"anthropic","model":"claude-opus-4-7"},"verdict":"go","optional":["consider caching the result"],"timestamp":"2026-05-26T04:00:00Z"},
+    {"seat":"codex","harness":{"name":"codex","version":"x"},"provider":{"name":"openai","model":"gpt-5.5"},"verdict":"failed","failure_note":"401 auth error","raw_output":{"role":"codex-transcript","path":"codex-transcript.txt","media_type":"text/plain"},"timestamp":"2026-05-26T04:01:00Z"}
+  ],
+  "decision": {"escalation_reason":"codex auth failure; no autonomous fallback","deferred_beads":["etude-followup"]},
+  "timestamp": "2026-05-26T04:05:00Z"
+}`
+	writeFile(t, repo, "g3.json", esc)
+	if _, stderr, err := execute("capture-gate", "--run", "gates-run", "--gate-file", "g3.json"); err != nil {
+		t.Fatalf("capture-gate r3 error: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "gates-run")
+	if err != nil {
+		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	wants := []string{
+		"gate: plan.r1", "gate: plan.r2", "gate: plan.r3",
+		"  status:   rerun", "  status:   pass", "  status:   escalated",
+		"  reviewed: plan (role=plan)",
+		"  degraded: pilms outage; 3 substantive GO",
+		"  escalation: codex auth failure; no autonomous fallback",
+		"  deferred: etude-followup",
+		"    provider: google / gemini-3.1-pro-preview",
+		"    provider: lmstudio / qwen/qwen3.6-35b-a3b",
+		"    harness:  gemini-cli 3.1",
+		"    harness:  claude-code o47",
+		"    verdict:  block", "    verdict:  go", "    verdict:  disregarded", "    verdict:  failed",
+		"    required:",
+		"      - specify the validation rule",
+		"    optional:",
+		"      - consider caching the result",
+		"    note:     0-CPU client hang",
+		"    note:     401 auth error",
+		"    raw_output: artifacts/sha256/",
+		"    skill:    dev-pr-reviewer@v3 (codewithjv-agent-skills)",
+	}
+	for _, w := range wants {
+		if !strings.Contains(stdout, w) {
+			t.Fatalf("expected %q in run show output:\n%s", w, stdout)
+		}
+	}
+	// Manifest order: plan.r1 before plan.r2 before plan.r3.
+	if !(strings.Index(stdout, "gate: plan.r1") < strings.Index(stdout, "gate: plan.r2") &&
+		strings.Index(stdout, "gate: plan.r2") < strings.Index(stdout, "gate: plan.r3")) {
+		t.Fatalf("expected gates in manifest order plan.r1 < plan.r2 < plan.r3:\n%s", stdout)
+	}
+	// Exactly the two notes that should exist render (pilms disregarded + codex
+	// failed); no go/block seat renders a note. Count-based so it is not fooled
+	// by field ordering within a seat block.
+	if n := strings.Count(stdout, "    note:     "); n != 2 {
+		t.Fatalf("expected exactly 2 seat note lines (disregarded + failed), got %d:\n%s", n, stdout)
+	}
+	// skill line renders only for the one seat that carries a skill (opus on r1).
+	if n := strings.Count(stdout, "    skill:    "); n != 1 {
+		t.Fatalf("expected exactly 1 seat skill line, got %d:\n%s", n, stdout)
+	}
+}
+
+// TestRunShowNoGatesUnchanged verifies a gate-less run prints no gate section.
+func TestRunShowNoGatesUnchanged(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan",
+		"--run", "no-gates-run", "--output", "output=out.md",
+		"--skill-id", "dev-planner", "--skill-repo", "r", "--skill-version", "v1",
+	); err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "no-gates-run")
+	if err != nil {
+		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+	if strings.Contains(stdout, "gate:") {
+		t.Fatalf("did not expect any gate section for a gate-less run:\n%s", stdout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------

@@ -188,5 +188,73 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
 	}
+
+	for _, gate := range m.Gates {
+		printGate(out, gate)
+	}
 	return nil
+}
+
+// printGate renders one review-gate attempt in the same flat, indented style as
+// the stage block. Optional fields (reviewed roles/artifacts, skill, required/
+// optional feedback, failure note, raw output, decision reasons) print only when
+// present, so they never leave blank lines.
+func printGate(out io.Writer, g runmanifest.GateAttempt) {
+	fmt.Fprintf(out, "\ngate: %s\n", g.GateID)
+	fmt.Fprintf(out, "  phase:    %s\n", g.Phase)
+	fmt.Fprintf(out, "  round:    %d\n", g.Round)
+	fmt.Fprintf(out, "  tier:     %d\n", g.Tier)
+	fmt.Fprintf(out, "  status:   %s\n", g.Status)
+	for _, r := range g.ReviewedStages {
+		line := r.Stage
+		if r.Role != "" {
+			line += fmt.Sprintf(" (role=%s)", r.Role)
+		}
+		if r.Artifact != "" {
+			line += fmt.Sprintf(" (artifact=%s)", r.Artifact)
+		}
+		fmt.Fprintf(out, "  reviewed: %s\n", line)
+	}
+	if g.Decision.EscalationReason != "" {
+		fmt.Fprintf(out, "  escalation: %s\n", g.Decision.EscalationReason)
+	}
+	if g.Decision.DegradedReason != "" {
+		fmt.Fprintf(out, "  degraded: %s\n", g.Decision.DegradedReason)
+	}
+	if len(g.Decision.DeferredBeads) > 0 {
+		fmt.Fprintf(out, "  deferred: %s\n", strings.Join(g.Decision.DeferredBeads, ", "))
+	}
+	for _, s := range g.Seats {
+		fmt.Fprintf(out, "  seat: %s\n", s.Seat)
+		fmt.Fprintf(out, "    provider: %s / %s\n", s.Provider.Name, s.Provider.Model)
+		if s.Harness.Name != "" {
+			if s.Harness.Version != "" {
+				fmt.Fprintf(out, "    harness:  %s %s\n", s.Harness.Name, s.Harness.Version)
+			} else {
+				fmt.Fprintf(out, "    harness:  %s\n", s.Harness.Name)
+			}
+		}
+		if s.Skill.ID != "" {
+			fmt.Fprintf(out, "    skill:    %s@%s (%s)\n", s.Skill.ID, s.Skill.Version, s.Skill.Repo)
+		}
+		fmt.Fprintf(out, "    verdict:  %s\n", s.Verdict)
+		if len(s.Required) > 0 {
+			fmt.Fprintln(out, "    required:")
+			for _, r := range s.Required {
+				fmt.Fprintf(out, "      - %s\n", r)
+			}
+		}
+		if len(s.Optional) > 0 {
+			fmt.Fprintln(out, "    optional:")
+			for _, o := range s.Optional {
+				fmt.Fprintf(out, "      - %s\n", o)
+			}
+		}
+		if s.FailureNote != "" {
+			fmt.Fprintf(out, "    note:     %s\n", s.FailureNote)
+		}
+		if s.RawOutput != nil {
+			fmt.Fprintf(out, "    raw_output: %s\n", s.RawOutput.Path)
+		}
+	}
 }
