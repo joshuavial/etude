@@ -375,6 +375,16 @@ explicitly deferred to a named follow-up bead.
 Reviewer auth, quota, model access, allowance, timeout, or tooling failures are
 captured as reviewer failures. They do not count as `GO`.
 
+Gate results are ALSO captured STRUCTURALLY via `etude capture-gate` (append-only,
+one `GateAttempt` per gate attempt on the bead's run ref) — this is now the
+durable, import-ready source of truth for reviewer seats/verdicts/rounds/provenance,
+with the prose block above kept as the human-readable mirror. Use
+`scripts/dogfood-gate-capture.sh <bead-id> <gate.json>`; the gate-file shape,
+reviewer-seat harness/provider/model conventions, and the per-outcome verdict
+mapping (incl. `failure_note` for failed/empty/malfunction/disregarded) live in
+[review-gate-runbook.md](review-gate-runbook.md#structured-capture-etude-capture-gate).
+This replaces the prior need to hand-parse prose gate summaries on import.
+
 The normal `plan`, `implement`, `verify`, `docs`, and `final-review` stages go
 through the four-reviewer gate. Retro artifacts do not gate the main workflow
 unless a later bead explicitly makes a retro the artifact being advanced.

@@ -462,6 +462,72 @@ If the phase artifact has its own review-gate section, append reviewer results
 after review completes. Do not edit the original artifact body just to insert
 post-review data.
 
+### Structured capture (`etude capture-gate`)
+
+The prose block above is the human-readable mirror; the **structured record is
+the durable source of truth**. After each gate ATTEMPT concludes (one panel
+re-examination of one phase at one round), also record it as a `GateAttempt` on
+the bead's etude run:
+
+1. Author a gate-attempt JSON (the orchestrator already holds every seat's
+   verdict, feedback, provider, and model at gate time).
+2. Run `scripts/dogfood-gate-capture.sh <bead-id> <gate.json>`. It builds etude
+   fresh, fetches the run ref, appends via `etude capture-gate`, VERIFIES the
+   local manifest (`manifest_version` 3 + the gate present) BEFORE pushing, then
+   pushes `refs/etude/runs/<bead-id>`.
+
+Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
+COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose
+`phase`/`gate_id` names the dominant phase and whose `reviewed_stages` lists the
+artifacts it actually reviewed (e.g. `implement` + `verify`) — a deliberate
+modeling choice, not "the implement gate only".
+
+Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema.md`
+§4/§5 for the full schema + a worked example):
+
+```jsonc
+{
+  "gate_id": "<phase>.r<round>",         // unique per run, e.g. "plan.r2"
+  "phase": "plan|implement|verify|review|...",
+  "round": 1,                            // 1-based; rerun => round+1, new attempt
+  "tier": 1,                             // 0 unknown | 1 | 2 | 3
+  "status": "pass|rerun|escalated",
+  "reviewed_stages": [                   // >=1; stage must exist on the run
+    { "stage": "implement", "role": "diff", "artifact": "<sha or omit>" }
+  ],
+  "seats": [ /* one per seat, see conventions below */ ],
+  "decision": { "degraded_reason": "<why a disregarded seat was allowed>",
+                "escalation_reason": "", "deferred_beads": [] },
+  "timestamp": "<RFC3339Nano UTC>"
+}
+```
+
+**Reviewer-seat conventions** (pin `harness`/`provider`/`model` exactly):
+
+| seat   | harness.name | provider.name | provider.model            |
+|--------|--------------|---------------|---------------------------|
+| opus   | claude-code  | anthropic     | claude-opus-4-7           |
+| gemini | gemini-cli   | google        | gemini-3.1-pro-preview    |
+| codex  | codex        | openai        | gpt-5.5                   |
+| pilms  | pi           | lmstudio      | qwen/qwen3.6-35b-a3b      |
+
+**Verdict mapping** (per seat, covering every outcome):
+
+| outcome                          | `verdict`     | required extra fields                         |
+|----------------------------------|---------------|-----------------------------------------------|
+| passed                           | `go`          | `optional` (if any)                           |
+| blocked                          | `block`       | `required` (the changes); gate `status: rerun`|
+| auth/quota/tool invocation failed| `failed`      | `failure_note`                                |
+| ran but produced no verdict      | `empty`       | `failure_note`                                |
+| root-caused tooling outage       | `malfunction` | `failure_note`                                |
+| outage seat skipped (degraded)   | `disregarded` | `failure_note` AND `decision.degraded_reason` |
+
+`failure_note` is REQUIRED for every non-`go`/`block` verdict
+(`failed`/`empty`/`malfunction`/`disregarded`) and FORBIDDEN on `go`/`block` —
+`capture-gate`'s validation enforces this. So a skipped pilms seat always carries
+both `failure_note` (what broke) and `decision.degraded_reason` (why the gate
+still passed under the autonomous-loop fallback).
+
 ## Safe Bead Updates
 
 Use stdin or files for long Markdown updates.
