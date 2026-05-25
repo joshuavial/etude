@@ -392,6 +392,29 @@ up, or author the corrected design directly (the planner's exploration —
 file refs, structure, tests — is still reused). Don't round-trip a contradiction
 open-ended.
 
+**Recurring avoidable plan-gate blocks — preempt them in the plan.** Across the
+gate-reviewer-visibility epic, most plan-gate BLOCKs were the same two shapes;
+plans that handle these up front avoid a rerun round:
+
+- **Cover ALL of a schema type's fields, including optional ones.** When a change
+  renders, documents, captures, or tests a struct, address every field of that
+  struct (or explicitly justify each omission). Partial coverage drew repeat
+  BLOCKs (omitting `SeatResult.Skill` from `run show`; leaving `optional`/
+  `raw_output`/`escalation`/`deferred` rendering untested; omitting `skill` from
+  the docs field listing). "I covered the common/required fields" is not "I
+  covered the type."
+- **Read acceptance criteria literally.** Satisfy the words as written, not a
+  convenient reinterpretation (e.g. "a NEW dogfood run demonstrates X" means a
+  new run, not an append/backfill of an existing one — backfill was a separate
+  bead). When a criterion is ambiguous, state the chosen reading in the plan.
+- **Verify before any irreversible step.** A script/process that mutates then
+  pushes must verify the local result BEFORE the push, and be exercised in a
+  throwaway repo before first real use (see Scope Discipline / isolation rule).
+
+Also: a BLOCK that rests on a factual claim about behavior (e.g. "this example is
+invalid") is verified empirically before reworking (see Result Classification);
+do not edit to satisfy a disproven claim — rerun with the evidence.
+
 If the same gate receives `BLOCK` results through attempt 4 (the initial run
 plus three reruns), escalate to the user with:
 
