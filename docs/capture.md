@@ -44,6 +44,9 @@ Useful flags:
 --skill-repo manual
 --skill-version manual
 --message <text>
+--harness <name>
+--harness-version <version>
+--model <model-id>
 ```
 
 If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
@@ -54,6 +57,11 @@ The other metadata defaults are `--workflow manual`,
 `--workflow-version manual-v1`, `--produced-by original`,
 `--skill-repo manual`, and `--skill-version manual`.
 Use `--message` to override the Git commit message for the run ref update.
+`--harness`, `--harness-version`, and `--model` are optional; all default to
+empty string. They populate the run manifest's producer block (harness name,
+harness version, and model that produced the stage). When `--harness` is
+omitted, the harness sub-block is omitted from the manifest entirely; when
+`--model` is omitted, no model field is written.
 
 ## Appending
 

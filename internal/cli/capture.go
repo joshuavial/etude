@@ -38,6 +38,9 @@ type captureConfig struct {
 	skillRepo       string
 	skillVersion    string
 	message         string
+	harness         string
+	harnessVersion  string
+	model           string
 }
 
 func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
@@ -81,6 +84,9 @@ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
 	flags.StringVar(&cfg.skillRepo, "skill-repo", defaultSkillRepo, "skill repo")
 	flags.StringVar(&cfg.skillVersion, "skill-version", defaultSkillVersion, "skill version")
 	flags.StringVar(&cfg.message, "message", "", "run ref commit message")
+	flags.StringVar(&cfg.harness, "harness", "", "agent runtime that executed the stage (e.g. claude-code)")
+	flags.StringVar(&cfg.harnessVersion, "harness-version", "", "version of the agent runtime")
+	flags.StringVar(&cfg.model, "model", "", "LLM model used by this stage (e.g. claude-opus-4-7)")
 	return cmd
 }
 
@@ -180,14 +186,23 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
 		return resolveErr
 	}
 
+	skill := runmanifest.Skill{
+		ID:      skillID,
+		Repo:    cfg.skillRepo,
+		Version: cfg.skillVersion,
+	}
 	manifest.Stages = append(manifest.Stages, runmanifest.Stage{
 		Name:       stageName,
 		ProducedBy: cfg.producedBy,
 		GitSHA:     gitSHA,
-		Skill: runmanifest.Skill{
-			ID:      skillID,
-			Repo:    cfg.skillRepo,
-			Version: cfg.skillVersion,
+		Skill:      skill,
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{
+				Name:    cfg.harness,
+				Version: cfg.harnessVersion,
+			},
+			Model: cfg.model,
+			Skill: skill,
 		},
 		Inputs:    inputs,
 		Output:    output,

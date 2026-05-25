@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,6 +235,215 @@ func TestInferMediaType(t *testing.T) {
 		if got := inferMediaType(path); got != want {
 			t.Errorf("inferMediaType(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+func readRawManifest(t *testing.T, repo, runID string) []byte {
+	t.Helper()
+	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, "manifest.json")
+	if err != nil {
+		t.Fatalf("ReadFile raw manifest returned error: %v", err)
+	}
+	return content
+}
+
+// rawProducerProbe decodes only the provenance-bearing fields of a manifest so
+// tests can assert the SERIALIZED shape structurally (rather than by substring,
+// which a leaked legacy top-level skill block could satisfy by accident).
+type rawProducerProbe struct {
+	Stages []struct {
+		Skill    *json.RawMessage `json:"skill"`
+		Producer struct {
+			Harness *struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"harness"`
+			Model string `json:"model"`
+			Skill *struct {
+				ID      string `json:"id"`
+				Repo    string `json:"repo"`
+				Version string `json:"version"`
+			} `json:"skill"`
+		} `json:"producer"`
+	} `json:"stages"`
+}
+
+func parseRawProducer(t *testing.T, raw []byte) rawProducerProbe {
+	t.Helper()
+	var probe rawProducerProbe
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("unmarshal raw manifest: %v\n%s", err, raw)
+	}
+	return probe
+}
+
+func TestCaptureRecordsProducer(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "run-1",
+		"--output", "output=out.md",
+		"--skill-id", "dev-planner",
+		"--skill-repo", "myrepo",
+		"--skill-version", "v3",
+		"--harness", "claude-code",
+		"--harness-version", "1.0",
+		"--model", "claude-opus-4-7",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	wantSkill := runmanifest.Skill{ID: "dev-planner", Repo: "myrepo", Version: "v3"}
+
+	manifest := readRunManifest(t, repo, "run-1")
+	if manifest.ManifestVersion != 2 {
+		t.Fatalf("ManifestVersion = %d, want 2", manifest.ManifestVersion)
+	}
+	stage := manifest.Stages[0]
+	if stage.Producer.Harness.Name != "claude-code" || stage.Producer.Harness.Version != "1.0" {
+		t.Fatalf("Producer.Harness = %#v, want {claude-code 1.0}", stage.Producer.Harness)
+	}
+	if stage.Producer.Model != "claude-opus-4-7" {
+		t.Fatalf("Producer.Model = %q, want claude-opus-4-7", stage.Producer.Model)
+	}
+	if stage.Producer.Skill != wantSkill {
+		t.Fatalf("Producer.Skill = %#v, want %#v", stage.Producer.Skill, wantSkill)
+	}
+	if stage.Skill != stage.Producer.Skill {
+		t.Fatalf("mirror invariant violated: Stage.Skill = %#v, Producer.Skill = %#v", stage.Skill, stage.Producer.Skill)
+	}
+
+	// Structurally verify the SERIALIZED shape: producer.skill must carry the
+	// resolved skill identity, and no top-level stages[].skill may exist (so the
+	// provenance can only be coming from producer.skill, not a leaked legacy block).
+	raw := readRawManifest(t, repo, "run-1")
+	ps := parseRawProducer(t, raw).Stages[0]
+	if ps.Skill != nil {
+		t.Fatalf("raw stages[0].skill must be absent (skill lives inside producer), got %s", *ps.Skill)
+	}
+	if ps.Producer.Skill == nil {
+		t.Fatalf("raw stages[0].producer.skill is missing:\n%s", raw)
+	}
+	if ps.Producer.Skill.ID != "dev-planner" || ps.Producer.Skill.Repo != "myrepo" || ps.Producer.Skill.Version != "v3" {
+		t.Fatalf("raw producer.skill = %#v, want {dev-planner myrepo v3}", *ps.Producer.Skill)
+	}
+	if ps.Producer.Harness == nil || ps.Producer.Harness.Name != "claude-code" || ps.Producer.Harness.Version != "1.0" {
+		t.Fatalf("raw producer.harness = %#v, want {claude-code 1.0}", ps.Producer.Harness)
+	}
+	if ps.Producer.Model != "claude-opus-4-7" {
+		t.Fatalf("raw producer.model = %q, want claude-opus-4-7", ps.Producer.Model)
+	}
+}
+
+func TestCaptureOmitsHarnessWithoutFlags(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "run-1",
+		"--output", "output=out.md",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	manifest := readRunManifest(t, repo, "run-1")
+	stage := manifest.Stages[0]
+	if stage.Producer.Harness.Name != "" {
+		t.Fatalf("Producer.Harness.Name = %q, want empty", stage.Producer.Harness.Name)
+	}
+	if stage.Producer.Model != "" {
+		t.Fatalf("Producer.Model = %q, want empty", stage.Producer.Model)
+	}
+	if stage.Skill != stage.Producer.Skill {
+		t.Fatalf("mirror invariant violated: Stage.Skill = %#v, Producer.Skill = %#v", stage.Skill, stage.Producer.Skill)
+	}
+
+	// Structural check: harness omitted, producer.skill present, no leaked
+	// top-level stages[].skill — independent of substring coincidence.
+	raw := readRawManifest(t, repo, "run-1")
+	ps := parseRawProducer(t, raw).Stages[0]
+	if ps.Producer.Harness != nil {
+		t.Fatalf("raw stages[0].producer.harness must be omitted when unset, got %#v", ps.Producer.Harness)
+	}
+	if ps.Producer.Model != "" {
+		t.Fatalf("raw stages[0].producer.model = %q, want empty/omitted", ps.Producer.Model)
+	}
+	if ps.Skill != nil {
+		t.Fatalf("raw stages[0].skill must be absent (skill lives inside producer), got %s", *ps.Skill)
+	}
+	if ps.Producer.Skill == nil || ps.Producer.Skill.ID == "" {
+		t.Fatalf("raw stages[0].producer.skill is missing or empty:\n%s", raw)
+	}
+}
+
+func TestCapturePartialHarnessName(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "run-1",
+		"--output", "output=out.md",
+		"--harness", "claude-code",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	manifest := readRunManifest(t, repo, "run-1")
+	stage := manifest.Stages[0]
+	if stage.Producer.Harness.Name != "claude-code" {
+		t.Fatalf("Producer.Harness.Name = %q, want claude-code", stage.Producer.Harness.Name)
+	}
+	if stage.Producer.Harness.Version != "" {
+		t.Fatalf("Producer.Harness.Version = %q, want empty", stage.Producer.Harness.Version)
+	}
+
+	raw := readRawManifest(t, repo, "run-1")
+	ps := parseRawProducer(t, raw).Stages[0]
+	if ps.Producer.Harness == nil || ps.Producer.Harness.Name != "claude-code" {
+		t.Fatalf("raw stages[0].producer.harness = %#v, want name claude-code", ps.Producer.Harness)
+	}
+	if ps.Producer.Harness.Version != "" {
+		t.Fatalf("raw producer.harness.version = %q, want empty", ps.Producer.Harness.Version)
+	}
+}
+
+func TestCaptureModelWithoutHarness(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan",
+		"--run", "run-1",
+		"--output", "output=out.md",
+		"--model", "claude-sonnet-4-6",
+	)
+	if err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	manifest := readRunManifest(t, repo, "run-1")
+	stage := manifest.Stages[0]
+	if stage.Producer.Model != "claude-sonnet-4-6" {
+		t.Fatalf("Producer.Model = %q, want claude-sonnet-4-6", stage.Producer.Model)
+	}
+	if stage.Producer.Harness.Name != "" {
+		t.Fatalf("Producer.Harness.Name = %q, want empty", stage.Producer.Harness.Name)
+	}
+
+	raw := readRawManifest(t, repo, "run-1")
+	ps := parseRawProducer(t, raw).Stages[0]
+	if ps.Producer.Model != "claude-sonnet-4-6" {
+		t.Fatalf("raw stages[0].producer.model = %q, want claude-sonnet-4-6", ps.Producer.Model)
+	}
+	if ps.Producer.Harness != nil {
+		t.Fatalf("raw stages[0].producer.harness must be omitted, got %#v", ps.Producer.Harness)
 	}
 }
 

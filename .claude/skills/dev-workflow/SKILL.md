@@ -91,6 +91,18 @@ Conventions:
   Final Review, so every stage shares the base-commit sha; that is expected.
 - Always pass `--workflow default --workflow-version v1` (consistent value, so
   appends never conflict on run-level metadata).
+- Always pass `--harness claude-code --harness-version "$(claude --version)"`
+  to record the harness that executed the stage. Quote the command substitution —
+  `claude --version` prints `2.1.150 (Claude Code)`, so without quotes the spaces
+  split into stray argv words.
+- Pass `--model <model>` matching the agent that produced the stage. The recorded
+  model must be the actual model used (mixed opus/sonnet across phases), so
+  provenance and benchmarks are meaningful. Per-stage mapping:
+  - `plan`      (`dev-planner`)      → `--model claude-opus-4-7`
+  - `implement` (`dev-executor`)     → `--model claude-sonnet-4-6`
+  - `verify`    (`dev-qa`)           → `--model claude-opus-4-7`
+  - `docs`      (`dev-docs-writer`)  → `--model claude-sonnet-4-6`
+  - `review`    (`dev-pr-reviewer`)  → `--model claude-opus-4-7`
 - If `etude` is not installed, skip capture and note the skip in the bead — the
   gate flow itself does not depend on capture succeeding.
 
@@ -116,13 +128,15 @@ etude capture plan --run <bead-id> \
   --ref bead=<bead-id> \
   --workflow default --workflow-version v1 \
   --skill-id dev-planner \
+  --harness claude-code --harness-version "$(claude --version)" \
+  --model claude-opus-4-7 \
   --message "<bead-id>: plan"
 ```
 
 Later phases follow the same shape with the stage's role/inputs from the table
 (`--skill-id` = the phase agent: `dev-executor`, `dev-qa`, `dev-docs-writer`,
-`dev-pr-reviewer`). After Final Review's capture, inspect the run with
-`etude run show <bead-id>`.
+`dev-pr-reviewer`; `--model` = the per-stage model from the mapping above).
+After Final Review's capture, inspect the run with `etude run show <bead-id>`.
 
 ## Auto Mode
 
