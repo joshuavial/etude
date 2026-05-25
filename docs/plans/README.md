@@ -15,6 +15,9 @@ should not yet be treated as shipped documentation.
 - [Design brief](product/BRIEF.md) - current product direction and phased plan.
 - [Retrospectives](product/retrospectives.md) - product planning for first-class
   retro artifacts, triggers, CLI shape, and manifest integration.
+- [etude retro command](product/etude-retro-command.md) - concrete design for the
+  `etude retro` CLI and `refs/etude/retros/*` storage model, reconciled with the
+  shipped capture/run/eval/bench surfaces.
 
 ## Dogfood Plans
 
