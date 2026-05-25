@@ -17,6 +17,7 @@ import (
 const (
 	runsNS     = "refs/etude/runs/"
 	evalsNS    = "refs/etude/evals/"
+	retrosNS   = "refs/etude/retros/"
 	defaultGit = "git"
 )
 
@@ -273,9 +274,9 @@ func (s Store) ensureCommit(ctx context.Context, oid string) error {
 }
 
 // DeleteRef deletes the named ref using git update-ref -d --no-deref.
-// It validates the ref namespace (refs/etude/runs or refs/etude/evals) and
-// rejects symbolic refs before issuing the delete, then errors if the ref
-// does not exist. Git objects are left for normal git gc.
+// It validates the ref namespace (refs/etude/runs, refs/etude/evals, or
+// refs/etude/retros) and rejects symbolic refs before issuing the delete,
+// then errors if the ref does not exist. Git objects are left for normal git gc.
 func (s Store) DeleteRef(ctx context.Context, ref string) error {
 	if err := s.validateRef(ctx, ref); err != nil {
 		return err
@@ -293,10 +294,10 @@ func (s Store) DeleteRef(ctx context.Context, ref string) error {
 }
 
 func (s Store) validateRef(ctx context.Context, ref string) error {
-	if !(strings.HasPrefix(ref, runsNS) || strings.HasPrefix(ref, evalsNS)) {
+	if !(strings.HasPrefix(ref, runsNS) || strings.HasPrefix(ref, evalsNS) || strings.HasPrefix(ref, retrosNS)) {
 		return fmt.Errorf("%w: %s", ErrInvalidRef, ref)
 	}
-	if ref == runsNS || ref == evalsNS {
+	if ref == runsNS || ref == evalsNS || ref == retrosNS {
 		return fmt.Errorf("%w: %s", ErrInvalidRef, ref)
 	}
 	if strings.Contains(ref, " ") || strings.Contains(ref, "\\") {
@@ -317,8 +318,8 @@ func (s Store) rejectSymbolicRef(ctx context.Context, ref string) error {
 }
 
 func validatePrefix(prefix string) error {
-	if prefix != strings.TrimSuffix(runsNS, "/") && prefix != strings.TrimSuffix(evalsNS, "/") &&
-		!strings.HasPrefix(prefix, runsNS) && !strings.HasPrefix(prefix, evalsNS) {
+	if prefix != strings.TrimSuffix(runsNS, "/") && prefix != strings.TrimSuffix(evalsNS, "/") && prefix != strings.TrimSuffix(retrosNS, "/") &&
+		!strings.HasPrefix(prefix, runsNS) && !strings.HasPrefix(prefix, evalsNS) && !strings.HasPrefix(prefix, retrosNS) {
 		return fmt.Errorf("%w: %s", ErrInvalidRef, prefix)
 	}
 	if strings.HasSuffix(prefix, "/") {

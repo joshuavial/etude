@@ -583,6 +583,20 @@ func validateArtifactRef(artifact ArtifactRef) error {
 	return nil
 }
 
+// VerifyArtifactFile is the exported form of verifyArtifactFile, used by
+// packages (e.g. internal/retro) that reuse the runmanifest schema but write
+// to a different namespace. Keeping the unexported original avoids touching
+// callers inside this package.
+func VerifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes map[string]string) error {
+	return verifyArtifactFile(artifact, files, hashes)
+}
+
+// ReferencedArtifactPaths is the exported form of referencedArtifactPaths,
+// used by packages that write their own namespace but reuse the same schema.
+func ReferencedArtifactPaths(manifest Manifest) map[string]struct{} {
+	return referencedArtifactPaths(manifest)
+}
+
 func verifyArtifactFile(artifact ArtifactRef, files map[string][]byte, hashes map[string]string) error {
 	content, ok := files[artifact.Path]
 	if !ok {

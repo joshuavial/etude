@@ -27,6 +27,7 @@ etude [flags]
 * [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs
 * [etude reindex](etude_reindex.md)	 - Rebuild the SQLite query index from all run and eval refs
 * [etude replay](etude_replay.md)	 - Replay a recorded stage end-to-end
+* [etude retro](etude_retro.md)	 - Manage etude retro artifacts
 * [etude run](etude_run.md)	 - Inspect etude runs
 * [etude sync](etude_sync.md)	 - Push and fetch refs/etude/* with a git remote
 

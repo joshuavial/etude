@@ -785,6 +785,69 @@ func TestDeleteRefLeavesOtherRefsIntact(t *testing.T) {
 	}
 }
 
+// ---- refs/etude/retros namespace tests ----
+
+// TestRetrosNamespaceAccepted verifies that the retros namespace is accepted by
+// WriteCommit, Resolve, List, and DeleteRef, parallel to the runs/evals namespaces.
+func TestRetrosNamespaceAccepted(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	// WriteCommit and Resolve accept refs/etude/retros/<id>.
+	commit, err := store.WriteCommit(ctx, "refs/etude/retros/retro-cohort-r1-20260526T100000Z", map[string][]byte{
+		"manifest.json": []byte(`{"retro":true}`),
+	}, WriteOptions{Message: "test retro"})
+	if err != nil {
+		t.Fatalf("WriteCommit retros ref returned error: %v", err)
+	}
+
+	resolved, err := store.Resolve(ctx, "refs/etude/retros/retro-cohort-r1-20260526T100000Z")
+	if err != nil {
+		t.Fatalf("Resolve retros ref returned error: %v", err)
+	}
+	if resolved != commit {
+		t.Errorf("Resolve = %q, want %q", resolved, commit)
+	}
+
+	// List with the retros prefix works.
+	refs, err := store.List(ctx, "refs/etude/retros")
+	if err != nil {
+		t.Fatalf("List retros returned error: %v", err)
+	}
+	want := []string{"refs/etude/retros/retro-cohort-r1-20260526T100000Z"}
+	if len(refs) != len(want) || refs[0] != want[0] {
+		t.Errorf("List = %#v, want %#v", refs, want)
+	}
+
+	// DeleteRef accepts the retros ref.
+	if err := store.DeleteRef(ctx, "refs/etude/retros/retro-cohort-r1-20260526T100000Z"); err != nil {
+		t.Fatalf("DeleteRef retros ref returned error: %v", err)
+	}
+
+	if _, err := store.Resolve(ctx, "refs/etude/retros/retro-cohort-r1-20260526T100000Z"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve after DeleteRef = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUnknownNamespaceRejected is a regression guard: unknown namespaces under
+// refs/etude/ must still be rejected even after adding retrosNS.
+func TestUnknownNamespaceRejected(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	for _, ref := range []string{
+		"refs/etude/foo/some-id",
+		"refs/etude/retros", // bare namespace (no id) must be rejected
+	} {
+		_, err := store.WriteCommit(ctx, ref, map[string][]byte{"manifest.json": []byte("{}")}, WriteOptions{})
+		if !errors.Is(err, ErrInvalidRef) {
+			t.Errorf("WriteCommit(%q) = %v, want ErrInvalidRef", ref, err)
+		}
+	}
+}
+
 // TestMain handles the helper-process pattern for TestStdoutStderrSplit.
 // When GO_WANT_HELPER_PROCESS=1 the binary acts as a fake git stub.
 func TestMain(m *testing.M) {
