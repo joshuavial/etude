@@ -24,7 +24,8 @@ import (
 //	                      <NN>-context-<role> for each Context entry (ordered, %02d)
 //	ETUDE_OUTPUT_FILE — path the judge MUST write its JSON verdict to
 //	ETUDE_RUBRIC_FILE — path to the materialised Rubric bytes (only set when Rubric is non-nil)
-//	ETUDE_MODEL       — req.Producer.Model (always set, even when empty)
+//	ETUDE_MODEL       — the ExecJudge.Model field (the judge/referee model;
+//	                      always set, even when empty). NOT the producer's model.
 //
 // The working directory is the scratch temp dir created for this invocation.
 //
