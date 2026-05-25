@@ -115,6 +115,12 @@ Per-seat sandbox constraints (learned from real spirals):
   prose (don't paste them), and on a rerun send just the delta. If codex returns
   no VERDICT, treat it as a truncation glitch (reroll with a smaller input), not a
   silent GO. As a rough budget, keep the codex prompt under ~700 lines.
+  **On a DESIGN/DOC gate (reviewing a planning note, not code), inline the whole
+  artifact + the line citations it makes, and tell codex to "reason ONLY from the
+  inlined note; do NOT read repo files."** When a doc gate says codex "MAY read"
+  the repo, it has no diff to anchor on and spiders the entire tree — observed
+  ballooning to 200 KB+ of output on the bench-retro design gate before finishing.
+  A doc review needs the artifact text + the few cited facts, not a repo crawl.
 - **in-harness Opus / other seats** with normal filesystem access MAY mutation-test
   by copying to `/tmp` and mutating the copy, never the repo file.
 - **gemini**: when `ripgrep` is unavailable in gemini's environment it falls back

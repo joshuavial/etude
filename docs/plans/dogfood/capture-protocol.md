@@ -210,6 +210,20 @@ Only the final parent Verify artifact goes through the four-reviewer gate. If
 an internal lane reveals required implementation work, Verify returns `fail`
 and the bead moves back to Implement.
 
+**A built-binary manual test for a command that WRITES to `refs/etude/*` (or
+any persistent repo state) MUST run in a throwaway repo, never the working
+repo.** Build the binary, then exercise it against a fresh `mktemp -d` + `git
+init` repo seeded with just the runs/artifacts the test needs. `etude bench`,
+`etude replay --record`, and `etude capture` all record new runs/evals into
+`refs/etude/runs|evals/*`; running them against the working repo during a manual
+test pollutes real dogfood data with throwaway runs (observed: a first
+`etude bench` manual test recorded 12 junk replay runs + eval results into the
+working repo that had to be hand-deleted). The manual test is still required —
+it catches stateful/integration bugs that static code review cannot (the
+`etude bench` cohort-recursion bug — bench re-benchmarking its own recorded
+replays — was invisible to all four review seats and only surfaced from running
+the built binary twice). Isolate it; do not skip it.
+
 For planning-only beads, Verify may record that test-writer and manual-test
 lanes were not applicable. QA still checks that the planning artifact is in the
 right location, links resolve, changed docs follow the writing style guide, and
