@@ -114,7 +114,14 @@ Per-seat sandbox constraints (learned from real spirals):
   grep proves does not exist. ALWAYS ground-truth-check a gemini BLOCK that cites
   a specific string in a test file (grep the real file + run the test) before
   acting; a gemini verdict contradicted by grep + passing tests is a tool
-  artifact, not a defect. (Tracked for a durable fix.)
+  artifact, not a defect. (Tracked for a durable fix.) **Dispatch gemini with the
+  changed files' content INLINED in the prompt from the FIRST attempt** (same as
+  codex's diff-only discipline), and tell it to reason only from the inlined code
+  without calling tools. This avoids two observed cycle-wasters at once: gemini
+  trying `run_shell_command` (which is NOT in its toolset — it errors
+  `Tool "run_shell_command" not found` and burns an attempt before recovering via
+  GrepTool), and the GrepTool cross-file misattribution above (no file reading is
+  needed when the code is already in the prompt).
 
 The GPT-5.5 reviewer (codex) must be fresh: start a new isolated agent session
 that receives only the gate prompt and artifacts needed for review, not
@@ -248,6 +255,22 @@ off here: `pi --thinking off`, the qwen `/no_think` token, and
 `chat_template_kwargs.enable_thinking=false` were all verified NOT to suppress it
 on this LM Studio build. An occasional truly-empty completion is a model glitch;
 rerun the seat (LM Studio is up) rather than treating one empty run as a verdict.
+
+**Third failure mode — `pi` client 0-CPU hang with a healthy backend.** Distinct
+from slow-reasoning (above) and LM-Studio-down. Symptom: the `pi` process stays
+alive but emits ZERO output indefinitely, and `ps` shows it at `0:00.00` CPU.
+Diagnose it cheaply rather than waiting the full 15-minute reasoning budget:
+after the seat has been silent ~2 minutes, check BOTH (a) `ps aux | grep "[p]i --provider lmstudio"`
+for `0:00.00` CPU and (b) `curl -s -m5 localhost:1234/v1/models` for a 200 with
+the model listed. If the process is at 0 CPU AND the backend is healthy, the
+client is hung (NOT reasoning, NOT a down backend) and will never produce a
+verdict — kill it immediately; do not wait out the 15-minute budget. This was
+reproducible across an entire session (rubric-eval gate ×2, pairwise-eval plan +
+impl gates) in both tool-mode and inline `-p` mode while LM Studio served other
+clients fine. Because it is a known, root-caused client artifact, ONE 0-CPU hang
+(after a single reroll confirming it recurs) satisfies the "reproducible tooling
+outage" bar for the autonomous-loop fallback below — do not burn four 15-minute
+waits re-confirming a hang you have already diagnosed this session.
 
 Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
 hangs, empties, or errors twice in a session, stop blind rerun/kill cycles and
