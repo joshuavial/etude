@@ -82,6 +82,16 @@ Each reviewer should run as a non-interactive prompt invocation that receives
 only the gate prompt and repository files. They must not rely on hidden
 implementation context.
 
+**Reviewer seats MUST NOT mutate the working tree.** A pre-commit gate reviews
+UNCOMMITTED work, so any `git checkout`/`git restore`/`git stash`/`git reset` a
+seat runs to "revert" a mutation test silently discards the implementation under
+review. (This happened once: a seat's mutation-test revert wiped the producer
+wiring out of `internal/cli/capture.go` mid-gate, and later seats then BLOCKed on
+"unknown flag".) Seats that want to mutation-test MUST copy the repo to a `/tmp`
+path and mutate the copy, never the repo file. The orchestrator should pass each
+seat a read-only instruction and, after each reviewer batch, verify the changed
+files still match a pre-gate snapshot before committing.
+
 The GPT-5.5 reviewer (codex) must be fresh: start a new isolated agent session
 that receives only the gate prompt and artifacts needed for review, not
 conversational history from the current bead.
