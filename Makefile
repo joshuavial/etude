@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check example
+.PHONY: build test lint clean docs docs-check docs-reality example
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -25,6 +25,12 @@ docs:
 docs-check:
 	@TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT; \
 		go run ./cmd/gen-docs -out "$$TMP" && diff -r "$$TMP" $(DOCS_DIR)
+
+# Mechanical guard against hand-written-doc/CLI drift. Kept SEPARATE from
+# docs-check (which only diffs generated docs/cli) so it can report hand-written
+# drift without breaking the generated-docs check.
+docs-reality:
+	@bash scripts/docs-reality-check.sh
 
 example: build
 	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh

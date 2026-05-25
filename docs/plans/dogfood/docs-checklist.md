@@ -47,10 +47,23 @@ landed:
   generated command references separate from hand-written guides.
 - **Planning docs needed**: add or update files under `docs/plans/`.
 
+## Mechanical reality check
+
+Run `make docs-reality` (the source-built CLI-inventory gate the docs-reality
+retro found missing). It builds etude fresh and fails, listing every finding,
+when a shipped command is not advertised in `README.md` (as `etude <cmd>` usage)
+or named in the `docs/README.md` index, when a shipped command lacks its
+`docs/cli/etude_<cmd>.md` page, when a doc names a command that does not exist,
+or when a `docs/plans/**` line still calls a SHIPPED command future/unimplemented.
+Resolve every finding before close; for genuinely-planned prose (about unshipped
+behavior) add a justified suppression to `scripts/docs-reality-allow.txt`. This
+is separate from `make docs-check` (which only diffs generated `docs/cli`).
+
 ## Final Review Prompt
 
 Final Review should ask:
 
+- Does `make docs-reality` pass (no doc/CLI drift)?
 - Does `docs/README.md` still explain why user-facing docs are sparse?
 - Does `README.md` match the final diff?
 - Did any user-facing behavior ship without documentation?
