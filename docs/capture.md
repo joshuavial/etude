@@ -73,6 +73,12 @@ the run refs; if a key already exists, the new value replaces it.
 explicitly provided during append and conflicts with the existing run, capture
 fails.
 
+## Capturing review gates
+
+`etude capture` records stage *producers*. To record the review *gate* a stage
+passed through (reviewer seats, verdicts, provider/model/harness), use
+`etude capture-gate` — see [Gate reviewer records](gates.md).
+
 ## Current Limits
 
 Not implemented yet:

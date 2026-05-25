@@ -91,6 +91,10 @@ Per stage, the detail view shows:
 artifact, `size` is its size in bytes, and `storage` is `content` for inline
 artifact bytes or `pointer` for an external pointer record.
 
+When a run carries review-gate attempts, they are printed after the stages —
+see [Gate reviewer records](gates.md) for the gate output format and how to
+capture gates with `etude capture-gate`.
+
 ### Run id validation
 
 The run id is validated before any git call, so the check works even outside a
