@@ -119,6 +119,37 @@ gate: plan.r2
 
 Runs with no gates print no gate section.
 
+## Backfilled gate records
+
+Runs whose gate data exists only as PROSE (in bead notes) predate structured
+capture. `scripts/backfill-gate-records.sh <bead-id> ...` does a best-effort,
+STRICT backfill: it parses only the canonical "Recording Results" block (the
+`<Phase> gate attempt <n>:` header with the four exact seat lines and a
+`result:` line) and appends one `GateAttempt` per block via `capture-gate`.
+
+Backfilled records are clearly marked, never silently presented as observed data:
+
+- **`tier: 0`** — the schema's "unknown/backfilled" tier; the machine-queryable
+  signal that a record was imported, not captured live.
+- **`decision.degraded_reason`** carries a leading `[backfilled from <bead>
+  notes; … provider/model convention-derived; … timestamps approximate]` marker.
+- **provider/model are convention-derived** from the runbook seat table (filled
+  only for recognized seat tokens), not observed; timestamps are approximate;
+  `reviewed_stages` cite the run's real stages.
+
+The importer **refuses rather than invents**: any block it cannot parse
+unambiguously (unknown seat token, unrecognized verdict, a phase that names no
+stage on the run, a missing `result:` line) is skipped with a message and a
+non-zero exit — it never guesses a verdict, round, or provider.
+
+This makes the importer effectively **forward-looking**. Historical bead notes
+in this repo use a looser narrative format (e.g. `## Plan gate — … PASS` with
+`- codex (…): BLOCK→GO`) that collapses multiple rounds into one line; that is
+genuinely ambiguous for the per-round `GateAttempt` model, so it is refused, not
+guessed. The strict parser will backfill runs whose notes use the canonical
+format going forward, and honestly declines the rest. Capturing gates live with
+`etude capture-gate` (per the dogfood conventions) is the reliable path.
+
 ## See also
 
 - [Manual Capture](capture.md) and [Runs](run.md) — capturing stages and

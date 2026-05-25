@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+#
+# backfill-gate-records.sh — best-effort backfill of structured gate-reviewer
+# records (GateAttempt) for runs whose gate data exists only as PROSE in bead
+# notes. STRICT and honest: it parses ONLY the canonical "Recording Results"
+# block documented in docs/plans/dogfood/review-gate-runbook.md and REFUSES
+# anything it cannot parse unambiguously, rather than inventing data.
+#
+# Usage:
+#   scripts/backfill-gate-records.sh <bead-id> [<bead-id> ...]
+#
+# For each bead it reads `bd show <bead>` notes + the run's real stage names,
+# parses each canonical gate block into a GateAttempt, and appends it via the
+# validated `etude capture-gate` path (verify-before-push). Backfilled records
+# are clearly marked: tier:0 (the schema's "unknown/backfilled" tier) and a
+# leading "[backfilled ...]" provenance string in decision.degraded_reason;
+# provider/model are convention-derived (runbook seat table) and timestamps are
+# approximate. See docs/gates.md "Backfilled gate records" for the limitations.
+#
+# NOTE (verified 2026-05-26): NO historical bead uses the canonical block — real
+# prose collapses rounds ("BLOCK->GO") and is ambiguous, so it is refused, not
+# guessed. This importer is therefore forward-looking: it backfills runs whose
+# notes use the canonical format, and honestly refuses the rest.
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 <bead-id> [<bead-id> ...]" >&2
+  exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+bindir="$(mktemp -d)"
+trap 'rm -rf "$bindir"' EXIT
+bin="$bindir/etude"
+go build -o "$bin" ./cmd/etude
+
+# Write the strict parser to a file so `bd show <bead> | python3 parse.py` keeps
+# the bead notes on stdin (an inline `python3 - <<'PY'` heredoc would instead
+# feed the program on stdin and starve the parser of the notes).
+parser="$bindir/parse.py"
+cat > "$parser" <<'PY'
+import json, os, re, sys
+
+bead = os.environ["BEAD"]
+stages = set(json.loads(os.environ["STAGES"]))
+text = sys.stdin.read()
+
+# Canonical seat tokens -> (seat, provider_name, model, harness_name) from the
+# runbook "Structured capture" conventions. Keys must match the canonical
+# "Recording Results" seat lines exactly.
+SEATS = {
+    "Gemini Pro":          ("gemini", "google",    "gemini-3.1-pro-preview", "gemini-cli"),
+    "Claude Opus":         ("opus",   "anthropic", "claude-opus-4-7",        "claude-code"),
+    "fresh GPT-5.5 xhigh": ("codex",  "openai",    "gpt-5.5",                "codex"),
+    "pi/pilms":            ("pilms",  "lmstudio",  "qwen/qwen3.6-35b-a3b",   "pi"),
+}
+VERDICTS = {"GO": "go", "BLOCK": "block", "failed": "failed",
+            "empty": "empty", "malfunction": "malfunction", "disregarded": "disregarded"}
+RESULTS = {"pass": "pass", "rerun required": "rerun", "rerun": "rerun", "escalated": "escalated"}
+PHASE_STAGE = {"plan": "plan", "implement": "implement", "verify": "verify",
+               "docs": "docs", "final review": "review", "review": "review"}
+
+lines = text.splitlines()
+attempts, refusals = [], []
+i = 0
+hdr = re.compile(r"^([A-Za-z][A-Za-z ]*?) gate attempt (\d+):\s*$")
+seat_re = re.compile(r"^-\s*(.+?):\s*(.+?)\s*$")
+
+while i < len(lines):
+    m = hdr.match(lines[i].strip())
+    if not m:
+        i += 1
+        continue
+    phase_raw, round_s = m.group(1).strip().lower(), m.group(2)
+    block, j = {}, i + 1
+    while j < len(lines):
+        s = lines[j].strip()
+        if hdr.match(s) or (s and not s.startswith("-")):
+            break
+        sm = seat_re.match(s)
+        if sm:
+            block[sm.group(1).strip()] = sm.group(2).strip()
+        j += 1
+
+    def refuse(why):
+        refusals.append(f"{bead}: '{phase_raw} gate attempt {round_s}' refused - {why}")
+
+    # Strict: every dash-line in the block must be a canonical seat or one of the
+    # known metadata keys. An unexpected line (e.g. an unrecognized seat token)
+    # means the block is non-canonical, so refuse it rather than silently drop a
+    # reviewer we do not understand.
+    ALLOWED = set(SEATS) | {"required changes incorporated",
+                            "optional improvements handled", "result"}
+    unexpected = sorted(k for k in block if k not in ALLOWED)
+    if unexpected:
+        refuse(f"unexpected line(s) {unexpected} - not a canonical seat or metadata key")
+        i = j; continue
+
+    stage = PHASE_STAGE.get(phase_raw)
+    if stage is None or stage not in stages:
+        refuse(f"phase '{phase_raw}' maps to no stage on the run (stages={sorted(stages)})")
+        i = j; continue
+    if "result" not in block or block["result"] not in RESULTS:
+        refuse("missing or unrecognized 'result:' line")
+        i = j; continue
+
+    seats, ok = [], True
+    for token, (seat, pname, model, harness) in SEATS.items():
+        if token not in block:
+            refuse(f"missing canonical seat line '- {token}:'"); ok = False; break
+        raw = block[token]
+        vkey = raw.split("(")[0].strip()  # strip trailing "(reason)"
+        verdict = VERDICTS.get(vkey)
+        if verdict is None:
+            refuse(f"unrecognized verdict {raw!r} for seat '{token}'"); ok = False; break
+        seat_obj = {
+            "seat": seat,
+            "harness": {"name": harness, "version": ""},
+            "provider": {"name": pname, "model": model},
+            "verdict": verdict,
+            "timestamp": "BACKFILL_TS",
+        }
+        if verdict in ("failed", "empty", "malfunction", "disregarded"):
+            mreason = re.search(r"\((.*)\)", raw)
+            seat_obj["failure_note"] = (mreason.group(1).strip() if mreason
+                                        else "backfilled: original note not recorded")
+        seats.append(seat_obj)
+    if not ok:
+        i = j; continue
+
+    attempts.append({
+        "gate_id": f"{stage}.r{round_s}",
+        "phase": stage,
+        "round": int(round_s),
+        "tier": 0,
+        "status": RESULTS[block["result"]],
+        "reviewed_stages": [{"stage": stage, "role": stage, "artifact": ""}],
+        "seats": seats,
+        "decision": {
+            "escalation_reason": ("backfilled; escalation reason not separately recorded"
+                                  if RESULTS[block["result"]] == "escalated" else ""),
+            "degraded_reason": (f"[backfilled from {bead} notes; verdicts parsed from the "
+                                f"canonical gate block; provider/model convention-derived; "
+                                f"round from prose; timestamps approximate]"),
+            "deferred_beads": [],
+        },
+        "timestamp": "BACKFILL_TS",
+    })
+    i = j
+
+print(json.dumps({"attempts": attempts, "refusals": refusals}))
+PY
+
+refused=0   # set when any block is refused; drives a non-zero final exit
+appended=0
+
+for bead in "$@"; do
+  ref="refs/etude/runs/$bead"
+  git fetch origin "$ref:$ref" 2>/dev/null || true
+  if ! git rev-parse --verify --quiet "$ref" >/dev/null; then
+    echo "refused [$bead]: no run ref $ref (a gate must attach to an existing run)" >&2
+    refused=1
+    continue
+  fi
+
+  # Real stage names on the run, for referential integrity + phase->stage mapping.
+  stages_json="$(git cat-file -p "$ref:manifest.json" | python3 -c 'import sys,json; print(json.dumps([s["stage"] for s in json.load(sys.stdin).get("stages",[])]))')"
+
+  # Parse the bead notes into {attempts:[...gateAttempt...], refusals:[...]}.
+  # Per-bead isolation: a bd-show/parse failure refuses THIS bead (non-zero final
+  # exit) without aborting the rest of the batch — and never mutates a ref.
+  if ! parsed="$(bd show "$bead" 2>/dev/null | BEAD="$bead" STAGES="$stages_json" python3 "$parser")"; then
+    echo "refused [$bead]: bd show / parse failed" >&2
+    refused=1
+    continue
+  fi
+
+  # Substitute an approximate timestamp (prose carries none; marked approximate above).
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  parsed="${parsed//BACKFILL_TS/$ts}"
+
+  n_attempts="$(printf '%s' "$parsed" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["attempts"]))')"
+
+  # Emit refusals (never invent); any refusal drives a non-zero final exit.
+  printf '%s' "$parsed" | python3 -c 'import sys,json
+[print("refused", r) for r in json.load(sys.stdin)["refusals"]]' >&2
+  if printf '%s' "$parsed" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin)["refusals"] else 1)'; then
+    refused=1
+  fi
+
+  if [ "$n_attempts" -eq 0 ]; then
+    echo "no canonical gate blocks backfilled for $bead" >&2
+    continue
+  fi
+
+  # Append each parsed attempt via the validated capture-gate path, verify, push.
+  idx=0
+  while [ "$idx" -lt "$n_attempts" ]; do
+    gate_file="$bindir/gate-$bead-$idx.json"
+    printf '%s' "$parsed" | python3 -c "import sys,json; json.dump(json.load(sys.stdin)['attempts'][$idx], open('$gate_file','w'))"
+    gate_id="$(python3 -c "import json; print(json.load(open('$gate_file'))['gate_id'])")"
+    "$bin" capture-gate --run "$bead" --gate-file "$gate_file"
+    git cat-file -p "$ref:manifest.json" | GID="$gate_id" python3 -c '
+import sys, os, json
+m = json.load(sys.stdin); gid = os.environ["GID"]
+v = m.get("manifest_version")
+assert v == 3, "expected manifest_version 3 after gate append, got %s" % v
+assert gid in [g.get("gate_id") for g in m.get("gates", [])], "%s not appended" % gid
+print("  backfilled %s (tier 0, convention-derived providers)" % gid)'
+    appended=$((appended + 1))
+    idx=$((idx + 1))
+  done
+  git push origin "$ref"
+  echo "pushed $ref ($n_attempts attempt(s))"
+done
+
+echo "backfill complete: $appended attempt(s) appended."
+exit "$refused"
