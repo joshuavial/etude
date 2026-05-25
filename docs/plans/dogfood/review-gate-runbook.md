@@ -69,6 +69,19 @@ Reviewer prompts may include a short orientation summary, but the exact current
 artifact contents or exact changed excerpts must be included. Do not rely on a
 summary as the sole source of truth.
 
+**Derive "ground-truth" facts in the prompt from the SOURCE, not from memory.**
+When a reviewer prompt asserts ground-truth a seat will check the artifact against
+(a schema rule, an existing convention, a CLI behavior), quote or derive it from
+the actual source (the runbook/spec/code), not a paraphrase from the orchestrator's
+recollection. An INCOMPLETE paraphrase makes a seat correctly BLOCK on a "violation"
+that is not a defect, costing a disputed-claim verify-and-rerun cycle. Observed:
+a gate prompt stated the disregard reroll bar as ">=2 rerolls" but omitted the
+runbook's documented single-confirming-reroll shortcut for an already-known
+artifact, so codex BLOCK'd the plan for "loosening" a bar it was actually faithful
+to — resolved only after re-reading the runbook and rerunning with the full rule.
+If unsure a paraphrase is complete, tell the seat to verify it against the named
+source rather than treating the paraphrase as authoritative.
+
 ## Invocation
 
 Run the four reviewers in parallel:
