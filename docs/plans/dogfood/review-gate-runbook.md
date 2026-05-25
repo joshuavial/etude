@@ -87,10 +87,28 @@ UNCOMMITTED work, so any `git checkout`/`git restore`/`git stash`/`git reset` a
 seat runs to "revert" a mutation test silently discards the implementation under
 review. (This happened once: a seat's mutation-test revert wiped the producer
 wiring out of `internal/cli/capture.go` mid-gate, and later seats then BLOCKed on
-"unknown flag".) Seats that want to mutation-test MUST copy the repo to a `/tmp`
-path and mutate the copy, never the repo file. The orchestrator should pass each
-seat a read-only instruction and, after each reviewer batch, verify the changed
-files still match a pre-gate snapshot before committing.
+"unknown flag".) The orchestrator MUST snapshot the changed files to a `/tmp`
+path BEFORE dispatching any seat, pass each seat an explicit read-only
+instruction, and after each reviewer batch verify the changed files still match
+that snapshot before committing.
+
+Per-seat sandbox constraints (learned from real spirals):
+
+- **codex**: its sandbox BLOCKS writes outside the project dir, so do NOT tell it
+  to copy the repo to `/tmp` or mutation-test — it will spiral retrying rejected
+  copy/patch commands until killed. Instruct codex to **review from the diff
+  ONLY** and trust the provided green test results; never tell it to reconstruct
+  a build env.
+- **in-harness Opus / other seats** with normal filesystem access MAY mutation-test
+  by copying to `/tmp` and mutating the copy, never the repo file.
+- **gemini**: when `ripgrep` is unavailable in gemini's environment it falls back
+  to a GrepTool that BLEEDS matches across files, and has reproducibly
+  misattributed string literals from one file (e.g. a planning doc path) to an
+  unrelated test file — producing a confident BLOCK on a phantom assertion that
+  grep proves does not exist. ALWAYS ground-truth-check a gemini BLOCK that cites
+  a specific string in a test file (grep the real file + run the test) before
+  acting; a gemini verdict contradicted by grep + passing tests is a tool
+  artifact, not a defect. (Tracked for a durable fix.)
 
 The GPT-5.5 reviewer (codex) must be fresh: start a new isolated agent session
 that receives only the gate prompt and artifacts needed for review, not
