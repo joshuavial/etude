@@ -98,7 +98,13 @@ Per-seat sandbox constraints (learned from real spirals):
   to copy the repo to `/tmp` or mutation-test — it will spiral retrying rejected
   copy/patch commands until killed. Instruct codex to **review from the diff
   ONLY** and trust the provided green test results; never tell it to reconstruct
-  a build env.
+  a build env. **Dispatch codex diff-only from the FIRST attempt — do NOT let it
+  run `go build`/`go test`/`go vet`.** When codex runs the suite it reliably
+  HANGS after the test output, before emitting its GO/BLOCK line (observed on
+  phase2.4, replay-command, and phase2.5 final gates — each required killing it
+  and re-dispatching diff-only). Embedding "do NOT run go build/go test; the
+  green results are provided and trustworthy" in the first prompt avoids the
+  kill-and-re-dispatch cycle entirely.
 - **in-harness Opus / other seats** with normal filesystem access MAY mutation-test
   by copying to `/tmp` and mutating the copy, never the repo file.
 - **gemini**: when `ripgrep` is unavailable in gemini's environment it falls back
@@ -261,6 +267,18 @@ After all four reviewers return:
 - any `BLOCK`: gate fails; incorporate all required changes and rerun the full
   gate
 - any reviewer failure: gate is incomplete; escalate to the user
+
+**Autonomous-loop tooling-outage fallback.** In an autonomous `/loop` there is no
+user to escalate to in real time, and blocking forever on one flaky seat stalls
+the loop. So: if a SINGLE seat has a REPRODUCIBLE tooling outage — empty
+completion or pre-verdict hang that recurs after ≥2 rerolls AND is root-caused to
+a known tooling artifact (e.g. pilms/LM Studio empty completion, codex go-test
+hang), NOT a substantive dissent — AND the other THREE seats (the substantive,
+high-signal ones) are unanimous `GO` after thorough review, treat the gate as
+passed and record the outage explicitly in the bead notes (which seat, the
+artifact, how many rerolls). This is a deliberate, documented exception, not a
+license to skip a seat that raises real findings: a seat that returns an actual
+BLOCK is never bypassed. Outside an autonomous loop, still escalate to the user.
 
 When a `BLOCK` rests on a disputed factual claim about tool behavior (e.g. "this
 git command exits 0", "the CLI prints X"), or two reviewers disagree on such a
