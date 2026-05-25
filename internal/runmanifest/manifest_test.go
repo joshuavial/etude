@@ -426,6 +426,11 @@ func TestWriterAcceptsMultiStageManifestWithMultipleInputsAndReplay(t *testing.T
 		},
 		Output:    ArtifactFromManifestArtifact(replay),
 		Timestamp: time.Date(2026, 5, 22, 1, 2, 0, 0, time.UTC),
+		ReplayOf: &ReplayLink{
+			RunID:  manifest.RunID,
+			Stage:  "plan",
+			Commit: strings.Repeat("a", 64),
+		},
 	})
 
 	if _, err := (Writer{Store: refstore.New(repo)}).Write(ctx, manifest, artifactStore.Files(), WriteOptions{}); err != nil {
@@ -681,6 +686,228 @@ func TestProducerRoundTrip(t *testing.T) {
 	}
 	if got.ManifestVersion != 2 {
 		t.Fatalf("ManifestVersion = %d, want 2", got.ManifestVersion)
+	}
+}
+
+// TestReplayOfJSONRoundTrip verifies that a stage with ReplayOf set round-trips
+// through JSON() -> ParseJSON with all three fields (RunID, Stage, Commit) intact.
+func TestReplayOfJSONRoundTrip(t *testing.T) {
+	store := artifactstore.New()
+	output, err := store.AddContent("output", "text/plain", []byte("replay-output"))
+	if err != nil {
+		t.Fatalf("AddContent: %v", err)
+	}
+	skill := Skill{ID: "dev-workflow", Repo: "github.com/example/skills", Version: "v1"}
+	commit := strings.Repeat("b", 64)
+	manifest := Manifest{
+		RunID:           "replay-roundtrip-run",
+		Workflow:        "test",
+		WorkflowVersion: "v1",
+		Created:         time.Date(2026, 5, 22, 1, 0, 0, 0, time.UTC),
+		Refs:            map[string]string{"bead": "test"},
+		Stages: []Stage{{
+			Name:       "plan",
+			ProducedBy: "replay",
+			GitSHA:     strings.Repeat("c", 40),
+			Skill:      skill,
+			Producer:   Producer{Skill: skill},
+			Output:     ArtifactFromManifestArtifact(output),
+			Timestamp:  time.Date(2026, 5, 22, 1, 1, 0, 0, time.UTC),
+			ReplayOf: &ReplayLink{
+				RunID:  "source-run-1",
+				Stage:  "plan",
+				Commit: commit,
+			},
+		}},
+	}
+
+	jsonBytes, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	// Verify the commit field is present in the raw JSON.
+	if !strings.Contains(string(jsonBytes), `"commit"`) {
+		t.Fatalf("JSON does not contain commit field:\n%s", jsonBytes)
+	}
+
+	// Verify manifest_version is 2.
+	got, err := ParseJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if got.ManifestVersion != 2 {
+		t.Fatalf("ManifestVersion = %d, want 2", got.ManifestVersion)
+	}
+	if len(got.Stages) != 1 {
+		t.Fatalf("len(Stages) = %d, want 1", len(got.Stages))
+	}
+	s := got.Stages[0]
+	if s.ReplayOf == nil {
+		t.Fatal("ReplayOf is nil, want non-nil")
+	}
+	if s.ReplayOf.RunID != "source-run-1" {
+		t.Fatalf("ReplayOf.RunID = %q, want %q", s.ReplayOf.RunID, "source-run-1")
+	}
+	if s.ReplayOf.Stage != "plan" {
+		t.Fatalf("ReplayOf.Stage = %q, want %q", s.ReplayOf.Stage, "plan")
+	}
+	if s.ReplayOf.Commit != commit {
+		t.Fatalf("ReplayOf.Commit = %q, want %q", s.ReplayOf.Commit, commit)
+	}
+}
+
+// TestV2WithReplayOfFrozenBytes is a frozen-bytes regression test for a v2
+// manifest containing a stage with a replay_of field (including all three sub-fields).
+func TestV2WithReplayOfFrozenBytes(t *testing.T) {
+	// SHA-256 content hash for "replay-artifact-data".
+	const contentHex = "9e3d07d6e1e91f1e7b37c88f76edbd42fe5fccb4f1ff17d2c52c98a49f0b5cc1"
+
+	commit := strings.Repeat("d", 40)
+	frozen := fmt.Sprintf(`{
+  "manifest_version": 2,
+  "run_id": "frozen-replay-run",
+  "workflow": "bench",
+  "workflow_version": "v1",
+  "created": "2026-05-22T01:00:00Z",
+  "refs": {},
+  "stages": [
+    {
+      "stage": "eval",
+      "produced_by": "replay",
+      "git_sha": "%s",
+      "producer": {
+        "skill": {
+          "id": "bench-skill",
+          "repo": "github.com/example/skills",
+          "version": "v2"
+        }
+      },
+      "inputs": [],
+      "output": {
+        "role": "result",
+        "artifact": "%s",
+        "path": "artifacts/sha256/%s/%s",
+        "media_type": "text/plain",
+        "storage": "content",
+        "size": 20
+      },
+      "timestamp": "2026-05-22T01:01:00Z",
+      "replay_of": {
+        "run_id": "source-run-frozen",
+        "stage": "eval",
+        "commit": "%s"
+      }
+    }
+  ]
+}
+`, strings.Repeat("e", 40), contentHex, contentHex[:2], contentHex, commit)
+
+	got, err := ParseJSON([]byte(frozen))
+	if err != nil {
+		t.Fatalf("ParseJSON(frozen v2 with replay_of): %v", err)
+	}
+	if got.ManifestVersion != 2 {
+		t.Fatalf("ManifestVersion = %d, want 2", got.ManifestVersion)
+	}
+	if len(got.Stages) != 1 {
+		t.Fatalf("len(Stages) = %d, want 1", len(got.Stages))
+	}
+	s := got.Stages[0]
+	if s.ReplayOf == nil {
+		t.Fatal("ReplayOf is nil after parsing frozen v2-with-replay_of")
+	}
+	if s.ReplayOf.RunID != "source-run-frozen" {
+		t.Fatalf("ReplayOf.RunID = %q, want source-run-frozen", s.ReplayOf.RunID)
+	}
+	if s.ReplayOf.Stage != "eval" {
+		t.Fatalf("ReplayOf.Stage = %q, want eval", s.ReplayOf.Stage)
+	}
+	if s.ReplayOf.Commit != commit {
+		t.Fatalf("ReplayOf.Commit = %q, want %q", s.ReplayOf.Commit, commit)
+	}
+}
+
+// TestV2WithoutReplayOfHasNilReplayOf verifies that a v2 manifest without a
+// replay_of field parses with Stage.ReplayOf == nil (back-compat assertion).
+func TestV2WithoutReplayOfHasNilReplayOf(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	manifest := validManifest(output)
+	jsonBytes, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	got, err := ParseJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if got.Stages[0].ReplayOf != nil {
+		t.Fatalf("ReplayOf = %+v, want nil for stage without replay_of", got.Stages[0].ReplayOf)
+	}
+}
+
+// TestValidateReplayOfGuards exercises all bidirectional Validate rules for replay_of.
+func TestValidateReplayOfGuards(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	validCommit := strings.Repeat("a", 40)
+	validLink := &ReplayLink{RunID: "source-run", Stage: "plan", Commit: validCommit}
+
+	cases := []struct {
+		name string
+		edit func(*Manifest)
+	}{
+		// produced_by:replay without replay_of
+		{"replay without replay_of", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = nil
+		}},
+		// replay_of present on produced_by:original
+		{"replay_of on original", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "original"
+			m.Stages[0].ReplayOf = validLink
+		}},
+		// invalid run_id in replay_of
+		{"invalid replay_of run_id", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "..", Stage: "plan", Commit: validCommit}
+		}},
+		// empty stage in replay_of
+		{"empty replay_of stage", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "source-run", Stage: "", Commit: validCommit}
+		}},
+		// invalid stage (spaces) in replay_of
+		{"invalid replay_of stage", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "source-run", Stage: "bad stage", Commit: validCommit}
+		}},
+		// empty commit in replay_of
+		{"empty replay_of commit", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "source-run", Stage: "plan", Commit: ""}
+		}},
+		// non-hex commit in replay_of
+		{"non-hex replay_of commit", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "source-run", Stage: "plan", Commit: "xyz" + strings.Repeat("0", 37)}
+		}},
+		// wrong-length commit (39 chars)
+		{"wrong-length replay_of commit", func(m *Manifest) {
+			m.Stages[0].ProducedBy = "replay"
+			m.Stages[0].ReplayOf = &ReplayLink{RunID: "source-run", Stage: "plan", Commit: strings.Repeat("a", 39)}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validManifest(output)
+			// validManifest uses produced_by:original with no replay_of; we need
+			// the Skill set on the stage so only the replay_of rule triggers.
+			tc.edit(&m)
+			if err := m.Validate(); err == nil {
+				t.Fatal("Validate returned nil error, want error")
+			}
+		})
 	}
 }
 

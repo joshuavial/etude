@@ -165,6 +165,9 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 	for _, stage := range m.Stages {
 		fmt.Fprintf(out, "\nstage: %s\n", stage.Name)
 		fmt.Fprintf(out, "  produced_by: %s\n", stage.ProducedBy)
+		if stage.ReplayOf != nil {
+			fmt.Fprintf(out, "  replay of:   %s/%s\n", stage.ReplayOf.RunID, stage.ReplayOf.Stage)
+		}
 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
 		if stage.Producer.Harness.Name != "" {
 			if stage.Producer.Harness.Version != "" {

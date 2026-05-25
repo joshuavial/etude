@@ -424,6 +424,33 @@ func TestResolveInputsReadContentPropagatesError(t *testing.T) {
 	}
 }
 
+// TestResolveInputsSurfacesWorkflowAndCommit asserts that ResolvedStage exposes
+// Workflow and WorkflowVersion (from the parent manifest) and Commit (the resolved
+// git commit OID). These are consumed by the --record path in replay.go.
+func TestResolveInputsSurfacesWorkflowAndCommit(t *testing.T) {
+	outputContent := []byte("output-workflow")
+	stage := makeStage("plan", nil, outputContent)
+
+	files := map[string][]byte{stage.Output.Path: outputContent}
+	manifest := makeManifest("run-workflow", nil, []runmanifest.Stage{stage})
+	// makeManifest sets Workflow="test-workflow" WorkflowVersion="v1"
+	store, runID, seedCommit := seedRun(t, manifest, files)
+
+	result, err := ResolveInputs(context.Background(), store, runID, "plan")
+	if err != nil {
+		t.Fatalf("ResolveInputs: %v", err)
+	}
+	if result.Workflow != "test-workflow" {
+		t.Errorf("Workflow = %q, want %q", result.Workflow, "test-workflow")
+	}
+	if result.WorkflowVersion != "v1" {
+		t.Errorf("WorkflowVersion = %q, want %q", result.WorkflowVersion, "v1")
+	}
+	if result.Commit != seedCommit {
+		t.Errorf("Commit = %q, want %q", result.Commit, seedCommit)
+	}
+}
+
 func TestResolveInputsTOCTOU(t *testing.T) {
 	ctx := context.Background()
 

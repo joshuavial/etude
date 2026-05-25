@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/replay"
 )
 
 // ---------------------------------------------------------------------------
@@ -441,6 +443,41 @@ func TestRunShowPartialProducer(t *testing.T) {
 
 	if stderr != "" {
 		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// TestRunShowReplayOfLine verifies that run show prints a "replay of:" line
+// for a stage with ReplayOf set (produced_by:replay).
+func TestRunShowReplayOfLine(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	// Record a replay run using the record path.
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	replayRunID := sourceRunID + "-replay-20260522T103000Z"
+	stub := &replay.StubRunner{CannedOutput: []byte("show-replay-output")}
+
+	r := &replayRunner{runner: stub, now: func() time.Time { return fixedTime }}
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, r)
+	cmd.SetArgs([]string{sourceRunID, "gen", "--record"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("replay --record returned error: %v\nstderr: %s", err, errOut.String())
+	}
+
+	// run show on the replay run must include "replay of:".
+	stdout, stderr, err := execute("run", "show", replayRunID)
+	if err != nil {
+		t.Fatalf("run show returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "replay of:") {
+		t.Fatalf("expected 'replay of:' in run show output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, sourceRunID+"/gen") {
+		t.Fatalf("expected source run id %q in replay of line:\n%s", sourceRunID+"/gen", stdout)
+	}
+	if !strings.Contains(stdout, "produced_by: replay") {
+		t.Fatalf("expected 'produced_by: replay' in output:\n%s", stdout)
 	}
 }
 

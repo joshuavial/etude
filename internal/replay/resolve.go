@@ -29,6 +29,11 @@ type ResolvedStage struct {
 	Refs map[string]string
 	// Commit is the resolved git commit OID at which the manifest was read.
 	Commit string
+	// Workflow and WorkflowVersion come from the PARENT manifest, not the stage.
+	// They carry the source run's workflow identity into --record so the replay
+	// run manifest can record the same workflow provenance.
+	Workflow        string
+	WorkflowVersion string
 	// ResolvedInputs holds the resolved inputs for this stage.
 	// Named ResolvedInputs (not Inputs) to avoid shadowing Stage.Inputs []ArtifactRef.
 	ResolvedInputs []ResolvedInput
@@ -148,9 +153,11 @@ func ResolveInputs(ctx context.Context, store refstore.Store, runID, stageName s
 
 	// Step 7: return resolved stage.
 	return ResolvedStage{
-		Stage:          stage,
-		Refs:           manifest.Refs,
-		Commit:         commit,
-		ResolvedInputs: resolvedInputs,
+		Stage:           stage,
+		Refs:            manifest.Refs,
+		Commit:          commit,
+		Workflow:        manifest.Workflow,
+		WorkflowVersion: manifest.WorkflowVersion,
+		ResolvedInputs:  resolvedInputs,
 	}, nil
 }

@@ -4,8 +4,8 @@
 stage's recorded inputs, checks out the recorded git SHA into a throwaway
 worktree, invokes an external runner, and emits the produced output.
 
-Replay does **not** persist a new stage back into the run. It only emits the
-output. Recording a replayed stage is deferred to a later release.
+Without `--record`, replay only emits the output and does not persist anything.
+With `--record`, it writes a new linked run; see [Recording (--record)](#recording---record) below.
 
 ```bash
 etude replay <run-id> <stage>
@@ -16,6 +16,8 @@ Example:
 ```bash
 etude replay run-1 plan --runner ./run.sh
 etude replay run-1 plan --runner ./run.sh --output result.md
+etude replay run-1 plan --runner ./run.sh --record
+etude replay run-1 plan --runner ./run.sh --record --output result.md
 ```
 
 ## Flags
@@ -23,7 +25,77 @@ etude replay run-1 plan --runner ./run.sh --output result.md
 | Flag | Description |
 |------|-------------|
 | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
-| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. |
+| `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. |
+| `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
+| `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
+| `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
+| `--skill-repo <repo>` | Override `producer.skill.repo` in the recorded producer. |
+| `--model <model>` | Override `producer.model` in the recorded producer. |
+| `--harness <name>` | Override `producer.harness.name` in the recorded producer. |
+| `--harness-version <v>` | Override `producer.harness.version` in the recorded producer. |
+
+## Recording (--record)
+
+When `--record` is passed, `etude replay` persists the replay output as a new
+**linked run** rather than simply emitting it. The source run is never modified.
+
+### New run id
+
+The new run id is derived from the source run id and the current UTC timestamp:
+
+```
+<source-run-id>-replay-<yyyymmddThhmmssZ>
+```
+
+For example, replaying `run-1` at `2026-05-25T10:30:00Z` produces
+`run-1-replay-20260525T103000Z`. If that id is already taken, a numeric suffix
+is appended (`-2` through `-10`) until a free slot is found.
+
+The new run is stored at `refs/etude/runs/<new-run-id>`.
+
+### Recorded stage
+
+The new run contains a single stage with:
+
+- `stage` — same name as the source stage.
+- `produced_by` — `"replay"`.
+- `git_sha` — the source stage's recorded git SHA (the replay runs at that
+  commit, so the SHA is preserved).
+- `producer` — the source stage's producer, merged with any producer-override
+  flags (`--skill-version`, `--model`, etc.). Unset override flags inherit from
+  the source.
+- `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
+  content-addressed refs).
+- `output` — the artifact produced by the replay run.
+- `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
+  `commit` is the immutable git commit of the source run ref (not the stage's
+  `git_sha`). This pins the link durably even if the source run ref is later
+  updated.
+
+The `replay_of` field is required for any stage with `produced_by: "replay"`,
+and forbidden otherwise. The manifest validator enforces this bidirectionally.
+
+### Confirmation and output
+
+After the new run is written, `etude replay` prints:
+
+```
+recorded replay run <new-run-id> (commit <git-oid>)
+```
+
+Here `<git-oid>` is the commit of the **new replay run** (not the source
+commit recorded in `replay_of.commit`).
+
+Recording does not suppress emitting: after the confirmation line, the replay
+output is still emitted — to stdout when `--output` is not given, or written to
+`<path>` when it is. So `--record` and `--output` may coexist: the output is
+both written to `<path>` and recorded as the new run's output artifact.
+
+If the runner produces no output, `--record` fails with:
+
+```
+replay produced no output; cannot record empty run
+```
 
 ### Runner resolution
 
@@ -84,6 +156,4 @@ finishes, whether it succeeds or fails.
   script instead.
 - Pointer/external artifact inputs are not replayable yet. All stage inputs
   must be stored as inline content artifacts.
-- Replay does not persist the output as a new stage in the run. Emitting only;
-  recording is deferred.
 - There is no `--json` or machine-readable output flag.

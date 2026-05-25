@@ -294,6 +294,12 @@ Notes:
 - Each artifact entry carries `role`, `artifact` (sha256 hex), `path`
   (content-addressed path in the run tree), `media_type`, `storage`
   (`"content"` or `"pointer"`), and `size`.
+- Stages produced by replay carry an optional `replay_of` object:
+  `{"run_id": "<source-run-id>", "stage": "<source-stage>", "commit": "<git-oid>"}`.
+  `commit` is the immutable git commit of the source run ref, pinning the link
+  durably. `produced_by: "replay"` and `replay_of` are bidirectionally required:
+  each implies the other and the manifest validator rejects any stage that has
+  one without the other.
 
 ### 4.5 Query index (rebuildable cache)
 
@@ -318,14 +324,31 @@ Two capture paths:
 
 ### 4.7 Replay
 
-`etude replay <run-id> --stage plan --skill-version <new>`:
+`etude replay <run-id> <stage>` re-executes one stage end-to-end:
 
-1. Read the run manifest; find the `plan` stage entry.
+1. Read the run manifest; find the named stage entry.
 2. Check out the recorded `git_sha` in a throwaway git worktree.
-3. Resolve the recorded input artifacts and feed them to the (new version of
-   the) skill via the **skill-runner adapter** (see open questions).
-4. Capture the new output as a fresh artifact; record a new stage entry with
-   `produced_by: replay` and the new skill identity.
+3. Resolve the recorded input artifacts and feed them to the runner via the
+   **skill-runner adapter** (`--runner` or `git config etude.runner`).
+4. Emit the produced output to stdout or `--output <path>`.
+
+Without `--record`, no data is persisted; the command is emit-only.
+
+With `--record`, the output is also persisted as a **new linked run**:
+
+- The new run id is `<source-run-id>-replay-<yyyymmddThhmmssZ>` (UTC), with a
+  numeric suffix (`-2` through `-10`) on collision.
+- The new run contains a single stage: same name as the source, `produced_by:
+  "replay"`, the source stage's `git_sha`, inputs copied verbatim from the
+  source, and a `replay_of` link (`{run_id, stage, commit}` — see §4.4).
+- The source commit is pinned in `replay_of.commit` for durable linkage.
+- The source run is never modified.
+- Producer-override flags (`--skill-version`, `--skill-id`, `--skill-repo`,
+  `--model`, `--harness`, `--harness-version`) let the caller record a
+  different producer identity (skill, model, and/or harness) for bench; unset
+  fields inherit from the source.
+
+Eval (`etude eval`) and bench (`etude bench`) are future work (Phase 3).
 
 ### 4.8 Eval
 

@@ -43,6 +43,15 @@ type Manifest struct {
 	Stages          []Stage
 }
 
+// ReplayLink records the durable source identity for a produced_by:"replay" stage.
+// RunID and Stage name the source run and stage; Commit pins the immutable source
+// commit so the link remains resolvable even after future appends to the source run.
+type ReplayLink struct {
+	RunID  string
+	Stage  string
+	Commit string
+}
+
 type Stage struct {
 	Name       string
 	ProducedBy string
@@ -55,6 +64,9 @@ type Stage struct {
 	Inputs    []ArtifactRef
 	Output    ArtifactRef
 	Timestamp time.Time
+	// ReplayOf, when non-nil, identifies the source run/stage this stage was
+	// replayed from. Required when ProducedBy=="replay"; forbidden otherwise.
+	ReplayOf *ReplayLink
 }
 
 type Skill struct {
@@ -243,6 +255,24 @@ func validateStage(index int, stage Stage) error {
 	if err := validateIdentifier(prefix+".produced_by", stage.ProducedBy); err != nil {
 		return err
 	}
+	// Bidirectional replay_of / produced_by constraint.
+	if stage.ProducedBy == "replay" && stage.ReplayOf == nil {
+		return fmt.Errorf("%w: %s produced_by \"replay\" requires replay_of", ErrInvalidManifest, prefix)
+	}
+	if stage.ReplayOf != nil && stage.ProducedBy != "replay" {
+		return fmt.Errorf("%w: %s replay_of only allowed when produced_by is \"replay\"", ErrInvalidManifest, prefix)
+	}
+	if stage.ReplayOf != nil {
+		if !IsValidRunID(stage.ReplayOf.RunID) {
+			return fmt.Errorf("%w: %s replay_of.run_id invalid", ErrInvalidManifest, prefix)
+		}
+		if err := validateIdentifier(prefix+".replay_of.stage", stage.ReplayOf.Stage); err != nil {
+			return err
+		}
+		if !isHexOID(stage.ReplayOf.Commit) {
+			return fmt.Errorf("%w: %s replay_of.commit must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix)
+		}
+	}
 	if strings.TrimSpace(stage.GitSHA) == "" {
 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
 	}
@@ -267,6 +297,20 @@ func validateStage(index int, stage Stage) error {
 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
 	}
 	return nil
+}
+
+// isHexOID reports whether s is a valid git object id: non-empty, all lowercase
+// hex characters, and exactly 40 (SHA-1) or 64 (SHA-256) characters long.
+func isHexOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateArtifactRef(artifact ArtifactRef) error {
@@ -463,6 +507,16 @@ type stageJSON struct {
 	Inputs    []artifactJSON `json:"inputs"`
 	Output    artifactJSON   `json:"output"`
 	Timestamp string         `json:"timestamp"`
+	ReplayOf  *replayOfJSON  `json:"replay_of,omitempty"`
+}
+
+// replayOfJSON is the wire representation of ReplayLink in the manifest JSON.
+// All three fields are required when the object is present; only the object
+// itself is omitempty so that absent replay_of is omitted from the document.
+type replayOfJSON struct {
+	RunID  string `json:"run_id"`
+	Stage  string `json:"stage"`
+	Commit string `json:"commit"`
 }
 
 type skillJSON struct {
@@ -531,6 +585,15 @@ func (m Manifest) toJSON() manifestJSON {
 			},
 		}
 
+		var replayOfBlock *replayOfJSON
+		if stage.ReplayOf != nil {
+			replayOfBlock = &replayOfJSON{
+				RunID:  stage.ReplayOf.RunID,
+				Stage:  stage.ReplayOf.Stage,
+				Commit: stage.ReplayOf.Commit,
+			}
+		}
+
 		stages = append(stages, stageJSON{
 			Stage:      stage.Name,
 			ProducedBy: stage.ProducedBy,
@@ -540,6 +603,7 @@ func (m Manifest) toJSON() manifestJSON {
 			Inputs:    inputs,
 			Output:    stage.Output.toJSON(),
 			Timestamp: formatTime(stage.Timestamp),
+			ReplayOf:  replayOfBlock,
 		})
 	}
 	return manifestJSON{
@@ -654,6 +718,15 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 		}
 	}
 
+	var replayOf *ReplayLink
+	if s.ReplayOf != nil {
+		replayOf = &ReplayLink{
+			RunID:  s.ReplayOf.RunID,
+			Stage:  s.ReplayOf.Stage,
+			Commit: s.ReplayOf.Commit,
+		}
+	}
+
 	return Stage{
 		Name:       s.Stage,
 		ProducedBy: s.ProducedBy,
@@ -663,6 +736,7 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 		Inputs:     inputs,
 		Output:     s.Output.toArtifactRef(),
 		Timestamp:  timestamp,
+		ReplayOf:   replayOf,
 	}, nil
 }
 

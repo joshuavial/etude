@@ -79,6 +79,7 @@ printed in sorted order.
 Per stage, the detail view shows:
 
 - `produced_by`, `git sha`
+- `replay of:` — printed as `<run-id>/<stage>` immediately after `produced_by`; only present for replay stages (`produced_by: replay`)
 - `harness` — harness name and optional version; omitted for manual/legacy captures that did not record a harness
 - `model` — model name; omitted for manual/legacy captures that did not record a model
 - `skill` — always printed as `id@version (repo)`

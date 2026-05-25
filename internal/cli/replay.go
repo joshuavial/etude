@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -19,10 +22,13 @@ type replayRunner struct {
 	// runner is the Runner to use. If nil, an ExecRunner is built from the
 	// resolved --runner spec at run time. Tests inject a *replay.StubRunner here.
 	runner replay.Runner
+	// now returns the current time. Defaults to time.Now; tests inject a fixed clock
+	// to make replay run ids deterministic.
+	now func() time.Time
 }
 
 func newReplayCommand(out, errOut io.Writer) *cobra.Command {
-	return buildReplayCommand(out, errOut, &replayRunner{})
+	return buildReplayCommand(out, errOut, &replayRunner{now: time.Now})
 }
 
 // buildReplayCommand constructs the replay cobra.Command backed by r. Tests
@@ -31,6 +37,8 @@ func newReplayCommand(out, errOut io.Writer) *cobra.Command {
 func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	var runnerSpec string
 	var outputPath string
+	var record bool
+	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
 
 	cmd := &cobra.Command{
 		Use:           "replay <run> <stage>",
@@ -39,17 +47,56 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return r.run(cmd.Context(), out, args[0], args[1], runnerSpec, outputPath)
+			producerFlags := replayProducerFlags{
+				skillIDChanged:        cmd.Flags().Changed("skill-id"),
+				skillRepoChanged:      cmd.Flags().Changed("skill-repo"),
+				skillVersionChanged:   cmd.Flags().Changed("skill-version"),
+				modelChanged:          cmd.Flags().Changed("model"),
+				harnessChanged:        cmd.Flags().Changed("harness"),
+				harnessVersionChanged: cmd.Flags().Changed("harness-version"),
+				skillID:               skillID,
+				skillRepo:             skillRepo,
+				skillVersion:          skillVersion,
+				model:                 model,
+				harness:               harness,
+				harnessVersion:        harnessVersion,
+			}
+			return r.run(cmd.Context(), out, args[0], args[1], runnerSpec, outputPath, record, producerFlags)
 		},
 	}
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.Flags().StringVar(&runnerSpec, "runner", "", "runner command spec (e.g. ./run.sh)")
 	cmd.Flags().StringVar(&outputPath, "output", "", "write output to this file instead of stdout")
+	cmd.Flags().BoolVar(&record, "record", false, "persist the replay output as a new linked run")
+	cmd.Flags().StringVar(&skillVersion, "skill-version", "", "override skill version in recorded producer")
+	cmd.Flags().StringVar(&skillID, "skill-id", "", "override skill id in recorded producer")
+	cmd.Flags().StringVar(&skillRepo, "skill-repo", "", "override skill repo in recorded producer")
+	cmd.Flags().StringVar(&model, "model", "", "override model in recorded producer")
+	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer")
+	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer")
 	return cmd
 }
 
-func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName, runnerSpec, outputPath string) error {
+// replayProducerFlags carries the producer-override flag values and change
+// indicators so the run method can merge source producer with overrides.
+type replayProducerFlags struct {
+	skillIDChanged        bool
+	skillRepoChanged      bool
+	skillVersionChanged   bool
+	modelChanged          bool
+	harnessChanged        bool
+	harnessVersionChanged bool
+
+	skillID        string
+	skillRepo      string
+	skillVersion   string
+	model          string
+	harness        string
+	harnessVersion string
+}
+
+func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName, runnerSpec, outputPath string, record bool, pf replayProducerFlags) error {
 	store := refstore.New("")
 
 	// Step 1: resolve inputs (also validates runID and locates the stage).
@@ -108,7 +155,7 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 	}
 	defer os.RemoveAll(scratch)
 
-	// Step 7: materialize inputs.
+	// Step 7: materialize inputs (content only; pointer inputs are not yet supported).
 	inputs := make([]replay.RunInput, 0, len(resolved.ResolvedInputs))
 	for _, inp := range resolved.ResolvedInputs {
 		content, err := inp.ReadContent(ctx)
@@ -125,21 +172,46 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 		})
 	}
 
-	// Step 8: build and execute the run request.
+	// Step 8: build the producer, merging source with any flag overrides.
+	src := resolved.Producer
+	producer := runmanifest.Producer{
+		Harness: runmanifest.Harness{
+			Name:    mergeString(pf.harnessChanged, pf.harness, src.Harness.Name),
+			Version: mergeString(pf.harnessVersionChanged, pf.harnessVersion, src.Harness.Version),
+		},
+		Model: mergeString(pf.modelChanged, pf.model, src.Model),
+		Skill: runmanifest.Skill{
+			ID:      mergeString(pf.skillIDChanged, pf.skillID, src.Skill.ID),
+			Repo:    mergeString(pf.skillRepoChanged, pf.skillRepo, src.Skill.Repo),
+			Version: mergeString(pf.skillVersionChanged, pf.skillVersion, src.Skill.Version),
+		},
+	}
+
+	// Step 9: build and execute the run request.
 	req := replay.RunRequest{
 		WorktreeDir:     wt.Dir,
 		ScratchDir:      scratch,
 		Inputs:          inputs,
 		OutputRole:      resolved.Output.Role,
 		OutputMediaType: resolved.Output.MediaType,
-		Producer:        resolved.Producer,
+		Producer:        producer,
 	}
 	res, err := activeRunner.Run(ctx, req)
 	if err != nil {
 		return err
 	}
 
-	// Step 9: emit the output.
+	// Step 10: optionally record the replay as a new linked run.
+	if record {
+		if len(res.Output) == 0 {
+			return fmt.Errorf("replay produced no output; cannot record empty run")
+		}
+		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
+			return err
+		}
+	}
+
+	// Step 11: emit the output (--output and --record may coexist).
 	if outputPath != "" {
 		if err := os.WriteFile(outputPath, res.Output, 0o644); err != nil {
 			return fmt.Errorf("write output file: %w", err)
@@ -149,6 +221,139 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 	}
 	_, err = out.Write(res.Output)
 	return err
+}
+
+// mergeString returns override if changed is true, otherwise fallback.
+func mergeString(changed bool, override, fallback string) string {
+	if changed {
+		return override
+	}
+	return fallback
+}
+
+// recordRun persists a new replay run ref with a single stage linking back to
+// the source run/stage. It mirrors the create path used by capture.go.
+func (r *replayRunner) recordRun(
+	ctx context.Context,
+	store refstore.Store,
+	out io.Writer,
+	sourceRunID, sourceStageName string,
+	resolved replay.ResolvedStage,
+	res replay.RunResult,
+	_ []replay.RunInput, // materialized inputs unused here; we read raw bytes from source commit
+) error {
+	clockFn := r.now
+	if clockFn == nil {
+		clockFn = time.Now
+	}
+	now := clockFn().UTC()
+
+	// Build the unique replay run id from source id + timestamp.
+	baseID := fmt.Sprintf("%s-replay-%s", sourceRunID, now.Format("20060102T150405Z"))
+	replayRunID, err := allocateReplayRunID(ctx, store, baseID)
+	if err != nil {
+		return err
+	}
+
+	// Build the artifact store for the new run: output goes in via AddContent,
+	// then all source inputs are copied raw from the source commit.
+	artifactStore := artifactstore.New()
+
+	outputArtifact, err := artifactStore.AddContent(resolved.Output.Role, res.MediaType, res.Output)
+	if err != nil {
+		return fmt.Errorf("record: store output artifact: %w", err)
+	}
+
+	// Seed the files map from the artifact store (output bytes).
+	files := artifactStore.Files()
+
+	// Copy each source input's raw bytes from the source commit into files.
+	// Using ReadCommitFile gives us the raw stored bytes (correct for both
+	// content blobs and pointer-record JSON), bypassing ReadContent which
+	// would fail on pointer artifacts.
+	for _, inp := range resolved.ResolvedInputs {
+		rawBytes, err := store.ReadCommitFile(ctx, resolved.Commit, inp.ArtifactRef.Path)
+		if err != nil {
+			return fmt.Errorf("record: read source input %q: %w", inp.ArtifactRef.Role, err)
+		}
+		files[inp.ArtifactRef.Path] = rawBytes
+	}
+
+	// Build the single replay stage. Both Stage.Skill and Stage.Producer must
+	// be set (mirrors capture.go's pattern; validateStage requires Skill fields).
+	skill := res.Producer.Skill
+	stage := runmanifest.Stage{
+		Name:       sourceStageName,
+		ProducedBy: "replay",
+		GitSHA:     resolved.GitSHA,
+		Skill:      skill,
+		Producer:   res.Producer,
+		Inputs:     sourceInputRefs(resolved),
+		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
+		Timestamp:  now,
+		ReplayOf: &runmanifest.ReplayLink{
+			RunID:  sourceRunID,
+			Stage:  sourceStageName,
+			Commit: resolved.Commit,
+		},
+	}
+
+	manifest := runmanifest.Manifest{
+		RunID:           replayRunID,
+		Workflow:        resolved.Workflow,
+		WorkflowVersion: resolved.WorkflowVersion,
+		Created:         now,
+		Refs:            resolved.Refs,
+		Stages:          []runmanifest.Stage{stage},
+	}
+
+	written, err := (runmanifest.Writer{Store: store}).Write(ctx, manifest, files, runmanifest.WriteOptions{
+		Message: fmt.Sprintf("replay: record %s stage %s from %s", replayRunID, sourceStageName, sourceRunID),
+	})
+	if err != nil {
+		return fmt.Errorf("record: write replay run: %w", err)
+	}
+
+	_, err = fmt.Fprintf(out, "recorded replay run %s (commit %s)\n", replayRunID, written)
+	return err
+}
+
+// sourceInputRefs extracts the ArtifactRefs from the resolved stage's inputs,
+// preserving them verbatim so the replay run carries identical content-addressed refs.
+func sourceInputRefs(resolved replay.ResolvedStage) []runmanifest.ArtifactRef {
+	refs := make([]runmanifest.ArtifactRef, len(resolved.ResolvedInputs))
+	for i, inp := range resolved.ResolvedInputs {
+		refs[i] = inp.ArtifactRef
+	}
+	return refs
+}
+
+// allocateReplayRunID probes for a free replay run id, trying base then
+// base-2 through base-10. Returns an error if none are free.
+func allocateReplayRunID(ctx context.Context, store refstore.Store, base string) (string, error) {
+	if !runmanifest.IsValidRunID(base) {
+		return "", fmt.Errorf("derived replay run id %q is not a valid run id", base)
+	}
+
+	candidates := make([]string, 0, 11)
+	candidates = append(candidates, base)
+	for n := 2; n <= 10; n++ {
+		candidates = append(candidates, fmt.Sprintf("%s-%d", base, n))
+	}
+
+	for _, id := range candidates {
+		ref := "refs/etude/runs/" + id
+		_, err := store.Resolve(ctx, ref)
+		if errors.Is(err, refstore.ErrNotFound) {
+			// Free slot found.
+			return id, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("probe replay run id %q: %w", id, err)
+		}
+		// Already exists — try next suffix.
+	}
+	return "", fmt.Errorf("could not allocate unique replay run id after 10 attempts (base: %s)", base)
 }
 
 // resolveRunner returns r.runner if injected (test seam), otherwise builds an

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
@@ -416,6 +417,310 @@ func TestReplayPointerInputViaResolveInputs(t *testing.T) {
 	combined := execErr.Error() + " " + stderr
 	if !strings.Contains(combined, "pointer artifact") && !strings.Contains(combined, "cannot be replayed") {
 		t.Fatalf("error %q stderr %q do not indicate pointer artifact error", execErr, stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --record tests
+// ---------------------------------------------------------------------------
+
+// executeReplayWithClock builds a replayRunner with an injected stub and fixed
+// clock, then runs the replay command with the given args.
+func executeReplayWithClock(stub *replay.StubRunner, fixedTime time.Time, args ...string) (string, string, error) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	r := &replayRunner{runner: stub, now: func() time.Time { return fixedTime }}
+	cmd := buildReplayCommand(&out, &errOut, r)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(&errOut, err)
+	}
+	return out.String(), errOut.String(), err
+}
+
+// TestReplayRecordCreatesLinkedRun is the acceptance round-trip test.
+// It captures a real stage, replays with --record, then asserts:
+//   - a new run ref exists with the expected id
+//   - the stage has produced_by:replay + ReplayOf populated
+//   - ReplayOf.Commit matches the source's resolved commit
+//   - Stage.Skill mirrors Producer.Skill
+//   - output artifact bytes are persisted
+//   - source run is unmodified
+func TestReplayRecordCreatesLinkedRun(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	// Resolve the source run commit for later assertions.
+	sourceCommit, err := refstore.New(repo).Resolve(context.Background(), "refs/etude/runs/"+sourceRunID)
+	if err != nil {
+		t.Fatalf("resolve source run: %v", err)
+	}
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	wantRunID := sourceRunID + "-replay-20260522T103000Z"
+	wantOutput := []byte("recorded-replay-output")
+	stub := &replay.StubRunner{CannedOutput: wantOutput}
+
+	stdout, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record")
+	if err != nil {
+		t.Fatalf("replay --record returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, wantRunID) {
+		t.Fatalf("stdout %q does not contain replay run id %q", stdout, wantRunID)
+	}
+
+	// Assert the new run ref exists.
+	replayRunRef := "refs/etude/runs/" + wantRunID
+	store := refstore.New(repo)
+	_, err = store.Resolve(context.Background(), replayRunRef)
+	if err != nil {
+		t.Fatalf("replay run ref %q not found: %v", replayRunRef, err)
+	}
+
+	// Parse and inspect the replay manifest.
+	replayManifest := readRunManifest(t, repo, wantRunID)
+	if len(replayManifest.Stages) != 1 {
+		t.Fatalf("replay run has %d stages, want 1", len(replayManifest.Stages))
+	}
+	s := replayManifest.Stages[0]
+
+	if s.ProducedBy != "replay" {
+		t.Fatalf("ProducedBy = %q, want %q", s.ProducedBy, "replay")
+	}
+	if s.ReplayOf == nil {
+		t.Fatal("ReplayOf is nil, want non-nil")
+	}
+	if s.ReplayOf.RunID != sourceRunID {
+		t.Fatalf("ReplayOf.RunID = %q, want %q", s.ReplayOf.RunID, sourceRunID)
+	}
+	if s.ReplayOf.Stage != "gen" {
+		t.Fatalf("ReplayOf.Stage = %q, want %q", s.ReplayOf.Stage, "gen")
+	}
+	if s.ReplayOf.Commit != sourceCommit {
+		t.Fatalf("ReplayOf.Commit = %q, want %q", s.ReplayOf.Commit, sourceCommit)
+	}
+
+	// Stage.Skill must mirror Producer.Skill (codex change #1).
+	if s.Skill != s.Producer.Skill {
+		t.Fatalf("Stage.Skill %+v != Producer.Skill %+v", s.Skill, s.Producer.Skill)
+	}
+	if s.Skill.ID == "" {
+		t.Fatal("Stage.Skill.ID is empty")
+	}
+
+	// Output artifact must be persisted in the replay run.
+	outputBytes, err := store.ReadFile(context.Background(), replayRunRef, s.Output.Path)
+	if err != nil {
+		t.Fatalf("read replay output artifact: %v", err)
+	}
+	if !bytes.Equal(outputBytes, wantOutput) {
+		t.Fatalf("replay output bytes = %q, want %q", outputBytes, wantOutput)
+	}
+
+	// Source run must be unmodified (still has exactly 1 stage named "gen").
+	sourceManifest := readRunManifest(t, repo, sourceRunID)
+	if len(sourceManifest.Stages) != 1 {
+		t.Fatalf("source run has %d stages after replay, want 1", len(sourceManifest.Stages))
+	}
+	if sourceManifest.Stages[0].Name != "gen" {
+		t.Fatalf("source stage name = %q, want %q", sourceManifest.Stages[0].Name, "gen")
+	}
+
+	// Round-trip: ResolveInputs(ReplayOf.RunID, ReplayOf.Stage) resolves the source.
+	resolved, err := replay.ResolveInputs(context.Background(), store, s.ReplayOf.RunID, s.ReplayOf.Stage)
+	if err != nil {
+		t.Fatalf("ResolveInputs(source via ReplayOf) returned error: %v", err)
+	}
+	if resolved.Name != "gen" {
+		t.Fatalf("resolved source stage Name = %q, want gen", resolved.Name)
+	}
+}
+
+// TestReplayRecordNoOutputError verifies that --record with an empty output errors.
+func TestReplayRecordNoOutputError(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	stub := &replay.StubRunner{CannedOutput: nil} // empty output
+	_, stderr, err := executeReplayWithClock(stub, fixedTime, runID, "gen", "--record")
+	if err == nil {
+		t.Fatal("replay --record with empty output returned nil error")
+	}
+	combined := err.Error() + " " + stderr
+	if !strings.Contains(combined, "no output") && !strings.Contains(combined, "empty") {
+		t.Fatalf("error %q does not indicate empty output", combined)
+	}
+}
+
+// TestReplayRecordAndOutputCoexist verifies that --record + --output can both be
+// specified: the output is written to the file AND the replay run is recorded.
+func TestReplayRecordAndOutputCoexist(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	wantRunID := sourceRunID + "-replay-20260522T103000Z"
+	wantOutput := []byte("coexist-output")
+	stub := &replay.StubRunner{CannedOutput: wantOutput}
+	outFile := filepath.Join(t.TempDir(), "replay-out.txt")
+
+	_, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record", "--output", outFile)
+	if err != nil {
+		t.Fatalf("replay --record --output returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// File must be written.
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !bytes.Equal(got, wantOutput) {
+		t.Fatalf("file contents = %q, want %q", got, wantOutput)
+	}
+
+	// Replay run ref must exist.
+	_, err = refstore.New(repo).Resolve(context.Background(), "refs/etude/runs/"+wantRunID)
+	if err != nil {
+		t.Fatalf("replay run ref %q not found after --record --output: %v", wantRunID, err)
+	}
+}
+
+// TestReplayRecordProducerFlagOverride verifies that --skill-version overrides
+// the skill version in the recorded stage's Producer and Stage.Skill.
+func TestReplayRecordProducerFlagOverride(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	wantRunID := sourceRunID + "-replay-20260522T103000Z"
+	stub := &replay.StubRunner{CannedOutput: []byte("producer-override-output")}
+
+	_, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record", "--skill-version", "vNEW")
+	if err != nil {
+		t.Fatalf("replay --record --skill-version returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, wantRunID)
+	if len(m.Stages) != 1 {
+		t.Fatalf("replay run has %d stages, want 1", len(m.Stages))
+	}
+	s := m.Stages[0]
+	if s.Producer.Skill.Version != "vNEW" {
+		t.Fatalf("Producer.Skill.Version = %q, want %q", s.Producer.Skill.Version, "vNEW")
+	}
+	if s.Skill.Version != "vNEW" {
+		t.Fatalf("Stage.Skill.Version = %q, want %q", s.Skill.Version, "vNEW")
+	}
+	// Skill id and repo should be inherited from source.
+	if s.Skill.ID == "" {
+		t.Fatal("Skill.ID is empty after --skill-version override")
+	}
+	if s.Skill.Repo == "" {
+		t.Fatal("Skill.Repo is empty after --skill-version override")
+	}
+}
+
+// TestReplayRecordCollisionHandling verifies that two --record calls with the
+// same injected clock produce ids with a -2 suffix for the second.
+func TestReplayRecordCollisionHandling(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	baseRunID := sourceRunID + "-replay-20260522T103000Z"
+	stub1 := &replay.StubRunner{CannedOutput: []byte("first-output")}
+	stub2 := &replay.StubRunner{CannedOutput: []byte("second-output")}
+
+	// First record — should get the base id.
+	_, stderr, err := executeReplayWithClock(stub1, fixedTime, sourceRunID, "gen", "--record")
+	if err != nil {
+		t.Fatalf("first replay --record returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Second record with same clock — should get base-2.
+	stdout2, stderr, err := executeReplayWithClock(stub2, fixedTime, sourceRunID, "gen", "--record")
+	if err != nil {
+		t.Fatalf("second replay --record returned error: %v\nstderr: %s", err, stderr)
+	}
+	wantSecondID := baseRunID + "-2"
+	if !strings.Contains(stdout2, wantSecondID) {
+		t.Fatalf("stdout %q does not contain second replay run id %q", stdout2, wantSecondID)
+	}
+
+	// Both refs must exist.
+	store := refstore.New(repo)
+	for _, id := range []string{baseRunID, wantSecondID} {
+		if _, err := store.Resolve(context.Background(), "refs/etude/runs/"+id); err != nil {
+			t.Fatalf("run ref %q not found: %v", id, err)
+		}
+	}
+}
+
+// TestReplayEmitOnlyWritesNoNewRun verifies that without --record, no new run
+// ref is written (the emit-only path is unchanged).
+func TestReplayEmitOnlyWritesNoNewRun(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	stub := &replay.StubRunner{CannedOutput: []byte("emit-only-output")}
+	stdout, stderr, err := executeReplay(stub, runID, "gen")
+	if err != nil {
+		t.Fatalf("replay returned error: %v\nstderr: %s", err, stderr)
+	}
+	// Output must reach stdout.
+	if !strings.Contains(stdout, "emit-only-output") {
+		t.Fatalf("stdout %q does not contain expected output", stdout)
+	}
+
+	// Only the source run ref should exist — no new run with -replay- suffix pattern.
+	store := refstore.New(repo)
+	refs, err := store.List(context.Background(), "refs/etude/runs")
+	if err != nil {
+		t.Fatalf("List refs: %v", err)
+	}
+	for _, ref := range refs {
+		// The replay timestamp suffix pattern is: -replay-YYYYMMDDTHHMMSSZ (20 chars after -replay-)
+		if strings.Contains(ref, "-replay-") {
+			t.Fatalf("unexpected replay ref %q found after emit-only run", ref)
+		}
+	}
+}
+
+// TestReplayRecordInputBytesPreserved verifies that the source input's bytes
+// are byte-identical in the recorded replay run.
+func TestReplayRecordInputBytesPreserved(t *testing.T) {
+	repo, sourceRunID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	// Read the source input's artifact path and bytes.
+	sourceManifest := readRunManifest(t, repo, sourceRunID)
+	if len(sourceManifest.Stages[0].Inputs) == 0 {
+		t.Skip("source stage has no inputs — skip input-bytes test")
+	}
+	sourceInputRef := sourceManifest.Stages[0].Inputs[0]
+	store := refstore.New(repo)
+	sourceInputBytes, err := store.ReadFile(context.Background(), "refs/etude/runs/"+sourceRunID, sourceInputRef.Path)
+	if err != nil {
+		t.Fatalf("read source input: %v", err)
+	}
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	wantRunID := sourceRunID + "-replay-20260522T103000Z"
+	stub := &replay.StubRunner{CannedOutput: []byte("input-preserved-output")}
+	_, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record")
+	if err != nil {
+		t.Fatalf("replay --record returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// The input must also be present (at the same path) in the replay run.
+	replayInputBytes, err := store.ReadFile(context.Background(), "refs/etude/runs/"+wantRunID, sourceInputRef.Path)
+	if err != nil {
+		t.Fatalf("read replay input: %v", err)
+	}
+	if !bytes.Equal(replayInputBytes, sourceInputBytes) {
+		t.Fatalf("replay input bytes differ from source:\ngot: %q\nwant: %q", replayInputBytes, sourceInputBytes)
 	}
 }
 
