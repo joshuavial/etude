@@ -1,0 +1,162 @@
+// Package worktree provides a primitive for materializing a recorded commit OID
+// into a throwaway git worktree. Callers must call Cleanup or Close when done.
+package worktree
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+var (
+	ErrInvalidSHA  = errors.New("invalid SHA")
+	ErrSHANotFound = errors.New("SHA not found")
+)
+
+// Worktree is a disposable git worktree materialized at a specific commit OID.
+// Dir is the absolute path to the worktree directory in the system temp area,
+// outside the repository. Callers must call Cleanup or Close when done.
+type Worktree struct {
+	// Dir is the absolute path to the worktree directory (system temp, outside the repo).
+	Dir         string
+	root        string // repo root, passed to git -C
+	resolvedOID string // the full OID used at checkout time
+	removed     bool   // idempotency guard for Cleanup/Close
+}
+
+// Checkout materializes commit sha in a new throwaway worktree and returns it.
+// root is the repo root (passed to git -C). sha must be a full 40- or 64-char
+// lowercase hex commit OID; branch names, short SHAs, and mutable refs are
+// rejected with ErrInvalidSHA. Returns ErrSHANotFound if sha is not present in
+// the repository.
+func Checkout(ctx context.Context, root, sha string) (*Worktree, error) {
+	if err := validateSHA(sha); err != nil {
+		return nil, err
+	}
+
+	// Resolve the OID via rev-parse to confirm it exists as a commit.
+	out, err := gitCmd(ctx, root, "rev-parse", "--verify", sha+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrSHANotFound, sha)
+	}
+	resolvedOID := strings.TrimSpace(out)
+
+	// CRITICAL invariant: the input must BE the commit OID, not merely resolve to
+	// one. A hex-looking branch or tag whose name matches one hash width but
+	// resolves to a different-width OID (or a same-name moving ref) is rejected
+	// here. Legitimate recorded git_sha values are always direct commit OIDs, so
+	// equality always holds for valid replay inputs.
+	if resolvedOID != sha {
+		return nil, fmt.Errorf("%w: resolved OID %s != input %s", ErrInvalidSHA, resolvedOID, sha)
+	}
+
+	dir, err := os.MkdirTemp("", "etude-worktree-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// Add the worktree. Pass resolvedOID (never raw sha) and use -- to prevent
+	// the OID from being misinterpreted as a flag or option.
+	_, addErr := gitCmd(ctx, root, "worktree", "add", "--detach", "--", dir, resolvedOID)
+	if addErr != nil {
+		os.RemoveAll(dir)
+		// Best-effort prune to clear any partial registration.
+		_, _ = gitCmd(ctx, root, "worktree", "prune")
+		return nil, fmt.Errorf("worktree add: %w", addErr)
+	}
+
+	return &Worktree{
+		Dir:         dir,
+		root:        root,
+		resolvedOID: resolvedOID,
+	}, nil
+}
+
+// Cleanup removes the worktree and de-registers it from the repository.
+// It is idempotent: calling it multiple times returns nil after the first
+// successful removal. On a non-idempotency remove failure, Cleanup still runs
+// os.RemoveAll and git worktree prune (for no-leak) and returns the underlying
+// error so callers can log it.
+func (w *Worktree) Cleanup(ctx context.Context) error {
+	if w.removed {
+		return nil
+	}
+
+	_, removeErr := gitCmd(ctx, w.root, "worktree", "remove", "--force", w.Dir)
+	if removeErr != nil {
+		// Check for the idempotency case: a second remove emits "is not a working
+		// tree" at rc=128. Treat that as already-removed and fall through.
+		if !strings.Contains(removeErr.Error(), "is not a working tree") {
+			// Non-idempotency failure. Still run RemoveAll + prune for no-leak,
+			// then return the error.
+			os.RemoveAll(w.Dir)
+			_, _ = gitCmd(ctx, w.root, "worktree", "prune")
+			w.removed = true
+			return removeErr
+		}
+		// Already-removed: fall through to RemoveAll + prune.
+	}
+
+	// RemoveAll is a no-op for a missing path, so always call it.
+	os.RemoveAll(w.Dir)
+
+	// Prune runs LAST so it reaps any stale .git/worktrees entry including the
+	// case where remove failed but the filesystem dir was already deleted.
+	_, _ = gitCmd(ctx, w.root, "worktree", "prune")
+
+	w.removed = true
+	return nil
+}
+
+// Close implements io.Closer by calling Cleanup(context.Background()).
+// It provides no cancellation and is appropriate for defer statements.
+// Idempotent: Close-after-explicit-Cleanup is a no-op returning nil.
+func (w *Worktree) Close() error {
+	return w.Cleanup(context.Background())
+}
+
+// gitCmd runs git with the given args inside root, capturing stdout and stderr
+// separately. The environment extends os.Environ() with strict git settings to
+// prevent interactive prompts, optional locks, and locale-dependent output.
+// Errors are wrapped with the joined args and trimmed stderr for diagnostics.
+func gitCmd(ctx context.Context, root string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+		"LC_ALL=C",
+		"LANG=C",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// validateSHA requires sha to be a full 40- or 64-character lowercase hex
+// string, mirroring refstore.validateOID. It rejects empty strings, leading
+// dashes (option-injection guard), wrong lengths, and non-hex characters.
+func validateSHA(sha string) error {
+	if sha == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidSHA)
+	}
+	if strings.HasPrefix(sha, "-") {
+		return fmt.Errorf("%w: must not start with '-'", ErrInvalidSHA)
+	}
+	if len(sha) != 40 && len(sha) != 64 {
+		return fmt.Errorf("%w: want 40 or 64 hex characters, got %d", ErrInvalidSHA, len(sha))
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return fmt.Errorf("%w: want lowercase hex", ErrInvalidSHA)
+		}
+	}
+	return nil
+}
