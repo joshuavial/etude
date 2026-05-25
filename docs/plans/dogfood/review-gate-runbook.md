@@ -335,6 +335,23 @@ the gate with the empirical evidence embedded in the prompt so the panel
 converges on the verified behavior, and record the resolution in the gate note.
 A reviewer's confident assertion is not authoritative over a reproduced result.
 
+**Seats split on an approach/risk choice (not a fact, not a correctness bug).**
+Sometimes seats disagree on a design CHOICE where no one is factually wrong — one
+seat finds an approach acceptable or even preferable while others `BLOCK` it as
+too risky or too complex (observed: codex+gemini BLOCK'd a cobra
+default-subcommand shim as fragile/regression-prone while Opus empirically proved
+the shim *works* and preferred it). Resolve by choosing the option that ALL seats
+find acceptable — the consensus-safe option — especially when it is also the
+lower-complexity choice. A lone `GO` defending the riskier approach does NOT
+override two `BLOCK`s prescribing a safer one: empirical proof that the riskier
+approach *functions* informs the decision but does not by itself outweigh
+maintainability/regression objections ("it works" is not "it is the right
+surface"). Record the chosen option and why in the gate note. Corollary for PLAN
+gates: a gated plan must COMMIT to a single approach for any decision the gate
+will scrutinize. Leaving "approach A, or fall back to B if A proves hard" is
+itself a BLOCKable defect — it defers a reviewed decision to un-reviewed
+implementation time; the plan must pick one before the gate passes.
+
 Optional improvements are not blockers, but they are not ignored. Before
 advancing, either:
 
