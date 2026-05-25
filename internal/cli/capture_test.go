@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -508,4 +510,220 @@ func gitCapture(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
 	return string(out)
+}
+
+// writeGateJSON writes a minimal valid gate JSON file to dir/name. stageArtifact
+// may be empty to use a name-only reviewed_stage reference.
+func writeGateJSON(t *testing.T, dir, name, gateID, phase string, round int, stageArtifact string) string {
+	t.Helper()
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	reviewedRef := fmt.Sprintf(`{"stage":"plan","role":"plan","artifact":%q}`, stageArtifact)
+	content := fmt.Sprintf(`{
+  "gate_id": %q,
+  "phase": %q,
+  "round": %d,
+  "tier": 1,
+  "status": "pass",
+  "reviewed_stages": [%s],
+  "seats": [
+    {
+      "seat": "gemini",
+      "harness": {"name":"gemini-cli","version":"3.1"},
+      "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+      "verdict": "go",
+      "timestamp": %q
+    }
+  ],
+  "decision": {},
+  "timestamp": %q
+}`, gateID, phase, round, reviewedRef, now, now)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write gate JSON %s: %v", path, err)
+	}
+	return path
+}
+
+// TestCaptureGateAppendsToExistingRun creates a run via capture plan, then
+// appends a gate with capture-gate. Asserts manifest gains one GateAttempt,
+// stages are untouched, manifest_version is 3, and artifacts are readable.
+func TestCaptureGateAppendsToExistingRun(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	// Capture a plan stage to create the run.
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// Read the plan stage artifact SHA so we can reference it in the gate.
+	m := readRunManifest(t, repo, "run-1")
+	planArtifact := m.Stages[0].Output.Artifact
+
+	gateFile := writeGateJSON(t, repo, "gate.json", "plan.r1", "plan", 1, planArtifact)
+
+	stdout, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err != nil {
+		t.Fatalf("capture-gate: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "captured ") || !strings.Contains(stdout, "ref refs/etude/runs/run-1") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+
+	m2 := readRunManifest(t, repo, "run-1")
+	if len(m2.Stages) != 1 {
+		t.Fatalf("stages count = %d, want 1 (stages untouched)", len(m2.Stages))
+	}
+	if len(m2.Gates) != 1 {
+		t.Fatalf("gates count = %d, want 1", len(m2.Gates))
+	}
+	if m2.ManifestVersion != 3 {
+		t.Fatalf("manifest_version = %d, want 3", m2.ManifestVersion)
+	}
+	g := m2.Gates[0]
+	if g.GateID != "plan.r1" || g.Phase != "plan" || g.Round != 1 {
+		t.Fatalf("gate = %+v", g)
+	}
+	if g.Status != runmanifest.GateStatusPass {
+		t.Fatalf("gate status = %q, want pass", g.Status)
+	}
+	if len(g.Seats) != 1 || g.Seats[0].Verdict != runmanifest.SeatVerdictGo {
+		t.Fatalf("seats = %+v", g.Seats)
+	}
+
+	// Prior stage artifact must still be readable.
+	if _, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/run-1", m2.Stages[0].Output.Path); err != nil {
+		t.Fatalf("prior stage artifact not readable after gate append: %v", err)
+	}
+}
+
+// TestCaptureGateMultipleAttemptsSamePhase verifies that two gate records for
+// the same phase (different rounds) both land.
+func TestCaptureGateMultipleAttemptsSamePhase(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	gate1 := writeGateJSON(t, repo, "gate1.json", "plan.r1", "plan", 1, "")
+	gate2 := writeGateJSON(t, repo, "gate2.json", "plan.r2", "plan", 2, "")
+
+	if _, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gate1); err != nil {
+		t.Fatalf("capture-gate round 1: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gate2); err != nil {
+		t.Fatalf("capture-gate round 2: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 2 {
+		t.Fatalf("gates count = %d, want 2", len(m.Gates))
+	}
+	if m.Gates[0].Round != 1 || m.Gates[1].Round != 2 {
+		t.Fatalf("gate rounds = %d, %d; want 1, 2", m.Gates[0].Round, m.Gates[1].Round)
+	}
+}
+
+// TestCaptureGatePilmsProvider verifies that a seat with provider lmstudio /
+// model qwen/qwen3.6-35b-a3b is recorded verbatim.
+func TestCaptureGatePilmsProvider(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	now := time.Date(2026, 5, 25, 3, 55, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id": "plan.r1",
+  "phase": "plan",
+  "round": 1,
+  "tier": 1,
+  "status": "pass",
+  "reviewed_stages": [{"stage":"plan"}],
+  "seats": [
+    {
+      "seat": "pilms",
+      "harness": {"name":"pi","version":"x"},
+      "provider": {"name":"lmstudio","model":"qwen/qwen3.6-35b-a3b"},
+      "verdict": "disregarded",
+      "failure_note": "0-CPU client hang reproduced; known artifact",
+      "timestamp": %q
+    }
+  ],
+  "decision": {},
+  "timestamp": %q
+}`, now, now)
+	gateFile := filepath.Join(repo, "gate.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate file: %v", err)
+	}
+
+	if _, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile); err != nil {
+		t.Fatalf("capture-gate: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 1 || len(m.Gates[0].Seats) != 1 {
+		t.Fatalf("unexpected gate structure: %+v", m.Gates)
+	}
+	p := m.Gates[0].Seats[0].Provider
+	if p.Name != "lmstudio" || p.Model != "qwen/qwen3.6-35b-a3b" {
+		t.Fatalf("provider = %+v, want {lmstudio qwen/qwen3.6-35b-a3b}", p)
+	}
+}
+
+// TestCaptureGateRejectsNewRun verifies that capture-gate fails when the run
+// does not exist, with a clear "must attach to existing run" message.
+func TestCaptureGateRejectsNewRun(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{"gate_id":"plan.r1","phase":"plan","round":1,"tier":1,"status":"pass","reviewed_stages":[{"stage":"plan"}],"seats":[{"seat":"gemini","harness":{"name":"h"},"provider":{"name":"p","model":"m"},"verdict":"go","timestamp":%q}],"decision":{},"timestamp":%q}`, now, now)
+	gateFile := filepath.Join(repo, "gate.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate file: %v", err)
+	}
+
+	_, _, err := execute("capture-gate", "--run", "nonexistent-run", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate returned nil error for nonexistent run")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error %q does not mention 'not found'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "existing run") {
+		t.Fatalf("error %q does not mention 'existing run'", err.Error())
+	}
+}
+
+// TestCaptureGateRejectsDanglingArtifact verifies that a reviewed_stage artifact
+// SHA that does not match any artifact on the stage is rejected end-to-end.
+func TestCaptureGateRejectsDanglingArtifact(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// Use a SHA that does not match any artifact on the plan stage.
+	danglingArtifact := strings.Repeat("f", 64)
+	gateFile := writeGateJSON(t, repo, "gate.json", "plan.r1", "plan", 1, danglingArtifact)
+
+	_, _, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate returned nil error for dangling artifact")
+	}
+	if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "dangling") && !strings.Contains(err.Error(), "artifact") {
+		t.Fatalf("error %q does not mention artifact rejection", err.Error())
+	}
 }

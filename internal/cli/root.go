@@ -35,6 +35,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	cmd.AddCommand(newBenchCommand(out, errOut))
 	cmd.AddCommand(newCaptureCommand(out, errOut))
+	cmd.AddCommand(newCaptureGateCommand(out, errOut))
 	cmd.AddCommand(newGCCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
 	cmd.AddCommand(newReindexCommand(out, errOut))

@@ -32,8 +32,9 @@ var (
 
 type Manifest struct {
 	// ManifestVersion versions the on-disk document format.
-	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema.
-	// (No v1 is ever emitted; the transition goes directly 0→2.)
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+	// 3 = schema with gates.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
 	ManifestVersion int
 	RunID           string
 	Workflow        string
@@ -41,7 +42,78 @@ type Manifest struct {
 	Created         time.Time
 	Refs            map[string]string
 	Stages          []Stage
+	Gates           []GateAttempt
 }
+
+// GateAttempt records one full panel re-examination of one phase gate.
+// Every rerun (BLOCK -> incorporate -> rerun) is a new GateAttempt with an
+// incremented Round; prior rounds are retained as the queryable history.
+type GateAttempt struct {
+	GateID         string
+	Phase          string
+	Round          int
+	Tier           int
+	Status         GateStatus
+	ReviewedStages []ReviewedRef
+	Seats          []SeatResult
+	Decision       GateDecision
+	Timestamp      time.Time
+}
+
+// ReviewedRef ties a gate attempt to the exact stage/artifact it reviewed.
+// Artifact is optional (a gate may reference a stage by name only); when set it
+// is the same content-addressed sha the stage's Output/Input carries.
+type ReviewedRef struct {
+	Stage    string
+	Artifact string
+	Role     string
+}
+
+// SeatResult is one reviewer seat's outcome within one gate attempt.
+type SeatResult struct {
+	Seat        string
+	Harness     Harness
+	Provider    Provider
+	Skill       Skill
+	Verdict     SeatVerdict
+	Required    []string
+	Optional    []string
+	RawOutput   *ArtifactRef
+	FailureNote string
+	Timestamp   time.Time
+}
+
+// Provider names the model provider and model for a reviewer seat.
+type Provider struct {
+	Name  string
+	Model string
+}
+
+// GateDecision holds the aggregate decision detail of one gate attempt.
+type GateDecision struct {
+	EscalationReason string
+	DegradedReason   string
+	DeferredBeads    []string
+}
+
+// GateStatus is the aggregate status of one gate attempt.
+type GateStatus string
+
+// SeatVerdict is the outcome of one reviewer seat.
+type SeatVerdict string
+
+const (
+	GateStatusPass      GateStatus = "pass"
+	GateStatusRerun     GateStatus = "rerun"
+	GateStatusEscalated GateStatus = "escalated"
+
+	SeatVerdictGo          SeatVerdict = "go"
+	SeatVerdictBlock       SeatVerdict = "block"
+	SeatVerdictFailed      SeatVerdict = "failed"
+	SeatVerdictEmpty       SeatVerdict = "empty"
+	SeatVerdictMalfunction SeatVerdict = "malfunction"
+	SeatVerdictDisregarded SeatVerdict = "disregarded"
+)
 
 // ReplayLink records the durable source identity for a produced_by:"replay" stage.
 // RunID and Stage name the source run and stage; Commit pins the immutable source
@@ -154,6 +226,31 @@ func (m Manifest) Validate() error {
 			return err
 		}
 	}
+
+	// Build a stage index for referential integrity checks in gate validation.
+	stageIndex := make(map[string]Stage, len(m.Stages))
+	for _, stage := range m.Stages {
+		stageIndex[stage.Name] = stage
+	}
+
+	seenGateIDs := make(map[string]struct{}, len(m.Gates))
+	seenPhaseRound := make(map[string]struct{}, len(m.Gates))
+	for i, gate := range m.Gates {
+		if _, dup := seenGateIDs[gate.GateID]; dup {
+			return fmt.Errorf("%w: duplicate gate_id %q", ErrInvalidManifest, gate.GateID)
+		}
+		seenGateIDs[gate.GateID] = struct{}{}
+
+		phaseRoundKey := gate.Phase + "\x00" + fmt.Sprintf("%d", gate.Round)
+		if _, dup := seenPhaseRound[phaseRoundKey]; dup {
+			return fmt.Errorf("%w: duplicate (phase, round) (%q, %d)", ErrInvalidManifest, gate.Phase, gate.Round)
+		}
+		seenPhaseRound[phaseRoundKey] = struct{}{}
+
+		if err := validateGate(i, gate, stageIndex); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -198,6 +295,13 @@ func ArtifactPaths(manifest Manifest) []string {
 			seen[input.Path] = struct{}{}
 		}
 		seen[stage.Output.Path] = struct{}{}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				seen[seat.RawOutput.Path] = struct{}{}
+			}
+		}
 	}
 	paths := make([]string, 0, len(seen))
 	for path := range seen {
@@ -299,6 +403,150 @@ func validateStage(index int, stage Stage) error {
 	return nil
 }
 
+func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) error {
+	prefix := fmt.Sprintf("gate[%d]", index)
+
+	if err := validateIdentifier(prefix+".gate_id", gate.GateID); err != nil {
+		return err
+	}
+	if err := validateIdentifier(prefix+".phase", gate.Phase); err != nil {
+		return err
+	}
+	if gate.Round < 1 {
+		return fmt.Errorf("%w: %s round must be >= 1", ErrInvalidManifest, prefix)
+	}
+	if gate.Tier < 0 || gate.Tier > 3 {
+		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3}", ErrInvalidManifest, prefix)
+	}
+	if !isGateStatus(gate.Status) {
+		return fmt.Errorf("%w: %s status %q is not one of {pass, rerun, escalated}", ErrInvalidManifest, prefix, gate.Status)
+	}
+	if gate.Status == GateStatusEscalated && strings.TrimSpace(gate.Decision.EscalationReason) == "" {
+		return fmt.Errorf("%w: %s escalation_reason required when status is escalated", ErrInvalidManifest, prefix)
+	}
+	if len(gate.ReviewedStages) == 0 {
+		return fmt.Errorf("%w: %s at least one reviewed_stage required", ErrInvalidManifest, prefix)
+	}
+	for i, ref := range gate.ReviewedStages {
+		refPrefix := fmt.Sprintf("%s.reviewed_stages[%d]", prefix, i)
+		if err := validateIdentifier(refPrefix+".stage", ref.Stage); err != nil {
+			return err
+		}
+		stage, ok := stageIndex[ref.Stage]
+		if !ok {
+			return fmt.Errorf("%w: %s stage %q not found in manifest", ErrInvalidManifest, refPrefix, ref.Stage)
+		}
+		if ref.Role != "" {
+			if err := validateIdentifier(refPrefix+".role", ref.Role); err != nil {
+				return err
+			}
+		}
+		if ref.Artifact != "" {
+			if !validSHA256(ref.Artifact) {
+				return fmt.Errorf("%w: %s artifact must be a lowercase sha256", ErrInvalidManifest, refPrefix)
+			}
+			// Artifact must match the stage's output or one of its inputs.
+			if !stageHasArtifact(stage, ref.Artifact) {
+				return fmt.Errorf("%w: %s artifact %q not found on stage %q output or inputs", ErrInvalidManifest, refPrefix, ref.Artifact, ref.Stage)
+			}
+		}
+	}
+	if len(gate.Seats) == 0 {
+		return fmt.Errorf("%w: %s at least one seat required", ErrInvalidManifest, prefix)
+	}
+	for i, seat := range gate.Seats {
+		if err := validateSeat(prefix, i, seat); err != nil {
+			return err
+		}
+	}
+	if gate.Timestamp.IsZero() {
+		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	return nil
+}
+
+func stageHasArtifact(stage Stage, artifact string) bool {
+	if stage.Output.Artifact == artifact {
+		return true
+	}
+	for _, input := range stage.Inputs {
+		if input.Artifact == artifact {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSeat(gatePrefix string, index int, seat SeatResult) error {
+	prefix := fmt.Sprintf("%s.seat[%d]", gatePrefix, index)
+
+	if err := validateIdentifier(prefix+".seat", seat.Seat); err != nil {
+		return err
+	}
+	if strings.TrimSpace(seat.Harness.Name) == "" {
+		return fmt.Errorf("%w: %s harness.name required", ErrInvalidManifest, prefix)
+	}
+	if err := validateProviderField(prefix, seat.Provider); err != nil {
+		return err
+	}
+	if !isSeatVerdict(seat.Verdict) {
+		return fmt.Errorf("%w: %s verdict %q is not one of {go, block, failed, empty, malfunction, disregarded}", ErrInvalidManifest, prefix, seat.Verdict)
+	}
+	// failure_note required iff verdict in {failed, empty, malfunction, disregarded}
+	// failure_note forbidden iff verdict in {go, block}
+	switch seat.Verdict {
+	case SeatVerdictFailed, SeatVerdictEmpty, SeatVerdictMalfunction, SeatVerdictDisregarded:
+		if strings.TrimSpace(seat.FailureNote) == "" {
+			return fmt.Errorf("%w: %s failure_note required for verdict %q", ErrInvalidManifest, prefix, seat.Verdict)
+		}
+	case SeatVerdictGo, SeatVerdictBlock:
+		if seat.FailureNote != "" {
+			return fmt.Errorf("%w: %s failure_note must be empty for verdict %q", ErrInvalidManifest, prefix, seat.Verdict)
+		}
+	}
+	if seat.RawOutput != nil {
+		if err := validateArtifactRef(*seat.RawOutput); err != nil {
+			return fmt.Errorf("%w: %s raw_output: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
+	if seat.Timestamp.IsZero() {
+		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	return nil
+}
+
+func validateProviderField(prefix string, p Provider) error {
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("%w: %s provider.name required", ErrInvalidManifest, prefix)
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		return fmt.Errorf("%w: %s provider.model required", ErrInvalidManifest, prefix)
+	}
+	for _, r := range p.Name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s provider.name contains control character", ErrInvalidManifest, prefix)
+		}
+	}
+	for _, r := range p.Model {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s provider.model contains control character", ErrInvalidManifest, prefix)
+		}
+	}
+	return nil
+}
+
+func isGateStatus(s GateStatus) bool {
+	return s == GateStatusPass || s == GateStatusRerun || s == GateStatusEscalated
+}
+
+func isSeatVerdict(v SeatVerdict) bool {
+	switch v {
+	case SeatVerdictGo, SeatVerdictBlock, SeatVerdictFailed, SeatVerdictEmpty, SeatVerdictMalfunction, SeatVerdictDisregarded:
+		return true
+	}
+	return false
+}
+
 // isHexOID reports whether s is a valid git object id: non-empty, all lowercase
 // hex characters, and exactly 40 (SHA-1) or 64 (SHA-256) characters long.
 func isHexOID(s string) bool {
@@ -376,6 +624,13 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 			paths[input.Path] = struct{}{}
 		}
 		paths[stage.Output.Path] = struct{}{}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				paths[seat.RawOutput.Path] = struct{}{}
+			}
+		}
 	}
 	return paths
 }
@@ -485,8 +740,9 @@ func cloneBytes(in []byte) []byte {
 
 type manifestJSON struct {
 	// ManifestVersion versions the on-disk document format.
-	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema.
-	// (No v1 is ever emitted; the transition goes directly 0→2.)
+	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
+	// 3 = schema with gates.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
 	ManifestVersion int               `json:"manifest_version,omitempty"`
 	RunID           string            `json:"run_id"`
 	Workflow        string            `json:"workflow"`
@@ -494,6 +750,49 @@ type manifestJSON struct {
 	Created         string            `json:"created"`
 	Refs            map[string]string `json:"refs"`
 	Stages          []stageJSON       `json:"stages"`
+	Gates           []gateJSON        `json:"gates,omitempty"`
+}
+
+type gateJSON struct {
+	GateID         string            `json:"gate_id"`
+	Phase          string            `json:"phase"`
+	Round          int               `json:"round"`
+	Tier           int               `json:"tier"`
+	Status         string            `json:"status"`
+	ReviewedStages []reviewedRefJSON `json:"reviewed_stages"`
+	Seats          []seatResultJSON  `json:"seats"`
+	Decision       gateDecisionJSON  `json:"decision,omitempty"`
+	Timestamp      string            `json:"timestamp"`
+}
+
+type reviewedRefJSON struct {
+	Stage    string `json:"stage"`
+	Role     string `json:"role,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+}
+
+type seatResultJSON struct {
+	Seat        string        `json:"seat"`
+	Harness     harnessJSON   `json:"harness"`
+	Provider    providerJSON  `json:"provider"`
+	Skill       *skillJSON    `json:"skill,omitempty"`
+	Verdict     string        `json:"verdict"`
+	Required    []string      `json:"required,omitempty"`
+	Optional    []string      `json:"optional,omitempty"`
+	RawOutput   *artifactJSON `json:"raw_output,omitempty"`
+	FailureNote string        `json:"failure_note,omitempty"`
+	Timestamp   string        `json:"timestamp"`
+}
+
+type providerJSON struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type gateDecisionJSON struct {
+	EscalationReason string   `json:"escalation_reason,omitempty"`
+	DegradedReason   string   `json:"degraded_reason,omitempty"`
+	DeferredBeads    []string `json:"deferred_beads,omitempty"`
 }
 
 type stageJSON struct {
@@ -606,14 +905,90 @@ func (m Manifest) toJSON() manifestJSON {
 			ReplayOf:  replayOfBlock,
 		})
 	}
+	version := 2
+	var gatesOut []gateJSON
+	if len(m.Gates) > 0 {
+		version = 3
+		gatesOut = make([]gateJSON, 0, len(m.Gates))
+		for _, gate := range m.Gates {
+			gatesOut = append(gatesOut, gate.toJSON())
+		}
+	}
+
 	return manifestJSON{
-		ManifestVersion: 2,
+		ManifestVersion: version,
 		RunID:           m.RunID,
 		Workflow:        m.Workflow,
 		WorkflowVersion: m.WorkflowVersion,
 		Created:         formatTime(m.Created),
 		Refs:            refs,
 		Stages:          stages,
+		Gates:           gatesOut,
+	}
+}
+
+func (g GateAttempt) toJSON() gateJSON {
+	refs := make([]reviewedRefJSON, 0, len(g.ReviewedStages))
+	for _, r := range g.ReviewedStages {
+		refs = append(refs, reviewedRefJSON{
+			Stage:    r.Stage,
+			Role:     r.Role,
+			Artifact: r.Artifact,
+		})
+	}
+	seats := make([]seatResultJSON, 0, len(g.Seats))
+	for _, seat := range g.Seats {
+		seats = append(seats, seat.toJSON())
+	}
+	return gateJSON{
+		GateID:         g.GateID,
+		Phase:          g.Phase,
+		Round:          g.Round,
+		Tier:           g.Tier,
+		Status:         string(g.Status),
+		ReviewedStages: refs,
+		Seats:          seats,
+		Decision:       g.Decision.toJSON(),
+		Timestamp:      formatTime(g.Timestamp),
+	}
+}
+
+func (s SeatResult) toJSON() seatResultJSON {
+	sj := seatResultJSON{
+		Seat: s.Seat,
+		Harness: harnessJSON{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: providerJSON{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Verdict:     string(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		FailureNote: s.FailureNote,
+		Timestamp:   formatTime(s.Timestamp),
+	}
+	if s.Skill.ID != "" {
+		sj.Skill = &skillJSON{
+			ID:      s.Skill.ID,
+			Repo:    s.Skill.Repo,
+			Version: s.Skill.Version,
+		}
+	}
+	if s.RawOutput != nil {
+		aj := s.RawOutput.toJSON()
+		sj.RawOutput = &aj
+	}
+	return sj
+}
+
+func (d GateDecision) toJSON() gateDecisionJSON {
+	return gateDecisionJSON{
+		EscalationReason: d.EscalationReason,
+		DegradedReason:   d.DegradedReason,
+		DeferredBeads:    d.DeferredBeads,
 	}
 }
 
@@ -643,6 +1018,15 @@ func ensureEOF(dec *json.Decoder) error {
 }
 
 func (m manifestJSON) toManifest() (Manifest, error) {
+	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
+	// Reject 1 (never emitted) and any future version this binary cannot model.
+	switch m.ManifestVersion {
+	case 0, 2, 3:
+		// accepted
+	default:
+		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
+	}
+
 	created, err := parseTime("created", m.Created)
 	if err != nil {
 		return Manifest{}, err
@@ -659,6 +1043,14 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 	for key, value := range m.Refs {
 		refs[key] = value
 	}
+	gates := make([]GateAttempt, 0, len(m.Gates))
+	for i, g := range m.Gates {
+		gate, err := g.toGate(i)
+		if err != nil {
+			return Manifest{}, err
+		}
+		gates = append(gates, gate)
+	}
 	return Manifest{
 		ManifestVersion: m.ManifestVersion,
 		RunID:           m.RunID,
@@ -667,6 +1059,79 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		Created:         created,
 		Refs:            refs,
 		Stages:          stages,
+		Gates:           gates,
+	}, nil
+}
+
+func (g gateJSON) toGate(index int) (GateAttempt, error) {
+	ts, err := parseTime(fmt.Sprintf("gate[%d].timestamp", index), g.Timestamp)
+	if err != nil {
+		return GateAttempt{}, err
+	}
+	refs := make([]ReviewedRef, 0, len(g.ReviewedStages))
+	for _, r := range g.ReviewedStages {
+		refs = append(refs, ReviewedRef{
+			Stage:    r.Stage,
+			Artifact: r.Artifact,
+			Role:     r.Role,
+		})
+	}
+	seats := make([]SeatResult, 0, len(g.Seats))
+	for i, s := range g.Seats {
+		seat, err := s.toSeatResult(index, i)
+		if err != nil {
+			return GateAttempt{}, err
+		}
+		seats = append(seats, seat)
+	}
+	return GateAttempt{
+		GateID:         g.GateID,
+		Phase:          g.Phase,
+		Round:          g.Round,
+		Tier:           g.Tier,
+		Status:         GateStatus(g.Status),
+		ReviewedStages: refs,
+		Seats:          seats,
+		Decision: GateDecision{
+			EscalationReason: g.Decision.EscalationReason,
+			DegradedReason:   g.Decision.DegradedReason,
+			DeferredBeads:    g.Decision.DeferredBeads,
+		},
+		Timestamp: ts,
+	}, nil
+}
+
+func (s seatResultJSON) toSeatResult(gateIndex, seatIndex int) (SeatResult, error) {
+	ts, err := parseTime(fmt.Sprintf("gate[%d].seat[%d].timestamp", gateIndex, seatIndex), s.Timestamp)
+	if err != nil {
+		return SeatResult{}, err
+	}
+	var skill Skill
+	if s.Skill != nil {
+		skill = Skill{ID: s.Skill.ID, Repo: s.Skill.Repo, Version: s.Skill.Version}
+	}
+	var rawOutput *ArtifactRef
+	if s.RawOutput != nil {
+		a := s.RawOutput.toArtifactRef()
+		rawOutput = &a
+	}
+	return SeatResult{
+		Seat: s.Seat,
+		Harness: Harness{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: Provider{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Skill:       skill,
+		Verdict:     SeatVerdict(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		RawOutput:   rawOutput,
+		FailureNote: s.FailureNote,
+		Timestamp:   ts,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -318,6 +319,270 @@ func currentHEAD(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("could not resolve HEAD; run capture inside a repo with at least one commit or pass --git-sha")
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gateInputJSON is the input DTO for capture-gate. It mirrors the manifest
+// GateAttempt shape but accepts raw_output as a file path (resolved into the
+// content-addressed artifact store) rather than as an already-stored ArtifactRef.
+type gateInputJSON struct {
+	GateID         string                 `json:"gate_id"`
+	Phase          string                 `json:"phase"`
+	Round          int                    `json:"round"`
+	Tier           int                    `json:"tier"`
+	Status         string                 `json:"status"`
+	ReviewedStages []reviewedRefInputJSON `json:"reviewed_stages"`
+	Seats          []seatInputJSON        `json:"seats"`
+	Decision       gateDecisionInputJSON  `json:"decision"`
+	Timestamp      string                 `json:"timestamp"`
+}
+
+type reviewedRefInputJSON struct {
+	Stage    string `json:"stage"`
+	Artifact string `json:"artifact"`
+	Role     string `json:"role"`
+}
+
+type seatInputJSON struct {
+	Seat        string              `json:"seat"`
+	Harness     harnessInputJSON    `json:"harness"`
+	Provider    providerInputJSON   `json:"provider"`
+	Skill       *skillInputJSON     `json:"skill"`
+	Verdict     string              `json:"verdict"`
+	Required    []string            `json:"required"`
+	Optional    []string            `json:"optional"`
+	RawOutput   *rawOutputInputJSON `json:"raw_output"`
+	FailureNote string              `json:"failure_note"`
+	Timestamp   string              `json:"timestamp"`
+}
+
+type harnessInputJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type providerInputJSON struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type skillInputJSON struct {
+	ID      string `json:"id"`
+	Repo    string `json:"repo"`
+	Version string `json:"version"`
+}
+
+// rawOutputInputJSON specifies a seat's raw transcript as a local file path.
+// role and media_type are optional; if media_type is empty it is inferred from the path.
+type rawOutputInputJSON struct {
+	Role      string `json:"role"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type"`
+}
+
+type gateDecisionInputJSON struct {
+	EscalationReason string   `json:"escalation_reason"`
+	DegradedReason   string   `json:"degraded_reason"`
+	DeferredBeads    []string `json:"deferred_beads"`
+}
+
+type captureGateConfig struct {
+	runID    string
+	gateFile string
+}
+
+func newCaptureGateCommand(out, errOut io.Writer) *cobra.Command {
+	var cfg captureGateConfig
+	cmd := &cobra.Command{
+		Use:           "capture-gate",
+		Short:         "Append a gate reviewer record to an existing etude run",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runner := captureRunner{
+				now:    time.Now,
+				store:  refstore.New(""),
+				stdout: out,
+			}
+			return runner.runGate(cmd.Context(), cfg)
+		},
+	}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.Flags().StringVar(&cfg.runID, "run", "", "run id to append the gate record to (required)")
+	cmd.Flags().StringVar(&cfg.gateFile, "gate-file", "", "path to gate JSON file, or - to read from stdin (required)")
+	return cmd
+}
+
+func (r captureRunner) runGate(ctx context.Context, cfg captureGateConfig) error {
+	if strings.TrimSpace(cfg.runID) == "" {
+		return fmt.Errorf("--run is required")
+	}
+	if strings.TrimSpace(cfg.gateFile) == "" {
+		return fmt.Errorf("--gate-file is required")
+	}
+
+	// Read gate JSON from file or stdin.
+	var gateBytes []byte
+	var err error
+	if cfg.gateFile == "-" {
+		gateBytes, err = io.ReadAll(os.Stdin)
+	} else {
+		gateBytes, err = os.ReadFile(cfg.gateFile)
+	}
+	if err != nil {
+		return fmt.Errorf("read gate file: %w", err)
+	}
+
+	var input gateInputJSON
+	if err := json.Unmarshal(gateBytes, &input); err != nil {
+		return fmt.Errorf("parse gate JSON: %w", err)
+	}
+
+	// Resolve the existing run — a gate must attach to an existing run.
+	ref := "refs/etude/runs/" + cfg.runID
+	commit, err := r.store.Resolve(ctx, ref)
+	if errors.Is(err, refstore.ErrNotFound) {
+		return fmt.Errorf("run %q not found; a gate must attach to an existing run", cfg.runID)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing, priorFiles, err := r.readExistingRun(ctx, commit)
+	if err != nil {
+		return err
+	}
+	if existing.RunID != cfg.runID {
+		return fmt.Errorf("existing manifest run_id %q does not match --run %q", existing.RunID, cfg.runID)
+	}
+
+	// Resolve raw_output file paths into the artifact store.
+	artifactStore := artifactstore.New()
+	seats := make([]runmanifest.SeatResult, 0, len(input.Seats))
+	for _, s := range input.Seats {
+		seat, err := buildSeatResult(artifactStore, s)
+		if err != nil {
+			return err
+		}
+		seats = append(seats, seat)
+	}
+
+	// Parse gate timestamp.
+	gateTS, err := parseManifestTime("gate.timestamp", input.Timestamp)
+	if err != nil {
+		return err
+	}
+
+	// Build reviewed refs.
+	reviewedStages := make([]runmanifest.ReviewedRef, 0, len(input.ReviewedStages))
+	for _, r := range input.ReviewedStages {
+		reviewedStages = append(reviewedStages, runmanifest.ReviewedRef{
+			Stage:    r.Stage,
+			Artifact: r.Artifact,
+			Role:     r.Role,
+		})
+	}
+
+	gate := runmanifest.GateAttempt{
+		GateID:         input.GateID,
+		Phase:          input.Phase,
+		Round:          input.Round,
+		Tier:           input.Tier,
+		Status:         runmanifest.GateStatus(input.Status),
+		ReviewedStages: reviewedStages,
+		Seats:          seats,
+		Decision: runmanifest.GateDecision{
+			EscalationReason: input.Decision.EscalationReason,
+			DegradedReason:   input.Decision.DegradedReason,
+			DeferredBeads:    input.Decision.DeferredBeads,
+		},
+		Timestamp: gateTS,
+	}
+
+	// Append gate to the manifest.
+	existing.Gates = append(existing.Gates, gate)
+
+	// Merge prior files with new artifact files.
+	files := artifactStore.Files()
+	for path, content := range priorFiles {
+		files[path] = content
+	}
+
+	opts := runmanifest.WriteOptions{
+		ExpectedOld: commit,
+		Message:     fmt.Sprintf("capture-gate: append run %s gate %s", cfg.runID, input.GateID),
+	}
+	written, err := (runmanifest.Writer{Store: r.store}).Write(ctx, existing, files, opts)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\n", written, ref)
+	return err
+}
+
+func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.SeatResult, error) {
+	ts, err := parseManifestTime("seat.timestamp", s.Timestamp)
+	if err != nil {
+		return runmanifest.SeatResult{}, err
+	}
+
+	var skill runmanifest.Skill
+	if s.Skill != nil {
+		skill = runmanifest.Skill{ID: s.Skill.ID, Repo: s.Skill.Repo, Version: s.Skill.Version}
+	}
+
+	var rawOutput *runmanifest.ArtifactRef
+	if s.RawOutput != nil && s.RawOutput.Path != "" {
+		role := s.RawOutput.Role
+		if role == "" {
+			role = s.Seat + "-transcript"
+		}
+		mediaType := s.RawOutput.MediaType
+		if mediaType == "" {
+			mediaType = inferMediaType(s.RawOutput.Path)
+		}
+		content, err := os.ReadFile(s.RawOutput.Path)
+		if err != nil {
+			return runmanifest.SeatResult{}, fmt.Errorf("read raw_output %s: %w", s.RawOutput.Path, err)
+		}
+		artifact, err := store.AddContent(role, mediaType, content)
+		if err != nil {
+			return runmanifest.SeatResult{}, fmt.Errorf("add raw_output artifact: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+		rawOutput = &ref
+	}
+
+	return runmanifest.SeatResult{
+		Seat: s.Seat,
+		Harness: runmanifest.Harness{
+			Name:    s.Harness.Name,
+			Version: s.Harness.Version,
+		},
+		Provider: runmanifest.Provider{
+			Name:  s.Provider.Name,
+			Model: s.Provider.Model,
+		},
+		Skill:       skill,
+		Verdict:     runmanifest.SeatVerdict(s.Verdict),
+		Required:    s.Required,
+		Optional:    s.Optional,
+		RawOutput:   rawOutput,
+		FailureNote: s.FailureNote,
+		Timestamp:   ts,
+	}, nil
+}
+
+// parseManifestTime parses an RFC3339Nano timestamp string used in gate input DTOs.
+func parseManifestTime(field, value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("%s is required", field)
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: %w", field, value, err)
+	}
+	return t.UTC(), nil
 }
 
 func inferMediaType(filePath string) string {

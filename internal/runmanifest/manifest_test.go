@@ -1030,3 +1030,654 @@ func git(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// TestGateRoundTrip verifies that a manifest with the spec §5 two-round four-seat
+// example round-trips through JSON() -> ParseJSON intact, and ManifestVersion == 3.
+func TestGateRoundTrip(t *testing.T) {
+	m := gateManifest(t)
+
+	jsonBytes, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	got, err := ParseJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if got.ManifestVersion != 3 {
+		t.Fatalf("ManifestVersion = %d, want 3", got.ManifestVersion)
+	}
+	if len(got.Gates) != 2 {
+		t.Fatalf("len(Gates) = %d, want 2", len(got.Gates))
+	}
+	g0 := got.Gates[0]
+	if g0.GateID != "plan.r1" || g0.Phase != "plan" || g0.Round != 1 || g0.Tier != 1 {
+		t.Fatalf("gate[0] = %+v", g0)
+	}
+	if g0.Status != GateStatusRerun {
+		t.Fatalf("gate[0].Status = %q, want rerun", g0.Status)
+	}
+	if len(g0.Seats) != 4 {
+		t.Fatalf("gate[0] seat count = %d, want 4", len(g0.Seats))
+	}
+	// Verify provider with slash in model round-trips (pilms acceptance criterion).
+	pilms := g0.Seats[3]
+	if pilms.Provider.Name != "lmstudio" || pilms.Provider.Model != "qwen/qwen3.6-35b-a3b" {
+		t.Fatalf("pilms provider = %+v", pilms.Provider)
+	}
+	if pilms.Verdict != SeatVerdictMalfunction {
+		t.Fatalf("pilms verdict = %q, want malfunction", pilms.Verdict)
+	}
+
+	g1 := got.Gates[1]
+	if g1.GateID != "plan.r2" || g1.Status != GateStatusPass {
+		t.Fatalf("gate[1] = %+v", g1)
+	}
+	disregarded := g1.Seats[3]
+	if disregarded.Verdict != SeatVerdictDisregarded {
+		t.Fatalf("disregarded seat verdict = %q, want disregarded", disregarded.Verdict)
+	}
+	if g1.Decision.DegradedReason == "" {
+		t.Fatalf("gate[1].Decision.DegradedReason should be set")
+	}
+}
+
+// TestGatelessManifestStaysV2ByteIdentical verifies that a stage-only manifest
+// (no gates) serializes with manifest_version: 2 and no gates key — byte-identical
+// to a manifest serialized by the previous code path.
+func TestGatelessManifestStaysV2ByteIdentical(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+
+	jsonBytes, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	text := string(jsonBytes)
+
+	if !strings.Contains(text, `"manifest_version": 2`) {
+		t.Fatalf("expected manifest_version 2 in gate-less manifest:\n%s", text)
+	}
+	if strings.Contains(text, "gates") {
+		t.Fatalf("gate-less manifest must not contain 'gates' key:\n%s", text)
+	}
+
+	// Must parse back to ManifestVersion == 2.
+	got, err := ParseJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if got.ManifestVersion != 2 {
+		t.Fatalf("ManifestVersion = %d, want 2", got.ManifestVersion)
+	}
+}
+
+// TestValidateGateRejects is a table test covering all validation rules for gates.
+func TestValidateGateRejects(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	otherOutput := contentArtifact("other", "text/plain", []byte("other"))
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC)
+
+	validSeat := func() SeatResult {
+		return SeatResult{
+			Seat:      "gemini",
+			Harness:   Harness{Name: "gemini-cli", Version: "3.1"},
+			Provider:  Provider{Name: "google", Model: "gemini-3.1-pro-preview"},
+			Verdict:   SeatVerdictGo,
+			Timestamp: now,
+		}
+	}
+
+	validRef := func() ReviewedRef {
+		return ReviewedRef{Stage: "plan"}
+	}
+
+	validGate := func() GateAttempt {
+		return GateAttempt{
+			GateID:         "plan.r1",
+			Phase:          "plan",
+			Round:          1,
+			Tier:           1,
+			Status:         GateStatusPass,
+			ReviewedStages: []ReviewedRef{validRef()},
+			Seats:          []SeatResult{validSeat()},
+			Timestamp:      now,
+		}
+	}
+
+	baseManifest := func(edits ...func(*Manifest)) Manifest {
+		m := validManifest(output)
+		for _, e := range edits {
+			e(&m)
+		}
+		return m
+	}
+
+	cases := []struct {
+		name string
+		edit func(*Manifest)
+	}{
+		// gate_id
+		{"missing gate_id", func(m *Manifest) {
+			g := validGate()
+			g.GateID = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"invalid gate_id chars", func(m *Manifest) {
+			g := validGate()
+			g.GateID = "bad/id"
+			m.Gates = []GateAttempt{g}
+		}},
+		{"duplicate gate_id", func(m *Manifest) {
+			g1 := validGate()
+			g2 := validGate()
+			g2.Round = 2
+			m.Gates = []GateAttempt{g1, g2}
+		}},
+		// phase
+		{"missing phase", func(m *Manifest) {
+			g := validGate()
+			g.Phase = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		// round
+		{"round zero", func(m *Manifest) {
+			g := validGate()
+			g.Round = 0
+			m.Gates = []GateAttempt{g}
+		}},
+		{"round negative", func(m *Manifest) {
+			g := validGate()
+			g.Round = -1
+			m.Gates = []GateAttempt{g}
+		}},
+		// tier
+		{"tier negative", func(m *Manifest) {
+			g := validGate()
+			g.Tier = -1
+			m.Gates = []GateAttempt{g}
+		}},
+		{"tier 4", func(m *Manifest) {
+			g := validGate()
+			g.Tier = 4
+			m.Gates = []GateAttempt{g}
+		}},
+		// status
+		{"unknown status", func(m *Manifest) {
+			g := validGate()
+			g.Status = "unknown"
+			m.Gates = []GateAttempt{g}
+		}},
+		// escalation_reason
+		{"escalated without reason", func(m *Manifest) {
+			g := validGate()
+			g.Status = GateStatusEscalated
+			m.Gates = []GateAttempt{g}
+		}},
+		// reviewed_stages
+		{"no reviewed_stages", func(m *Manifest) {
+			g := validGate()
+			g.ReviewedStages = nil
+			m.Gates = []GateAttempt{g}
+		}},
+		{"reviewed_stage references unknown stage", func(m *Manifest) {
+			g := validGate()
+			g.ReviewedStages = []ReviewedRef{{Stage: "nonexistent"}}
+			m.Gates = []GateAttempt{g}
+		}},
+		{"reviewed_stage dangling artifact", func(m *Manifest) {
+			g := validGate()
+			g.ReviewedStages = []ReviewedRef{{Stage: "plan", Artifact: strings.Repeat("b", 64)}}
+			m.Gates = []GateAttempt{g}
+		}},
+		{"reviewed_stage bad artifact format", func(m *Manifest) {
+			g := validGate()
+			g.ReviewedStages = []ReviewedRef{{Stage: "plan", Artifact: "not-sha256"}}
+			m.Gates = []GateAttempt{g}
+		}},
+		{"reviewed_stage bad role chars", func(m *Manifest) {
+			g := validGate()
+			g.ReviewedStages = []ReviewedRef{{Stage: "plan", Role: "bad role"}}
+			m.Gates = []GateAttempt{g}
+		}},
+		// duplicate (phase, round)
+		{"duplicate phase round", func(m *Manifest) {
+			g1 := validGate()
+			g2 := validGate()
+			g2.GateID = "plan.r1b"
+			m.Gates = []GateAttempt{g1, g2}
+		}},
+		// seats
+		{"no seats", func(m *Manifest) {
+			g := validGate()
+			g.Seats = nil
+			m.Gates = []GateAttempt{g}
+		}},
+		{"missing seat name", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Seat = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"invalid seat name", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Seat = "bad seat"
+			m.Gates = []GateAttempt{g}
+		}},
+		{"missing harness name", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Harness.Name = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		// provider
+		{"missing provider name", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Provider.Name = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"missing provider model", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Provider.Model = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"provider name with control char", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Provider.Name = "bad\x01name"
+			m.Gates = []GateAttempt{g}
+		}},
+		{"provider model with control char", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Provider.Model = "bad\x00model"
+			m.Gates = []GateAttempt{g}
+		}},
+		// verdict
+		{"unknown verdict", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = "unknown"
+			m.Gates = []GateAttempt{g}
+		}},
+		// failure_note required for failed/empty/malfunction/disregarded
+		{"failed without failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictFailed
+			g.Seats[0].FailureNote = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"empty without failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictEmpty
+			g.Seats[0].FailureNote = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"malfunction without failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictMalfunction
+			g.Seats[0].FailureNote = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		{"disregarded without failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictDisregarded
+			g.Seats[0].FailureNote = ""
+			m.Gates = []GateAttempt{g}
+		}},
+		// failure_note forbidden for go/block
+		{"go with failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictGo
+			g.Seats[0].FailureNote = "oops"
+			m.Gates = []GateAttempt{g}
+		}},
+		{"block with failure_note", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Verdict = SeatVerdictBlock
+			g.Seats[0].FailureNote = "oops"
+			m.Gates = []GateAttempt{g}
+		}},
+		// raw_output validation
+		{"bad raw_output ref", func(m *Manifest) {
+			bad := ArtifactRef{Role: "t", Artifact: "badhash", Path: "artifacts/sha256/ab/badhash", MediaType: "text/plain", Storage: "content", Size: 0}
+			g := validGate()
+			g.Seats[0].RawOutput = &bad
+			m.Gates = []GateAttempt{g}
+		}},
+		// gate timestamp
+		{"missing gate timestamp", func(m *Manifest) {
+			g := validGate()
+			g.Timestamp = time.Time{}
+			m.Gates = []GateAttempt{g}
+		}},
+		// seat timestamp
+		{"missing seat timestamp", func(m *Manifest) {
+			g := validGate()
+			g.Seats[0].Timestamp = time.Time{}
+			m.Gates = []GateAttempt{g}
+		}},
+		// reviewed_stage with artifact matching other stage's artifact (dangling)
+		{"artifact belongs to different stage output", func(m *Manifest) {
+			m.Stages = append(m.Stages, Stage{
+				Name: "review", ProducedBy: "original", GitSHA: "def",
+				Skill: m.Stages[0].Skill, Output: otherOutput,
+				Timestamp: now,
+			})
+			g := validGate()
+			g.ReviewedStages = []ReviewedRef{{Stage: "plan", Artifact: otherOutput.Artifact}}
+			m.Gates = []GateAttempt{g}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := baseManifest(tc.edit)
+			if err := m.Validate(); err == nil {
+				t.Fatal("Validate returned nil error, want error")
+			}
+		})
+	}
+
+	// Acceptance: all six verdicts succeed when combined correctly.
+	t.Run("all six verdicts accepted", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.Seats = []SeatResult{
+			{Seat: "s1", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictGo, Timestamp: now},
+			{Seat: "s2", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictBlock, Timestamp: now},
+			{Seat: "s3", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictFailed, FailureNote: "auth failed", Timestamp: now},
+			{Seat: "s4", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictEmpty, FailureNote: "no output", Timestamp: now},
+			{Seat: "s5", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictMalfunction, FailureNote: "hang", Timestamp: now},
+			{Seat: "s6", Harness: Harness{Name: "h"}, Provider: Provider{Name: "p", Model: "m"}, Verdict: SeatVerdictDisregarded, FailureNote: "skipped", Timestamp: now},
+		}
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for valid six-verdict gate: %v", err)
+		}
+	})
+
+	// Acceptance: reviewed_stage with artifact "" (name-only) is valid.
+	t.Run("name-only reviewed_stage is valid", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.ReviewedStages = []ReviewedRef{{Stage: "plan", Artifact: ""}}
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for name-only reviewed_stage: %v", err)
+		}
+	})
+
+	// Acceptance: reviewed_stage with artifact matching the stage's output is valid.
+	t.Run("artifact matches stage output", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.ReviewedStages = []ReviewedRef{{Stage: "plan", Artifact: output.Artifact}}
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for valid artifact ref: %v", err)
+		}
+	})
+
+	// Acceptance: escalated with reason is valid.
+	t.Run("escalated with reason is valid", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.Status = GateStatusEscalated
+		g.Decision.EscalationReason = "human needed"
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for escalated gate with reason: %v", err)
+		}
+	})
+
+	// Acceptance: provider with slash in model (pilms) is valid.
+	t.Run("provider model with slash is valid", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.Seats[0].Provider = Provider{Name: "lmstudio", Model: "qwen/qwen3.6-35b-a3b"}
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for pilms provider: %v", err)
+		}
+	})
+}
+
+// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
+// and rejects 1 and 4 with ErrInvalidManifest.
+func TestVersionAllowlist(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	baseJSON, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	// Versions that should be accepted.
+	for _, v := range []int{0, 2} {
+		v := v
+		t.Run(fmt.Sprintf("accept version %d", v), func(t *testing.T) {
+			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
+			if _, err := ParseJSON([]byte(raw)); err != nil {
+				t.Fatalf("ParseJSON rejected version %d: %v", v, err)
+			}
+		})
+	}
+
+	// Version 3: need a manifest with gates to emit v3.
+	t.Run("accept version 3", func(t *testing.T) {
+		mg := gateManifest(t)
+		j, err := mg.JSON()
+		if err != nil {
+			t.Fatalf("JSON: %v", err)
+		}
+		if _, err := ParseJSON(j); err != nil {
+			t.Fatalf("ParseJSON rejected version 3: %v", err)
+		}
+	})
+
+	// Versions that should be rejected.
+	for _, v := range []int{1, 4, 5, 100} {
+		v := v
+		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
+			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
+			_, err := ParseJSON([]byte(raw))
+			if err == nil {
+				t.Fatalf("ParseJSON accepted invalid version %d", v)
+			}
+			if !errors.Is(err, ErrInvalidManifest) {
+				t.Fatalf("ParseJSON version %d error = %v, want ErrInvalidManifest", v, err)
+			}
+		})
+	}
+}
+
+// TestArtifactPathsWalksGateRawOutput verifies that ArtifactPaths and
+// referencedArtifactPaths include a seat's raw_output path.
+func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
+	ctx := context.Background()
+	repo := initGitRepo(t)
+
+	stageOutput := contentArtifact("output", "text/plain", []byte("stage content"))
+	rawTranscript := contentArtifact("codex-transcript", "text/markdown", []byte("codex review"))
+
+	m := validManifest(stageOutput)
+	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
+	m.Gates = []GateAttempt{{
+		GateID:         "plan.r1",
+		Phase:          "plan",
+		Round:          1,
+		Tier:           1,
+		Status:         GateStatusPass,
+		ReviewedStages: []ReviewedRef{{Stage: "plan"}},
+		Seats: []SeatResult{{
+			Seat:      "codex",
+			Harness:   Harness{Name: "codex", Version: "1.0"},
+			Provider:  Provider{Name: "openai", Model: "gpt-5.5"},
+			Verdict:   SeatVerdictGo,
+			RawOutput: &rawTranscript,
+			Timestamp: now,
+		}},
+		Timestamp: now,
+	}}
+
+	// ArtifactPaths must include both the stage output and the raw transcript.
+	paths := ArtifactPaths(m)
+	wantPaths := []string{rawTranscript.Path, stageOutput.Path}
+	// Sort both for stable comparison.
+	if len(paths) != 2 {
+		t.Fatalf("ArtifactPaths count = %d, want 2; paths = %v", len(paths), paths)
+	}
+	foundTranscript := false
+	for _, p := range paths {
+		if p == rawTranscript.Path {
+			foundTranscript = true
+		}
+	}
+	if !foundTranscript {
+		t.Fatalf("ArtifactPaths did not include raw_output path %q; got %v", rawTranscript.Path, paths)
+	}
+	_ = wantPaths
+
+	// Write to the git ref — Writer.Write uses referencedArtifactPaths to allow
+	// files, so if it doesn't walk gates the write will fail with ErrUnreferencedArtifact.
+	files := map[string][]byte{
+		stageOutput.Path:   []byte("stage content"),
+		rawTranscript.Path: []byte("codex review"),
+	}
+	if _, err := (Writer{Store: refstore.New(repo)}).Write(ctx, m, files, WriteOptions{}); err != nil {
+		t.Fatalf("Write with gate raw_output returned error: %v", err)
+	}
+
+	// Now verify that on append the raw_output blob is carried forward.
+	commit, err := refstore.New(repo).Resolve(ctx, "refs/etude/runs/"+m.RunID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Read the manifest back and verify paths include the gate transcript.
+	manifestBytes, err := refstore.New(repo).ReadCommitFile(ctx, commit, "manifest.json")
+	if err != nil {
+		t.Fatalf("ReadCommitFile: %v", err)
+	}
+	parsed, err := ParseJSON(manifestBytes)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	paths2 := ArtifactPaths(parsed)
+	foundTranscript2 := false
+	for _, p := range paths2 {
+		if p == rawTranscript.Path {
+			foundTranscript2 = true
+		}
+	}
+	if !foundTranscript2 {
+		t.Fatalf("ArtifactPaths after round-trip did not include raw_output path %q; got %v", rawTranscript.Path, paths2)
+	}
+
+	// An extra unreferenced blob still trips ErrUnreferencedArtifact.
+	extraBlob := contentArtifact("extra", "text/plain", []byte("extra blob"))
+	files2 := map[string][]byte{
+		stageOutput.Path:   []byte("stage content"),
+		rawTranscript.Path: []byte("codex review"),
+		extraBlob.Path:     []byte("extra blob"),
+	}
+	_, err = (Writer{Store: refstore.New(repo)}).Write(ctx, m, files2, WriteOptions{})
+	if !errors.Is(err, ErrUnreferencedArtifact) {
+		t.Fatalf("extra blob error = %v, want ErrUnreferencedArtifact", err)
+	}
+}
+
+// gateManifest builds a manifest with the spec §5 two-round four-seat example.
+func gateManifest(t *testing.T) Manifest {
+	t.Helper()
+	planOutput := contentArtifact("plan", "text/markdown", []byte("plan content"))
+	now := func(h, m int) time.Time {
+		return time.Date(2026, 5, 25, h, m, 0, 0, time.UTC)
+	}
+	base := validManifest(planOutput)
+	base.Gates = []GateAttempt{
+		{
+			GateID:         "plan.r1",
+			Phase:          "plan",
+			Round:          1,
+			Tier:           1,
+			Status:         GateStatusRerun,
+			ReviewedStages: []ReviewedRef{{Stage: "plan", Role: "plan"}},
+			Seats: []SeatResult{
+				{
+					Seat:      "gemini",
+					Harness:   Harness{Name: "gemini-cli", Version: "3.1"},
+					Provider:  Provider{Name: "google", Model: "gemini-3.1-pro-preview"},
+					Verdict:   SeatVerdictGo,
+					Optional:  []string{"clarify version-gate wording"},
+					Timestamp: now(3, 10),
+				},
+				{
+					Seat:      "opus",
+					Harness:   Harness{Name: "claude-code", Version: "opus-4-7"},
+					Provider:  Provider{Name: "anthropic", Model: "claude-opus-4-7"},
+					Verdict:   SeatVerdictGo,
+					Timestamp: now(3, 11),
+				},
+				{
+					Seat:      "codex",
+					Harness:   Harness{Name: "codex", Version: "gpt-5.5-xhigh"},
+					Provider:  Provider{Name: "openai", Model: "gpt-5.5"},
+					Verdict:   SeatVerdictBlock,
+					Required:  []string{"specify parser accepts {0,2,3} explicitly; reject v1/v4"},
+					Timestamp: now(3, 12),
+				},
+				{
+					Seat:        "pilms",
+					Harness:     Harness{Name: "pi", Version: "x"},
+					Provider:    Provider{Name: "lmstudio", Model: "qwen/qwen3.6-35b-a3b"},
+					Verdict:     SeatVerdictMalfunction,
+					FailureNote: "0-CPU client hang, backend healthy (curl 200); known artifact",
+					Timestamp:   now(3, 25),
+				},
+			},
+			Decision:  GateDecision{},
+			Timestamp: now(3, 26),
+		},
+		{
+			GateID:         "plan.r2",
+			Phase:          "plan",
+			Round:          2,
+			Tier:           1,
+			Status:         GateStatusPass,
+			ReviewedStages: []ReviewedRef{{Stage: "plan", Role: "plan"}},
+			Seats: []SeatResult{
+				{
+					Seat:      "gemini",
+					Harness:   Harness{Name: "gemini-cli", Version: "3.1"},
+					Provider:  Provider{Name: "google", Model: "gemini-3.1-pro-preview"},
+					Verdict:   SeatVerdictGo,
+					Timestamp: now(3, 40),
+				},
+				{
+					Seat:      "opus",
+					Harness:   Harness{Name: "claude-code", Version: "opus-4-7"},
+					Provider:  Provider{Name: "anthropic", Model: "claude-opus-4-7"},
+					Verdict:   SeatVerdictGo,
+					Timestamp: now(3, 41),
+				},
+				{
+					Seat:      "codex",
+					Harness:   Harness{Name: "codex", Version: "gpt-5.5-xhigh"},
+					Provider:  Provider{Name: "openai", Model: "gpt-5.5"},
+					Verdict:   SeatVerdictGo,
+					Timestamp: now(3, 42),
+				},
+				{
+					Seat:        "pilms",
+					Harness:     Harness{Name: "pi", Version: "x"},
+					Provider:    Provider{Name: "lmstudio", Model: "qwen/qwen3.6-35b-a3b"},
+					Verdict:     SeatVerdictDisregarded,
+					FailureNote: "0-CPU client hang reproduced after 1 reroll; known artifact",
+					Timestamp:   now(3, 55),
+				},
+			},
+			Decision: GateDecision{
+				DegradedReason: "pilms reproducible 0-CPU hang (2 rounds); other 3 seats unanimous GO; autonomous-loop fallback",
+			},
+			Timestamp: now(3, 56),
+		},
+	}
+	return base
+}
