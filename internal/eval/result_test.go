@@ -825,3 +825,136 @@ func gitCmd(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// ---- JudgeID and Seed backward-compat round-trip tests ----
+
+// TestJudgeIDAndSeedOmitempty verifies that an EvalResult with empty JudgeID and
+// nil Seed serializes byte-identical to the pre-field JSON (no "judge_id" or
+// "seed" keys appear), preserving backward compatibility with old doc readers.
+func TestJudgeIDAndSeedOmitempty(t *testing.T) {
+	r := validPairwiseResult()
+	// Explicitly confirm the zero values.
+	r.JudgeID = ""
+	r.Seed = nil
+
+	got, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	// Neither "judge_id" nor "seed" must appear in the output.
+	if strings.Contains(string(got), "judge_id") {
+		t.Errorf("JSON contains 'judge_id' despite empty JudgeID:\n%s", got)
+	}
+	if strings.Contains(string(got), `"seed"`) {
+		t.Errorf("JSON contains 'seed' despite nil Seed:\n%s", got)
+	}
+
+	// Re-serialise a pre-field result (no JudgeID/Seed fields set) and compare.
+	pre := validPairwiseResult()
+	preSerialized, err := pre.JSON()
+	if err != nil {
+		t.Fatalf("pre-field JSON: %v", err)
+	}
+	if string(got) != string(preSerialized) {
+		t.Errorf("byte mismatch: zero-value fields changed the serialisation\ngot:\n%s\npre:\n%s", got, preSerialized)
+	}
+}
+
+// TestJudgeIDAndSeedRoundTrip verifies that an EvalResult with non-empty JudgeID
+// and non-nil Seed round-trips correctly through JSON/ParseJSON.
+func TestJudgeIDAndSeedRoundTrip(t *testing.T) {
+	seed := int64(42)
+	r := validPairwiseResult()
+	r.JudgeID = strings.Repeat("a", 64) // valid hex-like string (not validated)
+	r.Seed = &seed
+
+	raw, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	// Both fields must appear in the output.
+	if !strings.Contains(string(raw), "judge_id") {
+		t.Errorf("JSON missing 'judge_id':\n%s", raw)
+	}
+	if !strings.Contains(string(raw), `"seed"`) {
+		t.Errorf("JSON missing 'seed':\n%s", raw)
+	}
+
+	// Round-trip.
+	parsed, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if parsed.JudgeID != r.JudgeID {
+		t.Errorf("JudgeID = %q, want %q", parsed.JudgeID, r.JudgeID)
+	}
+	if parsed.Seed == nil {
+		t.Fatal("Seed is nil after round-trip")
+	}
+	if *parsed.Seed != seed {
+		t.Errorf("Seed = %d, want %d", *parsed.Seed, seed)
+	}
+
+	// Re-serialise and verify byte-equality.
+	raw2, err := parsed.JSON()
+	if err != nil {
+		t.Fatalf("JSON after round-trip: %v", err)
+	}
+	if string(raw) != string(raw2) {
+		t.Errorf("round-trip not byte-equal\nbefore:\n%s\nafter:\n%s", raw, raw2)
+	}
+}
+
+// TestParseJSONOldDocWithoutJudgeIDOrSeed verifies that a persisted doc that
+// predates the JudgeID/Seed fields (no "judge_id" or "seed" keys) is still
+// parsed successfully with JudgeID="" and Seed==nil.
+func TestParseJSONOldDocWithoutJudgeIDOrSeed(t *testing.T) {
+	// Serialise a clean pairwise result (no JudgeID/Seed) and confirm the keys
+	// are absent (established by TestJudgeIDAndSeedOmitempty), then parse it.
+	r := validPairwiseResult()
+	raw, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	// Sanity check: the old-style doc must not contain judge_id/seed.
+	if strings.Contains(string(raw), "judge_id") || strings.Contains(string(raw), `"seed"`) {
+		t.Fatalf("test setup: pre-field doc unexpectedly contains judge_id or seed:\n%s", raw)
+	}
+
+	parsed, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON of old doc: %v", err)
+	}
+	if parsed.JudgeID != "" {
+		t.Errorf("JudgeID = %q, want empty for old doc", parsed.JudgeID)
+	}
+	if parsed.Seed != nil {
+		t.Errorf("Seed = %v, want nil for old doc", *parsed.Seed)
+	}
+}
+
+// TestValidateAcceptsEmptyJudgeIDAndNilSeed verifies that Validate does not
+// reject a valid EvalResult simply because JudgeID is empty or Seed is nil.
+func TestValidateAcceptsEmptyJudgeIDAndNilSeed(t *testing.T) {
+	r := validPairwiseResult()
+	r.JudgeID = ""
+	r.Seed = nil
+	if err := r.Validate(); err != nil {
+		t.Errorf("Validate rejected empty JudgeID and nil Seed: %v", err)
+	}
+}
+
+// TestValidateAcceptsNonEmptyJudgeIDAndSeed verifies that Validate accepts
+// a populated JudgeID and Seed.
+func TestValidateAcceptsNonEmptyJudgeIDAndSeed(t *testing.T) {
+	seed := int64(99)
+	r := validPairwiseResult()
+	r.JudgeID = strings.Repeat("b", 64)
+	r.Seed = &seed
+	if err := r.Validate(); err != nil {
+		t.Errorf("Validate rejected non-empty JudgeID and Seed: %v", err)
+	}
+}

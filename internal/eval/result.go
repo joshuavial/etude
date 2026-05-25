@@ -37,6 +37,12 @@ type EvalResult struct {
 	Context           []ArtifactSource // optional unscored inputs
 	Producer          runmanifest.Producer
 	Created           time.Time // RFC3339Nano UTC
+	// JudgeID is the stable fingerprint of the judge that produced this result.
+	// Empty for unidentified judges (e.g. StubJudge). Omitted from JSON when empty.
+	JudgeID string
+	// Seed is the PairwiseEvaluator seed used during evaluation. Nil when absent
+	// (legacy docs or non-pairwise methods). Omitted from JSON when nil.
+	Seed *int64
 }
 
 // Validate enforces the full EvalResult invariants.
@@ -399,6 +405,8 @@ type evalResultJSON struct {
 	Context           []sourceJSON   `json:"context,omitempty"`
 	Producer          producerJSON   `json:"producer"`
 	Created           string         `json:"created"`
+	JudgeID           string         `json:"judge_id,omitempty"`
+	Seed              *int64         `json:"seed,omitempty"`
 }
 
 type scoreJSON struct {
@@ -522,6 +530,8 @@ func (r EvalResult) toJSON() evalResultJSON {
 		Context:   contextSources,
 		Producer:  producer,
 		Created:   r.Created.UTC().Format(time.RFC3339Nano),
+		JudgeID:   r.JudgeID,
+		Seed:      r.Seed,
 	}
 }
 
@@ -608,6 +618,8 @@ func (j evalResultJSON) toEvalResult() (EvalResult, error) {
 		Context:   contextSources,
 		Producer:  producer,
 		Created:   created.UTC(),
+		JudgeID:   j.JudgeID,
+		Seed:      j.Seed,
 	}, nil
 }
 

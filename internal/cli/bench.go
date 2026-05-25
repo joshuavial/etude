@@ -38,6 +38,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 		runnerSpec, judgeSpec, judgeModel                                string
 		seed                                                             int64
 		skillVersion, skillID, skillRepo, model, harness, harnessVersion string
+		noCache                                                          bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,7 +62,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 				Harness:               harness,
 				HarnessVersion:        harnessVersion,
 			}
-			return r.run(cmd.Context(), out, errOut, args[0], runnerSpec, judgeSpec, judgeModel, seed, last, overrides)
+			return r.run(cmd.Context(), out, errOut, args[0], runnerSpec, judgeSpec, judgeModel, seed, last, noCache, overrides)
 		},
 	}
 	cmd.SetOut(out)
@@ -78,6 +79,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 	cmd.Flags().StringVar(&model, "model", "", "override model in recorded producer (contestant, NOT the judge/referee — use --judge-model for that)")
 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer (contestant)")
 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer (contestant)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "force re-evaluation; skip the eval-result cache")
 
 	return cmd
 }
@@ -88,6 +90,7 @@ func (r *benchRunner) run(
 	stage, runnerSpec, judgeSpec, judgeModel string,
 	seed int64,
 	last int,
+	noCache bool,
 	overrides bench.ProducerOverrides,
 ) error {
 	// Validate --last before any store access.
@@ -128,6 +131,8 @@ func (r *benchRunner) run(
 		nowFn = time.Now
 	}
 
+	judgeID := eval.JudgeIdentity(activeJudge)
+
 	pipeline := bench.Pipeline{
 		Store:     store,
 		Runner:    activeRunner,
@@ -136,6 +141,8 @@ func (r *benchRunner) run(
 		Seed:      seed,
 		Overrides: overrides,
 		Now:       nowFn,
+		Cache:     !noCache,
+		JudgeID:   judgeID,
 	}
 
 	// Run the pipeline: skip-and-report on per-run errors.
@@ -220,7 +227,7 @@ func renderReport(out io.Writer, r bench.Report) {
 
 	if len(r.Outcomes) > 0 {
 		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "SOURCE RUN\tREPLAY RUN\tWINNER\tCONF\tEVAL ID\tFINDING")
+		fmt.Fprintln(w, "SOURCE RUN\tREPLAY RUN\tWINNER\tCONF\tEVAL ID\tFINDING\tCACHED")
 		for _, o := range r.Outcomes {
 			conf := "-"
 			if o.Confidence != nil {
@@ -230,8 +237,12 @@ func renderReport(out io.Writer, r bench.Report) {
 			if len(o.Findings) > 0 {
 				finding = o.Findings[0].Message
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				o.SourceRunID, o.ReplayRunID, string(o.Winner), conf, o.EvalID, finding)
+			cached := ""
+			if o.Reused {
+				cached = "CACHED"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				o.SourceRunID, o.ReplayRunID, string(o.Winner), conf, o.EvalID, finding, cached)
 		}
 		w.Flush()
 		fmt.Fprintln(out)

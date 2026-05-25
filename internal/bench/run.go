@@ -54,6 +54,9 @@ type BenchOutcome struct {
 	Findings []eval.Finding
 	// Result is the full persisted EvalResult document (for .3 cache + .4 report).
 	Result eval.EvalResult
+	// Reused is true when the outcome was served from the eval-result cache
+	// (no judge call was made and no new eval ref was written).
+	Reused bool
 }
 
 // Pipeline runs the per-run replay -> record -> pairwise-eval pipeline.
@@ -66,6 +69,12 @@ type Pipeline struct {
 	Seed      int64 // -> PairwiseEvaluator.Seed
 	Overrides ProducerOverrides
 	Now       func() time.Time
+	// Cache enables eval-result caching. When true and JudgeID is non-empty,
+	// BenchRun will look up a prior matching eval before calling the judge.
+	Cache bool
+	// JudgeID is the stable fingerprint of the active judge (from eval.JudgeIdentity).
+	// An empty JudgeID disables caching for this pipeline regardless of Cache.
+	JudgeID string
 }
 
 // BenchRun executes a single bench pipeline step for cr:
@@ -172,6 +181,50 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		return BenchOutcome{}, wrap("record replay run", err)
 	}
 
+	// Build the two target ArtifactSources (needed for both cache lookup and eval).
+	targetA := eval.ArtifactSource{
+		RunID:    cr.RunID,
+		Stage:    stageName,
+		Commit:   resolved.Commit,
+		Artifact: resolved.Output.Artifact,
+	}
+	targetB := eval.ArtifactSource{
+		RunID:    recorded.RunID,
+		Stage:    stageName,
+		Commit:   recorded.Commit,
+		Artifact: recorded.OutputArtifact,
+	}
+
+	// Cache lookup: performed ONLY when Cache is enabled and JudgeID is non-empty.
+	// An empty JudgeID means an unidentified judge — never consult the cache.
+	if p.Cache && p.JudgeID != "" {
+		key := cacheKey{
+			Method:    "pairwise",
+			ArtifactA: targetA.Artifact,
+			ArtifactB: targetB.Artifact,
+			JudgeID:   p.JudgeID,
+			Seed:      p.Seed,
+		}
+		cached, hit, err := lookupCachedEval(ctx, p.Store, key)
+		if err != nil {
+			return BenchOutcome{}, wrap("cache lookup", err)
+		}
+		if hit {
+			return BenchOutcome{
+				SourceRunID:  cr.RunID,
+				Stage:        stageName,
+				ReplayRunID:  recorded.RunID,
+				ReplayCommit: recorded.Commit,
+				EvalID:       cached.EvalID,
+				Winner:       cached.Score.Winner,
+				Confidence:   cached.Score.Confidence,
+				Findings:     cached.Findings,
+				Result:       cached,
+				Reused:       true,
+			}, nil
+		}
+	}
+
 	// Step 7: build the pairwise eval request.
 	// A = original (source run); B = replay (recorded run).
 	evalReq := eval.EvalRequest{
@@ -181,23 +234,13 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 				Role:      "original",
 				MediaType: resolved.Output.MediaType,
 				Content:   origBytes,
-				Source: eval.ArtifactSource{
-					RunID:    cr.RunID,
-					Stage:    stageName,
-					Commit:   resolved.Commit,
-					Artifact: resolved.Output.Artifact,
-				},
+				Source:    targetA,
 			},
 			{
 				Role:      "replay",
 				MediaType: res.MediaType,
 				Content:   res.Output,
-				Source: eval.ArtifactSource{
-					RunID:    recorded.RunID,
-					Stage:    stageName,
-					Commit:   recorded.Commit,
-					Artifact: recorded.OutputArtifact,
-				},
+				Source:    targetB,
 			},
 		},
 		Producer: res.Producer,
@@ -209,7 +252,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		return BenchOutcome{}, wrap("evaluate", err)
 	}
 
-	// Step 8: build and persist the EvalResult.
+	// Step 8: build and persist the EvalResult (miss path).
 	ts := now().UTC()
 	evalIDBase := eval.EvalIDBase("pairwise", cr.RunID, stageName, ts)
 	evalID, err := eval.AllocateEvalID(ctx, p.Store, evalIDBase)
@@ -217,6 +260,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		return BenchOutcome{}, wrap("allocate eval id", err)
 	}
 
+	seed := p.Seed
 	result := eval.EvalResult{
 		EvalResultVersion: 1,
 		EvalID:            evalID,
@@ -229,6 +273,8 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		},
 		Producer: res.Producer,
 		Created:  ts,
+		JudgeID:  p.JudgeID,
+		Seed:     &seed,
 	}
 
 	if err := result.Validate(); err != nil {
@@ -252,6 +298,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		Confidence:   evaluation.Score.Confidence,
 		Findings:     evaluation.Findings,
 		Result:       result,
+		Reused:       false,
 	}, nil
 }
 
