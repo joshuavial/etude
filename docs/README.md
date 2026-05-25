@@ -13,6 +13,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [GC](gc.md) - report artifact storage and explicitly prune named run refs.
 - [Reindex](reindex.md) - build the derived SQLite query index from all run and eval refs.
 - [Plans](plans/README.md) - notes on planned components that do not exist yet.
+- [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).
 
 The current implemented state is summarized in the top-level
 [README](../README.md).

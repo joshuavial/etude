@@ -1,8 +1,9 @@
 BINARY := etude
 BIN_DIR := bin
 VERSION ?= dev
+DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean
+.PHONY: build test lint clean docs docs-check
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -17,3 +18,10 @@ lint:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+docs:
+	go run ./cmd/gen-docs -out $(DOCS_DIR)
+
+docs-check:
+	@TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT; \
+		go run ./cmd/gen-docs -out "$$TMP" && diff -r "$$TMP" $(DOCS_DIR)
