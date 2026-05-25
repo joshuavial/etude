@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check
+.PHONY: build test lint clean docs docs-check example
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -25,3 +25,6 @@ docs:
 docs-check:
 	@TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT; \
 		go run ./cmd/gen-docs -out "$$TMP" && diff -r "$$TMP" $(DOCS_DIR)
+
+example: build
+	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh

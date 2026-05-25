@@ -66,3 +66,6 @@ See [Manual Capture](docs/capture.md) for the capture command.
 See [Runs](docs/run.md) for the run list and run show commands.
 See [Sync](docs/sync.md) for the sync command.
 See [Replay](docs/replay.md) for the replay command.
+
+For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
+[examples/summarize/README.md](examples/summarize/README.md).
