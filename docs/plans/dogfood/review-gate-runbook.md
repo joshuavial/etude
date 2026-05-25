@@ -90,7 +90,14 @@ wiring out of `internal/cli/capture.go` mid-gate, and later seats then BLOCKed o
 "unknown flag".) The orchestrator MUST snapshot the changed files to a `/tmp`
 path BEFORE dispatching any seat, pass each seat an explicit read-only
 instruction, and after each reviewer batch verify the changed files still match
-that snapshot before committing.
+that snapshot before committing. **The snapshot must PRESERVE directory
+structure** (snapshot `internal/gc/gc.go` to `<tmp>/internal/gc/gc.go`, not a
+flat `<tmp>/gc.go`). Flattening collides files that share a basename — e.g.
+`internal/gc/gc.go` and `internal/cli/gc.go` both land at `<tmp>/gc.go`, the
+second `cp` overwrites the first, and the clobber-check then reports a phantom
+DIFF on one and could silently MASK a real mutation of the other. Use
+`cp --parents` (or `rsync -R`, or per-file `mkdir -p`) so each snapshot path is
+unique.
 
 Per-seat sandbox constraints (learned from real spirals):
 
@@ -353,6 +360,20 @@ changed, but they never count toward the new gate.
 
 For rerun counting, the same gate means one phase attempt for one bead. The
 counter resets when the phase gate passes.
+
+**Incorporating a PLAN-gate BLOCK: distinguish a missing detail from a
+conceptual contradiction.** A missing-detail BLOCK ("add validation X",
+"specify the seed") bounces back to the planner cleanly — it appends the detail.
+But when the BLOCK exposes a CONCEPTUAL contradiction in the design (the plan's
+own model is internally inconsistent — e.g. gc-command defined "prune the
+unreachable runs" while also stating leaf runs are kept work, leaving "what does
+--prune delete?" undefined), bouncing it back with an open-ended "resolve the
+contradiction" tends to make the planner re-derive the SAME flawed framing
+(observed: two wasted gc-command planner round-trips). For a conceptual
+contradiction, either hand the planner the PRESCRIPTIVE resolved model to write
+up, or author the corrected design directly (the planner's exploration —
+file refs, structure, tests — is still reused). Don't round-trip a contradiction
+open-ended.
 
 If the same gate receives `BLOCK` results through attempt 4 (the initial run
 plus three reruns), escalate to the user with:
