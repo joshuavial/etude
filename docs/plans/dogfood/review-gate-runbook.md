@@ -104,7 +104,17 @@ Per-seat sandbox constraints (learned from real spirals):
   phase2.4, replay-command, and phase2.5 final gates — each required killing it
   and re-dispatching diff-only). Embedding "do NOT run go build/go test; the
   green results are provided and trustworthy" in the first prompt avoids the
-  kill-and-re-dispatch cycle entirely.
+  kill-and-re-dispatch cycle entirely. **Keep codex's inline input SMALL — review
+  the DIFF / the changed production files only, never a full-file + full-test
+  dump.** On large inline inputs (observed at ~1000+ lines: the assertion-eval and
+  bench-cohort impl gates) codex reliably emits its preamble and then TRUNCATES
+  without ever printing a VERDICT line (exit 0, no verdict — looks like an empty
+  completion). The identical gate with a focused input (≈600 lines of production
+  code + a one-line test summary, or a small delta on a rerun) completes cleanly.
+  So: inline only the changed production code + the diff, summarize the tests in
+  prose (don't paste them), and on a rerun send just the delta. If codex returns
+  no VERDICT, treat it as a truncation glitch (reroll with a smaller input), not a
+  silent GO. As a rough budget, keep the codex prompt under ~700 lines.
 - **in-harness Opus / other seats** with normal filesystem access MAY mutation-test
   by copying to `/tmp` and mutating the copy, never the repo file.
 - **gemini**: when `ripgrep` is unavailable in gemini's environment it falls back
