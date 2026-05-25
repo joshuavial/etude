@@ -7,7 +7,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
 - [Manual Capture](capture.md) - record local file artifacts into a run ref.
 - [Runs](run.md) - list and inspect stored runs.
-- [Gate reviewer records](gates.md) - capture and inspect review-gate attempts (reviewer seats, verdicts, provider/model/harness).
+- [Gate reviewer records](gates.md) - capture (`etude capture-gate`) and inspect review-gate attempts (reviewer seats, verdicts, provider/model/harness).
 - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.
 - [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
 - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.

@@ -9,13 +9,16 @@ After a context clear or when starting a new ticket, boot into productive state:
 
 1. Run `bd prime`.
 2. Run `bd ready` and pick the next unblocked bead.
-3. Read this index.
-4. Read [Review gate runbook](review-gate-runbook.md).
-5. For workflow shape, read [Verify phase design](verify-phase-design.md).
-6. Work the bead through `plan -> implement -> verify -> docs -> final review`.
-7. Before advancing any phase gate, run the four-reviewer process from
+3. Inspect recent dogfood runs with `etude run list` and `etude run show <run-id>`
+   (recent closed beads are captured as `refs/etude/runs/*`, including their gate
+   reviewer records) to recover what shipped and how it was reviewed — not only `bd`.
+4. Read this index.
+5. Read [Review gate runbook](review-gate-runbook.md).
+6. For workflow shape, read [Verify phase design](verify-phase-design.md).
+7. Work the bead through `plan -> implement -> verify -> docs -> final review`.
+8. Before advancing any phase gate, run the four-reviewer process from
    [Review gate process](review-gate-process.md).
-8. After a gate passes and optional improvements are handled or deferred,
+9. After a gate passes and optional improvements are handled or deferred,
    continue to the next workflow step without waiting for another prompt unless
    blocked.
 

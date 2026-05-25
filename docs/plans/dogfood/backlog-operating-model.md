@@ -18,15 +18,15 @@ the current beads backlog while building `etude`.
 
 ### Product Path
 
-These beads move Phase 0 toward a usable capture loop. Prefer these when
-choosing "next" work:
-
-- `etude-run-manifest`
-- `etude-workflow-schema`
-- `etude-init-command`
-- `etude-capture-manual`
-- `etude-run-show-list`
-- `etude-sync-command`
+Product-path beads move the shipped CLI surface forward. Prefer these when
+choosing "next" work. The Phase 0 capture-loop foundation has SHIPPED
+(`etude-run-manifest`, `etude-workflow-schema`, `etude-init-command`,
+`etude-capture-manual`, `etude-run-show-list`, `etude-sync-command` — all
+closed), and since then so have replay, the eval library + `etude bench`,
+`etude gc`, `etude reindex`, and gate-reviewer visibility (`etude capture-gate`
++ run-show gates). The current product frontier is the post-Phase-0 roadmap:
+retros as a first-class artifact (`etude-14r`) and Phase 1 (xenota capture
+adapter + GitHub import), plus the dogfood-workflow prep beads.
 
 ### Hardening
 
@@ -58,18 +58,17 @@ When the user says "next", use this order:
 4. Consider hardening only when it protects the next product-path bead.
 5. Ignore ready epics unless the user asks for planning or roadmap work.
 
-## Current Phase 0 Bias
+## Current Frontier
 
-The Phase 0 product path is COMPLETE. `etude-run-manifest`,
-`etude-capture-manual`, `etude-workflow-schema`, `etude-init-command`,
-`etude-run-show-list`, and `etude-sync-command` are all closed, alongside the
-refstore and artifact-store foundations — the minimal git-native capture loop
-(declare workflow, capture, inspect runs, sync `refs/etude/*`) now exists end to
-end.
+Phase 0 (the minimal git-native capture loop) is COMPLETE and several phases
+beyond it have shipped: replay, the eval library + `etude bench`, `etude gc`,
+`etude reindex`, generated CLI docs + the example workflow (Phase 3/4), and the
+gate-reviewer-visibility epic (`etude-roadmap.2`: `etude capture-gate`, run-show
+gates, the dogfood gate-capture script, backfill, and `docs/gates.md`).
 
-There is no remaining ready product-path leaf. The default next work is now
-polish taken opportunistically — `etude-cr2` (typed artifact discriminator),
-`etude-88o` — plus the deferred follow-ups `etude-dpz` (shared run-id
-validation) and `etude-zcq` (sync fetchBangAbort coverage). `etude-ccj`
-(refstore edge cases) has landed. Net-new product scope belongs to Phase 1; pick
-a polish bead by priority unless the user opens Phase 1 planning.
+The current frontier is the dogfood-workflow prep epic (`etude-phase-prep`:
+retro ledger, docs refresh, degraded-gate policy, docs-reality guard) and the
+post-Phase-0 roadmap: retros as a first-class artifact (`etude-14r`) and Phase 1
+(xenota capture adapter + GitHub import), which is USER-BLOCKED pending external
+context. Choose the highest-priority ready non-epic bead; net-new product scope
+beyond the prep epic belongs to Phase 1.

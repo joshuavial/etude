@@ -70,7 +70,11 @@ not interrupt the Phase 0 path.
 
 ## Out Of Scope For Phase 0
 
-- Replay and skill-runner integration.
-- Eval and bench.
-- Documentation site.
-- Garbage collection and query index polish.
+These were deferred past Phase 0 and have since SHIPPED (Phase 3/4) — listed
+here only for the historical Phase-0 scope boundary:
+
+- Replay and skill-runner integration. (shipped: `etude replay`)
+- Eval and bench. (shipped: the `internal/eval` library + `etude bench`; a
+  standalone `etude eval` CLI remains future work)
+- Documentation site. (shipped: generated `docs/cli/` reference)
+- Garbage collection and query index polish. (shipped: `etude gc`, `etude reindex`)

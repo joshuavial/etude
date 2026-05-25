@@ -348,7 +348,8 @@ With `--record`, the output is also persisted as a **new linked run**:
   different producer identity (skill, model, and/or harness) for bench; unset
   fields inherit from the source.
 
-Eval (`etude eval`) and bench (`etude bench`) are future work (Phase 3).
+Bench (`etude bench`) has shipped, backed by the `internal/eval` evaluator
+library. A standalone `etude eval` CLI remains future work.
 
 ### 4.8 Eval
 

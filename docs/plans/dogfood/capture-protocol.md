@@ -1,16 +1,22 @@
 # Dogfood Capture Protocol
 
-Status: planning note. This defines the temporary manual capture protocol for
-dogfooding `etude` while the product capture commands are not implemented.
+Status: dogfood process note. The capture commands are SHIPPED — `etude capture`
+records stage artifacts and `etude capture-gate` records review-gate reviewer
+records — so each closed bead is captured as a real `refs/etude/runs/*` run
+(manifest_version 2/3, producer + gate metadata). This defines the protocol the
+dogfood workflow follows.
 
 ## Decision
 
-Use one bead as one provisional `etude` run.
+Use one bead as one `etude` run.
 
-Until `etude capture` exists, the bead, git history, and dogfood planning docs
-are the capture store. Each workflow phase records a first-draft artifact, a
-provenance envelope, and review-gate results in stable locations that can later
-be imported into `etude` as run and stage records.
+`scripts/dogfood-capture.sh` captures the bead's plan/implement/verify/review
+stages into `refs/etude/runs/<bead>`; `scripts/dogfood-gate-capture.sh` appends
+each review-gate attempt as a structured `GateAttempt`. The bead, git history,
+and these dogfood planning docs remain the human-readable mirror. Each workflow
+phase records a first-draft artifact, a provenance envelope, and review-gate
+results; remaining capture gaps (retros as first-class artifacts, batch capture,
+and external import) are still planned, not yet shipped.
 
 Captured phase artifacts are append-only after review starts. If a phase fails
 review or must be redone, create a new attempt entry instead of editing the

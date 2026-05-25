@@ -2,8 +2,10 @@
 
 ## Status
 
-Current implementation: `etude init`, manual capture, run inspection, sync, and replay CLIs
-plus internal storage, manifest, and workflow-schema packages.
+Current implementation: `etude init`, manual capture (`etude capture` and
+`etude capture-gate`), run inspection, sync, replay, bench, gc, and reindex CLIs
+plus internal storage, manifest, workflow-schema, replay, eval, bench, gc, and
+index packages.
 
 Implemented:
 
@@ -12,10 +14,14 @@ Implemented:
 - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
   and configure `refs/etude/*` fetch/push refspecs on a git remote.
 - Manual `etude capture` command for local file artifacts.
+- `etude capture-gate` to append structured review-gate reviewer records to a run.
 - `etude run list` to list all stored runs.
-- `etude run show <run-id>` to inspect the detail of one run.
+- `etude run show <run-id>` to inspect the detail of one run (including gates).
 - `etude sync` to push and fetch `refs/etude/*` with a git remote.
 - `etude replay <run-id> <stage>` to re-execute a recorded stage end-to-end and emit its output.
+- `etude bench <stage>` to replay a cohort and report replay-vs-original win rates.
+- `etude gc` to report artifact storage and explicitly prune named run refs.
+- `etude reindex` to rebuild the derived SQLite query index from run and eval refs.
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -24,10 +30,12 @@ Implemented:
 - Internal workflow schema package for parsing and validating `.etude/workflow.yaml`.
 - Local build, test, lint, and clean commands.
 
-The storage, manifest, and workflow-schema packages are Go APIs internal to
-this module. The implemented CLI surface is `etude init`, `etude capture`,
-`etude run list`, `etude run show`, `etude sync`, `etude replay`, and the root
-help and version output.
+The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
+packages are Go APIs internal to this module. The implemented CLI surface is
+`etude init`, `etude capture`, `etude capture-gate`, `etude run list`,
+`etude run show`, `etude sync`, `etude replay`, `etude bench`, `etude gc`,
+`etude reindex`, and the root help and version output. (The `eval` package is a
+library used by `etude bench`; there is no standalone `etude eval` CLI yet.)
 
 The full design is in
 [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
@@ -59,13 +67,22 @@ make clean
 ./bin/etude sync --remote upstream
 ./bin/etude replay run-1 plan --runner ./run.sh
 ./bin/etude replay run-1 plan --runner ./run.sh --output result.md
+./bin/etude capture-gate --run run-1 --gate-file gate.json
+./bin/etude bench plan --last 10 --runner ./run.sh --judge ./judge.sh
+./bin/etude gc
+./bin/etude reindex
 ```
 
 See [Init](docs/init.md) for the init command.
 See [Manual Capture](docs/capture.md) for the capture command.
+See [Gate reviewer records](docs/gates.md) for `etude capture-gate` and gate inspection.
 See [Runs](docs/run.md) for the run list and run show commands.
 See [Sync](docs/sync.md) for the sync command.
 See [Replay](docs/replay.md) for the replay command.
+See [Bench](docs/bench.md) for the bench command.
+See [GC](docs/gc.md) for the gc command.
+See [Reindex](docs/reindex.md) for the reindex command.
+See [CLI reference](docs/cli/etude.md) for the generated per-command reference.
 
 For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
 [examples/summarize/README.md](examples/summarize/README.md).
