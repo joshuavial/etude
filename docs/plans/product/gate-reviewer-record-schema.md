@@ -1,0 +1,387 @@
+# Gate Reviewer Record Schema
+
+Status: design spec, the deliverable of `etude-roadmap.2.1`. Defines the
+structured data model for review-gate attempts and reviewer-seat results in the
+run manifest. The implement bead (`etude-roadmap.2.2`) builds the Go types in
+`internal/runmanifest` from this spec; `.3` surfaces them in `etude run show`;
+`.5` backfills recent runs.
+
+## 1. Problem
+
+Today the manifest records stage PRODUCERS (`Producer{Harness, Model, Skill}`)
+but has no representation of the review GATE that each phase artifact passes
+through. Reviewer seats, their verdicts (GO/BLOCK), rounds (BLOCK→incorporate→
+rerun), provider/model, required vs optional feedback, and failure/malfunction
+states live only as prose in bead notes (see review-gate-runbook.md "Recording
+Results"). This makes gate work unqueryable. This schema makes it first-class.
+
+## 2. Core modeling decisions (the three required + provider)
+
+### 2.1 Decision: embed in manifest vs. separate referenced gate artifact — EMBED (structured), REFERENCE (raw)
+
+**Decision:** The structured gate records are EMBEDDED in `manifest.json` as a
+top-level `gates` array. Each seat's RAW reviewer output (potentially large —
+e.g. codex's full transcript, or a 200KB doc-gate crawl) is stored as a
+content-addressed artifact and REFERENCED by sha from the seat record, exactly
+like stage artifacts.
+
+**Justification:**
+- The structured records are small, bounded, and are the queryable index — the
+  whole point of this epic is that `etude run show` / a future query can read
+  verdicts/rounds/providers without fetching blobs. The manifest IS the index
+  (mirrors how `Stages` is embedded while artifact bytes are content-addressed).
+- A fully separate gate artifact would force a second blob read + a join just to
+  answer "did this phase pass and who blocked it", and would duplicate the
+  manifest's own versioning/validation machinery.
+- Raw transcripts are unbounded and exactly match the existing artifact model
+  (`ArtifactRef` → `artifacts/sha256/XX/<sha>`), so they are referenced, not
+  inlined. This keeps `manifest.json` small and lets GC/dedup work on transcripts.
+- The runbook's own "Recording Results" block is small structured text; nothing
+  large belongs inline. So: small structured = embedded; large raw = referenced.
+
+### 2.2 Decision: provider axis — reviewer-seat ONLY (do NOT add to stage Producer yet)
+
+**Decision:** Add `provider` to the reviewer-seat identity (`SeatResult.Provider`),
+NOT to stage `Producer`. `Producer` is unchanged in this bead.
+
+**Justification:** The acceptance criteria only require provider "where relevant",
+and the only place it is relevant TODAY is the reviewer seats (pilms MUST carry
+`provider=lmstudio`, model `qwen/qwen3.6-35b-a3b`; codex provider `openai`,
+gemini provider `google`). Adding `provider` to `Producer` would touch every
+existing stage, the capture adapter, `run show`, and force a broader migration —
+out of scope and a bigger forward-compat surface. **Open decision recorded:**
+whether stage `Producer` should later gain a `provider` field is deferred to a
+future bead; if taken, it should reuse the same `Provider` type defined here.
+
+### 2.3 Decision: manifest_version — bump to 3, parser accepts {0, 2, 3}
+
+**Decision:** When a manifest carries any `gates`, emit `manifest_version: 3`.
+When a run has no gate records, continue emitting exactly as today
+(`manifest_version: 2`, no `gates` key) so v2 runs stay byte-identical. The
+parser accepts `manifest_version` in `{0, 2, 3}` and rejects anything else with
+`ErrInvalidManifest`.
+
+**Justification & mechanics:**
+- `ParseJSON` uses `dec.DisallowUnknownFields()`. A NEW top-level key (`gates`)
+  is rejected by OLD etude binaries reading a NEW manifest — an unavoidable
+  forward-compat break for the manifests that actually contain gates. Bumping the
+  version makes that break explicit and detectable rather than a confusing
+  "unknown field gates" decode error.
+- `toJSON()` currently hardcodes `ManifestVersion: 2`. Change it to emit `3` iff
+  `len(m.Gates) > 0`, else `2`. This means: gate-less new runs are still v2 and
+  OLD binaries keep reading them unchanged (no regression for the common case).
+- Today the parser ignores `ManifestVersion` (it just copies it through). Add an
+  explicit allowlist check in `toManifest()`/`Validate()`: version must be one of
+  `0, 2, 3`. Reject `1` (never emitted) and any future version this binary does
+  not understand, so a v4 manifest fails loudly rather than silently dropping
+  data it cannot represent.
+
+### 2.4 Decision: where it attaches — top-level `gates []GateAttempt`, keyed by phase + round (NOT nested under stages)
+
+**Decision:** `gates` is a top-level array on `Manifest`. Each `GateAttempt`
+names the `phase` it gates and the `reviewed_stages` (stage names + artifact
+refs) it evaluated.
+
+**Justification:** A gate EVALUATES stage artifacts; it is not produced by a
+stage and may reference more than one stage (e.g. the `review` gate reviews both
+the `diff` and the `verify` artifact — see dogfood-capture.sh line 69). Nesting
+under `Stage` would (a) imply the stage produced the gate and (b) make
+multi-stage / multi-round gates awkward. A flat array keyed by `(phase, round)`
+matches the runbook's "phase gate / attempt n" mental model and the prose
+recording format directly, and keeps the change additive and orthogonal to
+`Stages`. It is also forward-compatible with retrospectives.md, which wants
+`retro` artifacts linked from the manifest the same way (a future `retros []`
+sibling array).
+
+## 3. Go type definitions (struct sketches)
+
+```go
+// GateAttempt records one full panel re-examination of one phase gate.
+// Every rerun (BLOCK -> incorporate -> rerun) is a new GateAttempt with an
+// incremented Round; prior rounds are retained (runbook: "Prior GO results do
+// not carry over" but the history is the queryable record).
+type GateAttempt struct {
+    GateID         string        // identifier, e.g. "review.r2"; [A-Za-z0-9_.-]
+    Phase          string        // plan | implement | verify | docs | review (stage-name charset)
+    Round          int           // 1-based; round 1 is the first attempt
+    Tier           int           // 0 (unknown/backfilled) | 1 | 2 | 3 (review-gate-runbook "Gate Weight")
+    Status         GateStatus    // aggregate: pass | rerun | escalated
+    ReviewedStages []ReviewedRef // stage names + artifact refs this gate evaluated
+    Seats          []SeatResult  // one entry per reviewer seat that ran or was meant to run
+    Decision       GateDecision  // aggregate decision detail
+    Timestamp      time.Time     // when this attempt concluded (RFC3339Nano UTC)
+}
+
+// ReviewedRef ties a gate attempt to the exact stage/artifact it reviewed.
+// Artifact is optional (a gate may reference a stage by name only); when set it
+// is the same content-addressed sha the stage's Output/Input carries.
+type ReviewedRef struct {
+    Stage    string // stage name (must match a Stage.Name in this manifest)
+    Artifact string // optional lowercase sha256 of the reviewed artifact ("" if none)
+    Role     string // optional role label, e.g. "diff", "verify" ("" if none)
+}
+
+// SeatResult is one reviewer seat's outcome within one gate attempt.
+type SeatResult struct {
+    Seat        string       // logical seat name: "gemini" | "opus" | "codex" | "pilms" (charset)
+    Harness     Harness      // reuse existing Harness{Name,Version}; e.g. {gemini-cli, 3.1}
+    Provider    Provider     // NEW; explicit provider+model axis (see Provider)
+    Skill       Skill        // optional reviewer skill/tool identity ({} when n/a)
+    Verdict     SeatVerdict  // go | block | failed | empty | malfunction | disregarded
+    Required    []string     // required-change feedback (only meaningful on BLOCK)
+    Optional    []string     // optional improvements (meaningful on GO)
+    RawOutput   *ArtifactRef // content-addressed raw transcript; nil if not captured
+    FailureNote string       // human reason for failed/empty/malfunction/disregarded ("" otherwise)
+    Timestamp   time.Time     // when this seat returned (RFC3339Nano UTC)
+}
+
+// Provider names the model provider and model for a reviewer seat. This is the
+// axis the manifest lacks today. For pilms it MUST be {lmstudio, qwen/qwen3.6-35b-a3b}.
+type Provider struct {
+    Name  string // "lmstudio" | "openai" | "google" | "anthropic" (free-form, validated non-control)
+    Model string // e.g. "qwen/qwen3.6-35b-a3b", "gpt-5.5", "gemini-3.1-pro-preview", "claude-opus-4-7"
+}
+
+type GateStatus string   // "pass" | "rerun" | "escalated"
+type SeatVerdict string   // "go" | "block" | "failed" | "empty" | "malfunction" | "disregarded"
+
+// GateDecision holds the aggregate decision DETAIL of one gate attempt. The
+// aggregate status itself lives on GateAttempt.Status (not duplicated here).
+type GateDecision struct {
+    EscalationReason string   // why escalated, when GateAttempt.Status==escalated ("" otherwise)
+    DegradedReason   string   // why a disregarded/malfunction seat was allowed (autonomous-loop fallback) ("" otherwise)
+    DeferredBeads    []string // follow-up bead refs for deferred optional improvements
+}
+
+// Manifest gains exactly one new field:
+type Manifest struct {
+    // ... existing fields unchanged ...
+    Gates []GateAttempt // NEW; nil/empty for v0/v2 runs
+}
+```
+
+`Verdict` semantics (covers acceptance criterion 2):
+- `go` — seat passed.
+- `block` — seat blocked; `Required` lists the changes that force a rerun.
+- `failed` — invocation failed (auth/quota/model/tool/timeout). NOT a GO; per
+  runbook escalates outside an autonomous loop.
+- `empty` — process completed but produced no verdict (e.g. codex truncation,
+  pilms empty completion). NOT a GO.
+- `malfunction` — known, root-caused tooling outage (e.g. pilms 0-CPU client
+  hang with a healthy backend). `FailureNote` records the diagnosis.
+- `disregarded` — a `malfunction`/`empty` seat deliberately skipped under the
+  autonomous-loop degraded-gate fallback; `GateDecision.DegradedReason` records
+  the justification (which seat, how many rerolls). This makes the pilms-was-
+  skipped case representable, not silently absent.
+
+## 4. JSON wire shape
+
+Field names follow the existing snake_case convention. New blocks are emitted
+only when present (`omitempty` on the `gates` array and on optional sub-fields),
+so v2 gate-less runs are byte-identical to today.
+
+```jsonc
+{
+  "manifest_version": 3,            // 3 ONLY because gates are present; else 2
+  "run_id": "...",
+  "workflow": "default",
+  "workflow_version": "v1",
+  "created": "...",
+  "refs": { "bead": "etude-roadmap.2.1" },
+  "stages": [ /* unchanged */ ],
+  "gates": [
+    {
+      "gate_id": "review.r1",
+      "phase": "review",
+      "round": 1,
+      "tier": 1,
+      "status": "rerun",
+      "reviewed_stages": [
+        { "stage": "implement", "role": "diff",   "artifact": "<sha256>" },
+        { "stage": "verify",    "role": "verify", "artifact": "<sha256>" }
+      ],
+      "seats": [ /* per-seat results, see §5 */ ],
+      "decision": {
+        "escalation_reason": "",
+        "degraded_reason": "",
+        "deferred_beads": []
+      },
+      "timestamp": "..."
+    }
+  ]
+}
+```
+
+JSON tags:
+`gates` → `gate_id` `phase` `round` `tier` `status` `reviewed_stages` `seats`
+`decision` `timestamp`. `reviewed_stages[]` → `stage` `role,omitempty`
+`artifact,omitempty`. `seats[]` → `seat` `harness` `provider` `skill,omitempty`
+`verdict` `required,omitempty` `optional,omitempty` `raw_output,omitempty`
+`failure_note,omitempty` `timestamp`. `provider` → `name` `model`. `decision` →
+`escalation_reason,omitempty` `degraded_reason,omitempty` `deferred_beads,omitempty`
+(NO `status` — the aggregate status lives on the parent gate). `raw_output` reuses
+the existing `artifactJSON` shape (`role`/`artifact`/`path`/`media_type`/`storage`/`size`).
+
+## 5. Worked example — the real four-seat gate of THIS bead
+
+Two rounds: codex BLOCK→GO across rounds, gemini GO, opus GO, pilms
+MALFUNCTION→disregarded under the degraded-gate fallback.
+
+```jsonc
+"gates": [
+  {
+    "gate_id": "plan.r1", "phase": "plan", "round": 1, "tier": 1,
+    "status": "rerun",
+    "reviewed_stages": [ { "stage": "plan", "role": "plan", "artifact": "<sha-plan-v1>" } ],
+    "seats": [
+      { "seat": "gemini", "harness": {"name":"gemini-cli","version":"3.1"},
+        "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+        "verdict": "go", "optional": ["clarify version-gate wording"],
+        "timestamp": "2026-05-25T03:10:00Z" },
+      { "seat": "opus", "harness": {"name":"claude-code","version":"opus-4-7"},
+        "provider": {"name":"anthropic","model":"claude-opus-4-7"},
+        "verdict": "go", "timestamp": "2026-05-25T03:11:00Z" },
+      { "seat": "codex", "harness": {"name":"codex","version":"gpt-5.5-xhigh"},
+        "provider": {"name":"openai","model":"gpt-5.5"},
+        "verdict": "block",
+        "required": ["specify parser accepts {0,2,3} explicitly; reject v1/v4"],
+        "raw_output": {"role":"codex-transcript","artifact":"<sha-codex-r1>",
+          "path":"artifacts/sha256/ab/<sha-codex-r1>","media_type":"text/markdown",
+          "storage":"content","size":4096},
+        "timestamp": "2026-05-25T03:12:00Z" },
+      { "seat": "pilms", "harness": {"name":"pi","version":"x"},
+        "provider": {"name":"lmstudio","model":"qwen/qwen3.6-35b-a3b"},
+        "verdict": "malfunction",
+        "failure_note": "0-CPU client hang, backend healthy (curl 200); known artifact",
+        "timestamp": "2026-05-25T03:25:00Z" }
+    ],
+    "decision": { "degraded_reason": "" }
+  },
+  {
+    "gate_id": "plan.r2", "phase": "plan", "round": 2, "tier": 1,
+    "status": "pass",
+    "reviewed_stages": [ { "stage": "plan", "role": "plan", "artifact": "<sha-plan-v2>" } ],
+    "seats": [
+      { "seat": "gemini", "harness": {"name":"gemini-cli","version":"3.1"},
+        "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+        "verdict": "go", "timestamp": "2026-05-25T03:40:00Z" },
+      { "seat": "opus", "harness": {"name":"claude-code","version":"opus-4-7"},
+        "provider": {"name":"anthropic","model":"claude-opus-4-7"},
+        "verdict": "go", "timestamp": "2026-05-25T03:41:00Z" },
+      { "seat": "codex", "harness": {"name":"codex","version":"gpt-5.5-xhigh"},
+        "provider": {"name":"openai","model":"gpt-5.5"},
+        "verdict": "go", "timestamp": "2026-05-25T03:42:00Z" },
+      { "seat": "pilms", "harness": {"name":"pi","version":"x"},
+        "provider": {"name":"lmstudio","model":"qwen/qwen3.6-35b-a3b"},
+        "verdict": "disregarded",
+        "failure_note": "0-CPU client hang reproduced after 1 reroll; known artifact",
+        "timestamp": "2026-05-25T03:55:00Z" }
+    ],
+    "decision": {
+      "degraded_reason": "pilms reproducible 0-CPU hang (2 rounds); other 3 seats unanimous GO; autonomous-loop fallback",
+      "deferred_beads": [] }
+  }
+]
+```
+
+## 6. Validation rules (mirroring existing `Validate`/`validateStage` style)
+
+Add `validateGate(index, gate)` called from `Manifest.Validate()` after the
+stage loop. `gates` is OPTIONAL (zero gates is valid — backward compat). Per gate:
+
+- `gate_id`: required, `IsValidIdentifier` charset (`[A-Za-z0-9_.-]`). MUST be
+  UNIQUE across all gates in the manifest. By convention `gate_id` is
+  `<phase>.r<round>` (e.g. `review.r2`); this convention is RECOMMENDED, but the
+  hard, enforced rule is uniqueness (a duplicate `gate_id` is rejected with
+  `ErrInvalidManifest`).
+- `phase`: required, `validateIdentifier`. (Not constrained to a fixed enum — the
+  workflow defines phase names; matches how `stage.Name` is validated.)
+- `round`: required, integer `>= 1`.
+- `(phase, round)` UNIQUENESS: the tuple `(phase, round)` MUST be unique across
+  all gates — at most one attempt record per phase per round. This is precisely
+  what "keyed by (phase, round)" means; without it two conflicting records for the
+  same phase/round could coexist and break queryability. Enforced in
+  `Manifest.Validate()` with a seen-tuple set, rejecting duplicates with
+  `ErrInvalidManifest` (mirrors the existing duplicate-`produces`-role check).
+- `tier`: required, integer in `{0, 1, 2, 3}`. `0` means UNKNOWN (e.g. a gate
+  backfilled by `.5` from prose notes that did not record a tier); live gates
+  SHOULD use `1`-`3`.
+- `status` (GateAttempt.Status): must be one of `pass | rerun | escalated`.
+  (There is no `decision.status`; the aggregate status lives only on the gate.)
+- `reviewed_stages`: at least one entry; each `stage` must be a `validateIdentifier`
+  AND must match some `Stage.Name` in this manifest (referential integrity);
+  `role` when non-empty is `validateIdentifier`; `artifact` when non-empty must be
+  `validSHA256` AND must EQUAL the named stage's `Output.Artifact` or one of its
+  `Inputs[].Artifact` — a gate may not cite a sha the reviewed stage does not
+  actually carry (rejects dangling artifact references; `""` artifact = "stage
+  referenced by name only" and stays valid).
+- `seats`: at least one entry. Per seat:
+  - `seat`: required, `validateIdentifier`.
+  - `harness.name`: required (a seat always has a runtime); `harness.version`
+    optional (mirrors stage harness rule).
+  - `provider.name` and `provider.model`: REQUIRED, non-empty, non-control
+    (criterion 3 — provider is explicit). pilms records `{lmstudio,
+    qwen/qwen3.6-35b-a3b}`. (Required even on failed/empty/malfunction seats so
+    the disregarded-seat identity is never lost.)
+  - `verdict`: must be one of the six enum values.
+  - `required`: non-empty only meaningful on `block`; not rejected otherwise but
+    a `block` SHOULD carry at least one `required` entry (warn-level; allow empty
+    to avoid over-constraining backfill).
+  - `failure_note`: required (non-empty) when verdict ∈ {failed, empty,
+    malfunction, disregarded}; forbidden (must be "") when verdict ∈ {go, block}.
+  - `raw_output`: when present, validated via the existing `validateArtifactRef`
+    (sha256 + path matches `artifacts/sha256/XX/<sha>` + storage content|pointer).
+  - `timestamp`: required, RFC3339Nano (`parseTime`).
+- `decision.escalation_reason`: required non-empty iff `status == escalated`.
+- `gate.timestamp`: required, RFC3339Nano.
+- Raw-output artifacts referenced by seats MUST be added to
+  `referencedArtifactPaths`/`ArtifactPaths` so `Writer.Write` verifies and
+  retains the blob (gc-safe) — extend both functions to walk `m.Gates`. This is
+  load-bearing on two paths: `Writer.Write` rejects unreferenced files with
+  `ErrUnreferencedArtifact`, and `ArtifactPaths` is the append carry-forward set
+  (`readExistingRun`), so a prior round's gate `raw_output` blob would be silently
+  DROPPED on the next append if `ArtifactPaths` does not walk `m.Gates`.
+
+Two scoping notes (NOT defects; recorded so they are deliberate):
+- **gc size accounting (deferred).** `gc.runSummaryFromManifest` currently sums
+  bytes by walking `Stages` only, so gate `raw_output` bytes will be under-counted
+  in storage reports until a later bead (`.3` or a gc follow-up) also walks
+  `m.Gates`. This is a size UNDER-REPORT, not data loss — `Writer.Write` +
+  `ArtifactPaths` still retain the blobs. In scope to note; out of scope to fix in
+  `.1`/`.2`.
+- **Intra-manifest only.** `reviewed_stages` reference stages WITHIN this manifest
+  (referential integrity to `Stage.Name`). Cross-run gate references are out of
+  scope. If a future bead adds them, `gc.BuildPinSet` (which today pins only via
+  `stage.ReplayOf.RunID`) MUST be extended to pin reviewed runs, or they could be
+  pruned.
+
+## 7. Backward-compatibility story (criterion 4)
+
+- **v0 (legacy) and v2 runs** have NO `gates` key. `gatesJSON` is `*[]gateJSON`
+  / slice with `omitempty`; absent → decodes to a nil/empty `Gates` slice →
+  `len(Gates)==0` is valid. They parse exactly as today; `run show` shows no
+  gate section. No migration, no rewrite.
+- **Emission stays v2 for gate-less runs.** `toJSON` emits `manifest_version: 2`
+  and NO `gates` key when `len(m.Gates)==0`, so every existing capture path
+  (dogfood-capture.sh, replay) produces byte-identical output and OLD etude
+  binaries keep reading new gate-less runs. Only runs that actually carry gates
+  become v3.
+- **Forward break is bounded and explicit.** An OLD binary reading a v3 manifest
+  fails on `DisallowUnknownFields` ("unknown field gates"). This is the inherent
+  cost of that strict decoder and is acceptable: only gate-carrying runs trip it,
+  the version number flags it, and the fix is "upgrade etude". Document this in
+  the spec's compatibility note so it is a known contract, not a surprise.
+- **Parser version allowlist.** Add an explicit check: accept `{0, 2, 3}`, reject
+  others (incl. never-emitted `1` and any future `4+`) with `ErrInvalidManifest`,
+  so a newer manifest fails loudly instead of silently losing fields this binary
+  cannot model.
+- **Backfill (.5)** constructs `GateAttempt`s from the prose "gate attempt n"
+  bead notes; runs without such notes simply keep empty `gates`. Backfilled raw
+  transcripts, where preserved, are written as content artifacts.
+
+## 8. Compatibility with retrospectives (forward-looking, NOT designed here)
+
+retrospectives.md wants `retro` artifacts linked from the manifest. This schema's
+top-level-sibling-array pattern (`gates []`) is the same shape a future `retros
+[]` array would use, and `Provider`/`Harness` reuse keeps reviewer/runner
+identity consistent across both. No retro fields are added in this bead.

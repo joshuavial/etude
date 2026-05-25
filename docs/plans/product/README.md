@@ -12,3 +12,7 @@ user-facing documentation.
 - [Manifest schema v2](manifest-schema-v2.md) - deferred manifest-schema
   decisions (typed external refs, distinct unknown pointer size) and their
   revisit triggers.
+- [Gate reviewer record schema](gate-reviewer-record-schema.md) - structured
+  data model for review-gate attempts and reviewer-seat results (top-level
+  `gates []`, six verdict states, provider axis, v3-iff-gates compat); the
+  design for the etude-roadmap.2 epic.
