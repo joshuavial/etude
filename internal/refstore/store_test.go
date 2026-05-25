@@ -686,6 +686,105 @@ func TestWriteCommitAndCASInSHA256Repo(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// DeleteRef tests
+// ---------------------------------------------------------------------------
+
+func TestDeleteRefDeletesExistingRunRef(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	if _, err := store.WriteCommit(ctx, "refs/etude/runs/run-1", map[string][]byte{"manifest.json": []byte("{}")}, WriteOptions{}); err != nil {
+		t.Fatalf("WriteCommit returned error: %v", err)
+	}
+
+	if err := store.DeleteRef(ctx, "refs/etude/runs/run-1"); err != nil {
+		t.Fatalf("DeleteRef returned error: %v", err)
+	}
+
+	if _, err := store.Resolve(ctx, "refs/etude/runs/run-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve after DeleteRef = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteRefErrorsOnMissingRef(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	err := store.DeleteRef(ctx, "refs/etude/runs/nonexistent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteRef missing ref = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteRefRejectsOutOfNamespaceRef(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	for _, ref := range []string{
+		"refs/heads/main",
+		"refs/etude/other/id",
+		"HEAD",
+	} {
+		err := store.DeleteRef(ctx, ref)
+		if !errors.Is(err, ErrInvalidRef) {
+			t.Fatalf("DeleteRef(%q) = %v, want ErrInvalidRef", ref, err)
+		}
+	}
+}
+
+func TestDeleteRefRejectsSymbolicRef(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	// Create a real ref to use as the symbolic ref target.
+	seed, err := store.WriteCommit(ctx, "refs/etude/evals/seed", map[string][]byte{"data": []byte("seed")}, WriteOptions{})
+	if err != nil {
+		t.Fatalf("WriteCommit seed returned error: %v", err)
+	}
+	git(t, repo, "update-ref", "refs/heads/main", seed)
+	git(t, repo, "symbolic-ref", "refs/etude/runs/symlink", "refs/heads/main")
+
+	err = store.DeleteRef(ctx, "refs/etude/runs/symlink")
+	if !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("DeleteRef symbolic ref = %v, want ErrInvalidRef", err)
+	}
+}
+
+func TestDeleteRefLeavesOtherRefsIntact(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	for _, ref := range []string{"refs/etude/runs/a", "refs/etude/runs/b", "refs/etude/runs/c"} {
+		if _, err := store.WriteCommit(ctx, ref, map[string][]byte{"manifest.json": []byte(ref)}, WriteOptions{}); err != nil {
+			t.Fatalf("WriteCommit(%s) returned error: %v", ref, err)
+		}
+	}
+
+	if err := store.DeleteRef(ctx, "refs/etude/runs/b"); err != nil {
+		t.Fatalf("DeleteRef returned error: %v", err)
+	}
+
+	refs, err := store.List(ctx, "refs/etude/runs")
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	want := []string{"refs/etude/runs/a", "refs/etude/runs/c"}
+	if len(refs) != len(want) {
+		t.Fatalf("refs = %#v, want %#v", refs, want)
+	}
+	for i, r := range refs {
+		if r != want[i] {
+			t.Fatalf("refs[%d] = %q, want %q", i, r, want[i])
+		}
+	}
+}
+
 // TestMain handles the helper-process pattern for TestStdoutStderrSplit.
 // When GO_WANT_HELPER_PROCESS=1 the binary acts as a fake git stub.
 func TestMain(m *testing.M) {

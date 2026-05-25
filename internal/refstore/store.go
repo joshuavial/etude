@@ -272,6 +272,26 @@ func (s Store) ensureCommit(ctx context.Context, oid string) error {
 	return nil
 }
 
+// DeleteRef deletes the named ref using git update-ref -d --no-deref.
+// It validates the ref namespace (refs/etude/runs or refs/etude/evals) and
+// rejects symbolic refs before issuing the delete, then errors if the ref
+// does not exist. Git objects are left for normal git gc.
+func (s Store) DeleteRef(ctx context.Context, ref string) error {
+	if err := s.validateRef(ctx, ref); err != nil {
+		return err
+	}
+	if err := s.rejectSymbolicRef(ctx, ref); err != nil {
+		return err
+	}
+	if _, err := s.Resolve(ctx, ref); err != nil {
+		return fmt.Errorf("%w: %s", ErrNotFound, ref)
+	}
+	if _, err := s.git(ctx, nil, nil, "update-ref", "-d", "--no-deref", ref); err != nil {
+		return fmt.Errorf("delete ref %s: %w", ref, err)
+	}
+	return nil
+}
+
 func (s Store) validateRef(ctx context.Context, ref string) error {
 	if !(strings.HasPrefix(ref, runsNS) || strings.HasPrefix(ref, evalsNS)) {
 		return fmt.Errorf("%w: %s", ErrInvalidRef, ref)

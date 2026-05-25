@@ -10,6 +10,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.
 - [Replay](replay.md) - re-execute a recorded stage end-to-end and emit its output.
 - [Bench](bench.md) - replay a stage across a cohort and report replay-vs-original win rates.
+- [GC](gc.md) - report artifact storage and explicitly prune named run refs.
 - [Plans](plans/README.md) - notes on planned components that do not exist yet.
 
 The current implemented state is summarized in the top-level
