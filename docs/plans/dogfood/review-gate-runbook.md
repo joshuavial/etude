@@ -403,6 +403,30 @@ plus three reruns), escalate to the user with:
 The user can provide direction, but the gate still needs a clean
 four-reviewer `GO` before advancing.
 
+## Scope Discipline (implement → gate)
+
+The bead's commit must contain ONLY this bead's change (1 bead = 1 commit). The
+implementer (and any implementing sub-agent) touches ONLY the files in the
+approved plan's **Files** list, plus their tests and any file the plan's change
+mechanically forces (e.g. a regenerated reference). Do NOT, on your own
+initiative, fix unrelated drift, refactor adjacent code, update docs the plan did
+not name, edit process docs, or write a retro — even when you spot a real problem.
+Drift or cleanup you discover is filed as a SEPARATE bead, never folded in.
+
+Before the gate, the orchestrator runs a scope-check: `git status` and diff the
+working tree against the plan's **Files** list. Any file changed that the plan did
+not name is out-of-scope — investigate it, then revert it (preserving it elsewhere
+if it has independent value, e.g. under the bead it actually belongs to) so the
+commit stays scoped. Sub-agents report what they *intended*; verify what they
+*did*. (Observed: an implementing sub-agent silently fixed unrelated README/BRIEF
+doc drift and wrote a retro doc while implementing a schema bead; the scope-check
+caught it.)
+
+The orchestrator owns the commit — sub-agents never run `git commit`. Before the
+wrap-up commit, check `git log -1`/`git status`: if the change is already
+committed (concurrent/autonomous settings), verify its scope instead of creating
+a duplicate.
+
 ## Recording Results
 
 Record gate results in bead notes:
