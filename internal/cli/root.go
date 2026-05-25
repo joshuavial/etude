@@ -37,6 +37,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.AddCommand(newCaptureCommand(out, errOut))
 	cmd.AddCommand(newGCCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
+	cmd.AddCommand(newReindexCommand(out, errOut))
 	cmd.AddCommand(newReplayCommand(out, errOut))
 	cmd.AddCommand(newRunCommand(out, errOut))
 	cmd.AddCommand(newSyncCommand(out, errOut))

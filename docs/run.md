@@ -29,7 +29,8 @@ Columns:
 When there are no runs, the command prints `no runs found` and exits 0.
 
 `run list` takes no arguments or flags. It walks `refs/etude/runs/*` directly;
-there is no query index.
+there is no query index. (A SQLite index exists at `.git/etude-index.db` and can
+be built with `etude reindex`, but `run list` does not yet consume it.)
 
 If any run's `manifest.json` is missing or cannot be parsed, the command fails
 with a non-zero exit code, names the offending run id in an error written to
