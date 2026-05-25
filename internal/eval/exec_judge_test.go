@@ -547,7 +547,6 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
 		name   string
 		method string
 	}{
-		{"pairwise method", "pairwise"},
 		{"empty method", ""},
 		{"unknown method", "foobar"},
 	}
@@ -560,6 +559,68 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateJudgeOutput_Pairwise(t *testing.T) {
+	conf05 := 0.5
+	conf15 := 1.5
+
+	t.Run("valid winner A", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A"})
+		if err != nil {
+			t.Errorf("want nil, got %v", err)
+		}
+	})
+	t.Run("valid winner B", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "B"})
+		if err != nil {
+			t.Errorf("want nil, got %v", err)
+		}
+	})
+	t.Run("valid winner tie", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "tie"})
+		if err != nil {
+			t.Errorf("want nil, got %v", err)
+		}
+	})
+	t.Run("valid winner A with confidence 0.5", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf05})
+		if err != nil {
+			t.Errorf("want nil, got %v", err)
+		}
+	})
+	t.Run("reject empty winner", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: ""})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject unknown winner X", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "X"})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject value set", func(t *testing.T) {
+		v := 5.0
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Value: &v})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject max set", func(t *testing.T) {
+		m := 10.0
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Max: &m})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject confidence out of range", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf15})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
 }
 
 func TestExecJudge_RoleWithPathSeparator(t *testing.T) {

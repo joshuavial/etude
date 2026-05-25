@@ -233,6 +233,20 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
 		if w.Confidence != nil {
 			return fmt.Errorf("%w: rubric method must not set confidence", ErrJudgeOutputInvalid)
 		}
+	case "pairwise":
+		validWinners := map[string]bool{"A": true, "B": true, "tie": true}
+		if !validWinners[w.Winner] {
+			return fmt.Errorf("%w: pairwise method requires winner to be A, B, or tie; got %q", ErrJudgeOutputInvalid, w.Winner)
+		}
+		if w.Value != nil {
+			return fmt.Errorf("%w: pairwise method must not set value", ErrJudgeOutputInvalid)
+		}
+		if w.Max != nil {
+			return fmt.Errorf("%w: pairwise method must not set max", ErrJudgeOutputInvalid)
+		}
+		if w.Confidence != nil && (*w.Confidence < 0 || *w.Confidence > 1) {
+			return fmt.Errorf("%w: pairwise confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *w.Confidence)
+		}
 	default:
 		return fmt.Errorf("%w: unsupported method %q", ErrJudgeOutputInvalid, method)
 	}
