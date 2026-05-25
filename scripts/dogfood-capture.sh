@@ -33,6 +33,9 @@ bead="$1"; commit="$2"; verify_file="$3"; review_file="$4"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Resolve to a full 40-char hex id; etude --git-sha rejects short SHAs.
+commit="$(git rev-parse --verify "${commit}^{commit}")"
+
 for f in "$verify_file" "$review_file"; do
   [ -f "$f" ] || { echo "error: artifact file not found: $f" >&2; exit 1; }
 done
