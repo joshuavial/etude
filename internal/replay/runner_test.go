@@ -8,7 +8,11 @@ import (
 	"github.com/joshuavial/etude/internal/runmanifest"
 )
 
-var testSkill = runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"}
+var testProducer = runmanifest.Producer{
+	Harness: runmanifest.Harness{Name: "claude-code", Version: "2.1.150"},
+	Model:   "claude-opus-4-7",
+	Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+}
 
 func testReq(inputs []RunInput) RunRequest {
 	return RunRequest{
@@ -17,7 +21,7 @@ func testReq(inputs []RunInput) RunRequest {
 		Inputs:          inputs,
 		OutputRole:      "output",
 		OutputMediaType: "text/plain",
-		Skill:           testSkill,
+		Producer:        testProducer,
 	}
 }
 
@@ -40,8 +44,8 @@ func TestStubRunner_CannedMode_Empty(t *testing.T) {
 	if res.MediaType != "text/plain" {
 		t.Errorf("want MediaType %q (default), got %q", "text/plain", res.MediaType)
 	}
-	if res.Skill != testSkill {
-		t.Errorf("want Skill echoed as %v, got %v", testSkill, res.Skill)
+	if res.Producer != testProducer {
+		t.Errorf("want Producer echoed as %v, got %v", testProducer, res.Producer)
 	}
 }
 
@@ -136,35 +140,39 @@ func TestStubRunner_InjectedError(t *testing.T) {
 	}
 }
 
-func TestStubRunner_SkillEcho(t *testing.T) {
+func TestStubRunner_ProducerEcho(t *testing.T) {
 	stub := &StubRunner{CannedOutput: []byte("x")}
 	req := testReq(nil)
 	res, err := stub.Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Skill != testSkill {
-		t.Errorf("want Skill echoed as %v, got %v", testSkill, res.Skill)
+	if res.Producer != testProducer {
+		t.Errorf("want Producer echoed as %v, got %v", testProducer, res.Producer)
 	}
 }
 
-func TestStubRunner_SkillOverride(t *testing.T) {
-	override := runmanifest.Skill{ID: "newskill", Repo: "r", Version: "v2"}
+func TestStubRunner_ProducerOverride(t *testing.T) {
+	override := runmanifest.Producer{
+		Harness: runmanifest.Harness{Name: "codex", Version: "x"},
+		Model:   "gpt-5.5",
+		Skill:   runmanifest.Skill{ID: "newskill", Repo: "r", Version: "v2"},
+	}
 	stub := &StubRunner{
-		CannedOutput:  []byte("x"),
-		SkillOverride: override,
+		CannedOutput:     []byte("x"),
+		ProducerOverride: override,
 	}
 	req := testReq(nil)
-	// req.Skill == testSkill, which is distinct from override
+	// req.Producer == testProducer, which is distinct from override on all three axes
 	res, err := stub.Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Skill == req.Skill {
-		t.Errorf("want SkillOverride applied, but got req.Skill echoed: %v", res.Skill)
+	if res.Producer == req.Producer {
+		t.Errorf("want ProducerOverride applied, but got req.Producer echoed: %v", res.Producer)
 	}
-	if res.Skill != override {
-		t.Errorf("want Skill %v, got %v", override, res.Skill)
+	if res.Producer != override {
+		t.Errorf("want Producer %v, got %v", override, res.Producer)
 	}
 }
 

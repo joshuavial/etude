@@ -43,19 +43,19 @@ type RunRequest struct {
 	Inputs          []RunInput
 	OutputRole      string
 	OutputMediaType string // from the original stage's Output.MediaType
-	Skill           runmanifest.Skill
+	Producer        runmanifest.Producer
 }
 
 // RunResult is the outcome of a stage execution.
 //
 // MediaType: if empty, Run() defaults it to req.OutputMediaType.
 //
-// Skill is the skill identity actually used; it MAY differ from req.Skill
-// (e.g. when the replay uses a newer skill version).
+// Producer is the producer identity actually used; MAY differ from req.Producer
+// (e.g. when the replay uses a newer skill version/model).
 type RunResult struct {
 	Output    []byte
-	MediaType string            // if empty, Run defaults it to req.OutputMediaType
-	Skill     runmanifest.Skill // the skill identity actually used (MAY differ from req.Skill)
+	MediaType string               // if empty, Run defaults it to req.OutputMediaType
+	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
 }
 
 // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.
@@ -72,8 +72,8 @@ const stubConcatSeparator = "\n"
 //	              stubConcatSeparator.
 //	(c) Err     — returns the injected Err unchanged.
 //
-// In all non-error cases StubRunner echoes req.Skill into RunResult.Skill
-// (unless SkillOverride is non-zero). The RunResult.MediaType == ""
+// In all non-error cases StubRunner echoes req.Producer into RunResult.Producer
+// (unless ProducerOverride is non-zero). The RunResult.MediaType == ""
 // default (-> req.OutputMediaType) is applied inside Run.
 type StubRunner struct {
 	// CannedOutput, if non-nil, activates CANNED mode.
@@ -85,8 +85,8 @@ type StubRunner struct {
 	Concat bool
 	// Err, if non-nil, is returned immediately from Run.
 	Err error
-	// SkillOverride, if non-zero, overrides the echoed Skill in RunResult.
-	SkillOverride runmanifest.Skill
+	// ProducerOverride, if non-zero, overrides the echoed Producer in RunResult.
+	ProducerOverride runmanifest.Producer
 }
 
 // compile-time interface satisfaction assertion.
@@ -98,9 +98,9 @@ func (s *StubRunner) Run(_ context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, s.Err
 	}
 
-	skill := req.Skill
-	if s.SkillOverride != (runmanifest.Skill{}) {
-		skill = s.SkillOverride
+	producer := req.Producer
+	if s.ProducerOverride != (runmanifest.Producer{}) {
+		producer = s.ProducerOverride
 	}
 
 	var output []byte
@@ -126,6 +126,6 @@ func (s *StubRunner) Run(_ context.Context, req RunRequest) (RunResult, error) {
 	return RunResult{
 		Output:    output,
 		MediaType: mediaType,
-		Skill:     skill,
+		Producer:  producer,
 	}, nil
 }
