@@ -40,6 +40,14 @@ If any reviewer cannot complete because of auth, quota, model access,
 allowance, timeout, or tooling failure, stop and escalate to the user. A failed
 reviewer invocation is not a `GO` and must not be skipped.
 
+**Degraded gate (bounded exception).** The strict rule above is the default. The
+one exception: a SINGLE reviewer with a reproducible, root-caused TOOLING outage
+(not substantive dissent) may be `disregarded` and the gate may pass on the other
+three unanimous substantive `GO`s — under the explicit conditions, reroll bar,
+authorization (orchestrator inside an autonomous `/loop`, else escalate to the
+user), and structured recording defined in the runbook's **Degraded Gate
+Policy**. A substantive `BLOCK` is never bypassed.
+
 If the same gate receives `BLOCK` results through attempt 4 (the initial run
 plus three reruns), escalate to the user with the reviewer feedback and a
 proposed resolution. The user can provide direction, but the gate still

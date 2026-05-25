@@ -292,7 +292,7 @@ reproducible across an entire session (rubric-eval gate ×2, pairwise-eval plan 
 impl gates) in both tool-mode and inline `-p` mode while LM Studio served other
 clients fine. Because it is a known, root-caused client artifact, ONE 0-CPU hang
 (after a single reroll confirming it recurs) satisfies the "reproducible tooling
-outage" bar for the autonomous-loop fallback below — do not burn four 15-minute
+outage" bar for the Degraded Gate Policy below — do not burn four 15-minute
 waits re-confirming a hang you have already diagnosed this session.
 
 Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
@@ -314,17 +314,11 @@ After all four reviewers return:
   gate
 - any reviewer failure: gate is incomplete; escalate to the user
 
-**Autonomous-loop tooling-outage fallback.** In an autonomous `/loop` there is no
-user to escalate to in real time, and blocking forever on one flaky seat stalls
-the loop. So: if a SINGLE seat has a REPRODUCIBLE tooling outage — empty
-completion or pre-verdict hang that recurs after ≥2 rerolls AND is root-caused to
-a known tooling artifact (e.g. pilms/LM Studio empty completion, codex go-test
-hang), NOT a substantive dissent — AND the other THREE seats (the substantive,
-high-signal ones) are unanimous `GO` after thorough review, treat the gate as
-passed and record the outage explicitly in the bead notes (which seat, the
-artifact, how many rerolls). This is a deliberate, documented exception, not a
-license to skip a seat that raises real findings: a seat that returns an actual
-BLOCK is never bypassed. Outside an autonomous loop, still escalate to the user.
+**Reviewer failure / tooling outage.** A reviewer failure (auth/quota/empty/hang/
+tool error) makes the gate INCOMPLETE — escalate, never treat as `GO`. The single
+bounded exception — when one outage seat may be `disregarded` and a degraded gate
+may still pass on the other three substantive `GO`s — is the **Degraded Gate
+Policy** below.
 
 When a `BLOCK` rests on a disputed factual claim about tool behavior (e.g. "this
 git command exits 0", "the CLI prints X"), or two reviewers disagree on such a
@@ -366,6 +360,51 @@ After a gate passes and optional improvements are implemented or explicitly
 deferred, continue immediately to the next workflow step. Do not wait for a
 separate user prompt unless the process is blocked, reviewer execution failed,
 or the next step requires missing user input.
+
+## Degraded Gate Policy
+
+The DEFAULT is strict: a gate passes only on a UNANIMOUS substantive `GO` from its
+tier's seats, and a seat returning an actual `BLOCK` (substantive dissent) is
+NEVER bypassed. This section makes the bounded exceptions explicit so the written
+process matches real practice; it does not weaken the default.
+
+**1. Block vs. recoverable retry.** A seat that exits with
+auth/quota/model-access/timeout/tool-invocation failure, or returns empty/no
+verdict, is FIRST a recoverable retry: reroll and root-cause per "Waiting And
+Status" (the second-occurrence debug rule, the pi/pilms reasoning budget, the
+0-CPU-hang diagnosis under "Third failure mode"). Until it is resolved or meets
+the disregard bar below, the gate is INCOMPLETE (verdict `failed`/`empty`) — an
+unresolved or undiagnosed failure is never a `GO`.
+
+**2. Disregarding a seat (the bounded exception).** A SINGLE seat may be
+`disregarded` ONLY when ALL hold: (a) it is a reproducible TOOLING outage
+(empty/hang/auth/quota), NOT substantive dissent; (b) root-caused to a known
+tooling artifact (e.g. the pi/pilms 0-CPU client hang, codex go-test hang, pilms
+empty completion); (c) REROLL BAR — `>=2` rerolls to ESTABLISH a NOVEL outage as
+reproducible, or, for an outage ALREADY documented here as a known root-caused
+artifact (e.g. the pi/pilms 0-CPU hang under "Third failure mode"), a single
+confirming reroll — this shortcut is bounded to already-known/root-caused
+artifacts, NOT a general 1-reroll allowance; (d) the OTHER THREE seats are
+unanimous substantive `GO` after thorough review. A DISPROVEN `BLOCK`
+(ground-truth contradicts a factual claim) is NOT a disregard — it is handled by
+the disputed-factual-claim rule under Result Classification (verify empirically,
+do not apply the change, rerun with the evidence embedded). A substantive `BLOCK`
+is never disregarded.
+
+**3. Degraded 3-seat gate — allowed, authorized, recorded.** When rule 2 holds,
+the gate MAY pass on the three substantive `GO`s. WHO authorizes: inside an
+autonomous `/loop` there is no real-time user, so the ORCHESTRATOR authorizes
+under exactly these conditions; OUTSIDE an autonomous loop, escalate to the user
+instead. It is always RECORDED: which seat, the artifact/diagnosis, and the
+reroll evidence.
+
+**4. Structured recording (shipped schema).** Capture the degraded gate as a
+normal `GateAttempt` (status `pass`) via `etude capture-gate`: the outage seat
+carries verdict `malfunction` (or `failed`/`empty`) with a `failure_note`; the
+disregarded seat carries verdict `disregarded` + `failure_note`; and
+`decision.degraded_reason` records which seat, the evidence, and the reroll count.
+No new schema field is needed (see docs/gates.md and
+docs/plans/product/gate-reviewer-record-schema.md).
 
 ## Reruns
 
@@ -562,7 +601,7 @@ Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema
 (`failed`/`empty`/`malfunction`/`disregarded`) and FORBIDDEN on `go`/`block` —
 `capture-gate`'s validation enforces this. So a skipped pilms seat always carries
 both `failure_note` (what broke) and `decision.degraded_reason` (why the gate
-still passed under the autonomous-loop fallback).
+still passed under the Degraded Gate Policy).
 
 ## Safe Bead Updates
 
