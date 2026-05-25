@@ -92,6 +92,15 @@ type StubRunner struct {
 // compile-time interface satisfaction assertion.
 var _ Runner = (*StubRunner)(nil)
 
+// applyResultDefaults fills in result fields that runners leave empty.
+// Currently it sets res.MediaType to req.OutputMediaType when res.MediaType=="".
+// Producer is intentionally NOT touched here — each runner sets it explicitly.
+func applyResultDefaults(req RunRequest, res *RunResult) {
+	if res.MediaType == "" {
+		res.MediaType = req.OutputMediaType
+	}
+}
+
 // Run implements Runner for StubRunner.
 func (s *StubRunner) Run(_ context.Context, req RunRequest) (RunResult, error) {
 	if s.Err != nil {
@@ -119,13 +128,11 @@ func (s *StubRunner) Run(_ context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
-	if mediaType == "" {
-		mediaType = req.OutputMediaType
-	}
-
-	return RunResult{
+	res := RunResult{
 		Output:    output,
 		MediaType: mediaType,
 		Producer:  producer,
-	}, nil
+	}
+	applyResultDefaults(req, &res)
+	return res, nil
 }
