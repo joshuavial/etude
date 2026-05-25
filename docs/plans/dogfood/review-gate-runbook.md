@@ -450,6 +450,19 @@ wrap-up commit, check `git log -1`/`git status`: if the change is already
 committed (concurrent/autonomous settings), verify its scope instead of creating
 a duplicate.
 
+**When implementation reveals the gated PLAN is wrong: deviate correctly, then
+FLAG the deviation to the implement gate.** Scope discipline ("follow the plan")
+must not become "follow a plan that turned out factually wrong." If implementing
+exposes a wrong assumption in the gated plan (observed: a plan required matching
+each command as `etude <cmd>` in BOTH README and docs/README, but docs/README is a
+link INDEX — the predicate false-positived every command), do NOT silently follow
+the broken plan, and do NOT silently deviate. Implement the CORRECT thing, then
+state the deviation explicitly in the implement-gate prompt ("the plan said X;
+implementation does Y because the plan's assumption Z is wrong") so the panel
+validates the deviation rather than rubber-stamping. This is distinct from
+out-of-scope drift (which is reverted): a deviation stays IN scope (same goal,
+corrected approach) and is surfaced for review, not hidden.
+
 ## Recording Results
 
 Record gate results in bead notes:
