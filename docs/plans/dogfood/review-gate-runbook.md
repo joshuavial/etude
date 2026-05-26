@@ -534,9 +534,9 @@ corrected approach) and is surfaced for review, not hidden.
 ## Recurring Defect Classes (implement gate)
 
 Defect classes the gate caught repeatedly across the etude-14r feature
-(q87/8t4/n0t), the misc-backlog sweep (0rt/712/4o0), and the Phase-C extras
-(egg/2ku/qih/aqt), cheap to catch up front. Both the implementer and the gate
-should check them.
+(q87/8t4/n0t), the misc-backlog sweep (0rt/712/4o0), the Phase-C extras
+(egg/2ku/qih/aqt), and the review-finding hardening beads (shd/4n7), cheap to
+catch up front. Both the implementer and the gate should check them.
 
 **1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
 passthrough) override.** When a command writes keys into a map that a passthrough
@@ -689,6 +689,31 @@ root/index pages that list or cross-reference it.
   flag → that command's generated page. Gate check: does the file-scope match what
   the generator actually emits? A scope that lists the new page but omits the
   regenerated root/index page is a BLOCK.
+
+**7. Platform-specific API usage (`syscall.*`, OS-specific flags/constants) must be
+build-tagged AND verified with a CROSS-COMPILE — the native dev build and `go test
+./...` will NOT catch a symbol that is undefined on another GOOS.** A change that
+references a platform-only symbol compiles and passes every test on the dev host
+yet breaks `GOOS=<other> go build ./...`.
+- **Why:** etude-4n7 used `syscall.O_NOFOLLOW` directly in cross-platform
+  `internal/cli/*.go`. It built + passed the full suite on darwin, and the PLAN even
+  asserted "on Windows it's 0/no-op — acceptable" — but the symbol is UNDEFINED on
+  `GOOS=windows`, so `GOOS=windows GOARCH=amd64 go build ./...` failed with
+  `undefined: syscall.O_NOFOLLOW`. HEAD compiled cleanly for windows before the
+  bead, so this was a regression. codex + gemini caught it at the implement gate by
+  actually cross-compiling; the darwin-only empirical seat (Opus) ran the full suite
+  + exploit probes and MISSED it, because the host build never references the
+  windows path. Fix: a build-tagged constant (`//go:build unix` →
+  `syscall.O_NOFOLLOW`; `//go:build !unix` → `0` fallback) so the package compiles
+  everywhere while the hardened platform keeps the real flag.
+- **How to apply:** whenever a change references `syscall.*`, an OS-specific
+  `os`/`golang.org/x/sys` constant or flag, or platform-conditional behavior:
+  (a) isolate the platform-specific symbol behind build-tagged files with a portable
+  fallback, and (b) add `GOOS=windows GOARCH=amd64 go build ./...` (and `GOOS=linux`)
+  to the Verify checklist for that bead. The native build + `go test ./...` are
+  necessary but NOT sufficient — they exercise only the host GOOS. An in-harness
+  empirical seat that only builds/tests natively cannot see this class; the gate
+  brief should ask a seat to cross-compile when platform APIs are touched.
 
 ## Plan-Phase Discipline
 

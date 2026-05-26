@@ -288,6 +288,35 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
   Phase 1 beads (xenota-capture-adapter, github-import). etude-9ey stays deferred
   (needs real sidecar data). Natural pause point.
 
+### B14. Cadence retro (2026-05-26) — first review-finding beads (shd/4n7/hp7)
+- **Trigger/scope:** 3-ticket cadence after the FULL-REVIEW phase (user-directed audit
+  of docs + code → 9 beads filed). First three cleared: etude-shd (timeout + output-cap
+  on the exec runner/generator/judge), etude-4n7 (capture-gate/replay symlink-follow
+  confinement via atomic O_NOFOLLOW), etude-hp7 (README retro generate/list/show docs).
+- **Findings/changes:** added a SEVENTH "Recurring Defect Classes" item: **platform-
+  specific API usage must be build-tagged AND verified with a CROSS-COMPILE — the native
+  dev build + `go test ./...` do NOT catch a symbol undefined on another GOOS.** From
+  etude-4n7: `syscall.O_NOFOLLOW` used directly in cross-platform files built + passed the
+  whole suite on darwin (the plan even mis-asserted "Windows = 0/no-op"), but
+  `GOOS=windows go build ./...` failed `undefined: syscall.O_NOFOLLOW` — a regression
+  (HEAD compiled for windows). codex+gemini caught it by cross-compiling at the implement
+  gate; the darwin-only empirical Opus seat (full suite + exploit probes) MISSED it. Fix:
+  build-tagged `nofollowFlag` (unix→syscall.O_NOFOLLOW, !unix→0).
+- **Reinforced — items 2 + P1 + the disputed-claim discipline:** both P2 hardening beads
+  had the multi-seat gate catch real concurrency/security defects the test-passing/host
+  seat missed (shd: cmd.WaitDelay pipe-drain hang + LimitReader TOCTOU, codex plan catch;
+  4n7: read TOCTOU, UNANIMOUS plan BLOCK + the windows regression). Every BLOCK this cadence
+  was verified TRUE against source before accepting. **What worked well (preserve):** seeding
+  the gate BRIEF with explicit scrutiny points (I flagged the 4n7 capture-gate read TOCTOU in
+  the plan-gate payload, and all three seats then caught it) — a cheap force-multiplier;
+  keep pre-loading the gate brief with the specific risks I suspect.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` (new defect-class item 7 + intro
+  bead list). Counter reset.
+- **Remaining:** 5 review-finding P3 beads open (etude-x0r docs-plans refresh, etude-5ft
+  manifest-load helper, etude-kig retro preamble, etude-8b7 dead pointer chain, etude-6j8
+  inferMediaType move + cleanups, etude-0ew gate-input validation). Phase 1 still USER-BLOCKED;
+  etude-9ey still deferred.
+
 ### Inclusion boundary
 
 These commits touched `review-gate-runbook.md` but are deliberately NOT retro
