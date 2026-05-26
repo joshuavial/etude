@@ -609,6 +609,498 @@ stages:
 	}
 }
 
+// ptrBool returns a pointer to the given bool value — helper for test data.
+func ptrBool(b bool) *bool { return &b }
+
+// ptrInt returns a pointer to the given int value — helper for test data.
+func ptrInt(i int) *int { return &i }
+
+// minimalRetrosYAML is the smallest YAML snippet that includes a valid retros
+// block (on_run_close is true by default so a generator is required).
+const minimalRetrosYAML = `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+`
+
+// ---- retros: block tests -----------------------------------------------
+
+// TestRetrosAbsentBlockNilAndDefaults asserts that a workflow without a retros:
+// block leaves Retros nil and returns sensible defaults from all accessors.
+func TestRetrosAbsentBlockNilAndDefaults(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Retros != nil {
+		t.Fatalf("expected Retros == nil for absent block, got %+v", w.Retros)
+	}
+	if !w.OnRunCloseEnabled() {
+		t.Fatal("OnRunCloseEnabled() should return true when block absent")
+	}
+	if w.OnRepeatedGateBlockEnabled() {
+		t.Fatal("OnRepeatedGateBlockEnabled() should return false when block absent")
+	}
+	if w.OnFailedVerifyEnabled() {
+		t.Fatal("OnFailedVerifyEnabled() should return false when block absent")
+	}
+	if w.OnBlockedStateEnabled() {
+		t.Fatal("OnBlockedStateEnabled() should return false when block absent")
+	}
+	if w.PostBenchEnabled() {
+		t.Fatal("PostBenchEnabled() should return false when block absent")
+	}
+	if w.RetroGenerator() != "" {
+		t.Fatalf("RetroGenerator() should be empty when block absent, got %q", w.RetroGenerator())
+	}
+}
+
+// TestRetrosAbsentBlockLegacyRoundTrip asserts that ParseYAML(legacy).YAML()
+// emits NO retros: block — the round-trip is byte-stable.
+func TestRetrosAbsentBlockLegacyRoundTrip(t *testing.T) {
+	legacy := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(legacy))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	if strings.Contains(string(out), "retros") {
+		t.Fatalf("re-encoded legacy workflow should not contain 'retros', got:\n%s", out)
+	}
+}
+
+// TestRetrosPresentBlockOmittedOnRunClose checks that a present block with
+// on_run_close omitted keeps Retros != nil AND defaults on_run_close to true.
+func TestRetrosPresentBlockOmittedOnRunClose(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Retros == nil {
+		t.Fatal("expected Retros != nil for present block")
+	}
+	if !w.OnRunCloseEnabled() {
+		t.Fatal("OnRunCloseEnabled() should default true when block present but on_run_close omitted")
+	}
+}
+
+// TestRetrosExplicitOnRunCloseFalse asserts an explicit on_run_close: false is
+// honored.
+func TestRetrosExplicitOnRunCloseFalse(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.OnRunCloseEnabled() {
+		t.Fatal("OnRunCloseEnabled() should return false when explicitly set to false")
+	}
+}
+
+// TestRetrosAutomatedTriggerWithoutGeneratorErrors asserts Validate returns
+// ErrInvalidWorkflow when an automated trigger is enabled but no generator is set.
+func TestRetrosAutomatedTriggerWithoutGeneratorErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{
+			"on_run_close default true no generator",
+			`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros: {}
+`,
+		},
+		{
+			"post_bench true no generator",
+			`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  post_bench: true
+`,
+		},
+		{
+			"on_failed_verify true no generator",
+			`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_failed_verify: true
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseYAML([]byte(tc.input))
+			if err == nil {
+				t.Fatal("ParseYAML should return error when automated trigger enabled with no generator")
+			}
+			if !errors.Is(err, ErrInvalidWorkflow) {
+				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+			}
+		})
+	}
+}
+
+// TestRetrosAutomatedTriggerWithGeneratorOk asserts a present block with an
+// automated trigger and a generator passes Validate.
+func TestRetrosAutomatedTriggerWithGeneratorOk(t *testing.T) {
+	w, err := ParseYAML([]byte(minimalRetrosYAML))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate error: %v", err)
+	}
+}
+
+// TestRetrosAbsentBlockNeverErrors asserts a workflow WITHOUT a retros: block
+// never triggers the generator-required error even though on_run_close is
+// effectively true — validation only applies when the block is present.
+func TestRetrosAbsentBlockNeverErrors(t *testing.T) {
+	w := minimalWorkflow()
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate returned error for workflow without retros block: %v", err)
+	}
+}
+
+// TestRetrosRepeatedGateBlockThresholdDefaults asserts that when
+// on_repeated_gate_block is enabled with no threshold, the accessor returns 3
+// and Validate passes.
+func TestRetrosRepeatedGateBlockThresholdDefaults(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+  on_repeated_gate_block:
+    enabled: true
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.RepeatedGateBlockThreshold() != 3 {
+		t.Fatalf("expected default threshold 3, got %d", w.RepeatedGateBlockThreshold())
+	}
+}
+
+// TestRetrosRepeatedGateBlockThresholdZeroErrors asserts threshold: 0 is
+// rejected.
+func TestRetrosRepeatedGateBlockThresholdZeroErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+  on_repeated_gate_block:
+    enabled: true
+    threshold: 0
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject threshold: 0")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosRepeatedGateBlockThresholdValidWhenPositive asserts threshold >= 1
+// passes Validate.
+func TestRetrosRepeatedGateBlockThresholdValidWhenPositive(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+  on_repeated_gate_block:
+    enabled: true
+    threshold: 5
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.RepeatedGateBlockThreshold() != 5 {
+		t.Fatalf("expected threshold 5, got %d", w.RepeatedGateBlockThreshold())
+	}
+}
+
+// TestRetrosKnownFieldsRejectsUnknownInRetros asserts that an unknown key
+// inside retros: is rejected by KnownFields.
+func TestRetrosKnownFieldsRejectsUnknownInRetros(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+  unknown_key: oops
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside retros:")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosKnownFieldsRejectsUnknownInRepeatedGateBlock asserts that an
+// unknown key inside on_repeated_gate_block: is rejected by KnownFields.
+func TestRetrosKnownFieldsRejectsUnknownInRepeatedGateBlock(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  generator: ./retro.sh
+  on_repeated_gate_block:
+    enabled: true
+    unknown_key: oops
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside on_repeated_gate_block:")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosFullBlockRoundTrip parses a fully-specified retros block, re-encodes
+// it, and parses again — all three must be equal (parse→encode→parse stable).
+func TestRetrosFullBlockRoundTrip(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  on_repeated_gate_block:
+    enabled: true
+    threshold: 5
+  on_failed_verify: true
+  on_blocked_state: true
+  post_bench: true
+  generator: ./retro.sh
+`
+	w1, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("first ParseYAML error: %v", err)
+	}
+	encoded, err := w1.YAML()
+	if err != nil {
+		t.Fatalf("YAML encode error: %v", err)
+	}
+	w2, err := ParseYAML(encoded)
+	if err != nil {
+		t.Fatalf("second ParseYAML error: %v", err)
+	}
+	// Structural equality of the retros block.
+	if w1.Retros == nil || w2.Retros == nil {
+		t.Fatal("expected both Retros to be non-nil")
+	}
+	if w1.OnRunCloseEnabled() != w2.OnRunCloseEnabled() {
+		t.Fatalf("OnRunCloseEnabled mismatch: %v vs %v", w1.OnRunCloseEnabled(), w2.OnRunCloseEnabled())
+	}
+	if w1.OnRepeatedGateBlockEnabled() != w2.OnRepeatedGateBlockEnabled() {
+		t.Fatalf("OnRepeatedGateBlockEnabled mismatch")
+	}
+	if w1.RepeatedGateBlockThreshold() != w2.RepeatedGateBlockThreshold() {
+		t.Fatalf("RepeatedGateBlockThreshold mismatch: %d vs %d", w1.RepeatedGateBlockThreshold(), w2.RepeatedGateBlockThreshold())
+	}
+	if w1.OnFailedVerifyEnabled() != w2.OnFailedVerifyEnabled() {
+		t.Fatalf("OnFailedVerifyEnabled mismatch")
+	}
+	if w1.OnBlockedStateEnabled() != w2.OnBlockedStateEnabled() {
+		t.Fatalf("OnBlockedStateEnabled mismatch")
+	}
+	if w1.PostBenchEnabled() != w2.PostBenchEnabled() {
+		t.Fatalf("PostBenchEnabled mismatch")
+	}
+	if w1.RetroGenerator() != w2.RetroGenerator() {
+		t.Fatalf("RetroGenerator mismatch: %q vs %q", w1.RetroGenerator(), w2.RetroGenerator())
+	}
+	// Byte stability: re-encoding the second parse must equal the first encode.
+	reEncoded, err := w2.YAML()
+	if err != nil {
+		t.Fatalf("re-encode error: %v", err)
+	}
+	if string(reEncoded) != string(encoded) {
+		t.Fatalf("round-trip bytes differ\nfirst encode:\n%s\nre-encode:\n%s", encoded, reEncoded)
+	}
+}
+
+// TestRetrosManualOnlyNoGeneratorRequired asserts that a present block with all
+// automated triggers explicitly off does NOT require a generator.
+func TestRetrosManualOnlyNoGeneratorRequired(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  on_failed_verify: false
+  on_blocked_state: false
+  post_bench: false
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate should pass with all triggers off and no generator: %v", err)
+	}
+}
+
+// ---- present-null / present-absent distinction tests -----------------------
+// These tests regression-guard the fix for the codex-identified bug where a
+// bare/null retros: key was silently treated as absent (Retros == nil).
+
+// TestRetrosPresentNullBareKeyIsPresent asserts that a bare `retros:` key
+// (which yaml.v3 decodes as a !!null scalar) is treated as PRESENT, not
+// absent.  Because on_run_close defaults to true and no generator is provided,
+// Validate must return ErrInvalidWorkflow.
+func TestRetrosPresentNullBareKeyIsPresent(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should return error: present-null retros has on_run_close=true default but no generator")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosPresentNullExplicitNullIsPresent asserts that `retros: null` is
+// treated as PRESENT (same as bare retros:), not absent.  Validate must error
+// for the same reason as above.
+func TestRetrosPresentNullExplicitNullIsPresent(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros: null
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should return error: retros: null is present, on_run_close=true default but no generator")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosPresentEmptyMapErrors confirms that `retros: {}` (empty mapping)
+// is still present and still errors due to missing generator.
+// This was already tested in TestRetrosAutomatedTriggerWithoutGeneratorErrors
+// but is spelled out explicitly here as a companion to the present-null cases.
+func TestRetrosPresentEmptyMapErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros: {}
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should return error: retros: {} has on_run_close=true default but no generator")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRetrosAbsentIsNilAndByteStable is the canonical absent-key regression
+// guard: a workflow without a retros: key must have Retros == nil, must
+// return true from OnRunCloseEnabled (absent ≡ "default on"), and must
+// round-trip without emitting a retros: key.
+func TestRetrosAbsentIsNilAndByteStable(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Retros != nil {
+		t.Fatalf("expected Retros == nil for absent retros: key, got %+v", w.Retros)
+	}
+	if !w.OnRunCloseEnabled() {
+		t.Fatal("OnRunCloseEnabled() must return true when retros block is absent")
+	}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML() error: %v", err)
+	}
+	if strings.Contains(string(out), "retros") {
+		t.Fatalf("re-encoded absent-retros workflow must not contain 'retros', got:\n%s", out)
+	}
+}
+
 // minimalWorkflow returns the smallest valid workflow for mutation tests.
 func minimalWorkflow() Workflow {
 	return Workflow{

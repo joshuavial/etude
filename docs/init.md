@@ -81,6 +81,40 @@ etude init --force
 etude init --remote upstream
 ```
 
+## workflow.yaml — retros: block
+
+The scaffolded `workflow.yaml` does **not** include a `retros:` block; omitting
+it is valid and preserves legacy behavior.  When you add one, it enables
+advisory (non-gating) retro triggers that tooling or agents can observe to
+decide when to call `retro capture` (manual) or `retro generate` (automated).
+Triggers are **never** a precondition for advancing a workflow phase.
+
+```yaml
+retros:
+  on_run_close: true            # default ON (also the default when block is absent)
+  on_repeated_gate_block:
+    enabled: false              # default OFF
+    threshold: 3                # default 3; must be >= 1 when trigger enabled
+  on_failed_verify: false       # default OFF
+  on_blocked_state: false       # default OFF
+  post_bench: false             # default OFF
+  generator: ./retro.sh         # required when any automated trigger is effectively enabled
+```
+
+Defaults and rules:
+
+- **`on_run_close`** — true by default regardless of whether the block is present.
+  Explicitly set `on_run_close: false` (plus all others off) to opt out entirely
+  and suppress the generator requirement.
+- **`generator`** — required when at least one trigger is effectively enabled
+  (including the `on_run_close` default).  Writing a `retros:` block without a
+  generator and without explicitly disabling all triggers is a validation error.
+- **Absent block** — omitting `retros:` entirely (legacy / `Default()`) is
+  always valid; no generator is required and no retros validation runs.
+- **Automated firing** — auto-firing is not yet wired; this block is parsed and
+  validated only.  See `docs/plans/product/etude-retro-command.md §4` for the
+  full trigger table and Phase C roadmap.
+
 ## Notes
 
 The `.etude/` directory is not gitignored — config files belong on main where

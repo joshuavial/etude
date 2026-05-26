@@ -38,6 +38,107 @@ var validEvalMethods = map[string]bool{
 type Workflow struct {
 	Name   string
 	Stages []Stage
+	// Retros holds the optional retros: block from workflow.yaml.  Nil means
+	// the block is absent (legacy / Default()).  A non-nil pointer means the
+	// operator explicitly authored the block.  Use the accessor methods on
+	// Workflow (OnRunCloseEnabled, etc.) to read effective values — those
+	// methods apply the correct defaults and never require callers to nil-check
+	// the pointer.
+	Retros *RetrosConfig
+}
+
+// RetrosConfig holds the parsed retros: configuration block.  Fields use
+// pointer types so that an omitted field is distinguishable from an explicit
+// false/0 when encoding and when computing effective defaults via the accessor
+// methods.
+type RetrosConfig struct {
+	// OnRunClose enables the on_run_close trigger.  Nil means omitted (default
+	// ON per accessor); explicit false disables it.
+	OnRunClose *bool
+	// OnRepeatedGateBlock holds the on_repeated_gate_block sub-block.  Nil
+	// means omitted (default OFF).
+	OnRepeatedGateBlock *RepeatedGateBlock
+	// OnFailedVerify enables the on_failed_verify trigger.  Nil = default OFF.
+	OnFailedVerify *bool
+	// OnBlockedState enables the on_blocked_state trigger.  Nil = default OFF.
+	OnBlockedState *bool
+	// PostBench enables the post_bench trigger.  Nil = default OFF.
+	PostBench *bool
+	// Generator is the path to the retro generator script.  Required when any
+	// automated trigger is effectively enabled.
+	Generator string
+}
+
+// RepeatedGateBlock holds the on_repeated_gate_block sub-block.
+type RepeatedGateBlock struct {
+	// Enabled activates the trigger.  Nil = default OFF.
+	Enabled *bool
+	// Threshold is the number of gate blocks before triggering.  Nil = default 3.
+	Threshold *int
+}
+
+// OnRunCloseEnabled returns the effective value of the on_run_close trigger.
+// True when the retros block is absent (nil), when the block is present but
+// on_run_close is omitted, or when on_run_close is explicitly true.  Returns
+// false only when on_run_close is explicitly set to false.
+func (w Workflow) OnRunCloseEnabled() bool {
+	if w.Retros == nil || w.Retros.OnRunClose == nil {
+		return true
+	}
+	return *w.Retros.OnRunClose
+}
+
+// OnRepeatedGateBlockEnabled returns the effective value of the
+// on_repeated_gate_block.enabled trigger.  Default OFF.
+func (w Workflow) OnRepeatedGateBlockEnabled() bool {
+	if w.Retros == nil || w.Retros.OnRepeatedGateBlock == nil || w.Retros.OnRepeatedGateBlock.Enabled == nil {
+		return false
+	}
+	return *w.Retros.OnRepeatedGateBlock.Enabled
+}
+
+// RepeatedGateBlockThreshold returns the effective threshold for the
+// on_repeated_gate_block trigger.  Default 3 when omitted.
+func (w Workflow) RepeatedGateBlockThreshold() int {
+	if w.Retros == nil || w.Retros.OnRepeatedGateBlock == nil || w.Retros.OnRepeatedGateBlock.Threshold == nil {
+		return 3
+	}
+	return *w.Retros.OnRepeatedGateBlock.Threshold
+}
+
+// OnFailedVerifyEnabled returns the effective value of the on_failed_verify
+// trigger.  Default OFF.
+func (w Workflow) OnFailedVerifyEnabled() bool {
+	if w.Retros == nil || w.Retros.OnFailedVerify == nil {
+		return false
+	}
+	return *w.Retros.OnFailedVerify
+}
+
+// OnBlockedStateEnabled returns the effective value of the on_blocked_state
+// trigger.  Default OFF.
+func (w Workflow) OnBlockedStateEnabled() bool {
+	if w.Retros == nil || w.Retros.OnBlockedState == nil {
+		return false
+	}
+	return *w.Retros.OnBlockedState
+}
+
+// PostBenchEnabled returns the effective value of the post_bench trigger.
+// Default OFF.
+func (w Workflow) PostBenchEnabled() bool {
+	if w.Retros == nil || w.Retros.PostBench == nil {
+		return false
+	}
+	return *w.Retros.PostBench
+}
+
+// RetroGenerator returns the generator script path, or "" when unset.
+func (w Workflow) RetroGenerator() string {
+	if w.Retros == nil {
+		return ""
+	}
+	return w.Retros.Generator
 }
 
 // Stage describes one ordered step in the workflow.
@@ -94,6 +195,10 @@ func (w Workflow) Validate() error {
 	// producedSoFar tracks roles available to the current stage's inputs.
 	// It is built incrementally so forward references are caught.
 	producedSoFar := make(map[string]bool, len(w.Stages))
+
+	if err := validateRetros(w); err != nil {
+		return err
+	}
 
 	for i, s := range w.Stages {
 		prefix := fmt.Sprintf("stage[%d]", i)
@@ -182,6 +287,31 @@ func validateEval(prefix string, e *Eval) error {
 	return nil
 }
 
+// validateRetros checks the retros block when present.  An absent block (nil)
+// is always valid — legacy and Default() workflows never fail here.
+func validateRetros(w Workflow) error {
+	if w.Retros == nil {
+		return nil
+	}
+	// generator is required when any automated trigger is effectively enabled.
+	anyAutomated := w.OnRunCloseEnabled() ||
+		w.OnRepeatedGateBlockEnabled() ||
+		w.OnFailedVerifyEnabled() ||
+		w.OnBlockedStateEnabled() ||
+		w.PostBenchEnabled()
+	if anyAutomated && strings.TrimSpace(w.RetroGenerator()) == "" {
+		return fmt.Errorf("%w: retros.generator is required when any automated trigger is enabled", ErrInvalidWorkflow)
+	}
+	// threshold must be >= 1 when the trigger is enabled and explicitly set.
+	if w.OnRepeatedGateBlockEnabled() {
+		rgb := w.Retros.OnRepeatedGateBlock
+		if rgb != nil && rgb.Threshold != nil && *rgb.Threshold < 1 {
+			return fmt.Errorf("%w: retros.on_repeated_gate_block.threshold must be >= 1", ErrInvalidWorkflow)
+		}
+	}
+	return nil
+}
+
 // validateStageName applies the manifest identifier charset to stage names:
 // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
 // rule is kept as a local per-rune predicate (isIdentChar) rather than calling
@@ -252,7 +382,10 @@ func ParseYAML(content []byte) (Workflow, error) {
 	if err := ensureEOF(dec); err != nil {
 		return Workflow{}, err
 	}
-	w := doc.toWorkflow()
+	w, err := doc.toWorkflow()
+	if err != nil {
+		return Workflow{}, err
+	}
 	if err := w.Validate(); err != nil {
 		return Workflow{}, err
 	}
@@ -327,9 +460,17 @@ func Default() Workflow {
 
 // workflowYAML is the internal struct used for YAML decode/encode, with
 // yaml struct tags.  It is the counterpart to manifestJSON in runmanifest.
+//
+// Retros is a yaml.Node rather than *retrosYAML so that presence detection is
+// possible: a zero Node (Kind == 0) means the key was absent; any non-zero Node
+// means the key was present, even when its value is bare/null.  This lets
+// present-null behave identically to present-empty ({}) rather than silently
+// collapsing to absent.  The omitempty tag suppresses a zero Node on re-encode
+// so absent → nil Workflow.Retros → no retros: key in the output.
 type workflowYAML struct {
 	Name   string      `yaml:"name"`
 	Stages []stageYAML `yaml:"stages"`
+	Retros yaml.Node   `yaml:"retros,omitempty"`
 }
 
 type stageYAML struct {
@@ -344,6 +485,26 @@ type stageYAML struct {
 type evalYAML struct {
 	Method string `yaml:"method"`
 	Rubric string `yaml:"rubric,omitempty"`
+}
+
+// retrosYAML is the decode/encode counterpart to RetrosConfig.  Pointer types
+// preserve the omitted-vs-explicit distinction for both encoding (omitempty
+// drops nil pointers) and the accessor methods.
+type retrosYAML struct {
+	OnRunClose          *bool                  `yaml:"on_run_close,omitempty"`
+	OnRepeatedGateBlock *repeatedGateBlockYAML `yaml:"on_repeated_gate_block,omitempty"`
+	OnFailedVerify      *bool                  `yaml:"on_failed_verify,omitempty"`
+	OnBlockedState      *bool                  `yaml:"on_blocked_state,omitempty"`
+	PostBench           *bool                  `yaml:"post_bench,omitempty"`
+	Generator           string                 `yaml:"generator,omitempty"`
+}
+
+// repeatedGateBlockYAML is the nested decode/encode struct for
+// on_repeated_gate_block.  A dedicated struct ensures KnownFields(true) rejects
+// unknown keys at this level too.
+type repeatedGateBlockYAML struct {
+	Enabled   *bool `yaml:"enabled,omitempty"`
+	Threshold *int  `yaml:"threshold,omitempty"`
 }
 
 func (w Workflow) toYAML() workflowYAML {
@@ -361,10 +522,76 @@ func (w Workflow) toYAML() workflowYAML {
 		}
 		stages = append(stages, sy)
 	}
-	return workflowYAML{Name: w.Name, Stages: stages}
+	out := workflowYAML{Name: w.Name, Stages: stages}
+	if w.Retros != nil {
+		ry := &retrosYAML{
+			OnRunClose:     w.Retros.OnRunClose,
+			OnFailedVerify: w.Retros.OnFailedVerify,
+			OnBlockedState: w.Retros.OnBlockedState,
+			PostBench:      w.Retros.PostBench,
+			Generator:      w.Retros.Generator,
+		}
+		if w.Retros.OnRepeatedGateBlock != nil {
+			ry.OnRepeatedGateBlock = &repeatedGateBlockYAML{
+				Enabled:   w.Retros.OnRepeatedGateBlock.Enabled,
+				Threshold: w.Retros.OnRepeatedGateBlock.Threshold,
+			}
+		}
+		// Encode the retrosYAML struct to a yaml.Node so it can be embedded
+		// in workflowYAML.Retros (which is now a yaml.Node for presence
+		// detection).  yaml.Node.Encode populates the receiver directly as a
+		// mapping node (Kind==MappingNode) — no document wrapper is added, so
+		// the result can be assigned to out.Retros directly.
+		var retrosNode yaml.Node
+		if err := retrosNode.Encode(ry); err == nil {
+			out.Retros = retrosNode
+		}
+	}
+	return out
 }
 
-func (d workflowYAML) toWorkflow() Workflow {
+// decodeRetrosNode converts a yaml.Node captured for the retros: key into a
+// *retrosYAML suitable for toWorkflow.  Returns (nil, nil) when the node is
+// the zero value (key was absent).  Returns a zero-value *retrosYAML (present
+// but empty) for a null scalar, mirroring the "present means present" rule.
+// Returns a populated *retrosYAML for a mapping node.  Unknown keys inside the
+// block are still rejected because the inner decode uses a KnownFields(true)
+// decoder (achieved by re-marshalling the node to bytes and decoding again).
+func decodeRetrosNode(node yaml.Node) (*retrosYAML, error) {
+	// Kind == 0: the retros: key was entirely absent in the YAML document.
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	// Scalar with !!null tag: the key was present but had a bare/null value
+	// (e.g. `retros:` or `retros: null`).  Treat as present-empty, equivalent
+	// to `retros: {}`.  A zero retrosYAML already has all-nil fields, which is
+	// what we want — no further decoding needed, and there are no keys to
+	// validate against KnownFields.
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return &retrosYAML{}, nil
+	}
+	// Any other node (mapping, etc.): re-marshal to bytes and decode through a
+	// KnownFields(true) decoder so unknown keys are still rejected, exactly as
+	// they were before this change.
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&node); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	dec := yaml.NewDecoder(&buf)
+	dec.KnownFields(true)
+	var ry retrosYAML
+	if err := dec.Decode(&ry); err != nil {
+		return nil, err
+	}
+	return &ry, nil
+}
+
+func (d workflowYAML) toWorkflow() (Workflow, error) {
 	stages := make([]Stage, 0, len(d.Stages))
 	for _, s := range d.Stages {
 		st := Stage{
@@ -379,5 +606,26 @@ func (d workflowYAML) toWorkflow() Workflow {
 		}
 		stages = append(stages, st)
 	}
-	return Workflow{Name: d.Name, Stages: stages}
+	w := Workflow{Name: d.Name, Stages: stages}
+	ry, err := decodeRetrosNode(d.Retros)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("%w: decode retros: %v", ErrInvalidWorkflow, err)
+	}
+	if ry != nil {
+		rc := &RetrosConfig{
+			OnRunClose:     ry.OnRunClose,
+			OnFailedVerify: ry.OnFailedVerify,
+			OnBlockedState: ry.OnBlockedState,
+			PostBench:      ry.PostBench,
+			Generator:      ry.Generator,
+		}
+		if ry.OnRepeatedGateBlock != nil {
+			rc.OnRepeatedGateBlock = &RepeatedGateBlock{
+				Enabled:   ry.OnRepeatedGateBlock.Enabled,
+				Threshold: ry.OnRepeatedGateBlock.Threshold,
+			}
+		}
+		w.Retros = rc
+	}
+	return w, nil
 }
