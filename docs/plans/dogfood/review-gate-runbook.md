@@ -534,8 +534,9 @@ corrected approach) and is surfaced for review, not hidden.
 ## Recurring Defect Classes (implement gate)
 
 Defect classes the gate caught repeatedly across the etude-14r feature
-(q87/8t4/n0t) and the misc-backlog sweep (0rt/712/4o0), cheap to catch up front.
-Both the implementer and the gate should check them.
+(q87/8t4/n0t), the misc-backlog sweep (0rt/712/4o0), and the Phase-C extras
+(egg), cheap to catch up front. Both the implementer and the gate should check
+them.
 
 **1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
 passthrough) override.** When a command writes keys into a map that a passthrough
@@ -623,6 +624,33 @@ that PREFIX or NEST inside other names will silently satisfy a loose check.**
   token with its children (`run`/`run list`)? Write the matcher to distinguish all
   of them in round one, and prove it by reasoning "if I drop the `run` line while
   keeping `run list`, does this fail?" before shipping.
+
+**5. An OPTIONAL config/struct block must preserve the absent / present-null /
+present-empty distinction — a plain `*T` pointer field conflates absent with
+present-null, and synthesizing defaults on parse destroys the presence bit and
+breaks round-trip.** When adding an optional nested block (e.g. a new
+`workflow.yaml` section, an optional manifest field), the three states absent vs
+present-but-null (`block:` / `block: null`) vs present-empty (`block: {}`) are
+distinct and often need distinct behavior.
+- **Why:** etude-egg (the `retros:` block) BLOCKED twice on exactly this. Plan
+  round 1: the design SYNTHESIZED the block (`Retros = &{defaults}`) when absent —
+  which destroyed the presence bit (`Validate` couldn't gate "generator required"
+  on the block being present vs defaulted) AND broke round-trip (a legacy file
+  with no block re-encoded WITH a spurious block, since `omitempty` only drops
+  nil). Implement round 1: decoding the block as `Retros *T` made a present-null
+  `retros:`/`retros: null` decode to `nil` — indistinguishable from absent — so it
+  silently skipped validation. Both were caught by the spec-focused seats (codex/
+  gemini reasoning about the STATE MODEL), not the test-running seat.
+- **How to apply:** (a) keep the field NIL for a genuinely-absent block (never
+  synthesize on parse) so `nil ⇔ absent` and `omitempty` keeps legacy round-trips
+  byte-stable; (b) compute effective defaults via ACCESSOR methods (read-time), not
+  by mutating the struct; (c) to distinguish absent from present-null, decode via
+  `yaml.Node` (Kind==0 absent; `!!null` scalar present-null; mapping present) — a
+  plain `*T` cannot; (d) when re-marshalling a captured node, re-impose
+  `KnownFields(true)` (node `.Decode` does not inherit it); (e) gate any
+  presence-conditional validation on the field being non-nil. Test all three
+  states explicitly (absent / `block:` / `block: {}`) plus a legacy byte-stable
+  round-trip.
 
 ## Epic-Close Gate
 
