@@ -599,6 +599,31 @@ confidence: the guard for X is unproven.
   crafted faulty inputs) is the enabler. Gate check: does each failure-mode test
   prove a DISTINCT path, or do several collapse onto the same one?
 
+**4. An "X appears in rendered output" assertion must match X at its exact
+rendered SLOT (whole token + position), never via substring/`Contains` — names
+that PREFIX or NEST inside other names will silently satisfy a loose check.**
+- **Why:** etude-7no's `etude prime` drift guard (assert every registered command
+  appears in the primer's command list) took FOUR implement rounds because the
+  membership check was too loose, with a fresh collision class surfacing each time:
+  (r2) `strings.Contains(primer, "capture")` passed even with the `capture` line
+  deleted, because "capture" is a substring of the prose/other lines; (r3, after
+  switching to first-field match) `fields[0]=="capture"` still false-matched
+  nothing — but the SIBLING prefix `capture` vs `capture-gate` and then (r4) the
+  PARENT/child `run` vs `run list` both slipped through, because `run list`'s first
+  field is also `run`. Only INDENT-anchored, whole-token matching
+  (`"  run "` 2-space top-level vs `"    run list "` 4-space subcommand, trailing
+  space to exclude `capture-gate`) closed all classes. Each loose check looked
+  fine until the specific colliding name existed. (Same theme as etude-712's
+  gen-docs guard — output-membership guards are a recurring trap.)
+- **How to apply:** when a guard asserts a derived/registered set appears in
+  rendered text, anchor each item to its exact rendered position — line start +
+  indent + the item as a whole token followed by a delimiter — NOT `Contains` and
+  NOT a bare first-field match. ENUMERATE the collision classes up front: does any
+  name prefix another (`capture`/`capture-gate`)? Does a parent share its first
+  token with its children (`run`/`run list`)? Write the matcher to distinguish all
+  of them in round one, and prove it by reasoning "if I drop the `run` line while
+  keeping `run list`, does this fail?" before shipping.
+
 ## Epic-Close Gate
 
 Closing an epic is a gated action with a mandatory pass/fail check.
