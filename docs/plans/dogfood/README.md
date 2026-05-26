@@ -45,5 +45,7 @@ After a context clear or when starting a new ticket, boot into productive state:
 - [Retro impact ledger](retro-ledger.md) - inventory of every retro performed
   and the concrete process improvements each produced (the manual stand-in until
   retros become a first-class etude artifact).
+- [Wide retro analysis](wide-retro-analysis.md) - cross-retro scratchpad for the
+  dogfood completeness failure and the `etude-8hq` enforcement phase.
 - [Artifacts](artifacts/) - committed dogfood capture artifacts for external
   files or large outputs that are referenced from bead notes.

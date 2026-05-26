@@ -49,6 +49,8 @@ behavior.
   for dogfood planning docs and docs verification.
 - [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
   early dogfood workflow issues and recommended process improvements.
+- [Wide retro analysis](dogfood/wide-retro-analysis.md) - cross-retro
+  scratchpad and phase plan for enforcing dogfood completeness.
 
 ## Components
 
