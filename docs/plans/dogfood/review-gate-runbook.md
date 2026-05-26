@@ -761,6 +761,29 @@ concrete prerequisite) rather than building speculative infra over a hypothetica
   dependency, no concrete consumer), recommend DEFER, name precisely what must
   exist first, file/point at that prerequisite bead, and `bd defer` — do NOT write
   speculative code just because a bead is open. Do NOT default to BUILD.
+- **Corollary — a bead derived from an AUDIT/review is a HYPOTHESIS, not a
+  validated fact; re-verify its premise against current code before building.** A
+  review/audit (even a careful one) over-states; the plan-phase premise-check is the
+  safety net that repeatedly scoped-down or deferred audit findings:
+  - etude-8b7 ("remove dead artifactstore pointer chain") — the audit's `deadcode`
+    "zero production callers" was true but NOT sufficient: `AddPointer` is the WRITE
+    half of a documented, schema-validated, well-tested `StoragePointer` variant
+    (validated at manifest.go:592, path-handled at :628, documented in docs/run.md +
+    docs/capture.md, listed as a planned feature). It is RESERVED scaffolding, not
+    dead code — DEFERRED, not removed. **"deadcode says zero callers" ≠ "safe to
+    remove"** when the symbol is the write-half of a documented/schema-integrated/
+    planned variant (same reserved-scaffolding judgment as the index query API +
+    unused eval evaluators).
+  - etude-0ew ("validate gate input: reject negative round/tier + unknown fields") —
+    half the bead (round/tier) was ALREADY enforced by `Validate`/`validateGate`
+    (manifest.go:430-433) on the write path, so it could not persist; the bead was
+    scoped down to just the real gap (DisallowUnknownFields). **"missing validation"
+    may already be enforced elsewhere** — trace the write/validate path first.
+  - **How to apply:** before implementing an audit-derived bead, verify the finding's
+    premise empirically — is the code really dead (grep callers AND check whether it's
+    a documented/reserved/tested variant)? is the validation really missing (trace
+    Validate + the write path)? is the duplication really N≥3 stable copies? Scope
+    down or defer the part that's already handled; only build the verified-real gap.
 
 ## Epic-Close Gate
 
