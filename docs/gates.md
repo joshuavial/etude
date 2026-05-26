@@ -61,7 +61,10 @@ The gate file is a single JSON object. Field names mirror the stored record:
 Appending is additive and validated: existing stages and prior gate attempts are
 preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
 `reviewed_stages` artifact (when set) must match one of the named stage's
-recorded artifacts (its output or one of its inputs). Invalid input is rejected without changing the run. A run that carries
+recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+strictly: an unknown or misspelled field (at any nesting level) is rejected
+rather than silently dropped, as is any trailing content after the gate object.
+Invalid input is rejected without changing the run. A run that carries
 any gates is written as `manifest_version` 3; gate-less runs are unchanged.
 
 A seat's `raw_output.path` must point at a **regular file**: it is opened

@@ -839,3 +839,115 @@ func TestCaptureGateRawOutputRegularFileAccepted(t *testing.T) {
 		t.Fatal("gate seat has no raw_output artifact; want one")
 	}
 }
+
+// TestCaptureGateRejectsUnknownField verifies that a gate JSON with a typo'd
+// top-level field (e.g. "verdct" instead of "verdict") is rejected with a
+// "parse gate JSON" error, and no ref is written. Under the old json.Unmarshal
+// the unknown field would have been silently dropped — the test confirms the
+// new strict decoder catches it.
+func TestCaptureGateRejectsUnknownField(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	// Create an existing run to attach the gate to.
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// Construct a gate JSON identical to a valid one but with an unknown
+	// top-level field "verdct" (typo of "verdict", which lives at seat level).
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id": "plan.r1",
+  "phase": "plan",
+  "round": 1,
+  "tier": 1,
+  "status": "pass",
+  "verdct": "go",
+  "reviewed_stages": [{"stage":"plan","role":"plan","artifact":""}],
+  "seats": [
+    {
+      "seat": "gemini",
+      "harness": {"name":"gemini-cli","version":"3.1"},
+      "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+      "verdict": "go",
+      "timestamp": %q
+    }
+  ],
+  "decision": {},
+  "timestamp": %q
+}`, now, now)
+	gateFile := filepath.Join(repo, "gate-typo.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate file: %v", err)
+	}
+
+	_, _, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate returned nil error for gate JSON with unknown field; expected rejection")
+	}
+	if !strings.Contains(err.Error(), "parse gate JSON") {
+		t.Fatalf("error %q does not mention 'parse gate JSON'", err.Error())
+	}
+
+	// Confirm no gate was written: the run should still have zero gates.
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 0 {
+		t.Fatalf("gates count = %d after rejected gate, want 0", len(m.Gates))
+	}
+}
+
+// TestCaptureGateRejectsTrailingData verifies that a gate file with a valid
+// JSON object followed by extra content is rejected.
+func TestCaptureGateRejectsTrailingData(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	// Create an existing run to attach the gate to.
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// A valid JSON object followed by a second JSON object (trailing data).
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id": "plan.r1",
+  "phase": "plan",
+  "round": 1,
+  "tier": 1,
+  "status": "pass",
+  "reviewed_stages": [{"stage":"plan","role":"plan","artifact":""}],
+  "seats": [
+    {
+      "seat": "gemini",
+      "harness": {"name":"gemini-cli","version":"3.1"},
+      "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+      "verdict": "go",
+      "timestamp": %q
+    }
+  ],
+  "decision": {},
+  "timestamp": %q
+}
+{}`, now, now)
+	gateFile := filepath.Join(repo, "gate-trailing.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate file: %v", err)
+	}
+
+	_, _, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate returned nil error for gate JSON with trailing data; expected rejection")
+	}
+	if !strings.Contains(err.Error(), "parse gate JSON") {
+		t.Fatalf("error %q does not mention 'parse gate JSON'", err.Error())
+	}
+
+	// Confirm no gate was written.
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 0 {
+		t.Fatalf("gates count = %d after rejected gate, want 0", len(m.Gates))
+	}
+}

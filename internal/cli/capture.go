@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -434,8 +435,17 @@ func (r captureRunner) runGate(ctx context.Context, cfg captureGateConfig) error
 	}
 
 	var input gateInputJSON
-	if err := json.Unmarshal(gateBytes, &input); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(gateBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&input); err != nil {
 		return fmt.Errorf("parse gate JSON: %w", err)
+	}
+	// Reject trailing data after the JSON object (a second token means extra content).
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("parse gate JSON: unexpected trailing data after gate object")
+		}
+		return fmt.Errorf("parse gate JSON: unexpected trailing data: %w", err)
 	}
 
 	// Resolve the existing run — a gate must attach to an existing run.
