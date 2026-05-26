@@ -15,6 +15,7 @@ Implemented:
   and configure `refs/etude/*` fetch/push refspecs on a git remote.
 - Manual `etude capture` command for local file artifacts.
 - `etude capture-gate` to append structured review-gate reviewer records to a run.
+- `etude capture-run` to capture a complete multi-stage run from a single YAML spec in one operation.
 - `etude run list` to list all stored runs.
 - `etude run show <run-id>` to inspect the detail of one run (including gates).
 - `etude sync` to push and fetch `refs/etude/*` with a git remote.
@@ -33,10 +34,11 @@ Implemented:
 
 The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
-`etude init`, `etude capture`, `etude capture-gate`, `etude run list`,
-`etude run show`, `etude sync`, `etude replay`, `etude bench`, `etude gc`,
-`etude reindex`, `etude retro capture`, and the root help and version output. (The `eval` package is a
-library used by `etude bench`; there is no standalone `etude eval` CLI yet.)
+`etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`,
+`etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
+`etude gc`, `etude reindex`, `etude retro capture`, and the root help and version
+output. (The `eval` package is a library used by `etude bench`; there is no
+standalone `etude eval` CLI yet.)
 
 The full design is in
 [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
@@ -62,6 +64,7 @@ make clean
 ./bin/etude init --force
 ./bin/etude init --remote upstream
 ./bin/etude capture plan --run run-1 --output output=plan.md
+./bin/etude capture-run spec.yaml
 ./bin/etude run list
 ./bin/etude run show run-1
 ./bin/etude sync
@@ -77,6 +80,7 @@ make clean
 
 See [Init](docs/init.md) for the init command.
 See [Manual Capture](docs/capture.md) for the capture command.
+See [Batch Capture](docs/capture-run.md) for `etude capture-run`.
 See [Gate reviewer records](docs/gates.md) for `etude capture-gate` and gate inspection.
 See [Runs](docs/run.md) for the run list and run show commands.
 See [Sync](docs/sync.md) for the sync command.

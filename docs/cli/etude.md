@@ -23,6 +23,7 @@ etude [flags]
 * [etude bench](etude_bench.md)	 - Benchmark a stage by replaying the cohort and judging replay vs original
 * [etude capture](etude_capture.md)	 - Capture a stage artifact into an etude run
 * [etude capture-gate](etude_capture-gate.md)	 - Append a gate reviewer record to an existing etude run
+* [etude capture-run](etude_capture-run.md)	 - Capture a multi-stage run from a YAML spec in one operation
 * [etude gc](etude_gc.md)	 - Report artifact storage or prune named run refs
 * [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs
 * [etude reindex](etude_reindex.md)	 - Rebuild the SQLite query index from all run and eval refs

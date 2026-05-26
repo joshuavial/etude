@@ -6,6 +6,7 @@ This directory holds user-facing documentation for implemented behavior.
 
 - [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
 - [Manual Capture](capture.md) - record local file artifacts into a run ref.
+- [Batch Capture](capture-run.md) - capture a complete multi-stage run from a single YAML spec.
 - [Runs](run.md) - list and inspect stored runs.
 - [Gate reviewer records](gates.md) - capture (`etude capture-gate`) and inspect review-gate attempts (reviewer seats, verdicts, provider/model/harness).
 - [Sync](sync.md) - push and fetch `refs/etude/*` with a git remote.

@@ -15,8 +15,15 @@ stages into `refs/etude/runs/<bead>`; `scripts/dogfood-gate-capture.sh` appends
 each review-gate attempt as a structured `GateAttempt`. The bead, git history,
 and these dogfood planning docs remain the human-readable mirror. Each workflow
 phase records a first-draft artifact, a provenance envelope, and review-gate
-results; remaining capture gaps (retros as first-class artifacts, batch capture,
-and external import) are still planned, not yet shipped.
+results; remaining capture gaps (retros as first-class artifacts and external
+import) are still planned, not yet shipped.
+
+**Batch capture is now shipped.** `etude capture-run <spec.yaml>` writes a
+complete multi-stage run from a single YAML spec in one operation. Artifact
+paths in the spec are relative to and confined within the spec file's directory.
+The command is create-only: it will not overwrite an existing run ref. The
+dogfood scripts that produce stage artifacts can use `capture-run` to record an
+entire bead run at once instead of calling `etude capture` once per stage.
 
 Captured phase artifacts are append-only after review starts. If a phase fails
 review or must be redone, create a new attempt entry instead of editing the
