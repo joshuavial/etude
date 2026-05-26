@@ -58,6 +58,27 @@ renders the sidecar in a `--- retro meta ---` section after the body (see
 [Show a retro](#show-a-retro)), and `retro list` flags its presence in the
 `META` column.
 
+#### Recommended convention
+
+etude does not enforce a sidecar schema, but downstream tooling expects a
+recognized shape. Use these advisory keys so a future cross-retro index can
+aggregate consistently:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `failure_modes` | array of strings | distinct failure modes the retro identified |
+| `root_causes` | array of strings | underlying process/skill/tool/context causes |
+
+Both are plural arrays (a retro may name several). Additional keys are allowed
+and ignored by current tooling. Example:
+
+```json
+{
+  "failure_modes": ["flaky-gate", "missing-newline-guard"],
+  "root_causes": ["lexical-only path check", "no edge test"]
+}
+```
+
 ## Generate a retro
 
 ```bash
@@ -229,7 +250,9 @@ the body, pretty-printed with two-space indentation:
   "failure_modes": [
     "flaky-gate"
   ],
-  "root_cause": "missing newline guard"
+  "root_causes": [
+    "missing newline guard"
+  ]
 }
 ```
 
