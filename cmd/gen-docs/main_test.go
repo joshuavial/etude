@@ -2,29 +2,71 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// expectedCommands lists every command the root tree should document.
-// One file per entry, named <command path with spaces replaced by underscores>.md.
-var expectedCommands = []string{
-	"etude.md",
-	"etude_bench.md",
-	"etude_capture.md",
-	"etude_gc.md",
-	"etude_init.md",
-	"etude_reindex.md",
-	"etude_replay.md",
-	"etude_retro_generate.md",
-	"etude_retro_list.md",
-	"etude_retro_show.md",
-	"etude_run.md",
-	"etude_run_list.md",
-	"etude_run_show.md",
-	"etude_sync.md",
+// checkDrift compares the generated set of etude*.md files against the
+// committed set. It returns one error per offending page:
+//   - missing/stale: a page in generatedDir does not exist byte-identically in committedDir
+//   - orphan: a page in committedDir has no counterpart in generatedDir
+//
+// It takes explicit dir args and does NOT hardcode docs/cli, so failure-mode
+// sub-tests can feed it crafted temp dirs.
+func checkDrift(generatedDir, committedDir string) []error {
+	var errs []error
+
+	// Build a set of generated pages (source of truth).
+	generatedFiles, err := filepath.Glob(filepath.Join(generatedDir, "etude*.md"))
+	if err != nil {
+		return []error{fmt.Errorf("glob generatedDir: %w", err)}
+	}
+	generatedSet := make(map[string]struct{}, len(generatedFiles))
+	for _, path := range generatedFiles {
+		generatedSet[filepath.Base(path)] = struct{}{}
+	}
+
+	// For each generated page, assert a byte-identical file exists in committedDir.
+	for _, genPath := range generatedFiles {
+		name := filepath.Base(genPath)
+		committedPath := filepath.Join(committedDir, name)
+
+		committedBytes, err := os.ReadFile(committedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("docs/cli/%s missing — run `make docs` to regenerate", name))
+			} else {
+				errs = append(errs, fmt.Errorf("read committed docs/cli/%s: %w", name, err))
+			}
+			continue
+		}
+		generatedBytes, err := os.ReadFile(genPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read generated %s: %w", name, err))
+			continue
+		}
+		if !bytes.Equal(generatedBytes, committedBytes) {
+			errs = append(errs, fmt.Errorf("docs/cli/%s is stale — run `make docs` to regenerate", name))
+		}
+	}
+
+	// Orphan check: any etude*.md in committedDir that the generator did NOT produce.
+	committedFiles, err := filepath.Glob(filepath.Join(committedDir, "etude*.md"))
+	if err != nil {
+		return append(errs, fmt.Errorf("glob committedDir: %w", err))
+	}
+	for _, path := range committedFiles {
+		name := filepath.Base(path)
+		if _, ok := generatedSet[name]; !ok {
+			errs = append(errs, fmt.Errorf("docs/cli/%s is an orphan (not produced by generator) — run `make docs` to regenerate", name))
+		}
+	}
+
+	return errs
 }
 
 func TestGeneratesOneFilePerCommand(t *testing.T) {
@@ -33,10 +75,19 @@ func TestGeneratesOneFilePerCommand(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	for _, name := range expectedCommands {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("missing expected file: %s", name)
+	entries, err := filepath.Glob(filepath.Join(dir, "etude*.md"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("run() generated no etude*.md files")
+	}
+
+	// Assert well-known anchor pages are present.
+	anchors := []string{"etude.md", "etude_run_list.md"}
+	for _, name := range anchors {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("missing expected anchor file: %s", name)
 		}
 	}
 }
@@ -104,8 +155,17 @@ func TestDeterministicOutput(t *testing.T) {
 		t.Fatalf("second run: %v", err)
 	}
 
-	for _, name := range expectedCommands {
-		a, err := os.ReadFile(filepath.Join(dir1, name))
+	// Enumerate files from dir1 (first run) as the reference set.
+	entries, err := filepath.Glob(filepath.Join(dir1, "etude*.md"))
+	if err != nil {
+		t.Fatalf("glob dir1: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("first run produced no etude*.md files")
+	}
+	for _, path := range entries {
+		name := filepath.Base(path)
+		a, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("missing from first run: %s", name)
 			continue
@@ -123,33 +183,145 @@ func TestDeterministicOutput(t *testing.T) {
 
 func TestDriftGuard(t *testing.T) {
 	// Locate the committed docs/cli directory relative to this file's module root.
-	// We walk up from the test binary's working directory to find go.mod.
 	committedDir, err := findCommittedCliDir()
 	if err != nil {
 		t.Skip("cannot locate committed docs/cli:", err)
 	}
 
-	dir := t.TempDir()
-	if err := run(dir); err != nil {
+	generatedDir := t.TempDir()
+	if err := run(generatedDir); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	// Compare every expected file.
-	for _, name := range expectedCommands {
-		committed, err := os.ReadFile(filepath.Join(committedDir, name))
+	for _, e := range checkDrift(generatedDir, committedDir) {
+		t.Error(e)
+	}
+}
+
+// TestCheckDriftFailureModes verifies that checkDrift detects each class of
+// discrepancy using crafted temp dirs (never touching real docs/cli).
+func TestCheckDriftFailureModes(t *testing.T) {
+	// Build the canonical generated dir once; all sub-tests share it read-only.
+	generatedDir := t.TempDir()
+	if err := run(generatedDir); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// copyDir copies all etude*.md files from src to dst.
+	copyDir := func(t *testing.T, src, dst string) {
+		t.Helper()
+		entries, err := filepath.Glob(filepath.Join(src, "etude*.md"))
 		if err != nil {
-			t.Errorf("committed docs/cli/%s missing — run `make docs` to regenerate", name)
-			continue
+			t.Fatalf("glob src: %v", err)
 		}
-		generated, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Errorf("generated docs missing %s", name)
-			continue
-		}
-		if !bytes.Equal(committed, generated) {
-			t.Errorf("docs/cli/%s is stale — run `make docs` to regenerate", name)
+		for _, path := range entries {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if err := os.WriteFile(filepath.Join(dst, filepath.Base(path)), data, 0o644); err != nil {
+				t.Fatalf("write %s: %v", filepath.Base(path), err)
+			}
 		}
 	}
+
+	// pickOne returns the base name of the first etude*.md in dir.
+	pickOne := func(t *testing.T, dir string) string {
+		t.Helper()
+		entries, err := filepath.Glob(filepath.Join(dir, "etude*.md"))
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("no etude*.md files in %s", dir)
+		}
+		return filepath.Base(entries[0])
+	}
+
+	t.Run("happy-path", func(t *testing.T) {
+		committedTmp := t.TempDir()
+		copyDir(t, generatedDir, committedTmp)
+
+		errs := checkDrift(generatedDir, committedTmp)
+		if len(errs) != 0 {
+			t.Errorf("expected no errors for identical dirs; got %d: %v", len(errs), errs)
+		}
+	})
+
+	t.Run("committed-missing", func(t *testing.T) {
+		committedTmp := t.TempDir()
+		copyDir(t, generatedDir, committedTmp)
+
+		// Remove one page from the committed copy.
+		victim := pickOne(t, generatedDir)
+		if err := os.Remove(filepath.Join(committedTmp, victim)); err != nil {
+			t.Fatalf("remove victim: %v", err)
+		}
+
+		errs := checkDrift(generatedDir, committedTmp)
+		if len(errs) == 0 {
+			t.Fatalf("expected an error for missing committed page %s, got none", victim)
+		}
+		found := false
+		for _, e := range errs {
+			if strings.Contains(e.Error(), victim) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("error does not name the missing page %q; errors: %v", victim, errs)
+		}
+	})
+
+	t.Run("committed-orphan", func(t *testing.T) {
+		committedTmp := t.TempDir()
+		copyDir(t, generatedDir, committedTmp)
+
+		// Add a stray page to the committed copy.
+		orphan := "etude_bogus.md"
+		if err := os.WriteFile(filepath.Join(committedTmp, orphan), []byte("stray"), 0o644); err != nil {
+			t.Fatalf("write orphan: %v", err)
+		}
+
+		errs := checkDrift(generatedDir, committedTmp)
+		if len(errs) == 0 {
+			t.Fatalf("expected an error for orphan page %s, got none", orphan)
+		}
+		found := false
+		for _, e := range errs {
+			if strings.Contains(e.Error(), orphan) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("error does not name the orphan page %q; errors: %v", orphan, errs)
+		}
+	})
+
+	t.Run("byte-stale", func(t *testing.T) {
+		committedTmp := t.TempDir()
+		copyDir(t, generatedDir, committedTmp)
+
+		// Corrupt one page's bytes in the committed copy.
+		victim := pickOne(t, generatedDir)
+		if err := os.WriteFile(filepath.Join(committedTmp, victim), []byte("stale content"), 0o644); err != nil {
+			t.Fatalf("write stale bytes: %v", err)
+		}
+
+		errs := checkDrift(generatedDir, committedTmp)
+		if len(errs) == 0 {
+			t.Fatalf("expected an error for stale committed page %s, got none", victim)
+		}
+		found := false
+		for _, e := range errs {
+			if strings.Contains(e.Error(), victim) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("error does not name the stale page %q; errors: %v", victim, errs)
+		}
+	})
 }
 
 // findCommittedCliDir resolves the docs/cli path by walking up from the
@@ -170,5 +342,5 @@ func findCommittedCliDir() (string, error) {
 		}
 		dir = parent
 	}
-	return "", os.ErrNotExist
+	return "", fs.ErrNotExist
 }
