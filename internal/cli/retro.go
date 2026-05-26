@@ -178,14 +178,9 @@ func (r *retroShowListRunner) list(ctx context.Context) error {
 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tMETA\tCREATED")
 	for _, ref := range refs {
-		id := strings.TrimPrefix(ref, retrosPrefix)
-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
+		id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro")
 		if err != nil {
-			return fmt.Errorf("retro %q: %w", id, err)
-		}
-		manifest, err := runmanifest.ParseJSON(manifestBytes)
-		if err != nil {
-			return fmt.Errorf("retro %q: %w", id, err)
+			return err
 		}
 		subjects := retroSubjectsList(manifest.Refs)
 		metaCol := "N"

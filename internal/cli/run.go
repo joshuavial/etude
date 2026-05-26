@@ -83,14 +83,9 @@ func (r *runShowListRunner) list(ctx context.Context) error {
 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "RUN ID\tWORKFLOW\tCREATED\tSTAGES")
 	for _, ref := range refs {
-		id := strings.TrimPrefix(ref, runsPrefix)
-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
+		id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run")
 		if err != nil {
-			return fmt.Errorf("run %q: %w", id, err)
-		}
-		manifest, err := runmanifest.ParseJSON(manifestBytes)
-		if err != nil {
-			return fmt.Errorf("run %q: %w", id, err)
+			return err
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
 			id,

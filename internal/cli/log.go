@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/joshuavial/etude/internal/refstore"
-	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/spf13/cobra"
 )
 
@@ -151,14 +150,9 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
 		return nil, err
 	}
 	for _, ref := range runRefs {
-		id := strings.TrimPrefix(ref, runsPrefix)
-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
+		id, manifest, err := loadManifestForRef(ctx, r.store, ref, runsPrefix, "run")
 		if err != nil {
-			return nil, fmt.Errorf("run %q: %w", id, err)
-		}
-		manifest, err := runmanifest.ParseJSON(manifestBytes)
-		if err != nil {
-			return nil, fmt.Errorf("run %q: %w", id, err)
+			return nil, err
 		}
 		summary := fmt.Sprintf("%s (%d stages)", manifest.Workflow, len(manifest.Stages))
 		if len(manifest.Gates) > 0 {
@@ -178,14 +172,9 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
 		return nil, err
 	}
 	for _, ref := range retroRefs {
-		id := strings.TrimPrefix(ref, retrosPrefix)
-		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
+		id, manifest, err := loadManifestForRef(ctx, r.store, ref, retrosPrefix, "retro")
 		if err != nil {
-			return nil, fmt.Errorf("retro %q: %w", id, err)
-		}
-		manifest, err := runmanifest.ParseJSON(manifestBytes)
-		if err != nil {
-			return nil, fmt.Errorf("retro %q: %w", id, err)
+			return nil, err
 		}
 		subjects := retroSubjectsList(manifest.Refs)
 		// Build summary: scope=<v> trigger=<v> subjects=<v>, trimming trailing
