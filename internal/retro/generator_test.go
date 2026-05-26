@@ -89,3 +89,29 @@ func TestStubGenerator_CompileTimeAssertion(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestStubGenerator_CannedMeta(t *testing.T) {
+	wantMeta := []byte(`{"scope":"cohort","failure_modes":[]}`)
+	stub := &StubGenerator{
+		CannedBody: []byte("# Retro body\n"),
+		CannedMeta: wantMeta,
+	}
+	res, err := stub.Generate(context.Background(), GenerateRequest{Scope: "cohort"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(res.Meta) != string(wantMeta) {
+		t.Errorf("Meta = %q, want %q", res.Meta, wantMeta)
+	}
+}
+
+func TestStubGenerator_NoCannedMetaIsNil(t *testing.T) {
+	stub := &StubGenerator{CannedBody: []byte("# Retro body\n")}
+	res, err := stub.Generate(context.Background(), GenerateRequest{Scope: "cohort"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Meta != nil {
+		t.Errorf("Meta = %q, want nil (no CannedMeta)", res.Meta)
+	}
+}

@@ -35,10 +35,26 @@ Useful flags:
 --model <model-id>
 --skill-id <id>               # default: retro
 --message <text>              # git commit message override
+--meta-file <path>|-          # optional retro-meta JSON sidecar
 ```
 
 The retro id is auto-assigned from the scope, primary subject, and timestamp.
 Prints `captured <commit-sha>` and `ref refs/etude/retros/<id>` on success.
+
+### Retro-meta sidecar
+
+`--meta-file <path>|-` attaches an optional JSON sidecar (read from a file or
+stdin) alongside the retro body. The body is stored as the first stage
+(`stage: retro`, `text/markdown`); when a sidecar is supplied it is stored as a
+second `retro-meta` stage (`application/json`) in the same manifest. Omitting
+`--meta-file` produces the usual single-stage manifest, so existing captures are
+unchanged.
+
+The sidecar must be well-formed JSON: malformed input is rejected before any ref
+is written, with `retro meta file "<path>" is not valid JSON` and a non-zero
+exit code. The schema of the JSON is not interpreted by etude — it is stored
+verbatim for downstream tooling (e.g. failure-mode indexing). `retro show` does
+not yet render the sidecar.
 
 ## Generate a retro
 

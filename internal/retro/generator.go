@@ -51,6 +51,10 @@ type GenerateResult struct {
 	MediaType string
 	// Producer is the producer identity actually used; MAY differ from req.Producer.
 	Producer runmanifest.Producer
+	// Meta is an optional JSON sidecar (application/json). When non-nil and
+	// non-empty, the CLI write path attaches it as a second retro-meta stage in
+	// the retro manifest. Nil/empty means no sidecar (single-stage manifest).
+	Meta []byte
 }
 
 // stubConcatSeparator is the separator used by StubGenerator in CONCAT mode.
@@ -72,6 +76,10 @@ type StubGenerator struct {
 	CannedBody []byte
 	// CannedMediaType is the MediaType returned in CANNED mode (may be empty).
 	CannedMediaType string
+	// CannedMeta, if non-nil, is returned as GenerateResult.Meta in all
+	// non-error modes. It allows tests to inject a JSON sidecar so the CLI
+	// write path attaches a retro-meta stage.
+	CannedMeta []byte
 	// Concat activates CONCAT mode when CannedBody is nil and Err is nil.
 	Concat bool
 	// Err, if non-nil, is returned immediately from Generate.
@@ -114,5 +122,6 @@ func (s *StubGenerator) Generate(_ context.Context, req GenerateRequest) (Genera
 		Body:      body,
 		MediaType: mediaType,
 		Producer:  producer,
+		Meta:      s.CannedMeta,
 	}, nil
 }

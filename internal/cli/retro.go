@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ var validRetroScopes = map[string]bool{
 
 type retroCaptureConfig struct {
 	file           string
+	metaFile       string
 	subjectRuns    []string
 	beads          []string
 	trigger        string
@@ -101,6 +103,10 @@ type retroWriteParams struct {
 	producedVia string
 	// generatorSpec, if non-empty, is set as Refs["generator"].
 	generatorSpec string
+	// metaContent, if non-empty, is well-formed JSON to attach as a second
+	// retro-meta stage in the manifest (role:retro-meta, application/json).
+	// When nil/empty the manifest has exactly one stage (backward compatible).
+	metaContent []byte
 }
 
 func newRetroCommand(out, errOut io.Writer) *cobra.Command {
@@ -406,6 +412,7 @@ func newRetroCaptureCommand(out, errOut io.Writer) *cobra.Command {
 
 	flags := cmd.Flags()
 	flags.StringVar(&cfg.file, "file", "", "path to retro markdown body, or - for stdin (required)")
+	flags.StringVar(&cfg.metaFile, "meta-file", "", "path to retro-meta JSON sidecar, or - for stdin (optional; must be well-formed JSON)")
 	flags.StringArrayVar(&cfg.subjectRuns, "subject-run", nil, "run id of a subject run (repeatable; >=1 required unless scope=workflow)")
 	flags.StringArrayVar(&cfg.beads, "bead", nil, "bead id of a subject bead (repeatable)")
 	flags.StringVar(&cfg.trigger, "trigger", "manual", "trigger that prompted this retro (e.g. manual, scheduled)")
@@ -479,6 +486,22 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 		return fmt.Errorf("read retro file: %w", err)
 	}
 
+	// Read the optional retro-meta JSON sidecar.
+	var metaContent []byte
+	if strings.TrimSpace(cfg.metaFile) != "" {
+		if cfg.metaFile == "-" {
+			metaContent, err = io.ReadAll(os.Stdin)
+		} else {
+			metaContent, err = os.ReadFile(cfg.metaFile)
+		}
+		if err != nil {
+			return fmt.Errorf("read retro meta file: %w", err)
+		}
+		if !json.Valid(metaContent) {
+			return fmt.Errorf("retro meta file %q is not valid JSON", cfg.metaFile)
+		}
+	}
+
 	// Parse extra --ref values and check for reserved keys.
 	extraRefs, err := parseRefs(cfg.refs)
 	if err != nil {
@@ -509,6 +532,7 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 		message:        cfg.message,
 		producedVia:    "",
 		generatorSpec:  "",
+		metaContent:    metaContent,
 	}
 
 	commit, retroID, err := assembleAndWriteRetro(ctx, r.store, r.now, bodyContent, p)
@@ -564,6 +588,17 @@ func assembleAndWriteRetro(
 		return "", "", fmt.Errorf("add retro body artifact: %w", err)
 	}
 	bodyRef := runmanifest.ArtifactFromManifestArtifact(bodyArtifact)
+
+	// Optionally add the retro-meta JSON sidecar artifact.
+	var metaRef runmanifest.ArtifactRef
+	if len(p.metaContent) > 0 {
+		metaArtifact, metaErr := artifactStoreInst.AddContent("retro-meta", "application/json", p.metaContent)
+		if metaErr != nil {
+			return "", "", fmt.Errorf("add retro-meta artifact: %w", metaErr)
+		}
+		metaRef = runmanifest.ArtifactFromManifestArtifact(metaArtifact)
+	}
+
 	files := artifactStoreInst.Files()
 
 	// Build the Refs map.
@@ -628,31 +663,50 @@ func assembleAndWriteRetro(
 		Version: p.skillVersion,
 	}
 
+	producer := runmanifest.Producer{
+		Harness: runmanifest.Harness{
+			Name:    p.harness,
+			Version: p.harnessVersion,
+		},
+		Model: p.model,
+		Skill: skill,
+	}
+
+	stages := []runmanifest.Stage{
+		{
+			Name:       "retro",
+			ProducedBy: "retro",
+			GitSHA:     p.gitSHA,
+			Skill:      skill,
+			Producer:   producer,
+			Inputs:     []runmanifest.ArtifactRef{},
+			Output:     bodyRef,
+			Timestamp:  now,
+		},
+	}
+
+	// When a meta sidecar is present, append a second retro-meta stage.
+	// The existing retro stage stays Stages[0]; retro-meta is Stages[1].
+	if len(p.metaContent) > 0 {
+		stages = append(stages, runmanifest.Stage{
+			Name:       "retro-meta",
+			ProducedBy: "retro-meta",
+			GitSHA:     p.gitSHA,
+			Skill:      skill,
+			Producer:   producer,
+			Inputs:     []runmanifest.ArtifactRef{},
+			Output:     metaRef,
+			Timestamp:  now,
+		})
+	}
+
 	manifest := runmanifest.Manifest{
 		RunID:           retroID,
 		Workflow:        "retro",
 		WorkflowVersion: "retro-v1",
 		Created:         now,
 		Refs:            refsMap,
-		Stages: []runmanifest.Stage{
-			{
-				Name:       "retro",
-				ProducedBy: "retro",
-				GitSHA:     p.gitSHA,
-				Skill:      skill,
-				Producer: runmanifest.Producer{
-					Harness: runmanifest.Harness{
-						Name:    p.harness,
-						Version: p.harnessVersion,
-					},
-					Model: p.model,
-					Skill: skill,
-				},
-				Inputs:    []runmanifest.ArtifactRef{},
-				Output:    bodyRef,
-				Timestamp: now,
-			},
-		},
+		Stages:          stages,
 	}
 
 	msg := p.message
@@ -883,6 +937,7 @@ func (r *retroGenerateRunner) run(ctx context.Context, scope string, cfg retroGe
 		message:        cfg.message,
 		producedVia:    "generate",
 		generatorSpec:  effectiveGeneratorSpec,
+		metaContent:    genResult.Meta,
 	}
 
 	commit, retroID, err := assembleAndWriteRetro(ctx, r.store, r.now, genResult.Body, p)

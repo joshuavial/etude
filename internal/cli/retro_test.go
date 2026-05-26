@@ -1208,3 +1208,308 @@ func TestRetroGenerateAmbiguousStage(t *testing.T) {
 		t.Errorf("error = %q, want containing 'ambiguous'", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// retro-meta sidecar (etude-2ku)
+// ---------------------------------------------------------------------------
+
+// TestRetroCaptureMetaFileTwoStages verifies that --meta-file produces a
+// 2-stage manifest: Stages[0]=retro (body), Stages[1]=retro-meta (JSON).
+func TestRetroCaptureMetaFileTwoStages(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nBody content.\n")
+	metaJSON := `{"scope":"cohort","decision":"accepted","failure_modes":[]}`
+	writeFile(t, repo, "meta.json", metaJSON)
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--meta-file", "meta.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture --meta-file returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/retros/") {
+		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	// Must have exactly 2 stages.
+	if len(manifest.Stages) != 2 {
+		t.Fatalf("len(manifest.Stages) = %d, want 2", len(manifest.Stages))
+	}
+
+	// Stage 0: retro body.
+	s0 := manifest.Stages[0]
+	if s0.Name != "retro" {
+		t.Errorf("Stages[0].Name = %q, want retro", s0.Name)
+	}
+	if s0.Output.Role != "retro" {
+		t.Errorf("Stages[0].Output.Role = %q, want retro", s0.Output.Role)
+	}
+	if s0.Output.MediaType != "text/markdown; charset=utf-8" {
+		t.Errorf("Stages[0].Output.MediaType = %q, want text/markdown; charset=utf-8", s0.Output.MediaType)
+	}
+
+	// Stage 1: retro-meta sidecar.
+	s1 := manifest.Stages[1]
+	if s1.Name != "retro-meta" {
+		t.Errorf("Stages[1].Name = %q, want retro-meta", s1.Name)
+	}
+	if s1.Output.Role != "retro-meta" {
+		t.Errorf("Stages[1].Output.Role = %q, want retro-meta", s1.Output.Role)
+	}
+	if s1.Output.MediaType != "application/json" {
+		t.Errorf("Stages[1].Output.MediaType = %q, want application/json", s1.Output.MediaType)
+	}
+
+	// Both artifact paths must be readable.
+	store := refstore.New(repo)
+	bodyBytes, err := store.ReadFile(context.Background(), "refs/etude/retros/"+retroID, s0.Output.Path)
+	if err != nil {
+		t.Fatalf("read body artifact: %v", err)
+	}
+	if string(bodyBytes) != "# Retro\nBody content.\n" {
+		t.Errorf("body = %q", bodyBytes)
+	}
+
+	metaBytes, err := store.ReadFile(context.Background(), "refs/etude/retros/"+retroID, s1.Output.Path)
+	if err != nil {
+		t.Fatalf("read meta artifact: %v", err)
+	}
+	if string(metaBytes) != metaJSON {
+		t.Errorf("meta = %q, want %q", metaBytes, metaJSON)
+	}
+
+	// Manifest must pass Validate.
+	if err := manifest.Validate(); err != nil {
+		t.Errorf("manifest.Validate() = %v, want nil", err)
+	}
+}
+
+// TestRetroCaptureNoMetaFileSingleStage verifies that omitting --meta-file
+// produces exactly 1 stage — backward compatible with the existing shape.
+func TestRetroCaptureNoMetaFileSingleStage(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nNo meta.\n")
+	chdir(t, repo)
+
+	stdout, _, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture (no meta) returned error: %v", err)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if len(manifest.Stages) != 1 {
+		t.Fatalf("len(manifest.Stages) = %d, want 1 (no --meta-file)", len(manifest.Stages))
+	}
+	if manifest.Stages[0].Name != "retro" {
+		t.Errorf("Stages[0].Name = %q, want retro", manifest.Stages[0].Name)
+	}
+}
+
+// TestRetroCaptureMetaFileMalformedJSON verifies that a malformed --meta-file
+// returns a clear error and writes nothing.
+func TestRetroCaptureMetaFileMalformedJSON(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\n")
+	writeFile(t, repo, "bad.json", "not valid json {{")
+	chdir(t, repo)
+
+	_, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--meta-file", "bad.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err == nil {
+		t.Fatal("expected error for malformed --meta-file JSON, got nil")
+	}
+	combined := err.Error() + " " + stderr
+	if !strings.Contains(combined, "not valid JSON") {
+		t.Errorf("error = %q, want containing 'not valid JSON'", combined)
+	}
+}
+
+// TestRetroCaptureMetaFileStdin verifies that --meta-file - reads meta from stdin.
+func TestRetroCaptureMetaFileStdin(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nBody.\n")
+	metaJSON := `{"scope":"run","decision":"accepted"}`
+	writeFile(t, repo, "meta-stdin.json", metaJSON)
+	chdir(t, repo)
+
+	// Pipe meta.json into stdin.
+	oldStdin := os.Stdin
+	f, err := os.Open(repo + "/meta-stdin.json")
+	if err != nil {
+		t.Fatalf("open meta stdin file: %v", err)
+	}
+	os.Stdin = f
+	t.Cleanup(func() {
+		f.Close()
+		os.Stdin = oldStdin
+	})
+
+	stdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--meta-file", "-",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture --meta-file - returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if len(manifest.Stages) != 2 {
+		t.Fatalf("len(manifest.Stages) = %d, want 2 (--meta-file -)", len(manifest.Stages))
+	}
+	if manifest.Stages[1].Output.Role != "retro-meta" {
+		t.Errorf("Stages[1].Output.Role = %q, want retro-meta", manifest.Stages[1].Output.Role)
+	}
+
+	// Verify meta content.
+	metaBytes, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/retros/"+retroID, manifest.Stages[1].Output.Path)
+	if err != nil {
+		t.Fatalf("read meta artifact: %v", err)
+	}
+	if string(metaBytes) != metaJSON {
+		t.Errorf("meta = %q, want %q", metaBytes, metaJSON)
+	}
+}
+
+// TestRetroGenerateWithCannedMeta verifies that a StubGenerator returning
+// CannedMeta produces a 2-stage manifest with a retro-meta sidecar.
+func TestRetroGenerateWithCannedMeta(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-meta-run")
+	chdir(t, repo)
+
+	wantBody := []byte("# Generated Retro\nWith meta.\n")
+	wantMeta := []byte(`{"scope":"cohort","failure_modes":[],"root_causes":[]}`)
+	stub := &retro.StubGenerator{
+		CannedBody: wantBody,
+		CannedMeta: wantMeta,
+	}
+
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "gen-meta-run",
+	)
+	if err != nil {
+		t.Fatalf("retro generate (with meta) returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if len(manifest.Stages) != 2 {
+		t.Fatalf("len(manifest.Stages) = %d, want 2 (generator returned Meta)", len(manifest.Stages))
+	}
+
+	s0 := manifest.Stages[0]
+	if s0.Name != "retro" {
+		t.Errorf("Stages[0].Name = %q, want retro", s0.Name)
+	}
+
+	s1 := manifest.Stages[1]
+	if s1.Name != "retro-meta" {
+		t.Errorf("Stages[1].Name = %q, want retro-meta", s1.Name)
+	}
+	if s1.Output.MediaType != "application/json" {
+		t.Errorf("Stages[1].Output.MediaType = %q, want application/json", s1.Output.MediaType)
+	}
+
+	store := refstore.New(repo)
+	metaBytes, err := store.ReadFile(context.Background(), "refs/etude/retros/"+retroID, s1.Output.Path)
+	if err != nil {
+		t.Fatalf("read meta artifact: %v", err)
+	}
+	if string(metaBytes) != string(wantMeta) {
+		t.Errorf("meta = %q, want %q", metaBytes, wantMeta)
+	}
+}
+
+// TestRetroGenerateWithoutMetaSingleStage verifies that a StubGenerator without
+// CannedMeta produces exactly 1 stage (backward compat).
+func TestRetroGenerateWithoutMetaSingleStage(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-no-meta-run")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("# Retro\nNo meta.\n")}
+
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "gen-no-meta-run",
+	)
+	if err != nil {
+		t.Fatalf("retro generate (no meta) returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if len(manifest.Stages) != 1 {
+		t.Fatalf("len(manifest.Stages) = %d, want 1 (no CannedMeta)", len(manifest.Stages))
+	}
+}
+
+// TestRetroShowWithMetaStageStillRendersSingleBody verifies that retro show
+// still renders correctly for a 2-stage retro (reads Stages[0] for body).
+func TestRetroShowWithMetaStageStillRendersSingleBody(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nMeta sidecar present.\n")
+	metaJSON := `{"scope":"cohort"}`
+	writeFile(t, repo, "meta.json", metaJSON)
+	chdir(t, repo)
+
+	captureStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--meta-file", "meta.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := extractRetroID(t, captureStdout)
+
+	stdout, stderr, err := execute("retro", "show", retroID)
+	if err != nil {
+		t.Fatalf("retro show (2-stage) returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Body divider must be present.
+	if !strings.Contains(stdout, "--- retro body ---") {
+		t.Errorf("expected '--- retro body ---' in output:\n%s", stdout)
+	}
+	// Body text must be present.
+	if !strings.Contains(stdout, "Meta sidecar present.") {
+		t.Errorf("expected body text in output:\n%s", stdout)
+	}
+	// Scope must be present.
+	if !strings.Contains(stdout, "cohort") {
+		t.Errorf("expected 'cohort' in output:\n%s", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}

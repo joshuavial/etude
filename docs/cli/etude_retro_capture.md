@@ -22,6 +22,7 @@ etude retro capture <scope> [flags]
       --harness-version string    version of the agent runtime
   -h, --help                      help for capture
       --message string            retro ref commit message
+      --meta-file string          path to retro-meta JSON sidecar, or - for stdin (optional; must be well-formed JSON)
       --model string              LLM model used (if any)
       --ref stringArray           additional ref as key=value (repeatable)
       --skill-id string           skill id (default "retro")
