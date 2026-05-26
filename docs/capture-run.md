@@ -64,6 +64,13 @@ All `path` values must be relative (not absolute) and must not escape the spec
 file's directory via `..`. Subdirectory paths like `artifacts/plan.md` are
 allowed. This makes a spec and its artifacts a self-contained directory.
 
+Confinement is enforced on the resolved real path, not just lexically: a symlink
+inside the spec directory whose target points outside it (via an absolute path,
+a `..` target, a chain, or an intermediate symlinked directory) is rejected with
+`escapes the spec directory`. A symlink whose target stays inside the spec
+directory is allowed. A path that does not exist is reported as
+`does not exist` rather than a confinement error.
+
 ## Create-only semantics
 
 `capture-run` creates the run ref only if it does not already exist. If

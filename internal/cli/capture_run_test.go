@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -310,9 +312,12 @@ func TestCaptureRunErrorCases(t *testing.T) {
 			want:     "output path is required",
 		},
 		{
+			// A genuinely-missing artifact path is reported as a plain "does not
+			// exist" typo error, not masked as a confinement violation (EvalSymlinks
+			// fails with os.ErrNotExist, which the resolver distinguishes).
 			name:     "nonexistent artifact path",
 			specYAML: "run_id: r1\nstages:\n  - stage: plan\n    skill:\n      id: planner\n    output:\n      role: plan\n      path: missing-file.md\n",
-			want:     "read ",
+			want:     "does not exist",
 		},
 		{
 			name:     "zero stages",
@@ -699,6 +704,127 @@ stages: []
 		}
 		if !strings.Contains(err.Error(), "parse spec") {
 			t.Fatalf("error %q does not mention 'parse spec'", err.Error())
+		}
+	})
+}
+
+// TestCaptureRunArtifactPathSymlinkContainment verifies that symlink-based path
+// escapes are caught by the realpath confinement layer, that symlinks pointing
+// inside the spec dir are accepted, and that relative-spec invocation works
+// correctly (the PLAN-GATE CORRECTION regression test).
+func TestCaptureRunArtifactPathSymlinkContainment(t *testing.T) {
+	repo := initCaptureRepo(t)
+
+	// Create an "outside" file we'll use as a symlink target for negative tests.
+	writeFile(t, repo, "secret.md", "this must not leak\n")
+
+	// specDir lives inside repo so we can write spec + artifacts next to each other.
+	writeFile(t, repo, "specdir/placeholder", "")
+
+	chdir(t, repo)
+
+	// Helper that skips if symlink creation is unsupported on this FS.
+	mustSymlink := func(t *testing.T, oldname, newname string) {
+		t.Helper()
+		if err := os.Symlink(oldname, newname); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+	}
+
+	specTemplate := func(runID, outputPath string) string {
+		return "run_id: " + runID + "\nstages:\n  - stage: plan\n    skill:\n      id: planner\n    output:\n      role: plan\n      path: " + outputPath + "\n"
+	}
+
+	t.Run("symlink_inside_to_absolute_outside_rejected", func(t *testing.T) {
+		// Create a real file outside the spec dir to target (self-contained — no host dep).
+		writeFile(t, repo, "outside-a.md", "outside content\n")
+		outsideAbs := repo + "/outside-a.md"
+
+		// Symlink inside specdir pointing to the absolute outside path.
+		mustSymlink(t, outsideAbs, repo+"/specdir/leak-a.md")
+
+		spec := specTemplate("sym-abs-"+t.Name()[len("TestCaptureRunArtifactPathSymlinkContainment/"):], "leak-a.md")
+		specPath := writeSpecFile(t, repo, "specdir/sym-abs.yaml", spec)
+
+		_, _, err := execute("capture-run", specPath)
+		if err == nil {
+			t.Fatal("capture-run accepted symlink pointing to absolute outside path; want error")
+		}
+		if !strings.Contains(err.Error(), "escapes the spec directory") {
+			t.Fatalf("error %q does not contain 'escapes the spec directory'", err.Error())
+		}
+	})
+
+	t.Run("symlink_inside_to_relative_outside_rejected", func(t *testing.T) {
+		// secret.md already lives at repo root, specdir is one level down.
+		// "../secret.md" from inside specdir resolves to repo/secret.md — outside specdir.
+		mustSymlink(t, "../secret.md", repo+"/specdir/leak-b.md")
+
+		spec := specTemplate("sym-rel-outside", "leak-b.md")
+		specPath := writeSpecFile(t, repo, "specdir/sym-rel.yaml", spec)
+
+		_, _, err := execute("capture-run", specPath)
+		if err == nil {
+			t.Fatal("capture-run accepted symlink with relative escape; want error")
+		}
+		if !strings.Contains(err.Error(), "escapes the spec directory") {
+			t.Fatalf("error %q does not contain 'escapes the spec directory'", err.Error())
+		}
+	})
+
+	t.Run("symlink_inside_to_inside_accepted", func(t *testing.T) {
+		// Create a real file deeper inside the spec dir, then symlink to it from the top.
+		writeFile(t, repo, "specdir/sub/b.md", "real content inside\n")
+		// specdir/a.md -> sub/b.md  (relative, stays inside specdir)
+		mustSymlink(t, "sub/b.md", repo+"/specdir/a.md")
+
+		spec := specTemplate("sym-inside", "a.md")
+		specPath := writeSpecFile(t, repo, "specdir/sym-inside.yaml", spec)
+
+		_, stderr, err := execute("capture-run", specPath)
+		if err != nil {
+			t.Fatalf("capture-run rejected inside-pointing symlink: %v\nstderr: %s", err, stderr)
+		}
+	})
+
+	t.Run("relative_spec_path_with_abs_target_inside_accepted", func(t *testing.T) {
+		// PLAN-GATE CORRECTION regression test:
+		// Invoke capture-run with a RELATIVE spec path (specDir == ".") and an
+		// artifact that is a symlink with an ABSOLUTE target pointing INSIDE the
+		// spec dir. Without the filepath.Abs fix this falsely rejects because
+		// EvalSymlinks(".") returns "." while the resolved symlink target is
+		// absolute, causing filepath.Rel(".", "/abs/...") to succeed but compare
+		// incorrectly or error.
+
+		// Make a subdirectory that will be both specdir and cwd.
+		writeFile(t, repo, "relspecdir/real.md", "real inside content\n")
+
+		// Absolute path of real.md inside relspecdir.
+		absTarget, err := filepath.Abs(repo + "/relspecdir/real.md")
+		if err != nil {
+			t.Fatalf("Abs: %v", err)
+		}
+		// Symlink inside relspecdir with absolute target also inside relspecdir.
+		mustSymlink(t, absTarget, repo+"/relspecdir/abs-inside.md")
+
+		spec := specTemplate("sym-abs-inside", "abs-inside.md")
+		specPath := writeSpecFile(t, repo, "relspecdir/relspec.yaml", spec)
+
+		// chdir into the spec dir and pass a relative spec path (specDir == ".").
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd: %v", err)
+		}
+		if err := os.Chdir(repo + "/relspecdir"); err != nil {
+			t.Fatalf("Chdir: %v", err)
+		}
+		t.Cleanup(func() { os.Chdir(origDir) })
+
+		// Use a relative spec path so specDir == "." inside run().
+		_ = specPath // absolute path available but we want relative
+		_, stderr, err := execute("capture-run", "relspec.yaml")
+		if err != nil {
+			t.Fatalf("capture-run rejected abs-target-inside symlink with relative spec path: %v\nstderr: %s", err, stderr)
 		}
 	})
 }

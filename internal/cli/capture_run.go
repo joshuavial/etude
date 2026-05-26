@@ -192,13 +192,27 @@ func (r captureRunRunner) run(ctx context.Context, specPath, message string) err
 	// Spec file directory — artifact paths resolve relative to it.
 	specDir := filepath.Dir(specPath)
 
+	// Anchor on an absolute lexical base so filepath.Rel never errors due to a
+	// relative vs. absolute mismatch (happens when specDir == "." because the
+	// user ran `etude capture-run spec.yaml` from inside the spec dir).
+	absSpecDir, err := filepath.Abs(specDir)
+	if err != nil {
+		return fmt.Errorf("resolve spec directory %s: %w", specDir, err)
+	}
+	// Resolve the real (symlink-free) spec dir once; used for realpath confinement.
+	// specDir always exists here because os.ReadFile(specPath) succeeded above.
+	realSpecDir, err := filepath.EvalSymlinks(absSpecDir)
+	if err != nil {
+		return fmt.Errorf("resolve spec directory %s: %w", absSpecDir, err)
+	}
+
 	// Build all stages + accumulate artifact files across stages.
 	artifactStore := artifactstore.New()
 	now := r.now().UTC()
 	stages := make([]runmanifest.Stage, 0, len(spec.Stages))
 
 	for i, stageSpec := range spec.Stages {
-		stage, err := r.buildStage(i, stageSpec, spec, runGitSHA, specDir, artifactStore, now)
+		stage, err := r.buildStage(i, stageSpec, spec, runGitSHA, absSpecDir, realSpecDir, artifactStore, now)
 		if err != nil {
 			return err
 		}
@@ -244,7 +258,8 @@ func (r captureRunRunner) buildStage(
 	stageSpec captureRunStageSpec,
 	runSpec captureRunSpec,
 	runGitSHA string,
-	specDir string,
+	absSpecDir string,
+	realSpecDir string,
 	store *artifactstore.Store,
 	now time.Time,
 ) (runmanifest.Stage, error) {
@@ -309,7 +324,7 @@ func (r captureRunRunner) buildStage(
 		if inputSpec.Path == "" {
 			return runmanifest.Stage{}, fmt.Errorf("stage[%d] (%s): input role %q has no path", index, stageSpec.Stage, inputSpec.Role)
 		}
-		absPath, err := resolveArtifactPath(specDir, inputSpec.Path)
+		absPath, err := resolveArtifactPath(absSpecDir, realSpecDir, inputSpec.Path)
 		if err != nil {
 			return runmanifest.Stage{}, fmt.Errorf("stage[%d] (%s): input: %w", index, stageSpec.Stage, err)
 		}
@@ -324,7 +339,7 @@ func (r captureRunRunner) buildStage(
 	if stageSpec.Output.Path == "" {
 		return runmanifest.Stage{}, fmt.Errorf("stage[%d] (%s): output path is required", index, stageSpec.Stage)
 	}
-	absOutputPath, err := resolveArtifactPath(specDir, stageSpec.Output.Path)
+	absOutputPath, err := resolveArtifactPath(absSpecDir, realSpecDir, stageSpec.Output.Path)
 	if err != nil {
 		return runmanifest.Stage{}, fmt.Errorf("stage[%d] (%s): output: %w", index, stageSpec.Stage, err)
 	}
@@ -374,20 +389,51 @@ func addFileArtifactFromPath(store *artifactstore.Store, role, absPath string) (
 // directory that contains the spec file, so spec files are self-contained
 // and portable as a directory.
 //
+// absSpecDir is the absolute (but not yet symlink-resolved) spec directory;
+// realSpecDir is its realpath (symlinks resolved). Both must be absolute paths.
+//
 // Absolute paths are rejected — every artifact path must be relative to the
-// spec dir. Relative paths that escape the spec dir via ".." are also
-// rejected. Subdirectory paths (e.g. "artifacts/plan.md") are allowed.
-func resolveArtifactPath(specDir, relPath string) (string, error) {
+// spec dir. Relative paths that escape the spec dir via ".." are also rejected.
+// A symlink inside the spec dir that resolves to a target outside the spec dir
+// is also rejected (realpath confinement). Subdirectory paths (e.g.
+// "artifacts/plan.md") are allowed. A symlink whose realpath stays inside the
+// spec dir is accepted.
+func resolveArtifactPath(absSpecDir, realSpecDir, relPath string) (string, error) {
+	// Fast path: reject absolute artifact paths immediately, no FS touch.
 	if filepath.IsAbs(relPath) {
 		return "", fmt.Errorf("path %q must be relative to the spec directory", relPath)
 	}
-	resolved := filepath.Clean(filepath.Join(specDir, relPath))
-	// Verify the resolved path stays inside the spec dir.
-	rel, err := filepath.Rel(specDir, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+
+	// Resolve against the absolute lexical base so `resolved` is always absolute.
+	resolved := filepath.Clean(filepath.Join(absSpecDir, relPath))
+
+	// Lexical confinement: cheap pre-check before any symlink follow.
+	sep := string(os.PathSeparator)
+	rel, err := filepath.Rel(absSpecDir, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) {
 		return "", fmt.Errorf("path %q escapes the spec directory", relPath)
 	}
-	return resolved, nil
+
+	// Realpath confinement: follow symlinks and re-check against the real spec dir.
+	realResolved, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		// A genuinely-missing file is a user typo, not an escape — a non-existent
+		// path cannot read anything outside the spec dir, so report it plainly
+		// instead of masking it as a confinement violation. Any other EvalSymlinks
+		// failure is denied by default (conservative, uniform security boundary).
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("artifact path %q does not exist", relPath)
+		}
+		return "", fmt.Errorf("path %q escapes the spec directory", relPath)
+	}
+	realRel, err := filepath.Rel(realSpecDir, realResolved)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+sep) {
+		return "", fmt.Errorf("path %q escapes the spec directory", relPath)
+	}
+
+	// Return the realpath so os.ReadFile doesn't re-follow the attacker-controlled
+	// symlink name (TOCTOU mitigation).
+	return realResolved, nil
 }
 
 // validateRefsMap validates the top-level refs map in the spec.
