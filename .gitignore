@@ -6,6 +6,10 @@
 bin/
 coverage.out
 
+# Stray binary left at the repo root by `go build ./cmd/gen-docs` (the docs
+# generator). Use `make docs` (go run) instead — this is build output, not source.
+/gen-docs
+
 # Claude Code session scheduler state (transient, machine-local)
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
