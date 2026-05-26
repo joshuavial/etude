@@ -382,17 +382,18 @@ empty even though the `etude retro` feature (capture/generate/list/show, the
 etude-14r deliverable) shipped. The gap was a dogfooding miss: run records were
 captured (66 `refs/etude/runs/*`) but the cadence retros were not.
 
-As of 2026-05-27 the cadence retros **B11–B15** are backfilled into
+As of 2026-05-27 the bead-cohort cadence retros **B8–B15** are backfilled into
 `refs/etude/retros/*` via `etude retro capture cohort`, each keyed (by
-`--subject-run`) to the bead-runs it covers — e.g.
+`--subject-run`) to the 3 bead-runs it covers — e.g.
 `retro-cohort-etude-x0r-…` over `etude-x0r,etude-5ft,etude-0ew`. The retro body
 is the ledger entry below; `trigger=cadence-retro`. So `etude retro list` /
 `show` now reflect real retro data linked to the runs they analyze. (Note:
 retros are their own `refs/etude/retros/*` namespace, NOT a `retro` stage inside
 a run manifest — that is the intended retro-as-first-class-artifact model, which
-supersedes the older "retro stage" framing.) Earlier retros (B1–B10, A/C forms)
-predate this session and remain ledger-only; they can be backfilled later if a
-complete `retro list` is wanted.
+supersedes the older "retro stage" framing.) The earlier retros (A1–A2, B1–B7,
+C1) are phase/commit-based without a clean 3-bead-run cohort (and A3/A4 are
+planning docs, not retros), so they remain ledger-only; they could be captured
+as `scope=workflow` retros later if a fully-complete `retro list` is wanted.
 
 ## Retro cadence
 
