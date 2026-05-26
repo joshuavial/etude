@@ -391,9 +391,12 @@ is the ledger entry below; `trigger=cadence-retro`. So `etude retro list` /
 retros are their own `refs/etude/retros/*` namespace, NOT a `retro` stage inside
 a run manifest — that is the intended retro-as-first-class-artifact model, which
 supersedes the older "retro stage" framing.) The earlier retros (A1–A2, B1–B7,
-C1) are phase/commit-based without a clean 3-bead-run cohort (and A3/A4 are
-planning docs, not retros), so they remain ledger-only; they could be captured
-as `scope=workflow` retros later if a fully-complete `retro list` is wanted.
+C1) are phase/commit-based without a clean 3-bead-run cohort, so they were
+captured as `scope=workflow` retros (10 of them, spaced for unique timestamp
+ids). **`etude retro list` is now complete: 18 retros** (8 cohort B8–B15 + 10
+workflow), covering every retro entry in this ledger. (A3/A4 are planning docs,
+not retros, so they are intentionally excluded.) Every retro the project has
+produced is now a first-class `refs/etude/retros/*` artifact.
 
 ## Retro cadence
 
