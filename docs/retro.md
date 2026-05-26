@@ -1,7 +1,7 @@
 # Retros
 
-`etude retro capture`, `etude retro list`, and `etude retro show` manage retro
-artifacts stored under `refs/etude/retros/*`.
+`etude retro capture`, `etude retro generate`, `etude retro list`, and
+`etude retro show` manage retro artifacts stored under `refs/etude/retros/*`.
 
 ## Capture a retro
 
@@ -39,6 +39,102 @@ Useful flags:
 
 The retro id is auto-assigned from the scope, primary subject, and timestamp.
 Prints `captured <commit-sha>` and `ref refs/etude/retros/<id>` on success.
+
+## Generate a retro
+
+```bash
+etude retro generate <scope> \
+  --subject-run <run-id> [--subject-run <run-id>...] \
+  --generator <script> \
+  [--stage <name>] \
+  [--trigger <name>]
+```
+
+Invokes an external generator script over the materialized artifacts of the
+named subject runs, then stores the produced markdown body exactly as `retro
+capture` does. `<scope>` is one of: `run`, `phase`, `gate`, `cohort`, `bench`,
+`workflow`.
+
+`--subject-run` is required for every scope except `workflow` and may be
+repeated to cover multiple runs in one retro. `--bead` and the other producer
+flags accepted by `retro capture` are also accepted here.
+
+### Generator script contract
+
+The script is run headlessly with a strict environment:
+
+| Variable | Content |
+|---|---|
+| `ETUDE_INPUTS_DIR` | Directory containing the subject runs' materialized artifacts. Each subject contributes `<NN>-<runid>-output` (the stage output) and `<NN>-<runid>-input-<role>` files (stage inputs), ordered by the position the `--subject-run` flag was given. |
+| `ETUDE_OUTPUT_FILE` | Path the script **must** write the retro markdown body to before exiting. |
+
+Only `PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE` are present in the
+environment — no other parent-process variables are forwarded. The working
+directory is a fresh temp directory.
+
+A non-zero exit code is treated as `ErrGeneratorFailed` and the error is
+reported to stderr with the trimmed stderr output of the script. The command
+aborts if the output file is missing or is not a regular file after the script
+exits.
+
+The generator can be set via `--generator <spec>` (e.g. `--generator
+./scripts/retro.sh`) or via git config:
+
+```bash
+git config etude.retroGenerator ./scripts/retro.sh
+```
+
+`--generator` takes precedence over git config. An error is returned when
+neither is set.
+
+### Stage selection
+
+When a subject run has exactly one stage, that stage is selected automatically.
+When a subject run has multiple stages, `--stage <name>` is required:
+
+```bash
+# Single-stage run: stage is auto-selected
+etude retro generate run --subject-run my-run-abc --generator ./retro.sh
+
+# Multi-stage run: --stage required
+etude retro generate run --subject-run my-run-xyz --stage implement \
+  --generator ./retro.sh
+```
+
+Omitting `--stage` for a multi-stage run produces an error that lists the
+available stage names.
+
+### Provenance
+
+Generated retros record two extra metadata keys visible in `retro show`:
+
+```
+metadata:
+  generator: ./scripts/retro.sh
+  produced_via: generate
+```
+
+`produced_via=generate` distinguishes generated retros from captured retros
+(`retro capture` does not set either key). `generator` records the spec that
+was used.
+
+### Output
+
+On success the command prints:
+
+```
+generated <commit-sha>
+ref refs/etude/retros/<retro-id>
+```
+
+Generated retros are stored under the same `refs/etude/retros/*` namespace as
+captured retros, so `retro list` and `retro show` treat them uniformly.
+
+### `--trigger` flag
+
+`--trigger` is a free-form label recorded in the manifest (default: `manual`).
+Setting a trigger value does not automate anything — config-driven automated
+triggers are not yet implemented.
 
 ## List retros
 

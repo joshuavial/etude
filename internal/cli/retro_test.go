@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/retro"
 	"github.com/joshuavial/etude/internal/runmanifest"
 )
 
@@ -756,5 +759,452 @@ func TestRetroShowFlatMetadata(t *testing.T) {
 
 	if stderr != "" {
 		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// retro generate
+// ---------------------------------------------------------------------------
+
+// executeRetroGenerate runs 'retro generate' with an injected StubGenerator.
+// This mirrors executeReplay's pattern for test-double injection.
+func executeRetroGenerate(gen retro.Generator, args ...string) (string, string, error) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	r := &retroGenerateRunner{
+		generator: gen,
+		now:       time.Now,
+		store:     refstore.New(""),
+		stdout:    &out,
+	}
+	cmd := buildRetroGenerateCommand(&out, &errOut, r)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(&errOut, err)
+	}
+	return out.String(), errOut.String(), err
+}
+
+// seedRunForGenerate creates a real run ref (via capture) that generate can
+// use as a --subject-run. Returns the run id.
+func seedRunForGenerate(t *testing.T, repo, runID string) {
+	t.Helper()
+	writeFile(t, repo, runID+"-output.md", "# Subject output\n")
+	chdir(t, repo)
+	_, stderr, err := execute("capture", "plan",
+		"--run", runID,
+		"--output", "output="+runID+"-output.md",
+	)
+	if err != nil {
+		t.Fatalf("capture setup for generate returned error: %v\nstderr: %s", err, stderr)
+	}
+}
+
+// TestRetroGenerateHappyPath verifies that generate writes a retro ref with
+// the stub body, produced_via=generate, and the correct scope.
+func TestRetroGenerateHappyPath(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-run-1")
+	chdir(t, repo)
+
+	wantBody := []byte("# Generated Retro\nFindings from generator.\n")
+	stub := &retro.StubGenerator{CannedBody: wantBody}
+
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "gen-run-1",
+	)
+	if err != nil {
+		t.Fatalf("retro generate returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "generated ") {
+		t.Fatalf("stdout missing 'generated': %q", stdout)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/retros/") {
+		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	// Extract retro id and verify manifest.
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if manifest.Refs["scope"] != "cohort" {
+		t.Errorf("Refs[scope] = %q, want cohort", manifest.Refs["scope"])
+	}
+	if manifest.Refs["produced_via"] != "generate" {
+		t.Errorf("Refs[produced_via] = %q, want generate", manifest.Refs["produced_via"])
+	}
+	if manifest.Refs["subject_run.1"] != "gen-run-1" {
+		t.Errorf("Refs[subject_run.1] = %q, want gen-run-1", manifest.Refs["subject_run.1"])
+	}
+
+	// Verify the body artifact content.
+	if len(manifest.Stages) != 1 {
+		t.Fatalf("len(manifest.Stages) = %d, want 1", len(manifest.Stages))
+	}
+	bodyBytes, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/retros/"+retroID, manifest.Stages[0].Output.Path)
+	if err != nil {
+		t.Fatalf("ReadFile body: %v", err)
+	}
+	if string(bodyBytes) != string(wantBody) {
+		t.Errorf("body = %q, want %q", bodyBytes, wantBody)
+	}
+}
+
+// TestRetroGenerateMultiSubject verifies two --subject-run args are accepted
+// and produce the correct indexed subject_run.N refs.
+func TestRetroGenerateMultiSubject(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-run-a")
+	seedRunForGenerate(t, repo, "gen-run-b")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("multi body")}
+
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "gen-run-a",
+		"--subject-run", "gen-run-b",
+	)
+	if err != nil {
+		t.Fatalf("retro generate multi-subject returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	retroID := extractRetroID(t, stdout)
+	manifest := readRetroManifest(t, repo, retroID)
+
+	if manifest.Refs["subject_run.1"] != "gen-run-a" {
+		t.Errorf("subject_run.1 = %q, want gen-run-a", manifest.Refs["subject_run.1"])
+	}
+	if manifest.Refs["subject_run.2"] != "gen-run-b" {
+		t.Errorf("subject_run.2 = %q, want gen-run-b", manifest.Refs["subject_run.2"])
+	}
+}
+
+// TestRetroGenerateWorkflowScopeNoSubjectRequired verifies scope=workflow needs no --subject-run.
+func TestRetroGenerateWorkflowScopeNoSubjectRequired(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("workflow retro")}
+	stdout, stderr, err := executeRetroGenerate(stub, "workflow")
+	if err != nil {
+		t.Fatalf("retro generate workflow returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/retros/") {
+		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+}
+
+// TestRetroGenerateNoGeneratorError verifies that the command errors when no
+// generator is injected and no --generator flag or git config is set.
+func TestRetroGenerateNoGeneratorError(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-run-x")
+	chdir(t, repo)
+
+	// No injected generator — will resolve to nil and return an error.
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	r := &retroGenerateRunner{
+		generator: nil, // no injected generator
+		now:       time.Now,
+		store:     refstore.New(""),
+		stdout:    &out,
+	}
+	cmd := buildRetroGenerateCommand(&out, &errOut, r)
+	cmd.SetArgs([]string{"cohort", "--subject-run", "gen-run-x"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no generator configured, got nil")
+	}
+	combined := err.Error() + " " + errOut.String()
+	if !strings.Contains(combined, "no generator configured") {
+		t.Errorf("error = %q, want containing 'no generator configured'", combined)
+	}
+}
+
+// TestRetroGenerateInvalidScope verifies scope validation.
+func TestRetroGenerateInvalidScope(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub, "badscope", "--subject-run", "r1")
+	if err == nil {
+		t.Fatal("expected error for invalid scope, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid scope") {
+		t.Errorf("error = %q, want containing 'invalid scope'", err.Error())
+	}
+}
+
+// TestRetroGenerateSubjectRunRequired verifies that non-workflow scope without
+// --subject-run returns an error.
+func TestRetroGenerateSubjectRunRequired(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub, "cohort")
+	if err == nil {
+		t.Fatal("expected error when --subject-run missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "--subject-run is required") {
+		t.Errorf("error = %q, want containing '--subject-run is required'", err.Error())
+	}
+}
+
+// TestRetroGenerateGeneratorError verifies that a generator error is propagated.
+func TestRetroGenerateGeneratorError(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "gen-run-err")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{Err: retro.ErrGeneratorFailed}
+	_, _, err := executeRetroGenerate(stub, "cohort", "--subject-run", "gen-run-err")
+	if err == nil {
+		t.Fatal("expected error from generator, got nil")
+	}
+}
+
+// TestRetroGenerateProducedViaReserved verifies that --ref produced_via=... is rejected.
+func TestRetroGenerateProducedViaReserved(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub, "workflow",
+		"--ref", "produced_via=fakegen",
+	)
+	if err == nil {
+		t.Fatal("expected error for reserved --ref produced_via, got nil")
+	}
+	if !strings.Contains(err.Error(), "is reserved") {
+		t.Errorf("error = %q, want containing 'is reserved'", err.Error())
+	}
+}
+
+// TestRetroCaptureProducedViaReserved verifies that capture also rejects
+// --ref produced_via=... (parity guard for the reserved key).
+func TestRetroCaptureProducedViaReserved(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\n")
+	chdir(t, repo)
+
+	_, _, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+		"--ref", "produced_via=manual",
+	)
+	if err == nil {
+		t.Fatal("expected error for reserved --ref produced_via in capture, got nil")
+	}
+	if !strings.Contains(err.Error(), "is reserved") {
+		t.Errorf("error = %q, want containing 'is reserved'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Defect 1: generator ref key is reserved
+// ---------------------------------------------------------------------------
+
+// TestRetroGenerateGeneratorRefReserved verifies that --ref generator=x is
+// rejected on retro generate (provenance spoofing guard).
+func TestRetroGenerateGeneratorRefReserved(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub, "workflow",
+		"--ref", "generator=malicious",
+	)
+	if err == nil {
+		t.Fatal("expected error for reserved --ref generator, got nil")
+	}
+	if !strings.Contains(err.Error(), "is reserved") {
+		t.Errorf("error = %q, want containing 'is reserved'", err.Error())
+	}
+}
+
+// TestRetroCaptureGeneratorRefReserved verifies that --ref generator=x is
+// also rejected on retro capture.
+func TestRetroCaptureGeneratorRefReserved(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\n")
+	chdir(t, repo)
+
+	_, _, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+		"--ref", "generator=malicious",
+	)
+	if err == nil {
+		t.Fatal("expected error for reserved --ref generator in capture, got nil")
+	}
+	if !strings.Contains(err.Error(), "is reserved") {
+		t.Errorf("error = %q, want containing 'is reserved'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Defect 2: resolveSubjectStage — explicit stage selection
+// ---------------------------------------------------------------------------
+
+// seedMultiStageRun creates a run with two stages (plan + implement) for
+// testing multi-stage resolution behaviour.
+func seedMultiStageRun(t *testing.T, repo, runID string) {
+	t.Helper()
+	writeFile(t, repo, runID+"-plan.md", "# Plan\n")
+	writeFile(t, repo, runID+"-impl.md", "# Implement\n")
+	chdir(t, repo)
+	_, stderr, err := execute("capture", "plan",
+		"--run", runID,
+		"--output", "output="+runID+"-plan.md",
+	)
+	if err != nil {
+		t.Fatalf("seedMultiStageRun capture plan: %v\nstderr: %s", err, stderr)
+	}
+	_, stderr, err = execute("capture", "implement",
+		"--run", runID,
+		"--output", "output="+runID+"-impl.md",
+	)
+	if err != nil {
+		t.Fatalf("seedMultiStageRun capture implement: %v\nstderr: %s", err, stderr)
+	}
+}
+
+// seedDuplicateStageRun creates a run with two stages that share the same
+// name (plan captured twice), triggering ErrAmbiguousStage.
+func seedDuplicateStageRun(t *testing.T, repo, runID string) {
+	t.Helper()
+	writeFile(t, repo, runID+"-plan1.md", "# Plan v1\n")
+	writeFile(t, repo, runID+"-plan2.md", "# Plan v2\n")
+	chdir(t, repo)
+	_, stderr, err := execute("capture", "plan",
+		"--run", runID,
+		"--output", "output="+runID+"-plan1.md",
+	)
+	if err != nil {
+		t.Fatalf("seedDuplicateStageRun first capture: %v\nstderr: %s", err, stderr)
+	}
+	_, stderr, err = execute("capture", "plan",
+		"--run", runID,
+		"--output", "output="+runID+"-plan2.md",
+	)
+	if err != nil {
+		t.Fatalf("seedDuplicateStageRun second capture: %v\nstderr: %s", err, stderr)
+	}
+}
+
+// TestRetroGenerateSingleStageNoStageFlag verifies that a single-stage subject
+// run works without --stage (the stage is unambiguous).
+func TestRetroGenerateSingleStageNoStageFlag(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "single-stage-run")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("# Retro\nSingle stage.\n")}
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "single-stage-run",
+	)
+	if err != nil {
+		t.Fatalf("retro generate single-stage (no --stage) returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/retros/") {
+		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+}
+
+// TestRetroGenerateMultiStageNoStageFlag verifies that a multi-stage subject
+// run without --stage returns a clear "multiple stages, specify --stage" error.
+func TestRetroGenerateMultiStageNoStageFlag(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedMultiStageRun(t, repo, "multi-stage-run")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "multi-stage-run",
+	)
+	if err == nil {
+		t.Fatal("expected error for multi-stage run without --stage, got nil")
+	}
+	if !strings.Contains(err.Error(), "multiple stages") {
+		t.Errorf("error = %q, want containing 'multiple stages'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--stage") {
+		t.Errorf("error = %q, want containing '--stage'", err.Error())
+	}
+}
+
+// TestRetroGenerateMultiStageWithStageFlag verifies that providing --stage
+// selects the named stage from a multi-stage subject run.
+func TestRetroGenerateMultiStageWithStageFlag(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedMultiStageRun(t, repo, "multi-stage-explicit")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("# Retro\nImplement stage.\n")}
+	stdout, stderr, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "multi-stage-explicit",
+		"--stage", "implement",
+	)
+	if err != nil {
+		t.Fatalf("retro generate multi-stage --stage implement returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/retros/") {
+		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+}
+
+// TestRetroGenerateStageNotFound verifies that --stage with a non-existent
+// stage name returns a clear not-found error.
+func TestRetroGenerateStageNotFound(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedRunForGenerate(t, repo, "stage-not-found-run")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "stage-not-found-run",
+		"--stage", "nosuch",
+	)
+	if err == nil {
+		t.Fatal("expected error for --stage nosuch, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want containing 'not found'", err.Error())
+	}
+}
+
+// TestRetroGenerateAmbiguousStage verifies that providing a stage name that
+// appears more than once in a run surfaces ErrAmbiguousStage, not a masked error.
+func TestRetroGenerateAmbiguousStage(t *testing.T) {
+	repo := initCaptureRepo(t)
+	seedDuplicateStageRun(t, repo, "dup-stage-run")
+	chdir(t, repo)
+
+	stub := &retro.StubGenerator{CannedBody: []byte("body")}
+	_, _, err := executeRetroGenerate(stub,
+		"cohort",
+		"--subject-run", "dup-stage-run",
+		"--stage", "plan",
+	)
+	if err == nil {
+		t.Fatal("expected error for ambiguous stage, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error = %q, want containing 'ambiguous'", err.Error())
 	}
 }

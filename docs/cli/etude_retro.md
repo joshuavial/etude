@@ -18,6 +18,7 @@ etude retro [flags]
 
 * [etude](etude.md)	 - Root CLI scaffold for etude
 * [etude retro capture](etude_retro_capture.md)	 - Capture an externally-authored retro into etude
+* [etude retro generate](etude_retro_generate.md)	 - Generate a retro by invoking an external generator script over covered run artifacts
 * [etude retro list](etude_retro_list.md)	 - List all retros
 * [etude retro show](etude_retro_show.md)	 - Show details of a retro
 

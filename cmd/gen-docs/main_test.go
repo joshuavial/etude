@@ -18,6 +18,7 @@ var expectedCommands = []string{
 	"etude_init.md",
 	"etude_reindex.md",
 	"etude_replay.md",
+	"etude_retro_generate.md",
 	"etude_retro_list.md",
 	"etude_retro_show.md",
 	"etude_run.md",
