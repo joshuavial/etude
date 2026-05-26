@@ -26,6 +26,7 @@ etude replay run-1 plan --runner ./run.sh --record --output result.md
 |------|-------------|
 | `--runner <command>` | Runner command spec. Whitespace-split into argv; `Command[0]` is the binary, the remainder are arguments. No shell quoting or expansion is performed (see [Current limits](#current-limits)). Falls back to `git config etude.runner` when omitted. |
 | `--output <path>` | Write output to `<path>` instead of stdout. When set, a confirmation line is printed to stdout. May be combined with `--record`. |
+| `--timeout <duration>` | Per-invocation timeout for the runner (default `10m`; `0` disables). The runner process is killed when the timeout elapses and the command returns a "timed out" error. A small grace period bounds cleanup even if the runner backgrounds a child that holds its output pipe open. |
 | `--record` | Persist the replay output as a new linked run. See [Recording (--record)](#recording---record). |
 | `--skill-version <v>` | Override `producer.skill.version` in the recorded producer. Only affects the recorded run; unset fields inherit from the source stage's producer. Requires `--record` to have any effect. |
 | `--skill-id <id>` | Override `producer.skill.id` in the recorded producer. |
@@ -128,6 +129,9 @@ All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`, and
 
 After the runner exits, `etude replay` reads the file at `ETUDE_OUTPUT_FILE`
 and emits its bytes as the replay output (to stdout or to `--output <path>`).
+The output is read through a hard size cap (default 64 MiB); a runner whose
+output exceeds the cap is rejected with an "output too large" error rather than
+read into memory unbounded.
 
 The worktree and all scratch files are always removed when the command
 finishes, whether it succeeds or fails.

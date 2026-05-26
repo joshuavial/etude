@@ -24,10 +24,12 @@ type benchRunner struct {
 	judge eval.Judge
 	// now returns the current time. Defaults to time.Now; tests inject a fixed clock.
 	now func() time.Time
+	// timeout overrides the default ExecRunner and ExecJudge timeout when non-zero.
+	timeout time.Duration
 }
 
 func newBenchCommand(out, errOut io.Writer) *cobra.Command {
-	return buildBenchCommand(out, errOut, &benchRunner{now: time.Now})
+	return buildBenchCommand(out, errOut, &benchRunner{now: time.Now, timeout: 10 * time.Minute})
 }
 
 // buildBenchCommand constructs the bench cobra.Command backed by r. Tests call
@@ -39,6 +41,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 		seed                                                             int64
 		skillVersion, skillID, skillRepo, model, harness, harnessVersion string
 		noCache                                                          bool
+		timeoutFlag                                                      time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -48,6 +51,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r.timeout = timeoutFlag
 			overrides := bench.ProducerOverrides{
 				SkillIDChanged:        cmd.Flags().Changed("skill-id"),
 				SkillRepoChanged:      cmd.Flags().Changed("skill-repo"),
@@ -80,6 +84,7 @@ func buildBenchCommand(out, errOut io.Writer, r *benchRunner) *cobra.Command {
 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer (contestant)")
 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer (contestant)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "force re-evaluation; skip the eval-result cache")
+	cmd.Flags().DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the runner and judge (0 disables)")
 
 	return cmd
 }
@@ -184,7 +189,11 @@ func (r *benchRunner) resolveRunner(ctx context.Context, spec string) (replay.Ru
 	if spec == "" {
 		return nil, fmt.Errorf("no runner configured (set --runner or git config etude.runner)")
 	}
-	return &replay.ExecRunner{Command: strings.Fields(spec)}, nil
+	return &replay.ExecRunner{
+		Command:        strings.Fields(spec),
+		Timeout:        r.timeout,
+		MaxOutputBytes: 64 << 20,
+	}, nil
 }
 
 // resolveJudge returns r.judge if injected (test seam), otherwise resolves the
@@ -213,7 +222,12 @@ func (r *benchRunner) resolveJudge(ctx context.Context, spec, judgeModel string)
 		judgeModel = gitConfigGet(ctx, "etude.judgeModel")
 	}
 
-	return &eval.ExecJudge{Command: strings.Fields(spec), Model: judgeModel}, nil
+	return &eval.ExecJudge{
+		Command:        strings.Fields(spec),
+		Model:          judgeModel,
+		Timeout:        r.timeout,
+		MaxOutputBytes: 64 << 20,
+	}, nil
 }
 
 // renderReport writes the bench report to out using tabwriter for alignment.

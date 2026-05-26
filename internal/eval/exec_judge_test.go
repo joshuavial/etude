@@ -680,3 +680,135 @@ func TestExecJudge_WithFindings(t *testing.T) {
 		t.Errorf("finding[1] = %+v", resp.Findings[1])
 	}
 }
+
+// TestExecJudge_TimeoutExceeded proves that a configured Timeout causes the
+// judge to fail with context.DeadlineExceeded and a "timed out" message.
+func TestExecJudge_TimeoutExceeded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	orig := judgeWaitDelay
+	judgeWaitDelay = 200 * time.Millisecond
+	defer func() { judgeWaitDelay = orig }()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "judge.sh")
+	writeJudgeScript(t, script, `sleep 30`)
+
+	j := &ExecJudge{
+		Command: []string{script},
+		Timeout: 150 * time.Millisecond,
+	}
+	_, err := j.Judge(context.Background(), JudgeRequest{
+		Method:  "rubric",
+		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+}
+
+// TestExecJudge_OutputExceedsCap proves that judge output larger than
+// MaxOutputBytes is rejected with ErrJudgeOutputTooLarge naming the cap.
+func TestExecJudge_OutputExceedsCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "judge.sh")
+	// Write 20 bytes of output, cap is 10.
+	writeJudgeScript(t, script, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
+
+	j := &ExecJudge{
+		Command:        []string{script},
+		MaxOutputBytes: 10,
+	}
+	_, err := j.Judge(context.Background(), JudgeRequest{
+		Method:  "rubric",
+		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
+	})
+	if !errors.Is(err, ErrJudgeOutputTooLarge) {
+		t.Fatalf("want ErrJudgeOutputTooLarge, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "10") {
+		t.Errorf("want cap value in error message, got: %v", err)
+	}
+}
+
+// TestExecJudge_OutputWithinCap proves that normal output under the cap
+// still succeeds unchanged.
+func TestExecJudge_OutputWithinCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "judge.sh")
+	writeJudgeScript(t, script, `printf '{"value":5.0,"max":10.0}' > "$ETUDE_OUTPUT_FILE"`)
+
+	j := &ExecJudge{
+		Command:        []string{script},
+		MaxOutputBytes: 100,
+	}
+	resp, err := j.Judge(context.Background(), JudgeRequest{
+		Method:  "rubric",
+		Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
+		Rubric:  []byte("rubric"),
+	})
+	if err != nil {
+		t.Fatalf("want success, got %v", err)
+	}
+	if resp.Value == nil || *resp.Value != 5.0 {
+		t.Errorf("Value = %v, want 5.0", resp.Value)
+	}
+}
+
+// TestExecJudge_SpawnsSurvivingChild proves that WaitDelay prevents the judge
+// from hanging when the script backgrounds a long-lived child that holds
+// inherited pipe write-ends open.
+//
+// Without WaitDelay: cmd.Wait blocks indefinitely.
+// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
+// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
+// any infinite hang), so a regression is a test FAILURE, not an infinite hang.
+func TestExecJudge_SpawnsSurvivingChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	orig := judgeWaitDelay
+	judgeWaitDelay = 200 * time.Millisecond
+	defer func() { judgeWaitDelay = orig }()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "judge.sh")
+	// Background a long-lived child, write valid output, then exit 0.
+	writeJudgeScript(t, script, `sleep 300 &
+printf '{"value":1.0,"max":1.0}' > "$ETUDE_OUTPUT_FILE"`)
+
+	j := &ExecJudge{
+		Command: []string{script},
+		Timeout: 150 * time.Millisecond,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := j.Judge(context.Background(), JudgeRequest{
+			Method:  "rubric",
+			Targets: []JudgeInput{{Role: "out", Content: []byte("x")}},
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected an error (timeout), got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecJudge.Judge did not return within 5s; WaitDelay regression: surviving child held pipes open")
+	}
+}

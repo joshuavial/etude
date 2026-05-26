@@ -30,6 +30,7 @@ etude retro generate <scope> [flags]
       --stage string              stage name to use for each subject run; required when a subject run has multiple stages
       --subject-run stringArray   run id of a subject run (repeatable; >=1 required unless scope=workflow)
       --supersedes string         retro id this retro supersedes
+      --timeout duration          per-invocation timeout for the generator (0 disables) (default 10m0s)
       --trigger string            trigger that prompted this retro (e.g. manual, post-bench) (default "manual")
 ```
 

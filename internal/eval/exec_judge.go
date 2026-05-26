@@ -4,13 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// judgeWaitDelay is the grace period after context cancellation or process
+// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
+// caused by a script that backgrounds a child holding inherited pipe
+// write-ends open. Declared as var so tests can override for speed.
+var judgeWaitDelay = 10 * time.Second
+
+// ErrJudgeOutputTooLarge is returned when the judge output file exceeds MaxOutputBytes.
+var ErrJudgeOutputTooLarge = errors.New("judge output too large")
 
 // ExecJudge satisfies Judge by invoking a configured external command headlessly.
 //
@@ -50,6 +61,13 @@ type ExecJudge struct {
 	Command []string
 	// Model is passed as ETUDE_MODEL to the judge command. May be empty.
 	Model string
+	// Timeout, when > 0, wraps the execution context with a per-invocation
+	// deadline. Zero means unlimited (default, backward compatible).
+	Timeout time.Duration
+	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
+	// file. Outputs exceeding the cap are rejected with ErrJudgeOutputTooLarge.
+	// Zero means unlimited (default, backward compatible).
+	MaxOutputBytes int64
 }
 
 // compile-time interface satisfaction assertion.
@@ -83,9 +101,21 @@ type findingWire struct {
 
 // Judge implements Judge for ExecJudge. It materialises inputs, runs the
 // command, reads the output file, and validates the result per method.
+//
+// When Timeout > 0, the execution context is wrapped with a per-invocation
+// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+// the process exits or the context fires, preventing hangs from backgrounded
+// grandchild processes that hold inherited pipe write-ends open.
 func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
 	if len(e.Command) == 0 {
 		return JudgeResponse{}, ErrJudgeNotConfigured
+	}
+
+	// Apply per-invocation timeout when configured.
+	if e.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.Timeout)
+		defer cancel()
 	}
 
 	// Create a fresh temp dir for this invocation; clean it up on return.
@@ -147,11 +177,18 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
 	cmd.Dir = scratch
 	cmd.Env = env
 	cmd.Stderr = &stderrBuf
+	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+	// open can cause cmd.Run to hang indefinitely.
+	cmd.WaitDelay = judgeWaitDelay
 
 	runErr := cmd.Run()
 
 	// Context cancellation/timeout takes precedence over generic exit-status errors.
 	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return JudgeResponse{}, fmt.Errorf("judge: timed out after %v: %w", e.Timeout, ctx.Err())
+		}
 		return JudgeResponse{}, fmt.Errorf("judge: context done: %w", ctx.Err())
 	}
 	if runErr != nil {
@@ -171,9 +208,32 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
 		return JudgeResponse{}, ErrJudgeOutputNotRegular
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if e.MaxOutputBytes > 0 && fi.Size() > e.MaxOutputBytes {
+		return JudgeResponse{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrJudgeOutputTooLarge, fi.Size(), e.MaxOutputBytes, outputPath)
+	}
+
+	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
+	// regular file is valid.
+	var data []byte
+	if e.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, e.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
+		}
+		if int64(len(data)) > e.MaxOutputBytes {
+			return JudgeResponse{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrJudgeOutputTooLarge, int64(len(data)), e.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return JudgeResponse{}, fmt.Errorf("%w: read output: %v", ErrJudgeOutputMissing, err)
+		}
 	}
 
 	// Decode with DisallowUnknownFields + trailing-data check (reuses ensureEOF).

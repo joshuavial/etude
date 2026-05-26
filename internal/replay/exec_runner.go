@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/joshuavial/etude/internal/runmanifest"
 )
@@ -22,7 +24,14 @@ var (
 	ErrRunnerFailed        = errors.New("runner failed")
 	ErrOutputMissing       = errors.New("output missing")
 	ErrOutputNotRegular    = errors.New("output is not a regular file")
+	ErrOutputTooLarge      = errors.New("output too large")
 )
+
+// runnerWaitDelay is the grace period after context cancellation or process
+// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
+// caused by a script that backgrounds a child holding inherited pipe
+// write-ends open. Declared as var so tests can override for speed.
+var runnerWaitDelay = 10 * time.Second
 
 // ExecRunner satisfies Runner by invoking a configured external command
 // headlessly. The command is launched with a strict environment (PATH,
@@ -32,6 +41,13 @@ type ExecRunner struct {
 	// Command is the executable and its arguments. Command[0] is the binary;
 	// Command[1:] are arguments. Must be non-empty to run.
 	Command []string
+	// Timeout, when > 0, wraps the execution context with a per-invocation
+	// deadline. Zero means unlimited (default, backward compatible).
+	Timeout time.Duration
+	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
+	// file. Outputs exceeding the cap are rejected with ErrOutputTooLarge.
+	// Zero means unlimited (default, backward compatible).
+	MaxOutputBytes int64
 }
 
 // compile-time interface satisfaction assertion.
@@ -40,6 +56,11 @@ var _ Runner = (*ExecRunner)(nil)
 // Run implements Runner for ExecRunner. It materializes inputs into
 // <ScratchDir>/inputs/<NN>-<role>, invokes the configured command, and reads
 // the output from <ScratchDir>/output.
+//
+// When Timeout > 0, the execution context is wrapped with a per-invocation
+// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+// the process exits or the context fires, preventing hangs from backgrounded
+// grandchild processes that hold inherited pipe write-ends open.
 func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	// Step 1: command must be configured.
 	if len(r.Command) == 0 {
@@ -99,7 +120,14 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		}
 	}
 
-	// Step 6: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
+	// Step 6: apply per-invocation timeout when configured.
+	if r.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
+		defer cancel()
+	}
+
+	// Step 7: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
 	pathVal := extractPATH(os.Environ())
 	env := []string{
 		"PATH=" + pathVal,
@@ -113,11 +141,18 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 	cmd.Env = env
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
+	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+	// open can cause cmd.Run to hang indefinitely.
+	cmd.WaitDelay = runnerWaitDelay
 
 	runErr := cmd.Run()
 
-	// Step 7: ctx taxonomy — context cancellation/timeout takes precedence.
+	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
 	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return RunResult{}, fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
+		}
 		return RunResult{}, fmt.Errorf("runner: context done: %w", ctx.Err())
 	}
 	if runErr != nil {
@@ -125,7 +160,7 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		return RunResult{}, fmt.Errorf("%w: %s: %v: %s", ErrRunnerFailed, r.Command[0], runErr, stderr)
 	}
 
-	// Step 8: read output (symlink-safe via Lstat).
+	// Step 9: read output (symlink-safe via Lstat).
 	fi, statErr := os.Lstat(outputPath)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -137,14 +172,36 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		return RunResult{}, ErrOutputNotRegular
 	}
 
-	// An empty-but-present regular file is valid: Output will be empty bytes,
-	// not ErrOutputMissing. Only absence triggers ErrOutputMissing.
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if r.MaxOutputBytes > 0 && fi.Size() > r.MaxOutputBytes {
+		return RunResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrOutputTooLarge, fi.Size(), r.MaxOutputBytes, outputPath)
 	}
 
-	// Step 9: assemble result and apply defaults.
+	// Read via LimitReader for a TOCTOU-safe hard cap: a concurrent writer
+	// (e.g. backgrounded grandchild) cannot sneak bytes past the cap between
+	// the Lstat and the read. An empty-but-present regular file is valid.
+	var data []byte
+	if r.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, r.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
+		}
+		if int64(len(data)) > r.MaxOutputBytes {
+			return RunResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrOutputTooLarge, int64(len(data)), r.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("%w: read output: %v", ErrOutputMissing, err)
+		}
+	}
+
+	// Step 10: assemble result and apply defaults.
 	res := RunResult{
 		Output:   data,
 		Producer: req.Producer,

@@ -231,3 +231,108 @@ func TestExecGenerator_EmptyOutputFile(t *testing.T) {
 		t.Errorf("want empty Body, got %q", res.Body)
 	}
 }
+
+// TestExecGenerator_TimeoutExceeded proves that a configured Timeout causes the
+// generate to fail with context.DeadlineExceeded and a "timed out" message.
+func TestExecGenerator_TimeoutExceeded(t *testing.T) {
+	orig := generatorWaitDelay
+	generatorWaitDelay = 200 * time.Millisecond
+	defer func() { generatorWaitDelay = orig }()
+
+	scratch := t.TempDir()
+	scriptPath := filepath.Join(scratch, "gen.sh")
+	writeGenScript(t, scriptPath, `sleep 30`)
+
+	g := &ExecGenerator{
+		Command: []string{scriptPath},
+		Timeout: 150 * time.Millisecond,
+	}
+	_, err := g.Generate(context.Background(), GenerateRequest{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+}
+
+// TestExecGenerator_OutputExceedsCap proves that output larger than
+// MaxOutputBytes is rejected with ErrGeneratorOutputTooLarge naming the cap.
+func TestExecGenerator_OutputExceedsCap(t *testing.T) {
+	scratch := t.TempDir()
+	scriptPath := filepath.Join(scratch, "gen.sh")
+	// Write 20 bytes of output, cap is 10.
+	writeGenScript(t, scriptPath, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
+
+	g := &ExecGenerator{
+		Command:        []string{scriptPath},
+		MaxOutputBytes: 10,
+	}
+	_, err := g.Generate(context.Background(), GenerateRequest{})
+	if !errors.Is(err, ErrGeneratorOutputTooLarge) {
+		t.Fatalf("want ErrGeneratorOutputTooLarge, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "10") {
+		t.Errorf("want cap value in error message, got: %v", err)
+	}
+}
+
+// TestExecGenerator_OutputWithinCap proves that normal output under the cap
+// still succeeds unchanged.
+func TestExecGenerator_OutputWithinCap(t *testing.T) {
+	scratch := t.TempDir()
+	scriptPath := filepath.Join(scratch, "gen.sh")
+	writeGenScript(t, scriptPath, `printf 'hello' > "$ETUDE_OUTPUT_FILE"`)
+
+	g := &ExecGenerator{
+		Command:        []string{scriptPath},
+		MaxOutputBytes: 100,
+	}
+	res, err := g.Generate(context.Background(), GenerateRequest{})
+	if err != nil {
+		t.Fatalf("want success, got %v", err)
+	}
+	if string(res.Body) != "hello" {
+		t.Errorf("want Body %q, got %q", "hello", res.Body)
+	}
+}
+
+// TestExecGenerator_SpawnsSurvivingChild proves that WaitDelay prevents the
+// generate from hanging when the script backgrounds a long-lived child that
+// holds inherited pipe write-ends open.
+//
+// Without WaitDelay: cmd.Wait blocks indefinitely.
+// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
+// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
+// any infinite hang), so a regression is a test FAILURE, not an infinite hang.
+func TestExecGenerator_SpawnsSurvivingChild(t *testing.T) {
+	orig := generatorWaitDelay
+	generatorWaitDelay = 200 * time.Millisecond
+	defer func() { generatorWaitDelay = orig }()
+
+	scratch := t.TempDir()
+	scriptPath := filepath.Join(scratch, "gen.sh")
+	// Background a long-lived child, write output, then exit 0.
+	writeGenScript(t, scriptPath, `sleep 300 &
+printf 'body' > "$ETUDE_OUTPUT_FILE"`)
+
+	g := &ExecGenerator{
+		Command: []string{scriptPath},
+		Timeout: 150 * time.Millisecond,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.Generate(context.Background(), GenerateRequest{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected an error (timeout), got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecGenerator.Generate did not return within 5s; WaitDelay regression: surviving child held pipes open")
+	}
+}

@@ -668,3 +668,138 @@ func TestExecRunner_EnvIsolation(t *testing.T) {
 		t.Errorf("env isolation failure: parent ETUDE_SECRET_PROBE leaked into child env, output: %q", res.Output)
 	}
 }
+
+// TestExecRunner_TimeoutExceeded proves that a configured Timeout causes the
+// run to fail with context.DeadlineExceeded and a "timed out" message.
+func TestExecRunner_TimeoutExceeded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	orig := runnerWaitDelay
+	runnerWaitDelay = 200 * time.Millisecond
+	defer func() { runnerWaitDelay = orig }()
+
+	worktree, scratch := makeSiblingDirs(t)
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `sleep 30`)
+
+	r := &ExecRunner{
+		Command: []string{scriptPath},
+		Timeout: 150 * time.Millisecond,
+	}
+	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
+	_, err := r.Run(context.Background(), req)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("want 'timed out' in error message, got: %v", err)
+	}
+}
+
+// TestExecRunner_OutputExceedsCap proves that output larger than MaxOutputBytes
+// is rejected with ErrOutputTooLarge naming the cap.
+func TestExecRunner_OutputExceedsCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	// Write 20 bytes of output, cap is 10.
+	writeScript(t, scriptPath, `printf '12345678901234567890' > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command:        []string{scriptPath},
+		MaxOutputBytes: 10,
+	}
+	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
+	_, err := r.Run(context.Background(), req)
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("want ErrOutputTooLarge, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "10") {
+		t.Errorf("want cap value in error message, got: %v", err)
+	}
+}
+
+// TestExecRunner_OutputWithinCap proves that normal output under the cap
+// still succeeds unchanged.
+func TestExecRunner_OutputWithinCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `printf 'hello' > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command:        []string{scriptPath},
+		MaxOutputBytes: 100,
+	}
+	req := RunRequest{
+		WorktreeDir:     worktree,
+		ScratchDir:      scratch,
+		OutputMediaType: "text/plain",
+	}
+	res, err := r.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("want success, got %v", err)
+	}
+	if string(res.Output) != "hello" {
+		t.Errorf("want output %q, got %q", "hello", res.Output)
+	}
+}
+
+// TestExecRunner_SpawnsSurvivingChild proves that WaitDelay prevents the run
+// from hanging when the script backgrounds a long-lived child that holds
+// inherited pipe write-ends open.
+//
+// Without WaitDelay: cmd.Wait blocks indefinitely because the grandchild keeps
+// the stdout/stderr pipes open, so the test would hang until the test timeout
+// guard fires.
+// With WaitDelay: cmd.Run returns within ~Timeout+WaitDelay. The test guard is
+// set to 5s (comfortably above 200ms WaitDelay + 150ms Timeout but well below
+// any infinite hang), so a regression is a test FAILURE, not a hang.
+func TestExecRunner_SpawnsSurvivingChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	orig := runnerWaitDelay
+	runnerWaitDelay = 200 * time.Millisecond
+	defer func() { runnerWaitDelay = orig }()
+
+	worktree, scratch := makeSiblingDirs(t)
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	// Background a long-lived child, then exit 0. The grandchild holds inherited
+	// pipe write-ends, which would cause cmd.Wait to hang without WaitDelay.
+	writeScript(t, scriptPath, `sleep 300 &
+printf 'done' > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command: []string{scriptPath},
+		Timeout: 150 * time.Millisecond,
+	}
+	req := RunRequest{WorktreeDir: worktree, ScratchDir: scratch}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Run(context.Background(), req)
+		done <- err
+	}()
+
+	// Guard: the run MUST return within Timeout + WaitDelay + generous margin.
+	// If it doesn't return, WaitDelay is not working (regression).
+	select {
+	case err := <-done:
+		// The run returned — WaitDelay worked. The error is expected (timeout).
+		if err == nil {
+			t.Error("expected an error (timeout), got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecRunner.Run did not return within 5s; WaitDelay regression: surviving child held pipes open")
+	}
+}

@@ -24,10 +24,12 @@ type replayRunner struct {
 	// now returns the current time. Defaults to time.Now; tests inject a fixed clock
 	// to make replay run ids deterministic.
 	now func() time.Time
+	// timeout overrides the default ExecRunner timeout when non-zero.
+	timeout time.Duration
 }
 
 func newReplayCommand(out, errOut io.Writer) *cobra.Command {
-	return buildReplayCommand(out, errOut, &replayRunner{now: time.Now})
+	return buildReplayCommand(out, errOut, &replayRunner{now: time.Now, timeout: 10 * time.Minute})
 }
 
 // buildReplayCommand constructs the replay cobra.Command backed by r. Tests
@@ -38,6 +40,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	var outputPath string
 	var record bool
 	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
+	var timeoutFlag time.Duration
 
 	cmd := &cobra.Command{
 		Use:           "replay <run> <stage>",
@@ -46,6 +49,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r.timeout = timeoutFlag
 			producerFlags := replayProducerFlags{
 				skillIDChanged:        cmd.Flags().Changed("skill-id"),
 				skillRepoChanged:      cmd.Flags().Changed("skill-repo"),
@@ -74,6 +78,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	cmd.Flags().StringVar(&model, "model", "", "override model in recorded producer")
 	cmd.Flags().StringVar(&harness, "harness", "", "override harness name in recorded producer")
 	cmd.Flags().StringVar(&harnessVersion, "harness-version", "", "override harness version in recorded producer")
+	cmd.Flags().DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the runner (0 disables)")
 	return cmd
 }
 
@@ -267,7 +272,11 @@ func (r *replayRunner) resolveRunner(ctx context.Context, spec string) (replay.R
 		return nil, fmt.Errorf("no runner configured (set --runner or git config etude.runner)")
 	}
 
-	return &replay.ExecRunner{Command: strings.Fields(spec)}, nil
+	return &replay.ExecRunner{
+		Command:        strings.Fields(spec),
+		Timeout:        r.timeout,
+		MaxOutputBytes: 64 << 20,
+	}, nil
 }
 
 // gitConfigGet reads a single git config value for key using any scope.

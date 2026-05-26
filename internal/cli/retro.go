@@ -781,6 +781,8 @@ type retroGenerateRunner struct {
 	now       func() time.Time
 	store     refstore.Store
 	stdout    io.Writer
+	// timeout overrides the default ExecGenerator timeout when non-zero.
+	timeout time.Duration
 }
 
 // newRetroGenerateCommand constructs the 'retro generate' subcommand. The
@@ -792,6 +794,7 @@ func newRetroGenerateCommand(out, errOut io.Writer, injectedGenerator retro.Gene
 		now:       time.Now,
 		store:     refstore.New(""),
 		stdout:    out,
+		timeout:   10 * time.Minute,
 	})
 }
 
@@ -803,6 +806,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
 		skillRepo:    defaultSkillRepo,
 		skillVersion: defaultSkillVersion,
 	}
+	var timeoutFlag time.Duration
 
 	cmd := &cobra.Command{
 		Use:           "generate <scope>",
@@ -811,6 +815,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r.timeout = timeoutFlag
 			return r.run(cmd.Context(), args[0], cfg)
 		},
 	}
@@ -837,6 +842,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
 	flags.StringVar(&cfg.message, "message", "", "retro ref commit message")
 	flags.StringVar(&cfg.generatorSpec, "generator", "", "generator command spec (e.g. ./gen.sh); falls back to git config etude.retroGenerator")
 	flags.StringVar(&cfg.stage, "stage", "", "stage name to use for each subject run; required when a subject run has multiple stages")
+	flags.DurationVar(&timeoutFlag, "timeout", 10*time.Minute, "per-invocation timeout for the generator (0 disables)")
 
 	return cmd
 }
@@ -1016,7 +1022,9 @@ func (r *retroGenerateRunner) resolveGenerator(ctx context.Context, spec string)
 		return nil, fmt.Errorf("no generator configured (set --generator or git config etude.retroGenerator)")
 	}
 
-	return retro.NewExecGenerator(spec), nil
+	gen := retro.NewExecGenerator(spec)
+	gen.Timeout = r.timeout
+	return gen, nil
 }
 
 // resolveSubjectStage resolves a stage of a run for use as a generator subject.

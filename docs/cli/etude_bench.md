@@ -24,6 +24,7 @@ etude bench <stage> [flags]
       --skill-id string          override skill id in recorded producer (contestant)
       --skill-repo string        override skill repo in recorded producer (contestant)
       --skill-version string     override skill version in recorded producer (contestant)
+      --timeout duration         per-invocation timeout for the runner and judge (0 disables) (default 10m0s)
 ```
 
 ### SEE ALSO

@@ -126,6 +126,15 @@ git config etude.retroGenerator ./scripts/retro.sh
 `--generator` takes precedence over git config. An error is returned when
 neither is set.
 
+### Generator timeout and output limits
+
+`--timeout <duration>` bounds each generator invocation (default `10m`; `0`
+disables). The generator process is killed when the timeout elapses and the
+command returns a "timed out" error; a small grace period bounds cleanup even if
+the generator backgrounds a child that holds its output pipe open. The
+generator's output file is read through a hard size cap (default 64 MiB) — an
+output exceeding the cap is rejected rather than read into memory unbounded.
+
 ### Stage selection
 
 When a subject run has exactly one stage, that stage is selected automatically.

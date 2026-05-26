@@ -71,6 +71,7 @@ that failed mid-benchmark. A `CACHED` marker flags rows served from the cache.
 | `--judge <command>` | Judge command spec (whitespace-split into argv). Falls back to `git config etude.judge`. Required (via flag or config). |
 | `--judge-model <model>` | Model passed to the judge process as `ETUDE_MODEL`. Falls back to `git config etude.judgeModel`. Empty is allowed (the judge command may encode its own model). This is the **referee** model and is independent of `--model`. |
 | `--seed <n>` | Seed for per-pair presentation randomisation (position-bias mitigation). |
+| `--timeout <duration>` | Per-invocation timeout applied to **both** the runner and the judge processes (default `10m`; `0` disables). Each process is killed when the timeout elapses. A small grace period bounds cleanup even if a process backgrounds a child that holds its output pipe open. Runner and judge output is also read through a hard size cap (default 64 MiB). |
 | `--no-cache` | Force re-evaluation; skip the eval-result cache. |
 | `--model`, `--skill-id`, `--skill-repo`, `--skill-version`, `--harness`, `--harness-version` | Override the corresponding field in the **contestant** (replay) producer. These describe the new skill being benchmarked; they never affect the judge. |
 

@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Sentinel errors for ExecGenerator.
@@ -17,7 +19,14 @@ var (
 	ErrGeneratorFailed           = errors.New("generator failed")
 	ErrGeneratorOutputMissing    = errors.New("generator output missing")
 	ErrGeneratorOutputNotRegular = errors.New("generator output is not a regular file")
+	ErrGeneratorOutputTooLarge   = errors.New("generator output too large")
 )
+
+// generatorWaitDelay is the grace period after context cancellation or process
+// exit before cmd.Wait forcibly closes I/O pipes. This bounds the hang class
+// caused by a script that backgrounds a child holding inherited pipe
+// write-ends open. Declared as var so tests can override for speed.
+var generatorWaitDelay = 10 * time.Second
 
 // ExecGenerator satisfies Generator by invoking a configured external command
 // headlessly. The command is launched with a strict environment (PATH,
@@ -42,15 +51,34 @@ type ExecGenerator struct {
 	// Command is the executable and its arguments. Command[0] is the binary.
 	// Must be non-empty to run.
 	Command []string
+	// Timeout, when > 0, wraps the execution context with a per-invocation
+	// deadline. Zero means unlimited (default, backward compatible).
+	Timeout time.Duration
+	// MaxOutputBytes, when > 0, caps how many bytes are read from the output
+	// file. Outputs exceeding the cap are rejected with ErrGeneratorOutputTooLarge.
+	// Zero means unlimited (default, backward compatible).
+	MaxOutputBytes int64
 }
 
 // compile-time interface satisfaction assertion.
 var _ Generator = (*ExecGenerator)(nil)
 
 // Generate implements Generator for ExecGenerator.
+//
+// When Timeout > 0, the execution context is wrapped with a per-invocation
+// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
+// the process exits or the context fires, preventing hangs from backgrounded
+// grandchild processes that hold inherited pipe write-ends open.
 func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
 	if len(g.Command) == 0 {
 		return GenerateResult{}, ErrGeneratorNotConfigured
+	}
+
+	// Apply per-invocation timeout when configured.
+	if g.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.Timeout)
+		defer cancel()
 	}
 
 	// Create a fresh temp dir for this invocation; clean it up on return.
@@ -109,11 +137,18 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
 	cmd.Dir = scratch
 	cmd.Env = env
 	cmd.Stderr = &stderrBuf
+	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
+	// Without it, a backgrounded grandchild holding inherited pipe write-ends
+	// open can cause cmd.Run to hang indefinitely.
+	cmd.WaitDelay = generatorWaitDelay
 
 	runErr := cmd.Run()
 
 	// Context cancellation/timeout takes precedence over generic exit-status errors.
 	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return GenerateResult{}, fmt.Errorf("generator: timed out after %v: %w", g.Timeout, ctx.Err())
+		}
 		return GenerateResult{}, fmt.Errorf("generator: context done: %w", ctx.Err())
 	}
 	if runErr != nil {
@@ -133,9 +168,32 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
 		return GenerateResult{}, ErrGeneratorOutputNotRegular
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
+	// Cheap pre-check: reject early if the file is already known to exceed the cap.
+	if g.MaxOutputBytes > 0 && fi.Size() > g.MaxOutputBytes {
+		return GenerateResult{}, fmt.Errorf("%w: file size %d exceeds cap %d: %s", ErrGeneratorOutputTooLarge, fi.Size(), g.MaxOutputBytes, outputPath)
+	}
+
+	// Read via LimitReader for a TOCTOU-safe hard cap. An empty-but-present
+	// regular file is valid.
+	var data []byte
+	if g.MaxOutputBytes > 0 {
+		f, openErr := os.Open(outputPath)
+		if openErr != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, openErr)
+		}
+		data, err = io.ReadAll(io.LimitReader(f, g.MaxOutputBytes+1))
+		f.Close()
+		if err != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
+		}
+		if int64(len(data)) > g.MaxOutputBytes {
+			return GenerateResult{}, fmt.Errorf("%w: read %d bytes, cap %d: %s", ErrGeneratorOutputTooLarge, int64(len(data)), g.MaxOutputBytes, outputPath)
+		}
+	} else {
+		data, err = os.ReadFile(outputPath)
+		if err != nil {
+			return GenerateResult{}, fmt.Errorf("%w: read output: %v", ErrGeneratorOutputMissing, err)
+		}
 	}
 
 	return GenerateResult{
@@ -178,6 +236,11 @@ func sanitizeForFilename(s string) string {
 
 // NewExecGenerator builds an ExecGenerator from a command spec string
 // (e.g. "./retro.sh arg1"). Uses strings.Fields to split.
+// Default Timeout is 10 minutes; default MaxOutputBytes is 64 MiB.
 func NewExecGenerator(spec string) *ExecGenerator {
-	return &ExecGenerator{Command: strings.Fields(spec)}
+	return &ExecGenerator{
+		Command:        strings.Fields(spec),
+		Timeout:        10 * time.Minute,
+		MaxOutputBytes: 64 << 20,
+	}
 }

@@ -21,6 +21,7 @@ etude replay <run> <stage> [flags]
       --skill-id string          override skill id in recorded producer
       --skill-repo string        override skill repo in recorded producer
       --skill-version string     override skill version in recorded producer
+      --timeout duration         per-invocation timeout for the runner (0 disables) (default 10m0s)
 ```
 
 ### SEE ALSO
