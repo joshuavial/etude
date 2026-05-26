@@ -515,6 +515,53 @@ validates the deviation rather than rubber-stamping. This is distinct from
 out-of-scope drift (which is reverted): a deviation stays IN scope (same goal,
 corrected approach) and is surfaced for review, not hidden.
 
+## Recurring Defect Classes (implement gate)
+
+Two defect classes recurred across the etude-14r retro feature (q87/8t4/n0t) and
+are cheap to catch up front. Both the implementer and the gate should check them.
+
+**1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
+passthrough) override.** When a command writes keys into a map that a passthrough
+flag (`--ref key=value`, `--meta`, …) later MERGES, any generated/validated key the
+passthrough can also write is silently overwritable — letting a user bypass
+validation or falsify provenance.
+- **Why:** this recurred. q87 first shipped with `--ref subject_run.1=`/`scope=`
+  able to overwrite the `IsValidRunID`-validated subjects + authoritative scope
+  (caught at the implement gate). n0t then REINTRODUCED the same class: it added a
+  `generator`/`produced_via` provenance key but only reserved `produced_via`, so
+  `--ref generator=hack` could spoof which generator produced a retro (caught
+  again). The fix pattern (a reserved-exact-keys + reserved-prefixes guard that
+  rejects colliding `--ref` keys) existed already; the second time it just wasn't
+  extended to the NEW key.
+- **How to apply:** whenever you add a command-generated key (flat or indexed) to
+  a manifest/Refs map that a passthrough flag also merges, add that key (or its
+  prefix) to the reserved-key guard in the SAME change. Gate check: enumerate every
+  key the command itself writes and confirm each is reserved against the
+  passthrough. A new provenance/identity key with no matching reserved entry is a
+  BLOCK.
+
+**2. The in-harness (repo-aware) reviewer seat must do ADVERSARIAL + spec-
+completeness review, not just "does it work as the implementer intended."** The
+repo-aware seat runs tests and mutation-tests and is excellent at confirming the
+happy path and the implementer's intent — but across q87/8t4/n0t it GO'd four
+times on changes that the spec-focused inlined seats (codex/gemini) correctly
+BLOCKED: the two `--ref` override holes above, `retro show` silently dropping
+`gate/bench/eval`/custom metadata, and `resolveSubjectStage` silently picking one
+arbitrary stage of a multi-stage run.
+- **Why:** the blind spot is systematic. "Run it, it works" and "the implementer's
+  tests pass" do not surface (a) fields the acceptance requires that are silently
+  dropped, (b) inputs the spec ALLOWS that bypass validation/spoof/inject, or
+  (c) heuristics that silently select the wrong thing. The inlined seats, judging
+  against the spec/precedent rather than the running code, catch these. This is
+  the concrete evidence that the multi-seat gate is load-bearing — do NOT collapse
+  a Tier-1/Tier-2 gate to the single repo-aware seat.
+- **How to apply:** the in-harness seat's brief must explicitly demand, beyond
+  "run the tests": (a) enumerate every field/key the acceptance requires and verify
+  each is rendered/stored/handled, not silently dropped; (b) try adversarial inputs
+  that bypass validation (override a generated key, spoof provenance, inject via an
+  unvalidated value); (c) for any selection heuristic, construct the input where it
+  picks wrong and confirm it errors rather than silently proceeding.
+
 ## Recording Results
 
 Record gate results in bead notes:
