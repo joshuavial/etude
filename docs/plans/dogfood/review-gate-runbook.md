@@ -867,8 +867,9 @@ the bead's etude run:
 > `etude-egg`/`f6h`/`quk`) do — the orchestrator captured the *runs* but quietly
 > stopped capturing the *gates* mid-stream. Treat gate capture as mandatory per
 > attempt, and sanity-check after closing a bead with
-> `etude run show <bead> | grep -c gate`. The historical backfill is tracked in
-> its own bead; the going-forward rule is: every gate attempt gets a record.
+> `etude run show <bead> | grep -c gate`. The 14-bead historical gap was
+> backfilled 2026-05-27 (35 GateAttempt records, etude-nm6) from the recorded
+> gate histories; the going-forward rule is: every gate attempt gets a record.
 
 Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
 COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose
