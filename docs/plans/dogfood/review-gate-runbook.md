@@ -535,8 +535,8 @@ corrected approach) and is surfaced for review, not hidden.
 
 Defect classes the gate caught repeatedly across the etude-14r feature
 (q87/8t4/n0t), the misc-backlog sweep (0rt/712/4o0), and the Phase-C extras
-(egg), cheap to catch up front. Both the implementer and the gate should check
-them.
+(egg/2ku/qih/aqt), cheap to catch up front. Both the implementer and the gate
+should check them.
 
 **1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
 passthrough) override.** When a command writes keys into a map that a passthrough
@@ -566,13 +566,28 @@ times on changes that the spec-focused inlined seats (codex/gemini) correctly
 BLOCKED: the two `--ref` override holes above, `retro show` silently dropping
 `gate/bench/eval`/custom metadata, and `resolveSubjectStage` silently picking one
 arbitrary stage of a multi-stage run.
+- **The pattern continued into the Phase-C extras (qih/aqt), and notably it is
+  often codex — not the repo-aware Opus seat — that catches these even at the
+  IMPLEMENT gate where the built binary is in hand:** on `etude log` (qih) the
+  `--subject` filter matched a retro by its OWN retro id (the spec says retros
+  match only by their `subject_run`/`bead` subjects) — both the in-harness Opus
+  seat AND gemini GO'd, gemini explicitly RATIONALIZING the line as correct; codex
+  BLOCKED on reading the match-set. On the retro-meta sidecar rendering (aqt) the
+  `--- retro meta ---` divider would glue onto a body printed with `Fprint` that
+  lacked a trailing newline — Opus said "no divergence", gemini "defensively
+  sound"; codex BLOCKED at the PLAN gate before a line was written. In both the
+  defect was a spec/output invariant the tests did not cover, so "tests pass"
+  proved nothing.
 - **Why:** the blind spot is systematic. "Run it, it works" and "the implementer's
   tests pass" do not surface (a) fields the acceptance requires that are silently
   dropped, (b) inputs the spec ALLOWS that bypass validation/spoof/inject, or
-  (c) heuristics that silently select the wrong thing. The inlined seats, judging
+  (c) heuristics that silently select the wrong thing, or (d) a match-set/output
+  invariant stated in PROSE that no test enforces. The inlined seats, judging
   against the spec/precedent rather than the running code, catch these. This is
   the concrete evidence that the multi-seat gate is load-bearing — do NOT collapse
-  a Tier-1/Tier-2 gate to the single repo-aware seat.
+  a Tier-1/Tier-2 gate to the single repo-aware seat, and do NOT let two GO seats
+  outweigh one source-cited BLOCK: every BLOCK this run that two seats missed was
+  verified TRUE against source.
 - **How to apply:** the in-harness seat's brief must explicitly demand, beyond
   "run the tests": (a) enumerate every field/key the acceptance requires and verify
   each is rendered/stored/handled, not silently dropped; (b) try adversarial inputs
@@ -651,6 +666,29 @@ distinct and often need distinct behavior.
   presence-conditional validation on the field being non-nil. Test all three
   states explicitly (absent / `block:` / `block: {}`) plus a legacy byte-stable
   round-trip.
+
+**6. A change that touches GENERATED artifacts has a blast radius beyond its own
+file — the plan's file-scope must enumerate EVERY generated output the change
+regenerates, not just the obvious one.** Adding, renaming, or removing a command
+or flag does not regenerate only that command's own page; it also rewrites the
+root/index pages that list or cross-reference it.
+- **Why:** etude-qih's PLAN gate BLOCKED on exactly this. The plan added a new
+  top-level `etude log` command and listed only `docs/cli/etude_log.md` in scope —
+  but `make docs` ALSO rewrites `docs/cli/etude.md`, whose generated `SEE ALSO`
+  section lists every top-level command alphabetically. So the new command inserts
+  a line into the root page too; committing only the new page leaves
+  `docs/cli/etude.md` stale and `make docs-check`/`gen-docs TestDriftGuard` red.
+  The plan looked complete because it named *a* generated file — just not all of
+  them. (Same family as the gen-docs guard traps in #3/#4: generated-output
+  reasoning is a recurring blind spot.)
+- **How to apply:** before finalizing scope, RUN the generator (`make docs`) and
+  `git status` to see the true set of changed files, OR reason explicitly about
+  the blast radius: a new/renamed/removed command → its own `cli/etude_<cmd>.md`
+  PLUS the root `cli/etude.md` `SEE ALSO` PLUS any hand-maintained index
+  (`docs/README.md`) PLUS README usage that `docs-reality` checks; a new/renamed
+  flag → that command's generated page. Gate check: does the file-scope match what
+  the generator actually emits? A scope that lists the new page but omits the
+  regenerated root/index page is a BLOCK.
 
 ## Epic-Close Gate
 
