@@ -534,6 +534,100 @@ func TestWriterForwardsCAS(t *testing.T) {
 	}
 }
 
+// TestWriteManifestTreeParameterization locks the three seams that
+// WriteManifestTree exposes to callers:
+//
+//  1. The ref prefix is honoured: writing with the retros prefix stores the ref
+//     under refs/etude/retros/ (not refs/etude/runs/), and the runs ref stays absent.
+//
+//  2. Create-only (empty ExpectedOld) rejects a second write with ErrRefExists.
+//
+//  3. CAS append (non-empty ExpectedOld) succeeds with a new commit whose
+//     parent is the one supplied — invoked directly on WriteManifestTree so the
+//     seam is independently locked from TestWriterForwardsCAS.
+func TestWriteManifestTreeParameterization(t *testing.T) {
+	ctx := context.Background()
+	artifact := contentArtifact("output", "text/plain", []byte("tree-param"))
+	files := map[string][]byte{artifact.Path: []byte("tree-param")}
+	manifest := validManifest(artifact)
+
+	// --- seam 1 + 2: retros prefix, create-only ---
+	t.Run("retros prefix and create-only", func(t *testing.T) {
+		repo := initGitRepo(t)
+		store := refstore.New(repo)
+		const retrosPrefix = "refs/etude/retros/"
+
+		commit, err := WriteManifestTree(ctx, store, retrosPrefix, manifest, files, refstore.WriteOptions{
+			Message: "retros prefix write",
+		})
+		if err != nil {
+			t.Fatalf("WriteManifestTree returned error: %v", err)
+		}
+
+		// Ref must resolve under retros/, not under runs/.
+		resolved, err := store.Resolve(ctx, retrosPrefix+manifest.RunID)
+		if err != nil {
+			t.Fatalf("Resolve retros ref: %v", err)
+		}
+		if resolved != commit {
+			t.Fatalf("resolved commit = %q, want %q", resolved, commit)
+		}
+
+		// The runs prefix must NOT exist (prefix isolation).
+		_, err = store.Resolve(ctx, "refs/etude/runs/"+manifest.RunID)
+		if !errors.Is(err, refstore.ErrNotFound) {
+			t.Fatalf("runs ref exists unexpectedly (err=%v); prefix isolation broken", err)
+		}
+
+		// Second write to same ref with no ExpectedOld must yield ErrRefExists.
+		_, err = WriteManifestTree(ctx, store, retrosPrefix, manifest, files, refstore.WriteOptions{
+			Message: "duplicate write",
+		})
+		if !errors.Is(err, refstore.ErrRefExists) {
+			t.Fatalf("second create-only write error = %v, want ErrRefExists", err)
+		}
+	})
+
+	// --- seam 3: CAS append via ExpectedOld ---
+	t.Run("CAS append via ExpectedOld", func(t *testing.T) {
+		repo := initGitRepo(t)
+		store := refstore.New(repo)
+
+		first, err := WriteManifestTree(ctx, store, "refs/etude/runs/", manifest, files, refstore.WriteOptions{
+			Message: "first",
+		})
+		if err != nil {
+			t.Fatalf("first WriteManifestTree: %v", err)
+		}
+
+		manifest2 := manifest
+		manifest2.Created = manifest.Created.Add(time.Second)
+		second, err := WriteManifestTree(ctx, store, "refs/etude/runs/", manifest2, files, refstore.WriteOptions{
+			ExpectedOld: first,
+			Message:     "second",
+		})
+		if err != nil {
+			t.Fatalf("CAS WriteManifestTree: %v", err)
+		}
+		if second == first {
+			t.Fatal("CAS write did not produce a new commit")
+		}
+		parent := strings.TrimSpace(git(t, repo, "rev-parse", second+"^"))
+		if parent != first {
+			t.Fatalf("parent = %q, want first commit %q", parent, first)
+		}
+
+		// Stale CAS must return ErrStaleRef.
+		_, err = WriteManifestTree(ctx, store, "refs/etude/runs/", manifest2, files, refstore.WriteOptions{
+			ExpectedOld: first,
+			Message:     "stale",
+		})
+		if !errors.Is(err, refstore.ErrStaleRef) {
+			t.Fatalf("stale CAS error = %v, want ErrStaleRef", err)
+		}
+	})
+}
+
 // TestLegacyBackCompatFrozenBytes is a FROZEN regression guard: it embeds a
 // real legacy-shaped manifest byte string (top-level per-stage skill{}, no
 // producer, no manifest_version) modelled on refs/etude/runs/etude-88o and

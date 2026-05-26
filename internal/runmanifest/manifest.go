@@ -312,15 +312,28 @@ func ArtifactPaths(manifest Manifest) []string {
 }
 
 func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
+	return WriteManifestTree(ctx, w.Store, "refs/etude/runs/", manifest, files, refstore.WriteOptions{
+		ExpectedOld: opts.ExpectedOld,
+		Message:     opts.Message,
+	})
+}
+
+// WriteManifestTree is the shared core that validates, verifies artifacts,
+// guards against unreferenced files, encodes manifest.json, and commits to
+// refPrefix+manifest.RunID via store.WriteCommit. It is parameterized by:
+//   - refPrefix: e.g. "refs/etude/runs/" or "refs/etude/retros/"
+//   - wopts.ExpectedOld: empty string = create-only; non-empty = CAS append
+//   - wopts.Message: commit message (callers supply any default before calling)
+//
+// Both runmanifest.Writer.Write and retro.Writer.Write delegate here so the
+// validate → verify-artifacts → unreferenced-file-guard → WriteCommit sequence
+// lives in exactly one place.
+func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix string, manifest Manifest, files map[string][]byte, wopts refstore.WriteOptions) (string, error) {
 	if err := manifest.Validate(); err != nil {
 		return "", err
 	}
 	if _, ok := files[manifestPath]; ok {
 		return "", ErrManifestCollision
-	}
-	manifestBytes, err := manifest.JSON()
-	if err != nil {
-		return "", err
 	}
 
 	referenced := referencedArtifactPaths(manifest)
@@ -343,12 +356,14 @@ func (w Writer) Write(ctx context.Context, manifest Manifest, files map[string][
 		}
 		out[filePath] = cloneBytes(content)
 	}
+
+	manifestBytes, err := manifest.JSON()
+	if err != nil {
+		return "", err
+	}
 	out[manifestPath] = manifestBytes
 
-	return w.Store.WriteCommit(ctx, "refs/etude/runs/"+manifest.RunID, out, refstore.WriteOptions{
-		ExpectedOld: opts.ExpectedOld,
-		Message:     opts.Message,
-	})
+	return store.WriteCommit(ctx, refPrefix+manifest.RunID, out, wopts)
 }
 
 func validateStage(index int, stage Stage) error {

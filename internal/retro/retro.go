@@ -69,57 +69,16 @@ type WriteOptions struct {
 }
 
 // Write validates and persists manifest to refs/etude/retros/<manifest.RunID>.
-// It runs the same artifact-verification and unreferenced-file guard that
-// runmanifest.Writer.Write uses (verifyArtifactFile / referencedArtifactPaths),
-// accessed by exporting those helpers from the runmanifest package.
+// It delegates to runmanifest.WriteManifestTree which holds the shared
+// validate → verify-artifacts → unreferenced-file-guard → WriteCommit sequence.
 // Returns refstore.ErrRefExists on collision (create-only).
 func (w Writer) Write(ctx context.Context, manifest runmanifest.Manifest, files map[string][]byte, opts WriteOptions) (string, error) {
-	if err := manifest.Validate(); err != nil {
-		return "", err
-	}
-	if _, ok := files["manifest.json"]; ok {
-		return "", runmanifest.ErrManifestCollision
-	}
-
-	// Verify all artifacts referenced in the manifest are present and hash-correct.
-	referenced := runmanifest.ReferencedArtifactPaths(manifest)
-	hashes := make(map[string]string, len(referenced))
-	for _, stage := range manifest.Stages {
-		for _, input := range stage.Inputs {
-			if err := runmanifest.VerifyArtifactFile(input, files, hashes); err != nil {
-				return "", err
-			}
-		}
-		if err := runmanifest.VerifyArtifactFile(stage.Output, files, hashes); err != nil {
-			return "", err
-		}
-	}
-
-	// Guard against files that are not referenced by the manifest.
-	const manifestPath = "manifest.json"
-	out := make(map[string][]byte, len(files)+1)
-	for filePath, content := range files {
-		if _, ok := referenced[filePath]; !ok {
-			return "", fmt.Errorf("%w: %s", runmanifest.ErrUnreferencedArtifact, filePath)
-		}
-		outBytes := make([]byte, len(content))
-		copy(outBytes, content)
-		out[filePath] = outBytes
-	}
-
-	manifestBytes, err := manifest.JSON()
-	if err != nil {
-		return "", err
-	}
-	out[manifestPath] = manifestBytes
-
 	msg := opts.Message
 	if strings.TrimSpace(msg) == "" {
 		msg = fmt.Sprintf("retro: %s", manifest.RunID)
 	}
-
-	return w.Store.WriteCommit(ctx, retrosPrefix+manifest.RunID, out, refstore.WriteOptions{
-		// No ExpectedOld: create-only. Collision surfaces as ErrRefExists from refstore.
+	// No ExpectedOld: create-only. Collision surfaces as ErrRefExists from refstore.
+	return runmanifest.WriteManifestTree(ctx, w.Store, retrosPrefix, manifest, files, refstore.WriteOptions{
 		Message: msg,
 	})
 }
