@@ -24,6 +24,7 @@ Implemented:
 - `etude gc` to report artifact storage and explicitly prune named run refs.
 - `etude reindex` to rebuild the derived SQLite query index from run and eval refs.
 - `etude retro capture <scope>` to store an externally-authored retro as a `refs/etude/retros/*` ref.
+- `etude prime` to print a structured agent-onboarding primer to stdout (runs anywhere, no args, no side effects).
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -36,9 +37,9 @@ The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
 `etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`,
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
-`etude gc`, `etude reindex`, `etude retro capture`, and the root help and version
-output. (The `eval` package is a library used by `etude bench`; there is no
-standalone `etude eval` CLI yet.)
+`etude gc`, `etude reindex`, `etude retro capture`, `etude prime`, and the root
+help and version output. (The `eval` package is a library used by `etude bench`;
+there is no standalone `etude eval` CLI yet.)
 
 The full design is in
 [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
@@ -76,6 +77,7 @@ make clean
 ./bin/etude gc
 ./bin/etude reindex
 ./bin/etude retro capture workflow --file retro.md
+./bin/etude prime
 ```
 
 See [Init](docs/init.md) for the init command.
@@ -88,6 +90,7 @@ See [Replay](docs/replay.md) for the replay command.
 See [Bench](docs/bench.md) for the bench command.
 See [GC](docs/gc.md) for the gc command.
 See [Reindex](docs/reindex.md) for the reindex command.
+See [Prime](docs/cli/etude_prime.md) for the prime command.
 See [CLI reference](docs/cli/etude.md) for the generated per-command reference.
 
 For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
