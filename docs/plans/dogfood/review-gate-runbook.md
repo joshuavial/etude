@@ -147,17 +147,33 @@ Per-seat sandbox constraints (learned from real spirals):
   to a GrepTool that BLEEDS matches across files, and has reproducibly
   misattributed string literals from one file (e.g. a planning doc path) to an
   unrelated test file — producing a confident BLOCK on a phantom assertion that
-  grep proves does not exist. ALWAYS ground-truth-check a gemini BLOCK that cites
-  a specific string in a test file (grep the real file + run the test) before
-  acting; a gemini verdict contradicted by grep + passing tests is a tool
-  artifact, not a defect. (Tracked for a durable fix.) **Dispatch gemini with the
-  changed files' content INLINED in the prompt from the FIRST attempt** (same as
-  codex's diff-only discipline), and tell it to reason only from the inlined code
-  without calling tools. This avoids two observed cycle-wasters at once: gemini
-  trying `run_shell_command` (which is NOT in its toolset — it errors
-  `Tool "run_shell_command" not found` and burns an attempt before recovering via
-  GrepTool), and the GrepTool cross-file misattribution above (no file reading is
-  needed when the code is already in the prompt).
+  grep proves does not exist.
+
+  **Root cause:** gemini-cli's `getRipgrepPath()` looks ONLY for a bundled binary
+  at `<bundle>/vendor/ripgrep/rg-<platform>-<arch>[.exe]` — it never consults
+  system `rg` on PATH. When that vendor path is absent (it is not shipped in
+  current gemini-cli builds), `ensureRgPath()` throws and gemini registers the
+  bleeding GrepTool, logging "Ripgrep is not available. Falling back to GrepTool."
+
+  **Durable fix:** run `scripts/provision-gemini-ripgrep.sh` once per machine.
+  The script creates the expected vendor path as a symlink to the system `rg` so
+  gemini finds and registers RipGrepTool on startup. Re-run after any
+  gemini-cli reinstall or upgrade — upgrading wipes the `vendor/` dir and its
+  symlinks. The script is idempotent; re-running when already provisioned is a
+  safe no-op.
+
+  **Defense-in-depth backstop** (covers machines where the symlink is missing):
+  ALWAYS ground-truth-check a gemini BLOCK that cites a specific string in a test
+  file (grep the real file + run the test) before acting; a gemini verdict
+  contradicted by grep + passing tests is a tool artifact, not a defect.
+  **Dispatch gemini with the changed files' content INLINED in the prompt from
+  the FIRST attempt** (same as codex's diff-only discipline), and tell it to
+  reason only from the inlined code without calling tools. This avoids two
+  observed cycle-wasters at once: gemini trying `run_shell_command` (which is NOT
+  in its toolset — it errors `Tool "run_shell_command" not found` and burns an
+  attempt before recovering via GrepTool), and the GrepTool cross-file
+  misattribution above (no file reading is needed when the code is already in the
+  prompt).
 
 The GPT-5.5 reviewer (codex) must be fresh: start a new isolated agent session
 that receives only the gate prompt and artifacts needed for review, not

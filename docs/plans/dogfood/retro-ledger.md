@@ -91,8 +91,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
   + the autonomous-loop tooling-outage fallback); a262870 (codex large-input
   ~1000+ line verdict truncation). Artifacts: review-gate-runbook.md,
   capture-protocol.md.
-- **Follow-up beads:** **etude-ojz** (open P3) — provision ripgrep to fix the
-  gemini GrepTool cross-file bleed (originates from bf3d755).
+- **Follow-up beads:** **etude-ojz** — provision ripgrep to fix the gemini
+  GrepTool cross-file bleed (originates from bf3d755). `[IMPLEMENTED]` → etude-ojz.
 
 ### B3. Phase 3 retro (2026-05-25) — commits 079aab3 + 25565d9
 - **Findings/changes:** dogfood-capture script + gate-tooling fixes (gemini
