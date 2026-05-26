@@ -408,3 +408,39 @@ process-change retros land here), and (2) an `etude retro capture cohort
 `refs/etude/retros/*` (dogfooding the retro feature + linking the retro to its
 runs), pushed to origin. Retro outputs go ONLY to skills, formulas, repo docs,
 or `etude` retro artifacts — **never to memory.**
+
+**Dogfood-completeness check (new, B16).** Because this project's whole point is
+running `etude` on itself, each cadence retro must also verify that — for the 3
+beads it covers — every artifact type the workflow produces is actually captured
+in `etude`: the **run** (`etude run show <bead>` exists with its stages), the
+**gate records** (`etude run show <bead> | grep -c gate` > 0 for gated beads),
+and the **retro itself** (captured per the dual-output rule above). This guards
+against the silent "built-the-feature-but-stopped-using-it" drift that left
+`retro list` empty and 14 beads gate-less until a manual spot-check caught it.
+
+### B16. Cadence retro (2026-05-27) — dogfooding-completeness closure (6j8/kig/nm6)
+- **Trigger/scope:** 3-ticket cadence: etude-6j8 (cli cleanups), etude-kig (retro
+  preamble extraction), etude-nm6 (gate-record backfill) — plus the retro backfill
+  + dogfooding QA pass that bracketed them.
+- **Finding (the through-line):** a dogfood project silently drifted away from using
+  its own tool. Two artifact types the workflow produces were not being captured:
+  **retros** (the feature shipped + tested, but every cadence retro went only to this
+  ledger — `retro list` was empty) and **gate records** (captured for early beads,
+  then silently dropped from etude-2ku onward — 14 beads gate-less). A user spot-check
+  ("how come retro list is empty?") surfaced it. Root cause: no standing check that
+  "every artifact I produce is captured in etude"; the run-capture habit held but the
+  retro/gate-capture habits lapsed without any signal.
+- **Changes:** (1) backfilled all 18 retros + 35 gate records into `refs/etude/retros/*`
+  and the run manifests (transcription, NOT fabrication — enabled by the rich review.md
+  artifacts captured at the time, which preserved the gate histories). (2) Forward-fixes:
+  the runbook now mandates per-gate capture + a post-close `grep -c gate` sanity-check;
+  the retro cadence now mandates dual-output (ledger + `etude retro`); and this new
+  **dogfood-completeness check** makes verifying run+gate+retro capture a standing step
+  of every cadence retro.
+- **What worked well (preserve):** capturing provenance RICHLY at the time (the per-bead
+  review.md "Gate history" sections) is what made the gate backfill faithful transcription
+  rather than fabrication — keep writing detailed verify/review artifacts.
+- **Landed:** `[IMPLEMENTED]` in this ledger (dogfood-completeness check) + the runbook
+  gate-capture mandate. Captured as an `etude retro` artifact. Counter reset.
+- **Remaining:** NO non-blocked work — corpus is complete (66 runs / 18 retros / 35 gated
+  runs, all consistent). Phase 1 (xenota/github-import) USER-BLOCKED; 8b7 + 9ey deferred.
