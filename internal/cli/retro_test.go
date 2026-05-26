@@ -211,6 +211,11 @@ func TestRetroCaptureValidationErrors(t *testing.T) {
 			wantErr: "--subject-run is required",
 		},
 		{
+			name:    "invalid --subject-run id",
+			args:    []string{"retro", "capture", "cohort", "--file", "retro.md", "--subject-run", "bad/id", "--skill-id", "retro"},
+			wantErr: "invalid --subject-run",
+		},
+		{
 			name:    "unreadable --file",
 			args:    []string{"retro", "capture", "cohort", "--file", "noexist.md", "--subject-run", "r1", "--skill-id", "retro"},
 			wantErr: "read retro file",

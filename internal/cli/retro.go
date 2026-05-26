@@ -452,6 +452,46 @@ type retroCaptureRunner struct {
 	stdout io.Writer
 }
 
+// validateSubjectsResolveSHA performs the validation shared by retro capture and
+// retro generate, in their common order: require >=1 subject run unless scope is
+// "workflow", validate each subject run id, then resolve the git SHA (trim,
+// fall back to HEAD, else validate). It is a contiguous slice of both runners'
+// preambles, so replacing each in place preserves the exact order of checks.
+func validateSubjectsResolveSHA(ctx context.Context, scope string, subjectRuns []string, gitSHA string) (string, error) {
+	if scope != "workflow" && len(subjectRuns) == 0 {
+		return "", fmt.Errorf("--subject-run is required for scope %q (at least one)", scope)
+	}
+	for _, id := range subjectRuns {
+		if !runmanifest.IsValidRunID(id) {
+			return "", fmt.Errorf("invalid --subject-run %q: must be a valid run id", id)
+		}
+	}
+	resolved := strings.TrimSpace(gitSHA)
+	if resolved == "" {
+		var err error
+		resolved, err = currentHEAD(ctx)
+		if err != nil {
+			return "", err
+		}
+	} else if err := validateGitSHA(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// parseAndCheckRefs parses --ref key=value pairs and rejects reserved keys. It
+// is called at each runner's existing point so the order of checks is preserved.
+func parseAndCheckRefs(refs []string) (map[string]string, error) {
+	extraRefs, err := parseRefs(refs)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkReservedRefs(extraRefs); err != nil {
+		return nil, err
+	}
+	return extraRefs, nil
+}
+
 func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCaptureConfig) error {
 	// Validate scope.
 	if !validRetroScopes[scope] {
@@ -463,27 +503,9 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 		return fmt.Errorf("--file is required")
 	}
 
-	// Validate subject runs are present unless scope is workflow.
-	if scope != "workflow" && len(cfg.subjectRuns) == 0 {
-		return fmt.Errorf("--subject-run is required for scope %q (at least one)", scope)
-	}
-
-	// Validate each subject run id.
-	for _, id := range cfg.subjectRuns {
-		if !runmanifest.IsValidRunID(id) {
-			return fmt.Errorf("invalid --subject-run %q: must be a valid run id", id)
-		}
-	}
-
-	// Resolve git SHA.
-	var err error
-	gitSHA := strings.TrimSpace(cfg.gitSHA)
-	if gitSHA == "" {
-		gitSHA, err = currentHEAD(ctx)
-		if err != nil {
-			return err
-		}
-	} else if err := validateGitSHA(gitSHA); err != nil {
+	// Validate subjects and resolve the git SHA (shared with retro generate).
+	gitSHA, err := validateSubjectsResolveSHA(ctx, scope, cfg.subjectRuns, cfg.gitSHA)
+	if err != nil {
 		return err
 	}
 
@@ -515,11 +537,8 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 	}
 
 	// Parse extra --ref values and check for reserved keys.
-	extraRefs, err := parseRefs(cfg.refs)
+	extraRefs, err := parseAndCheckRefs(cfg.refs)
 	if err != nil {
-		return err
-	}
-	if err := checkReservedRefs(extraRefs); err != nil {
 		return err
 	}
 
@@ -816,36 +835,15 @@ func (r *retroGenerateRunner) run(ctx context.Context, scope string, cfg retroGe
 		return fmt.Errorf("invalid scope %q: must be one of run, phase, gate, cohort, bench, workflow", scope)
 	}
 
-	// Validate subject runs are present unless scope is workflow.
-	if scope != "workflow" && len(cfg.subjectRuns) == 0 {
-		return fmt.Errorf("--subject-run is required for scope %q (at least one)", scope)
-	}
-
-	// Validate each subject run id.
-	for _, id := range cfg.subjectRuns {
-		if !runmanifest.IsValidRunID(id) {
-			return fmt.Errorf("invalid --subject-run %q: must be a valid run id", id)
-		}
-	}
-
-	// Resolve git SHA.
-	var err error
-	gitSHA := strings.TrimSpace(cfg.gitSHA)
-	if gitSHA == "" {
-		gitSHA, err = currentHEAD(ctx)
-		if err != nil {
-			return err
-		}
-	} else if err := validateGitSHA(gitSHA); err != nil {
+	// Validate subjects and resolve the git SHA (shared with retro capture).
+	gitSHA, err := validateSubjectsResolveSHA(ctx, scope, cfg.subjectRuns, cfg.gitSHA)
+	if err != nil {
 		return err
 	}
 
 	// Parse extra --ref values and check for reserved keys.
-	extraRefs, err := parseRefs(cfg.refs)
+	extraRefs, err := parseAndCheckRefs(cfg.refs)
 	if err != nil {
-		return err
-	}
-	if err := checkReservedRefs(extraRefs); err != nil {
 		return err
 	}
 
