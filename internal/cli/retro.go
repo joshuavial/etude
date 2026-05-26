@@ -203,7 +203,7 @@ func (r *retroShowListRunner) show(ctx context.Context, id string) error {
 	if err := validateCLIIdentifier("retro id", id); err != nil {
 		return err
 	}
-	if err := validateRetroIDExtra(id); err != nil {
+	if err := validateExtraID("retro", retro.IsValidRetroID(id), id); err != nil {
 		return err
 	}
 
@@ -228,17 +228,6 @@ func (r *retroShowListRunner) show(ctx context.Context, id string) error {
 	return printRetroDetail(r.store, ctx, ref, manifest, r.stdout)
 }
 
-// validateRetroIDExtra enforces the retro id rules from runmanifest that are
-// not covered by validateCLIIdentifier. It delegates to retro.IsValidRetroID
-// so the shared spec has a single source of truth. This runs before any git
-// call so it works outside a repo.
-func validateRetroIDExtra(id string) error {
-	if !retro.IsValidRetroID(id) {
-		return fmt.Errorf("invalid retro id %q", id)
-	}
-	return nil
-}
-
 // findRetroMetaStage scans m.Stages for a stage whose Output.Role is
 // "retro-meta" and returns it. Detection is role-based, not positional, so it
 // is robust to future stage additions.
@@ -251,10 +240,11 @@ func findRetroMetaStage(m runmanifest.Manifest) (runmanifest.Stage, bool) {
 	return runmanifest.Stage{}, false
 }
 
-// retroSubjectsList collects subject_run.N and bead.N values from refs,
-// sorted by their numeric index, and returns a comma-joined string. Returns
-// an empty string when no subject keys are present.
-func retroSubjectsList(refs map[string]string) string {
+// sortedRetroSubjects collects subject_run.N and bead.N values from refs,
+// sorted by prefix (lexical: bead. before subject_run.) then by numeric index,
+// and returns the ordered slice of values. Returns nil when no subject keys are
+// present.
+func sortedRetroSubjects(refs map[string]string) []string {
 	type indexed struct {
 		prefix string
 		index  int
@@ -272,7 +262,7 @@ func retroSubjectsList(refs map[string]string) string {
 		}
 	}
 	if len(items) == 0 {
-		return ""
+		return nil
 	}
 	// Sort by prefix (lexical: bead before subject_run), then by index, for deterministic output.
 	sort.Slice(items, func(i, j int) bool {
@@ -285,7 +275,13 @@ func retroSubjectsList(refs map[string]string) string {
 	for i, item := range items {
 		values[i] = item.value
 	}
-	return strings.Join(values, ",")
+	return values
+}
+
+// retroSubjectsList returns a comma-joined string of the sorted subject values
+// for use in the retro list SUBJECTS column. Returns "" when no subjects exist.
+func retroSubjectsList(refs map[string]string) string {
+	return strings.Join(sortedRetroSubjects(refs), ",")
 }
 
 // printRetroDetail renders the full retro detail for retro show, including
@@ -306,32 +302,8 @@ func printRetroDetail(store refstore.Store, ctx context.Context, ref string, m r
 	fmt.Fprintf(out, "created:   %s\n", m.Created.UTC().Format(time.RFC3339))
 
 	// Subjects: collect subject_run.N and bead.N sorted by prefix then index.
-	type indexedSubject struct {
-		prefix string
-		index  int
-		value  string
-	}
-	var subjects []indexedSubject
-	for k, v := range m.Refs {
-		for _, pfx := range []string{"subject_run.", "bead."} {
-			if strings.HasPrefix(k, pfx) {
-				n, err := strconv.Atoi(strings.TrimPrefix(k, pfx))
-				if err == nil {
-					subjects = append(subjects, indexedSubject{prefix: pfx, index: n, value: v})
-				}
-			}
-		}
-	}
-	if len(subjects) > 0 {
-		sort.Slice(subjects, func(i, j int) bool {
-			if subjects[i].prefix != subjects[j].prefix {
-				return subjects[i].prefix < subjects[j].prefix
-			}
-			return subjects[i].index < subjects[j].index
-		})
-		for _, s := range subjects {
-			fmt.Fprintf(out, "  subject: %s\n", s.value)
-		}
+	for _, v := range sortedRetroSubjects(m.Refs) {
+		fmt.Fprintf(out, "  subject: %s\n", v)
 	}
 
 	// Render all remaining Refs entries that are not already shown above.
@@ -368,11 +340,7 @@ func printRetroDetail(store refstore.Store, ctx context.Context, ref string, m r
 		p := stage.Producer
 		var parts []string
 		if p.Harness.Name != "" {
-			if p.Harness.Version != "" {
-				parts = append(parts, p.Harness.Name+" "+p.Harness.Version)
-			} else {
-				parts = append(parts, p.Harness.Name)
-			}
+			parts = append(parts, formatHarness(p.Harness))
 		}
 		if p.Model != "" {
 			parts = append(parts, p.Model)

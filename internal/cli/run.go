@@ -101,7 +101,7 @@ func (r *runShowListRunner) show(ctx context.Context, id string) error {
 	if err := validateCLIIdentifier("run id", id); err != nil {
 		return err
 	}
-	if err := validateRunIDExtra(id); err != nil {
+	if err := validateExtraID("run", runmanifest.IsValidRunID(id), id); err != nil {
 		return err
 	}
 
@@ -126,16 +126,25 @@ func (r *runShowListRunner) show(ctx context.Context, id string) error {
 	return printRunDetail(r.stdout, manifest)
 }
 
-// validateRunIDExtra enforces the run id rules from runmanifest that are not
-// covered by validateCLIIdentifier: leading/trailing dot, ".." anywhere,
-// all-dots, and ".lock" suffix. It delegates to runmanifest.IsValidRunID so
-// the shared spec has a single source of truth. This runs before any git call
-// so it works outside a repo.
-func validateRunIDExtra(id string) error {
-	if !runmanifest.IsValidRunID(id) {
-		return fmt.Errorf("invalid run id %q", id)
+// validateExtraID returns an error when valid is false, using kind and id to
+// form the exact message "invalid <kind> id <id>". Both validateRunIDExtra and
+// validateRetroIDExtra delegate here so the format string has one source of
+// truth across both callers.
+func validateExtraID(kind string, valid bool, id string) error {
+	if !valid {
+		return fmt.Errorf("invalid %s id %q", kind, id)
 	}
 	return nil
+}
+
+// formatHarness returns the harness inner display value: "name version" when
+// Version is set, else "name". Callers keep their own prefix/indent and their
+// own Name != "" guard.
+func formatHarness(h runmanifest.Harness) string {
+	if h.Version != "" {
+		return h.Name + " " + h.Version
+	}
+	return h.Name
 }
 
 func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
@@ -165,11 +174,7 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 		}
 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
 		if stage.Producer.Harness.Name != "" {
-			if stage.Producer.Harness.Version != "" {
-				fmt.Fprintf(out, "  harness:     %s %s\n", stage.Producer.Harness.Name, stage.Producer.Harness.Version)
-			} else {
-				fmt.Fprintf(out, "  harness:     %s\n", stage.Producer.Harness.Name)
-			}
+			fmt.Fprintf(out, "  harness:     %s\n", formatHarness(stage.Producer.Harness))
 		}
 		if stage.Producer.Model != "" {
 			fmt.Fprintf(out, "  model:       %s\n", stage.Producer.Model)
@@ -223,11 +228,7 @@ func printGate(out io.Writer, g runmanifest.GateAttempt) {
 		fmt.Fprintf(out, "  seat: %s\n", s.Seat)
 		fmt.Fprintf(out, "    provider: %s / %s\n", s.Provider.Name, s.Provider.Model)
 		if s.Harness.Name != "" {
-			if s.Harness.Version != "" {
-				fmt.Fprintf(out, "    harness:  %s %s\n", s.Harness.Name, s.Harness.Version)
-			} else {
-				fmt.Fprintf(out, "    harness:  %s\n", s.Harness.Name)
-			}
+			fmt.Fprintf(out, "    harness:  %s\n", formatHarness(s.Harness))
 		}
 		if s.Skill.ID != "" {
 			fmt.Fprintf(out, "    skill:    %s@%s (%s)\n", s.Skill.ID, s.Skill.Version, s.Skill.Repo)
