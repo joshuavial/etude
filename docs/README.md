@@ -18,7 +18,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [Prime](cli/etude_prime.md) - print a structured agent-onboarding primer to stdout (runs anywhere, no args).
 - [Log](log.md) - narrate runs and retros as a chronological timeline (read-only).
 - [Example](../examples/summarize/README.md) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
-- [Plans](plans/README.md) - notes on planned components that do not exist yet.
+- [Plans](plans/README.md) - planning and design notes (some components shipped, some not yet built).
 - [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).
 
 The current implemented state is summarized in the top-level

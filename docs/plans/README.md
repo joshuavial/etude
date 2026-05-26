@@ -1,12 +1,12 @@
 # Plans
 
-This section is for notes on things `etude` is expected to build, but has not
-implemented yet.
+This section holds planning and design notes — some describe components that now
+ship, others sketch work that is not built yet. It is not shipped user-facing
+documentation (that lives in the top-level [docs/](../README.md)).
 
 The source of truth for the current product direction is still the full
 [design brief](product/BRIEF.md). Use this section for smaller implementation
-notes, component sketches, sequencing notes, and open design decisions that
-should not yet be treated as shipped documentation.
+notes, component sketches, sequencing notes, and open design decisions.
 
 ## Product Plans
 
@@ -50,24 +50,37 @@ behavior.
 - [Dogfood process retro](dogfood/dogfood-process-retro.md) - retrospective on
   early dogfood workflow issues and recommended process improvements.
 
-## Planned components
+## Components
 
-- **Go CLI** - command structure, config loading, errors, and command docs.
+**Shipped** (see the top-level [docs/](../README.md) for user docs):
+
+- **Go CLI** - command structure, errors, and generated command docs.
 - **Workflow schema** - `.etude/workflow.yaml` validation and versioning.
 - **Git ref store** - immutable run commits under `refs/etude/*`.
-- **Capture** - manual capture first, then adapters for real workflows.
+- **Capture** - manual capture (`etude capture`, `capture-run`, `capture-gate`).
 - **Run manifests** - JSON manifests tying stages to artifacts, repo SHAs, and
   skill versions.
-- **Artifact store** - content-addressed blobs, with external references for
-  large binary artifacts.
-- **Sync** - explicit push/fetch support for the `refs/etude/*` namespace.
-- **Query index** - rebuildable SQLite cache in `.git/etude-index.db`.
+- **Artifact store** - content-addressed inline blobs.
+- **Sync** - explicit push/fetch for the `refs/etude/*` namespace.
 - **Replay** - throwaway worktree checkout plus skill-runner adapter.
-- **Eval** - rubric, pairwise, and deterministic assertion evaluators.
+- **Eval** - rubric, pairwise, and deterministic assertion evaluators (a library
+  consumed by `bench`).
 - **Bench** - batch replay plus eval to report skill-version win rates.
+- **Garbage collection** - `etude gc` storage report and explicit ref pruning.
+- **Query index** - rebuildable SQLite cache built by `etude reindex`.
+- **Retro** - `etude retro capture/generate/list/show` over `refs/etude/retros/*`.
+
+**Still planned / not yet built:**
+
+- **Capture adapters** - live xenota capture and GitHub PR import (Phase 1); the
+  shipped capture is manual/spec-driven only.
 - **Import** - backfill runs from GitHub PR history where enough source data
-  exists.
-- **Garbage collection** - cleanup for unreachable or oversized artifacts.
+  exists (`etude import --from-github`).
+- **Query command** - a CLI that consumes the index; today only `reindex` builds
+  it, nothing queries it.
+- **Standalone `etude eval`** - the eval package is wired only through `bench`.
+- **External artifact pointers** - out-of-tree references for large binary
+  artifacts (the content-addressed store is inline-only today).
 - **Documentation site** - likely Hugo, with generated CLI reference docs from
   the Go command tree.
 
