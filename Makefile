@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test
+.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -50,3 +50,7 @@ dogfood-audit:
 # Fixture-based tests for dogfood-completeness-audit.sh.
 dogfood-audit-test:
 	@bash scripts/dogfood-completeness-audit_test.sh
+
+# Fixture-based tests for dogfood-close.sh and the pre-push enforcement block.
+dogfood-close-test:
+	@bash scripts/dogfood-close_test.sh

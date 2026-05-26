@@ -445,12 +445,103 @@ For each phase:
 
 At bead close:
 
-- ensure every completed phase has a capture envelope
-- ensure reviewer results are appended for every gated phase
-- ensure implementation and docs commits are referenced
+Run `scripts/dogfood-close.sh` as the **terminal close step**. It captures the
+run, captures gate records, pushes the etude ref, and runs the completeness
+audit. The bead is **not complete** until it exits 0.
+
+```bash
+scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+```
+
+Then:
+
 - run `git status`
 - commit and push repository changes
 - run `bd dolt push` for bead storage
+
+See [Dogfood Close Gate](#dogfood-close-gate) below for the full contract.
+
+## Dogfood Close Gate
+
+`scripts/dogfood-close.sh` is the one command to run at bead close. It
+orchestrates the full close sequence and acts as the terminal blocking gate.
+
+### Contract
+
+```
+scripts/dogfood-close.sh <bead-id> <commit-sha> <verify-file> <review-file> [gate-dir]
+```
+
+- `<bead-id>` — the bead to close (also the run id and ref).
+- `<commit-sha>` — the implement-stage commit (passed to `dogfood-capture.sh`).
+- `<verify-file>` — path to the Verify-stage artifact.
+- `<review-file>` — path to the Final-Review-stage artifact.
+- `[gate-dir]` — OPTIONAL directory of `*.json` GateAttempt files (one per gate
+  attempt, shape per [Review Gate Runbook](review-gate-runbook.md) "Structured
+  capture"). If omitted, the terminal audit will fail check (b) for a
+  non-allowlisted bead — which is the correct loud signal that gate records are
+  missing.
+
+### Orchestration order
+
+1. **Preflight (no mutation):** validate arg count; check artifact files exist;
+   verify `refs/etude/runs/<bead>` does NOT already exist (capture-run is
+   create-only — fail before side effects). If `<bead>` is in
+   `scripts/dogfood-completeness-allow.txt`, print a bypass notice.
+2. **Capture the run:** calls `scripts/dogfood-capture.sh` — creates
+   `refs/etude/runs/<bead>` and pushes it.
+3. **Capture gate records:** for each `<gate-dir>/*.json` in sorted (lexical)
+   order, calls `scripts/dogfood-gate-capture.sh` — appends the gate and
+   re-pushes the ref. If no gate-dir, skips this step.
+4. **Terminal gate:** runs `scripts/dogfood-completeness-audit.sh --bead <bead>`
+   and propagates its exit code verbatim. Exit 0 = complete; exit 1 = hard gap
+   (missing-run / gateless-run / unpushed-ref) — wrapper fails loudly with the
+   audit's GAP lines.
+
+The wrapper does no git ref mutation itself — all mutation happens inside the
+already-tested capture scripts. See the audit's `--bead` mode note in the
+[Dogfood Completeness Audit](#dogfood-completeness-audit) section below for the
+exact hard checks (a), (b), (d).
+
+### What BLOCKS vs WARNS
+
+- **BLOCK (hard, exit 1):** (a) run ref missing; (b) run has no gate records;
+  (d) run ref not pushed to origin.
+- **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue (not run in
+  `--bead` mode — deadlock avoidance).
+
+### Bypass and defer policy
+
+For non-code or exceptional beads, add the bead to the allowlist
+`scripts/dogfood-completeness-allow.txt` with a written reason. The wrapper
+inherits the audit's bypass behavior: an allowlisted bead is reported as
+`bypass: <id> — <reason>` and does not cause exit 1. See the
+[Allowlist](#allowlist) subsection for the full policy and format.
+
+Use sparingly. Every bypass is visible in the audit output on every run.
+
+### `.beads/hooks/pre-push` enforcement
+
+A dogfood enforcement block appended after the bd-managed markers in
+`.beads/hooks/pre-push` provides a hard backstop for code pushes. It reads the
+push refs that git feeds on stdin and classifies them:
+
+- **Exempt** (exit 0, no audit): every non-deletion ref matches `refs/etude/*`
+  or `refs/tags/*`. This lets `dogfood-capture.sh` and `dogfood-gate-capture.sh`
+  push their `refs/etude/runs/<bead>` refs unhindered (no recursion, no
+  deadlock).
+- **Blocked** (exit 1): any `refs/heads/*` (code push) when
+  `scripts/dogfood-completeness-audit.sh --last 9` exits non-zero. The push is
+  rejected with the audit GAP lines visible.
+- **Allowed** (exit 0): code push where the audit exits 0.
+- **Deletion lines** (`local-oid` all-zeros): skipped — not new code.
+
+**Escape hatch:** `git push --no-verify` bypasses all hooks. Use only for
+genuine emergencies; the batch sweep and allowlist remain the audit-of-record.
+
+**Precondition:** the `--last 9` window must be clean (every in-window closed
+bead is captured or allowlisted) before this hook can land. Run
+`make dogfood-audit` to verify before pushing.
 
 ## Dogfood Completeness Audit
 
@@ -466,9 +557,9 @@ scripts/dogfood-completeness-audit.sh [--bead <id>]
                                        [--quiet] [--json]
 ```
 
-- `--bead <id>`: Audit exactly one closed bead. This is the mode `etude-8hq.1`
-  calls at close/push time. Hard checks only for that bead; no window or
-  cadence check.
+- `--bead <id>`: Audit exactly one closed bead. This is the mode called by
+  `scripts/dogfood-close.sh` at close time (see [Dogfood Close Gate](#dogfood-close-gate)).
+  Hard checks only for that bead; no window or cadence check.
 - `--last <N>` (default 9): Audit the N most-recently-closed in-scope beads.
 - `--since <date>`: Audit beads closed on/after an ISO date (YYYY-MM-DD).
 - `--quiet`: Suppress per-check PASS lines; still print gaps and summary.

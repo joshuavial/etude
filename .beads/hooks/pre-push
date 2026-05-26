@@ -1,4 +1,10 @@
 #!/usr/bin/env sh
+# Buffer stdin BEFORE the bd block. git feeds "<local-ref> <local-oid> <remote-ref>
+# <remote-oid>" lines on stdin. bd hooks run pre-push uses "$@" (remote name+URL)
+# and does NOT read stdin (empirically verified), so buffering here does not
+# starve the bd block. The dogfood classifier below reads $_dogfood_refs instead.
+_dogfood_refs="$(cat)"
+
 # --- BEGIN BEADS INTEGRATION v1.0.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
@@ -22,3 +28,92 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.0 ---
+
+# ---------------------------------------------------------------------------
+# Dogfood completeness enforcement — runs AFTER the bd block above.
+# Classifies the push refs buffered from stdin at the top of this file and
+# blocks code pushes (refs/heads/*) when the dogfood audit window has gaps.
+#
+# Exempt:  pushes whose every non-deletion ref matches refs/etude/* or
+#          refs/tags/*. This lets dogfood-capture.sh and dogfood-gate-capture.sh
+#          push their refs/etude/runs/<bead> refs unhindered (no recursion/deadlock).
+# Block:   pushes containing any refs/heads/* ref when
+#          scripts/dogfood-completeness-audit.sh --last 9 exits non-zero.
+# Escape:  git push --no-verify bypasses all hooks (git's built-in human
+#          escape hatch); this script does nothing to defeat it.
+# ---------------------------------------------------------------------------
+_dogfood_repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+# Allow test injection via env var; default to repo-relative path.
+_dogfood_script="${DOGFOOD_HOOK_AUDIT_SCRIPT:-$_dogfood_repo_root/scripts/dogfood-completeness-audit.sh}"
+
+# If the audit script doesn't exist (e.g. running outside the etude repo), skip.
+if [ ! -f "$_dogfood_script" ]; then
+  exit 0
+fi
+
+# Parse the buffered refs. Each line: <local-ref> <local-oid> <remote-ref> <remote-oid>
+# A deletion has local-oid = 0000000000000000000000000000000000000000 — skip those.
+_has_code_ref=false
+_all_exempt=true  # true until we see a non-exempt, non-deletion ref
+
+# Process refs line by line using a here-string from the buffered variable.
+# We use a while-read loop over a printf to avoid subshell issues with flag vars.
+_tmpfile="$(mktemp)"
+printf '%s\n' "$_dogfood_refs" > "$_tmpfile"
+while IFS= read -r _line; do
+  [ -z "$_line" ] && continue
+  # shellcheck disable=SC2086
+  set -- $_line
+  _local_ref="${1:-}"
+  _local_oid="${2:-}"
+  # Skip deletion lines (local-oid all zeros)
+  case "$_local_oid" in
+    0000000000000000000000000000000000000000) continue ;;
+  esac
+  # Classify the ref
+  case "$_local_ref" in
+    refs/etude/*|refs/tags/*)
+      # Exempt — etude artifact push or tag push; don't flip _all_exempt to false
+      ;;
+    refs/heads/*)
+      _has_code_ref=true
+      _all_exempt=false
+      ;;
+    *)
+      # Unknown ref type — not exempt, but not necessarily a code push.
+      # Treat as non-exempt to be safe but don't trigger the audit.
+      _all_exempt=false
+      ;;
+  esac
+done < "$_tmpfile"
+rm -f "$_tmpfile"
+
+# If every non-deletion ref was exempt (etude/* or tags/*), let it through.
+if $_all_exempt; then
+  exit 0
+fi
+
+# Only run the audit if there is at least one code ref (refs/heads/*).
+if ! $_has_code_ref; then
+  exit 0
+fi
+
+# Run the batch audit. Use DOGFOOD_AUDIT_ETUDE_BIN if set (faster; avoids
+# rebuilding on every push). The audit script already handles the env var.
+echo "dogfood pre-push: checking completeness audit (--last 9)..."
+_dogfood_audit_exit=0
+bash "$_dogfood_script" --last 9 || _dogfood_audit_exit=$?
+
+if [ "$_dogfood_audit_exit" -eq 0 ]; then
+  echo "dogfood pre-push: audit passed — push allowed."
+  exit 0
+elif [ "$_dogfood_audit_exit" -eq 1 ]; then
+  echo >&2 "dogfood pre-push: BLOCKED — completeness audit found gaps (see GAP lines above)."
+  echo >&2 "Close the listed bead(s) with scripts/dogfood-close.sh, or use git push --no-verify to bypass."
+  exit 1
+else
+  # exit 2 = environment/usage error — fail closed
+  echo >&2 "dogfood pre-push: BLOCKED — audit exited $_dogfood_audit_exit (environment/usage error; fail-closed)."
+  echo >&2 "Use git push --no-verify to bypass if this is a false alarm."
+  exit 1
+fi

@@ -21,6 +21,8 @@ After a context clear or when starting a new ticket, boot into productive state:
 9. After a gate passes and optional improvements are handled or deferred,
    continue to the next workflow step without waiting for another prompt unless
    blocked.
+10. At bead close, run `scripts/dogfood-close.sh <bead> <commit> <verify> <review> [gate-dir]`
+    as the terminal step. A bead is not complete until this exits 0.
 
 - [Dev workflow audit](dev-workflow-audit.md) - current agent workflow gaps and
   recommended dogfood workflow shape.
@@ -54,6 +56,7 @@ After a context clear or when starting a new ticket, boot into productive state:
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/dogfood-close.sh` | Orchestrate the full bead-close sequence: preflight, capture run, capture gate records, terminal completeness audit. Run this to close a bead. |
 | `scripts/dogfood-capture.sh` | Capture a closed bead's dev-workflow phases as an etude run and push the ref. |
 | `scripts/dogfood-gate-capture.sh` | Append a structured gate attempt to a bead's run and push. |
 | `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
