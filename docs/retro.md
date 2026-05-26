@@ -53,8 +53,10 @@ unchanged.
 The sidecar must be well-formed JSON: malformed input is rejected before any ref
 is written, with `retro meta file "<path>" is not valid JSON` and a non-zero
 exit code. The schema of the JSON is not interpreted by etude — it is stored
-verbatim for downstream tooling (e.g. failure-mode indexing). `retro show` does
-not yet render the sidecar.
+verbatim for downstream tooling (e.g. failure-mode indexing). `retro show`
+renders the sidecar in a `--- retro meta ---` section after the body (see
+[Show a retro](#show-a-retro)), and `retro list` flags its presence in the
+`META` column.
 
 ## Generate a retro
 
@@ -161,8 +163,8 @@ etude retro list
 Prints a tab-aligned table of all stored retros ordered lexically by retro id:
 
 ```
-RETRO ID           SCOPE  TRIGGER  SUBJECTS  CREATED
-run-abc-20260523   run    manual   run-1     2026-05-23T10:00:00Z
+RETRO ID           SCOPE  TRIGGER  SUBJECTS  META  CREATED
+run-abc-20260523   run    manual   run-1     N     2026-05-23T10:00:00Z
 ```
 
 Columns:
@@ -173,6 +175,7 @@ Columns:
 | `SCOPE` | Scope value recorded at capture time |
 | `TRIGGER` | Trigger value (e.g. `manual`, `scheduled`) |
 | `SUBJECTS` | Comma-joined subject run ids and bead ids |
+| `META` | `Y` when the retro carries a `retro-meta` JSON sidecar, else `N` |
 | `CREATED` | Creation timestamp in RFC3339 UTC |
 
 When there are no retros, the command prints `no retros found` and exits 0.
@@ -211,6 +214,29 @@ harness, model, or skill.
 When the retro carries extra metadata keys (beyond scope, trigger, decision,
 supersedes, and subject fields), they are printed in a `metadata:` block in
 sorted key order.
+
+### Retro-meta sidecar rendering
+
+When the retro carries a `retro-meta` JSON sidecar (captured with
+`--meta-file`), `retro show` prints it in a `--- retro meta ---` section after
+the body, pretty-printed with two-space indentation:
+
+```
+--- retro body ---
+<markdown content>
+--- retro meta ---
+{
+  "failure_modes": [
+    "flaky-gate"
+  ],
+  "root_cause": "missing newline guard"
+}
+```
+
+The section is omitted entirely for retros with no sidecar, so existing retros
+render exactly as before. The stage is located by its `retro-meta` artifact
+role, not by position. If the stored JSON cannot be re-indented it is printed
+verbatim.
 
 ### Retro id validation
 

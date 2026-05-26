@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -175,7 +176,7 @@ func (r *retroShowListRunner) list(ctx context.Context) error {
 	}
 
 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tCREATED")
+	fmt.Fprintln(w, "RETRO ID\tSCOPE\tTRIGGER\tSUBJECTS\tMETA\tCREATED")
 	for _, ref := range refs {
 		id := strings.TrimPrefix(ref, retrosPrefix)
 		manifestBytes, err := r.store.ReadFile(ctx, ref, "manifest.json")
@@ -187,11 +188,16 @@ func (r *retroShowListRunner) list(ctx context.Context) error {
 			return fmt.Errorf("retro %q: %w", id, err)
 		}
 		subjects := retroSubjectsList(manifest.Refs)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+		metaCol := "N"
+		if _, ok := findRetroMetaStage(manifest); ok {
+			metaCol = "Y"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			id,
 			manifest.Refs["scope"],
 			manifest.Refs["trigger"],
 			subjects,
+			metaCol,
 			manifest.Created.UTC().Format(time.RFC3339),
 		)
 	}
@@ -236,6 +242,18 @@ func validateRetroIDExtra(id string) error {
 		return fmt.Errorf("invalid retro id %q", id)
 	}
 	return nil
+}
+
+// findRetroMetaStage scans m.Stages for a stage whose Output.Role is
+// "retro-meta" and returns it. Detection is role-based, not positional, so it
+// is robust to future stage additions.
+func findRetroMetaStage(m runmanifest.Manifest) (runmanifest.Stage, bool) {
+	for _, s := range m.Stages {
+		if s.Output.Role == "retro-meta" {
+			return s, true
+		}
+	}
+	return runmanifest.Stage{}, false
 }
 
 // retroSubjectsList collects subject_run.N and bead.N values from refs,
@@ -377,10 +395,41 @@ func printRetroDetail(store refstore.Store, ctx context.Context, ref string, m r
 		if err != nil {
 			return fmt.Errorf("retro body: %w", err)
 		}
-		if stage.Output.Storage == artifactstore.StorageContent {
+		bodyIsContent := stage.Output.Storage == artifactstore.StorageContent
+		if bodyIsContent {
 			fmt.Fprint(out, string(bodyBytes))
 		} else {
 			fmt.Fprintf(out, "artifact: %s\n", stage.Output.Path)
+		}
+
+		// Render the retro-meta sidecar section when present.
+		if metaStage, ok := findRetroMetaStage(m); ok {
+			// Guarantee a newline before the meta divider. The content-storage
+			// body is printed with Fprint (no trailing newline added), so if the
+			// body bytes themselves don't end in '\n' the divider would glue onto
+			// the last body line. The pointer-storage branch always ends in "\n".
+			if bodyIsContent && len(bodyBytes) > 0 && bodyBytes[len(bodyBytes)-1] != '\n' {
+				fmt.Fprintln(out)
+			}
+			fmt.Fprintln(out, "--- retro meta ---")
+			metaBytes, err := store.ReadFile(ctx, ref, metaStage.Output.Path)
+			if err != nil {
+				return fmt.Errorf("retro meta: %w", err)
+			}
+			if metaStage.Output.Storage == artifactstore.StorageContent {
+				var buf bytes.Buffer
+				if json.Indent(&buf, metaBytes, "", "  ") == nil {
+					out.Write(buf.Bytes())
+					if !bytes.HasSuffix(buf.Bytes(), []byte("\n")) {
+						fmt.Fprintln(out)
+					}
+				} else {
+					// Fall back to raw bytes if indent fails.
+					fmt.Fprint(out, string(metaBytes))
+				}
+			} else {
+				fmt.Fprintf(out, "artifact: %s\n", metaStage.Output.Path)
+			}
 		}
 	}
 	return nil

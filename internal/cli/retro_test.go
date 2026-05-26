@@ -399,7 +399,7 @@ func TestRetroListOneRetro(t *testing.T) {
 	}
 
 	// Header row must contain all column names.
-	for _, col := range []string{"RETRO ID", "SCOPE", "TRIGGER", "SUBJECTS", "CREATED"} {
+	for _, col := range []string{"RETRO ID", "SCOPE", "TRIGGER", "SUBJECTS", "META", "CREATED"} {
 		if !strings.Contains(stdout, col) {
 			t.Fatalf("expected column %q in header:\n%s", col, stdout)
 		}
@@ -1472,7 +1472,7 @@ func TestRetroGenerateWithoutMetaSingleStage(t *testing.T) {
 }
 
 // TestRetroShowWithMetaStageStillRendersSingleBody verifies that retro show
-// still renders correctly for a 2-stage retro (reads Stages[0] for body).
+// renders both the body AND the retro-meta section for a 2-stage retro.
 func TestRetroShowWithMetaStageStillRendersSingleBody(t *testing.T) {
 	repo := initCaptureRepo(t)
 	writeFile(t, repo, "retro.md", "# Retro\nMeta sidecar present.\n")
@@ -1507,6 +1507,241 @@ func TestRetroShowWithMetaStageStillRendersSingleBody(t *testing.T) {
 	// Scope must be present.
 	if !strings.Contains(stdout, "cohort") {
 		t.Errorf("expected 'cohort' in output:\n%s", stdout)
+	}
+
+	// Meta section must be present and after the body section.
+	if !strings.Contains(stdout, "--- retro meta ---") {
+		t.Errorf("expected '--- retro meta ---' in output:\n%s", stdout)
+	}
+	bodyPos := strings.Index(stdout, "--- retro body ---")
+	metaPos := strings.Index(stdout, "--- retro meta ---")
+	if bodyPos < 0 || metaPos < 0 || metaPos <= bodyPos {
+		t.Errorf("expected meta divider after body divider; bodyPos=%d metaPos=%d in:\n%s", bodyPos, metaPos, stdout)
+	}
+	// The meta JSON value "cohort" must appear after the meta divider.
+	if !strings.Contains(stdout[metaPos:], "cohort") {
+		t.Errorf("expected 'cohort' in meta section of output:\n%s", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// TestRetroShowNoMetaStageNoMetaSection verifies that a retro captured without
+// --meta-file produces no "--- retro meta ---" section — output byte-identical
+// to the single-body format.
+func TestRetroShowNoMetaStageNoMetaSection(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nNo meta here.\n")
+	chdir(t, repo)
+
+	captureStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := extractRetroID(t, captureStdout)
+
+	stdout, stderr, err := execute("retro", "show", retroID)
+	if err != nil {
+		t.Fatalf("retro show returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Body section must be present.
+	if !strings.Contains(stdout, "--- retro body ---") {
+		t.Errorf("expected '--- retro body ---' in output:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "No meta here.") {
+		t.Errorf("expected body text in output:\n%s", stdout)
+	}
+	// Meta section must NOT be present.
+	if strings.Contains(stdout, "--- retro meta ---") {
+		t.Errorf("did not expect '--- retro meta ---' in output for retro without meta:\n%s", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// TestRetroShowMetaBodyNoTrailingNewline is a regression test for the
+// mandatory PLAN-GATE CORRECTION: when the retro body has no trailing newline,
+// the "--- retro meta ---" divider must appear on its own line (not glued to
+// the last body line).
+func TestRetroShowMetaBodyNoTrailingNewline(t *testing.T) {
+	repo := initCaptureRepo(t)
+	// Body deliberately has NO trailing newline.
+	writeFile(t, repo, "retro-notail.md", "Last line no newline")
+	metaJSON := `{"scope":"cohort","decision":"accepted"}`
+	writeFile(t, repo, "meta-notail.json", metaJSON)
+	chdir(t, repo)
+
+	captureStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro-notail.md",
+		"--meta-file", "meta-notail.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := extractRetroID(t, captureStdout)
+
+	stdout, stderr, err := execute("retro", "show", retroID)
+	if err != nil {
+		t.Fatalf("retro show returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// The divider must appear on its own line: preceded by \n, followed by \n.
+	if !strings.Contains(stdout, "\n--- retro meta ---\n") {
+		t.Errorf("expected '\\n--- retro meta ---\\n' (divider on its own line) in output:\n%q", stdout)
+	}
+	// The last body text must NOT be glued to the divider.
+	if strings.Contains(stdout, "Last line no newline--- retro meta ---") {
+		t.Errorf("body last line is glued to meta divider in output:\n%q", stdout)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// TestRetroShowMetaPrettyPrinted verifies that the meta JSON is pretty-printed
+// with 2-space indentation in the show output.
+func TestRetroShowMetaPrettyPrinted(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro-pp.md", "# Retro\nBody.\n")
+	// Single-line JSON — pretty-printing must expand it.
+	metaJSON := `{"scope":"cohort","decision":"accepted"}`
+	writeFile(t, repo, "meta-pp.json", metaJSON)
+	chdir(t, repo)
+
+	captureStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro-pp.md",
+		"--meta-file", "meta-pp.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := extractRetroID(t, captureStdout)
+
+	stdout, stderr, err := execute("retro", "show", retroID)
+	if err != nil {
+		t.Fatalf("retro show returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Find where the meta section starts.
+	metaPos := strings.Index(stdout, "--- retro meta ---")
+	if metaPos < 0 {
+		t.Fatalf("expected '--- retro meta ---' in output:\n%s", stdout)
+	}
+	metaSection := stdout[metaPos:]
+
+	// Must contain a line beginning with two spaces (2-space indent from json.Indent).
+	if !strings.Contains(metaSection, "\n  ") {
+		t.Errorf("expected 2-space indented JSON in meta section:\n%s", metaSection)
+	}
+	// The indented key "scope" must appear in the meta section.
+	if !strings.Contains(metaSection, `"scope"`) {
+		t.Errorf("expected '\"scope\"' in meta section:\n%s", metaSection)
+	}
+
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+// TestRetroListMetaColumn verifies that the list META column shows Y for a
+// retro with --meta-file and N for one without, and that CREATED is still
+// the last RFC3339Z field.
+func TestRetroListMetaColumn(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro-with-meta.md", "# Retro with meta\n")
+	writeFile(t, repo, "retro-no-meta.md", "# Retro without meta\n")
+	writeFile(t, repo, "meta-list.json", `{"scope":"cohort"}`)
+	chdir(t, repo)
+
+	// Capture retro WITH meta.
+	withMetaStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro-with-meta.md",
+		"--meta-file", "meta-list.json",
+		"--subject-run", "r1",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture with-meta returned error: %v\nstderr: %s", err, stderr)
+	}
+	withMetaID := extractRetroID(t, withMetaStdout)
+
+	// Capture retro WITHOUT meta.
+	noMetaStdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro-no-meta.md",
+		"--subject-run", "r2",
+		"--skill-id", "retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture no-meta returned error: %v\nstderr: %s", err, stderr)
+	}
+	noMetaID := extractRetroID(t, noMetaStdout)
+
+	stdout, stderr, err := execute("retro", "list")
+	if err != nil {
+		t.Fatalf("retro list returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Header must contain META column.
+	if !strings.Contains(stdout, "META") {
+		t.Fatalf("expected 'META' column in list header:\n%s", stdout)
+	}
+
+	// Find data rows by retro id and check META value.
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	// lines[0] is the header.
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		id := fields[0]
+		if id == withMetaID {
+			// META column is 5th field (index 4), CREATED is 6th (index 5).
+			if len(fields) < 6 {
+				t.Fatalf("row for with-meta retro has too few fields (%d):\n%s", len(fields), line)
+			}
+			if fields[4] != "Y" {
+				t.Errorf("expected META=Y for retro with meta (id=%s), got %q in:\n%s", withMetaID, fields[4], line)
+			}
+		} else if id == noMetaID {
+			if len(fields) < 6 {
+				t.Fatalf("row for no-meta retro has too few fields (%d):\n%s", len(fields), line)
+			}
+			if fields[4] != "N" {
+				t.Errorf("expected META=N for retro without meta (id=%s), got %q in:\n%s", noMetaID, fields[4], line)
+			}
+		}
+	}
+
+	// CREATED must still be the last field and parse as RFC3339Z.
+	var foundTime bool
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			lastField := fields[len(fields)-1]
+			if _, parseErr := time.Parse(time.RFC3339, lastField); parseErr == nil {
+				if strings.HasSuffix(lastField, "Z") {
+					foundTime = true
+				}
+			}
+		}
+	}
+	if !foundTime {
+		t.Fatalf("no valid RFC3339Z timestamp found as last field in data rows:\n%s", stdout)
 	}
 
 	if stderr != "" {
