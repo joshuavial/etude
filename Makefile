@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check docs-reality reconcile example
+.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -41,3 +41,12 @@ reconcile:
 
 example: build
 	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh
+
+# Dogfood completeness audit: check whether recent closed beads have run refs,
+# gate records, and pushed refs. Uses --last 9 by default.
+dogfood-audit:
+	@bash scripts/dogfood-completeness-audit.sh --last 9
+
+# Fixture-based tests for dogfood-completeness-audit.sh.
+dogfood-audit-test:
+	@bash scripts/dogfood-completeness-audit_test.sh

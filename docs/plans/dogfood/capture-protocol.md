@@ -452,6 +452,102 @@ At bead close:
 - commit and push repository changes
 - run `bd dolt push` for bead storage
 
+## Dogfood Completeness Audit
+
+`scripts/dogfood-completeness-audit.sh` mechanically checks whether closed
+beads have their dogfood artifacts. It is the reusable scripted version of the
+manual B16 completeness check from the retro ledger.
+
+### Usage
+
+```
+scripts/dogfood-completeness-audit.sh [--bead <id>]
+                                       [--last <N>] [--since <date>]
+                                       [--quiet] [--json]
+```
+
+- `--bead <id>`: Audit exactly one closed bead. This is the mode `etude-8hq.1`
+  calls at close/push time. Hard checks only for that bead; no window or
+  cadence check.
+- `--last <N>` (default 9): Audit the N most-recently-closed in-scope beads.
+- `--since <date>`: Audit beads closed on/after an ISO date (YYYY-MM-DD).
+- `--quiet`: Suppress per-check PASS lines; still print gaps and summary.
+- `--json`: Emit `{"checks":N,"gaps":[...],"exit":N}` for the gate.
+
+### What it checks
+
+For each in-scope, non-allowlisted bead:
+
+- **(a) Run ref present** (hard, both modes): `refs/etude/runs/<id>` must
+  exist in the local git repo.
+- **(b) Gated run has gate records** (hard, both modes): the run's
+  `manifest.json` must have at least one entry in `gates[]`. Read via
+  `git cat-file -p <ref>:manifest.json`.
+- **(c) Cadence retro not overdue** (WARN only, batch mode only): if 3 or
+  more in-scope beads are not covered by any cadence-retro ref, prints a
+  warning. Never affects the exit code. Not run in `--bead` mode (a cadence
+  retro is written AFTER the cohort's third bead closes, so gating an
+  individual close on its existence is a deadlock).
+- **(d) Refs pushed** (hard): in batch mode, every `refs/etude/{runs,retros}/*`
+  must be present on origin with a matching SHA. In `--bead` mode, only that
+  bead's own run ref is checked.
+- **(e) Docs drift** (WARN only, both modes): in batch mode runs
+  `make docs-check` and `make docs-reality` and warns on failure. In `--bead`
+  mode, warns only if the manifest's `git_sha` touched `docs/`.
+- **(f) Bypass report**: always prints allowlisted beads with their reasons so
+  exceptions are visible. Never affects exit.
+
+### Exit codes
+
+- `0` — all hard checks passed (warnings are allowed).
+- `1` — one or more hard gaps found.
+- `2` — usage error or environment problem (build failed, no closed beads).
+
+### Allowlist
+
+`scripts/dogfood-completeness-allow.txt` lists beads that are exempt from the
+run-ref / gates checks. Format:
+
+```
+<bead-id>  # reason
+```
+
+Blank lines and `#` comment lines are ignored. A bypassed bead is always
+reported in the output (`bypass: <id> — <reason>`) but does not cause a
+non-zero exit.
+
+**How to add a bypass:** add a line with the bead id and a written reason,
+then commit the change. Every bypass is visible in the audit output on every
+run. Use sparingly — only for legitimate exceptions such as epic/rollup beads,
+pre-dogfood-habit beads, and deferred beads. A missing reason or an
+over-broad entry obscures real gaps.
+
+Seeded exceptions (at the time this was written): epic/rollup beads
+(`etude-14r`, `etude-roadmap.1`, `etude-roadmap.2`, etc.), the
+`etude-nm6` backfill task, two deferred beads (`etude-8b7`, `etude-9ey`),
+and all pre-dogfood-habit infra/process/docs beads closed before run capture
+began.
+
+### Routine use
+
+For a routine completeness sweep:
+
+```bash
+scripts/dogfood-completeness-audit.sh --last 9
+```
+
+For a sweep of all post-habit work since a specific date:
+
+```bash
+scripts/dogfood-completeness-audit.sh --since 2026-05-18
+```
+
+For the close-gate check (called by `etude-8hq.1` wiring):
+
+```bash
+scripts/dogfood-completeness-audit.sh --bead <id>
+```
+
 ## Open Questions
 
 - The first `etude import` implementation should decide whether to preserve

@@ -49,3 +49,13 @@ After a context clear or when starting a new ticket, boot into productive state:
   dogfood completeness failure and the `etude-8hq` enforcement phase.
 - [Artifacts](artifacts/) - committed dogfood capture artifacts for external
   files or large outputs that are referenced from bead notes.
+
+## Dogfood Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/dogfood-capture.sh` | Capture a closed bead's dev-workflow phases as an etude run and push the ref. |
+| `scripts/dogfood-gate-capture.sh` | Append a structured gate attempt to a bead's run and push. |
+| `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
+| `scripts/docs-reality-check.sh` | Guard against doc/CLI drift (also run via `make docs-reality`). |
+| `scripts/backfill-gate-records.sh` | One-time backfill of missing gate records. |

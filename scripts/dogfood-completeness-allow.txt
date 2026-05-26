@@ -1,0 +1,53 @@
+# dogfood-completeness-audit allowlist: beads that are EXEMPT from the
+# run-ref-required / gates-required checks.
+# Format: <bead-id>  # reason
+# Blank lines and #-comment lines are ignored.
+# Each listed bead is REPORTED as "bypass: <bead> — <reason>" by the audit
+# (so exceptions remain visible + auditable in the output) but does NOT
+# cause a non-zero exit.
+# Keep this list minimal and justify each entry.
+#
+# How to add an exemption:
+#   1. Add a line: <bead-id>  # <reason>
+#   2. Commit the change with a short rationale in the commit message.
+#   3. The audit will report the bypass in its output on every run.
+
+# --- backfill / process beads ---
+etude-nm6  # gate-backfill task, no code run — captured the 14 missing gate records
+
+# --- deferred beads (no run because work was reserved/deferred, not shipped) ---
+etude-8b7  # deferred (reserved scaffolding — remove dead artifactstore pointer chain)
+etude-9ey  # deferred (needs sidecar data — cross-retro failure-mode index)
+
+# --- epic/rollup beads (closed when all children shipped; no direct code run) ---
+etude-14r        # epic rollup — retro capture; children q87+8t4 have runs
+etude-phase-prep # epic rollup — dev-workflow overhaul; children have runs
+etude-roadmap.1  # epic rollup — producer identity; children 1.1..1.4 have runs
+etude-roadmap.2  # epic rollup — gate reviewer visibility; children 2.1..2.6 have runs
+etude-bench-command  # epic rollup — etude bench; children bench-command.1..4 have runs
+
+# --- pre-dogfood-habit infra/process beads (closed before run capture began) ---
+etude-go-cli-scaffold     # pre-habit infra — scaffold Go CLI project
+etude-phase0              # pre-habit rollup — core schema+storage+capture
+etude-run-manifest        # pre-habit — define and write run manifests
+etude-artifact-store      # pre-habit — content-addressed artifact store
+etude-ref-store           # pre-habit — refs/etude/* git storage
+etude-workflow-schema     # pre-habit — workflow.yaml schema and validation
+etude-init-command        # pre-habit — etude init command
+etude-capture-manual      # pre-habit — manual capture command
+etude-skill-runner-adapter # pre-habit — skill-runner adapter
+etude-consolidate-test-qa  # pre-habit process — consolidate test/QA workflow
+etude-overhaul-dev-workflow-skill # pre-habit process — overhaul dev-workflow skill
+etude-agent-workflow-audit # pre-habit process — audit Claude dev agents
+etude-dogfood-capture-protocol # pre-habit process — define capture protocol
+etude-b1p               # pre-habit docs — document dogfood backlog + docs hygiene
+etude-dvy               # pre-habit docs — add dogfood session boot doc
+etude-jpf               # pre-habit docs — define retro capture in dogfood protocol
+etude-update-docs-agent  # pre-habit process — update docs agent
+etude-update-review-agent # pre-habit process — update review agent
+etude-lxg               # pre-habit infra — remove ActiveCampaign MCP configuration
+etude-phase2.1          # pre-habit — reconstruct original stage inputs for replay
+etude-phase2.2          # pre-habit — check out recorded git_sha in throwaway worktree
+etude-phase2.3          # pre-habit — define skill-runner interface and stub runner
+etude-phase2.4          # pre-habit — implement exec-command skill runner
+etude-phase2.5          # pre-habit — record replay output and link to source run

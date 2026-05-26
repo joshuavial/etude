@@ -870,6 +870,13 @@ the bead's etude run:
 > `etude run show <bead> | grep -c gate`. The 14-bead historical gap was
 > backfilled 2026-05-27 (35 GateAttempt records, etude-nm6) from the recorded
 > gate histories; the going-forward rule is: every gate attempt gets a record.
+>
+> **Mechanical completeness check:** `scripts/dogfood-completeness-audit.sh`
+> automates the B16 completeness check (run ref present, gates non-empty,
+> refs pushed). Run `scripts/dogfood-completeness-audit.sh --last 9` for a
+> batch sweep, or `--bead <id>` per close. See
+> [Dogfood Completeness Audit](capture-protocol.md#dogfood-completeness-audit)
+> in the capture protocol for full usage and the allowlist mechanism.
 
 Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
 COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose
