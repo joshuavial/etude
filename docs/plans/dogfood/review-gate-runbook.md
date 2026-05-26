@@ -690,6 +690,53 @@ root/index pages that list or cross-reference it.
   the generator actually emits? A scope that lists the new page but omits the
   regenerated root/index page is a BLOCK.
 
+## Plan-Phase Discipline
+
+Two plan-phase practices the gate enforces BEFORE design is accepted. Unlike the
+implement-gate defect classes above, these are about the plan itself.
+
+**P1. Verify the verification — when a bead's acceptance rests on an equivalence /
+escape / property proof, the PLAN must specify a proof that actually RUNS, uses
+commands/flags that EXIST, normalizes exactly the volatile fields, and covers the
+full fidelity/threat surface. The gate vets the proof method, not just the change.**
+- **Why:** etude-21z's PLAN gate was BLOCKED by ALL THREE seats — not on the
+  rewrite (a faithful 4-`capture`→1-`capture-run` swap) but on its VERIFICATION,
+  which was broken three independent ways: it diffed `etude run show --json` (no
+  such flag exists — run.go:60 defines none); it used throwaway ids `eq-old`/`eq-new`
+  that embed into `refs.bead` but normalized only run_id/created/timestamps (the
+  diff would falsely fail); and comparing `run show` TEXT would have missed
+  artifact content-hashes + media_type entirely. A "passing" equivalence check that
+  cannot run, or that is blind to the fields that matter, proves nothing. (Compare
+  etude-094, where the proof was an EMPIRICAL adversarial escape probe + a planted
+  secret leak-audit — that proof was load-bearing precisely because it actually
+  exercised the threat.)
+- **How to apply:** for any proof-backed bead, the plan states the EXACT proof
+  commands; confirm each flag/command exists (grep/`--help`), enumerate every
+  volatile field to normalize (run_id, created, per-stage timestamp, AND any
+  id-derived ref like `refs.bead`), and confirm the comparison surface includes
+  the load-bearing fields (for manifests: diff the raw `manifest.json` blob, which
+  carries artifact hashes + media_type, NOT the human `run show` text). Gate check:
+  trace the proof end-to-end — would it actually execute, and would it catch a real
+  divergence? A proof that can't run or is field-blind is a BLOCK.
+
+**P2. Premise-check before designing — confirm the bead's premise holds (the data
+exists, the dependency is stable, the value is real) and recommend DEFER (with the
+concrete prerequisite) rather than building speculative infra over a hypothetical.**
+- **Why:** etude-9ey ("cross-retro failure-mode index") was correctly DEFERRED at
+  plan time, not built: (a) ZERO retros carry a sidecar yet (`refs/etude/retros/*`
+  is empty), so the aggregation had no input; (b) the retro-meta sidecar is
+  schema-free BY DESIGN (etude-2ku stores it verbatim, json.Valid only) — an index
+  would be the first place to bless a schema, inverting that posture; (c) the
+  de-facto convention even CONTRADICTED itself (`root_cause` vs `root_causes`).
+  Building would have produced speculative read-side code over an empty, unstable
+  source — exactly "designing for hypothetical future requirements." The deferral
+  instead spun off the real prerequisite (etude-sb4: pin + document the convention).
+- **How to apply:** the planner's FIRST output for a feature bead is a
+  BUILD-vs-DEFER call. If the premise fails (no data, unstable/contradictory
+  dependency, no concrete consumer), recommend DEFER, name precisely what must
+  exist first, file/point at that prerequisite bead, and `bd defer` — do NOT write
+  speculative code just because a bead is open. Do NOT default to BUILD.
+
 ## Epic-Close Gate
 
 Closing an epic is a gated action with a mandatory pass/fail check.

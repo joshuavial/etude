@@ -254,6 +254,40 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
   etude-21z rewire dogfood-capture onto capture-run, etude-094 capture-run symlink-
   traversal hardening). Phase 1 (xenota/github-import) remains USER-BLOCKED.
 
+### B13. Cadence retro (2026-05-26) — Phase-C follow-up backlog (094/21z/sb4 + 9ey defer)
+- **Trigger/scope:** 3-ticket cadence closing out the Phase-C follow-up backlog —
+  etude-094 (capture-run symlink-traversal hardening), etude-21z (rewire
+  dogfood-capture.sh from 4 `capture` calls onto one `capture-run` spec), etude-sb4
+  (document the recommended retro-meta sidecar convention) — plus the etude-9ey DEFER.
+- **Findings/changes:** added a new **"Plan-Phase Discipline"** section to
+  `review-gate-runbook.md` with two items:
+  - **P1 Verify the verification.** etude-21z's PLAN was BLOCKED by ALL THREE seats —
+    not on the rewrite but on its VERIFICATION method, broken three ways: it diffed a
+    non-existent `etude run show --json` flag; it left `refs.bead` un-normalized (the
+    diff would falsely fail on the throwaway ids); and `run show` TEXT omits artifact
+    hashes + media_type. A proof that can't run or is field-blind proves nothing. Rule:
+    the gate vets the proof method — confirm flags exist, normalize every volatile field
+    (incl. id-derived refs), and compare the load-bearing surface (diff the raw
+    `manifest.json` blob, not human text). Counter-example that worked: etude-094's
+    EMPIRICAL adversarial escape-probe + planted-secret leak-audit.
+  - **P2 Premise-check before designing.** etude-9ey was correctly DEFERRED, not built:
+    zero retros carry a sidecar (empty source), the sidecar is schema-free by design
+    (etude-2ku), and the de-facto convention contradicted itself (`root_cause` vs
+    `root_causes`). Rule: the planner's first output for a feature bead is a
+    BUILD-vs-DEFER call; if the premise fails, DEFER + name the prerequisite + `bd defer`
+    rather than building speculative infra. The deferral spun off etude-sb4 (pin the
+    convention), which then shipped docs-only (resolving the contradiction on the plural
+    arrays, NO enforcement — preserving 2ku's verbatim storage).
+- **Reinforced — item 2 (5th time) + the disputed-claim discipline:** every BLOCK this
+  cadence was verified TRUE against source and accepted; codex caught the 094 relative-
+  specDir EvalSymlinks bug + the 21z dir-dot extension bug that Opus/gemini rated
+  non-blocking; gemini caught the 094 missing-file diagnostic masking. Zero false BLOCKs.
+- **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` (new "Plan-Phase Discipline"
+  section, items P1+P2). Counter reset.
+- **Remaining:** NO non-blocked ready work — `bd ready` shows only the USER-BLOCKED
+  Phase 1 beads (xenota-capture-adapter, github-import). etude-9ey stays deferred
+  (needs real sidecar data). Natural pause point.
+
 ### Inclusion boundary
 
 These commits touched `review-gate-runbook.md` but are deliberately NOT retro
