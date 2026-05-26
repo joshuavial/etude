@@ -25,6 +25,7 @@ Implemented:
 - `etude reindex` to rebuild the derived SQLite query index from run and eval refs.
 - `etude retro capture <scope>` to store an externally-authored retro as a `refs/etude/retros/*` ref.
 - `etude prime` to print a structured agent-onboarding primer to stdout (runs anywhere, no args, no side effects).
+- `etude log` to narrate runs and retros as a chronological timeline (read-only).
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -37,8 +38,8 @@ The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
 `etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`,
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
-`etude gc`, `etude reindex`, `etude retro capture`, `etude prime`, and the root
-help and version output. (The `eval` package is a library used by `etude bench`;
+`etude gc`, `etude reindex`, `etude retro capture`, `etude prime`, `etude log`,
+and the root help and version output. (The `eval` package is a library used by `etude bench`;
 there is no standalone `etude eval` CLI yet.)
 
 The full design is in
@@ -78,6 +79,8 @@ make clean
 ./bin/etude reindex
 ./bin/etude retro capture workflow --file retro.md
 ./bin/etude prime
+./bin/etude log
+./bin/etude log --kind retro --subject run-1 --limit 20
 ```
 
 See [Init](docs/init.md) for the init command.

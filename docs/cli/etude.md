@@ -26,6 +26,7 @@ etude [flags]
 * [etude capture-run](etude_capture-run.md)	 - Capture a multi-stage run from a YAML spec in one operation
 * [etude gc](etude_gc.md)	 - Report artifact storage or prune named run refs
 * [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs
+* [etude log](etude_log.md)	 - Show a chronological timeline of runs and retros
 * [etude prime](etude_prime.md)	 - Print a structured agent-onboarding primer to stdout
 * [etude reindex](etude_reindex.md)	 - Rebuild the SQLite query index from all run and eval refs
 * [etude replay](etude_replay.md)	 - Replay a recorded stage end-to-end
