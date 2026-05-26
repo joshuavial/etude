@@ -517,8 +517,9 @@ corrected approach) and is surfaced for review, not hidden.
 
 ## Recurring Defect Classes (implement gate)
 
-Two defect classes recurred across the etude-14r retro feature (q87/8t4/n0t) and
-are cheap to catch up front. Both the implementer and the gate should check them.
+Defect classes the gate caught repeatedly across the etude-14r feature
+(q87/8t4/n0t) and the misc-backlog sweep (0rt/712/4o0), cheap to catch up front.
+Both the implementer and the gate should check them.
 
 **1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
 passthrough) override.** When a command writes keys into a map that a passthrough
@@ -561,6 +562,26 @@ arbitrary stage of a multi-stage run.
   that bypass validation (override a generated key, spoof provenance, inject via an
   unvalidated value); (c) for any selection heuristic, construct the input where it
   picks wrong and confirm it errors rather than silently proceeding.
+
+**3. A negative/failure-mode test must exercise the claimed failure path for the
+RIGHT reason — verify it fails on the right injected fault, not a neighbouring
+one.** A test named for fault X that actually trips on fault Y gives false
+confidence: the guard for X is unproven.
+- **Why:** caught at etude-712's PLAN gate (a test-only/dev-tooling bead — the
+  rigor applies there too, not just product code). The drift guard derives its
+  expected set from the GENERATED dir; the plan's "delete a generated file →
+  proves missing-committed" sub-test actually only proved ORPHAN detection (the
+  committed copy becomes the orphan), and there was no byte-stale case at all. So
+  two of the three real fault paths (missing-committed, byte-stale) were unproven
+  while the test looked thorough. Fixing it required mutating a temp COMMITTED copy
+  (generated left whole) for "missing", a separate stray file for "orphan", and a
+  byte change for "stale" — three distinct injections.
+- **How to apply:** for each negative/guard test, name the exact fault it injects
+  and confirm the guard fails *because of that fault* — inject ONE fault at a time,
+  on the correct side of the comparison, and assert the error names that specific
+  victim. A helper that takes the inputs as parameters (so a test can feed it
+  crafted faulty inputs) is the enabler. Gate check: does each failure-mode test
+  prove a DISTINCT path, or do several collapse onto the same one?
 
 ## Epic-Close Gate
 
