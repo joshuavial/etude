@@ -374,23 +374,33 @@ Phase-0-completion notes).
 
 ---
 
-## Finding: no retro is captured as an etude run stage
+## Finding: retros are now captured as first-class etude artifacts (2026-05-27)
 
-No `refs/etude/runs/*` manifest contains a `retro` stage. Verified empirically:
-across all current run manifests the only stage names are
-`plan`/`implement`/`verify`/`review`/`docs`. Every retro above lives as a doc,
-a runbook-rule commit, and/or bead notes — **none is an `etude` run artifact.**
-This is exactly the gap that **etude-14r** ("Capture retros and session activity
-as a first-class etude artifact", open P0) and its design in
-[retrospectives.md](../product/retrospectives.md) /
-[etude-retro-command.md](../product/etude-retro-command.md) propose to close: a
-`retro` artifact/run keyed to the cohort of beads it covers, recording findings
-+ the durable changes it produced. Until then, this ledger is the manual
-stand-in.
+**Resolved.** Previously every retro above lived only as a doc / runbook-rule
+commit / bead notes — none was an `etude` artifact, so `etude retro list` was
+empty even though the `etude retro` feature (capture/generate/list/show, the
+etude-14r deliverable) shipped. The gap was a dogfooding miss: run records were
+captured (66 `refs/etude/runs/*`) but the cadence retros were not.
+
+As of 2026-05-27 the cadence retros **B11–B15** are backfilled into
+`refs/etude/retros/*` via `etude retro capture cohort`, each keyed (by
+`--subject-run`) to the bead-runs it covers — e.g.
+`retro-cohort-etude-x0r-…` over `etude-x0r,etude-5ft,etude-0ew`. The retro body
+is the ledger entry below; `trigger=cadence-retro`. So `etude retro list` /
+`show` now reflect real retro data linked to the runs they analyze. (Note:
+retros are their own `refs/etude/retros/*` namespace, NOT a `retro` stage inside
+a run manifest — that is the intended retro-as-first-class-artifact model, which
+supersedes the older "retro stage" framing.) Earlier retros (B1–B10, A/C forms)
+predate this session and remain ledger-only; they can be backfilled later if a
+complete `retro list` is wanted.
 
 ## Retro cadence
 
 The standing autonomous-`/loop` rule is a retro every **3 closed tickets**
-(small fixes inline, large ones become beads). Retro outputs go ONLY to skills,
-formulas, or repo docs (runbooks/checklists/this ledger) — **never to memory.**
-This ledger should be appended when a new retro lands a process change.
+(small fixes inline, large ones become beads). A cadence retro now produces TWO
+durable outputs: (1) an entry appended to this ledger (the human-readable index;
+process-change retros land here), and (2) an `etude retro capture cohort
+--subject-run <the closed bead-runs> --trigger cadence-retro` artifact under
+`refs/etude/retros/*` (dogfooding the retro feature + linking the retro to its
+runs), pushed to origin. Retro outputs go ONLY to skills, formulas, repo docs,
+or `etude` retro artifacts — **never to memory.**
