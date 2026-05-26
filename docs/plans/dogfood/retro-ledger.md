@@ -444,3 +444,38 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
   gate-capture mandate. Captured as an `etude retro` artifact. Counter reset.
 - **Remaining:** NO non-blocked work — corpus is complete (66 runs / 18 retros / 35 gated
   runs, all consistent). Phase 1 (xenota/github-import) USER-BLOCKED; 8b7 + 9ey deferred.
+
+### B17. Cadence retro (2026-05-27) — moving dogfood completeness from memory to a mechanical gate (nm6/8hq.4/8hq.1)
+- **Trigger/scope:** 3-ticket cadence, flagged MECHANICALLY this time by the new
+  `dogfood-completeness-audit.sh` cadence-overdue WARN (not a human spot-check):
+  etude-nm6 (gate-record backfill, closing the B16 gap), etude-8hq.4 (build the
+  dogfood-completeness audit), etude-8hq.1 (wire that audit into the close/push path
+  as a hard gate). 8hq.4 + 8hq.1 are the first two beads of phase `etude-8hq`.
+- **Finding (the through-line):** B16 diagnosed the failure ("capture is out-of-band →
+  omission") and added MORE PROSE RULES (a runbook mandate + a dual-output cadence
+  rule). This cohort tested whether prose fixes the omission — and the answer is no:
+  the durable fix is mechanical. 8hq.4 built a read-only audit (run+gate+pushed+cadence+
+  docs checks, with a per-bead strict mode); 8hq.1 put it on the critical path two ways
+  — a `dogfood-close.sh` wrapper (ergonomics) AND a `.beads/hooks/pre-push` hook that
+  EXEMPTS `refs/etude/*` pushes and BLOCKS `refs/heads/*` code pushes when the batch
+  audit fails. The proof it works: this very retro was triggered by the audit's own WARN,
+  and the 8hq.1 code push was gated live by the hook before it was allowed.
+- **What went wrong / was caught:** (1) 8hq.4 shipped a `grep -c … || echo 0` bug
+  (grep -c prints 0 AND exits 1 on no-match, so `|| echo 0` appended a SECOND line,
+  breaking the arithmetic so the docs-drift check silently never fired) — caught at
+  verify. Recurring shell footgun: `grep -c` needs `|| true`, not `|| echo 0`.
+  (2) 8hq.1's PLAN had REJECTED the pre-push hook (the stronger design) on a FALSE
+  premise; one adversarial seat (gemini) re-derived the premise from source, found it
+  false, and BLOCKed — overriding a 2-GO majority. Durable fix landed: runbook
+  **Plan-Phase Discipline P3** (rejected-alternatives rationale is a prime BLOCK target;
+  gate resolution is not a vote count).
+- **What worked well (preserve):** the multi-seat panel earned its keep again — a
+  lone constructive BLOCK that NAMED a feasible better mechanism produced a materially
+  better design than the comfortable majority. Keep running adversarial seats against
+  the plan's REASONING, not just its diff.
+- **Landed:** `[IMPLEMENTED]` — 8hq.4 audit + 8hq.1 close wrapper + pre-push hook
+  (commit 7d8771f) + runbook P3. Captured as an `etude retro` artifact (dual-output).
+  Counter reset.
+- **Remaining:** phase `etude-8hq` continues — 8hq.3 (retro-meta convention), 8hq.2
+  (event-time), 8hq.8 (subject-consistency guard), 8hq.6 (role-based gate), 8hq.7
+  (executable checklists), 8hq.5 (backfill sidecars, dep 8hq.3). Phase 1 USER-BLOCKED.

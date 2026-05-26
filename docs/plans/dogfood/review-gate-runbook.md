@@ -785,6 +785,33 @@ concrete prerequisite) rather than building speculative infra over a hypothetica
     Validate + the write path)? is the duplication really N≥3 stable copies? Scope
     down or defer the part that's already handled; only build the verified-real gap.
 
+**P3. A plan's REJECTED-ALTERNATIVES rationale is a prime BLOCK target — re-derive
+each rejection's premise from source, because a wrong rejection silently picks a
+weaker design.**
+- **Why:** etude-8hq.1's PLAN gate split 2 GO / 1 BLOCK. The plan's "Design
+  decision 1" had REJECTED a git pre-push hook (the stronger, mechanical
+  enforcement the bead's acceptance actually demanded) with two confidently-stated
+  reasons: the hook "cannot see the bead id" and "would recurse / fire mid-sequence
+  because capture itself pushes." Two seats (codex, opus) accepted that reasoning
+  and GO'd the weaker wrapper-only design. The adversarial seat (gemini) BLOCKed by
+  re-deriving the premise from the actual scripts: the hook needs NO bead id (it
+  runs the BATCH `--last 9` audit), and it does NOT recurse because it can EXEMPT
+  pushes whose refs are all `refs/etude/*` (verified: `core.hooksPath=.beads/hooks`,
+  and `dogfood-capture.sh`/`dogfood-gate-capture.sh` push only `refs/etude/runs/*`).
+  Both stated reasons were false. The plan was amended to the hybrid (wrapper +
+  pre-push hook) the bead actually needed.
+- **How to apply:** when a plan says "rejected (b) because X," do not accept X — go
+  read the source X refers to and confirm X holds NOW. A rejection premise is just
+  another claim to verify (cf. P2's audit-findings-are-hypotheses). This matters
+  most when the rejected option is the STRONGER one (a hard/mechanical gate, a real
+  fix) and the accepted one is weaker (a convention, a reminder, a partial fix):
+  that is exactly the shape where a comfortable but wrong rejection costs the most.
+- **Corollary — gate resolution is not a vote count.** A single verified-true BLOCK
+  that names a feasible mechanism better serving the bead's stated acceptance
+  OUTWEIGHS a 2-seat GO majority. The fix: ADOPT the BLOCK's mechanism (amend the
+  plan), then re-confirm with the blocking seat; the GO seats' approval of the
+  preserved-and-strengthened design carries forward. Do not average verdicts.
+
 ## Epic-Close Gate
 
 Closing an epic is a gated action with a mandatory pass/fail check.
