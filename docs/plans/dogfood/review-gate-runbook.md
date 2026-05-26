@@ -562,6 +562,33 @@ arbitrary stage of a multi-stage run.
   unvalidated value); (c) for any selection heuristic, construct the input where it
   picks wrong and confirm it errors rather than silently proceeding.
 
+## Epic-Close Gate
+
+Closing an epic is a gated action with a mandatory pass/fail check.
+
+**The gate:** before `bd close <epic>` (or `bd epic close-eligible`), you MUST
+run `make reconcile` and it MUST exit 0. This composes `make docs-reality` (whole-
+surface CLI-inventory check) and `make docs-check` (generated-docs drift check).
+See `docs/plans/dogfood/docs-checklist.md` "Epic-Close Reconciliation" for the
+full procedure including the one human holistic-read step.
+
+**Important:** `make reconcile` is a workflow-required command, NOT a `bd`
+pre-close hook. `bd` emits no mechanical pre-close event and has no plugin hook
+at epic close. Enforcement is documentary discipline — a required MUST + a
+pass/fail target — the same mechanism as all other workflow gates documented here.
+
+**Recording:** record the epic-close gate result in the epic bead's notes as a
+one-line gate note:
+
+```text
+Epic-close gate: make reconcile exit 0, <commit SHA> — closing.
+```
+
+This is consistent with the normal gate attempt note format (phase, result,
+commit reference). No four-seat reviewer panel is required for the epic-close
+gate (it is a mechanical pass/fail command, not a design/code review); the gate
+passes on `make reconcile` exit 0 + the holistic README/index read.
+
 ## Recording Results
 
 Record gate results in bead notes:

@@ -179,9 +179,10 @@ Phase-0-completion notes).
   the README/BRIEF/index refresh `[IMPLEMENTED]` → **etude-phase-prep.2** (commit
   e16b9b6, which made the guard pass — a closed loop).
 - **Follow-up beads / Remaining:** etude-phase-prep.5 (closed), etude-phase-prep.2
-  (closed). An epic-close holistic docs/reality reconciliation remains `[PLANNED]`
-  (folded into the docs-checklist + a runbook note, not yet a hard gate) — tracked
-  as open bead **etude-4o0**.
+  (closed). An epic-close holistic docs/reality reconciliation: `[IMPLEMENTED]` →
+  **etude-4o0** (`make reconcile` target composing `make docs-reality` +
+  `make docs-check`; mandatory checklist gate in docs-checklist.md; Epic-Close Gate
+  section in review-gate-runbook.md; commit SHA: etude-4o0).
 
 ---
 

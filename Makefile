@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check docs-reality example
+.PHONY: build test lint clean docs docs-check docs-reality reconcile example
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -31,6 +31,13 @@ docs-check:
 # drift without breaking the generated-docs check.
 docs-reality:
 	@bash scripts/docs-reality-check.sh
+
+# Epic-close holistic gate: re-runs the whole-surface docs/reality checks at the
+# integration point after all sibling beads have landed. MUST exit 0 before
+# bd close <epic>. Fails non-zero if either leg fails.
+reconcile:
+	$(MAKE) docs-reality
+	$(MAKE) docs-check
 
 example: build
 	@ETUDE_BIN=$(CURDIR)/$(BIN_DIR)/$(BINARY) bash examples/summarize/walkthrough.sh

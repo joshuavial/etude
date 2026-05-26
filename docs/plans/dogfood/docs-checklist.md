@@ -59,11 +59,55 @@ Resolve every finding before close; for genuinely-planned prose (about unshipped
 behavior) add a justified suppression to `scripts/docs-reality-allow.txt`. This
 is separate from `make docs-check` (which only diffs generated `docs/cli`).
 
+## Epic-Close Reconciliation (MANDATORY)
+
+This section applies at EPIC close, not at individual bead close. It is distinct
+from the per-bead `make docs-reality` step in "Mechanical reality check" above.
+
+Before running `bd close <epic>` (or `bd epic close-eligible`), you MUST:
+
+**1. Run `make reconcile` — it MUST exit 0.**
+
+`make reconcile` composes two whole-surface checks in sequence:
+
+- `make docs-reality` — builds etude fresh; verifies every shipped command is
+  advertised in `README.md` (as `etude <cmd>` usage), named in the
+  `docs/README.md` index, and has its `docs/cli/etude_<cmd>.md` page; no orphan
+  docs/cli pages; no `docs/plans/**` line still calls a SHIPPED command
+  future/unimplemented.
+- `make docs-check` — diffs generated `docs/cli` against source; fails if stale.
+
+If either leg exits non-zero, resolve every finding before closing the epic. For
+genuinely-planned prose (about unshipped behavior) add a justified suppression to
+`scripts/docs-reality-allow.txt`. Do NOT close the epic until `make reconcile`
+exits 0.
+
+**Why re-run at epic close?** Each bead's `make docs-reality` ran against the
+whole-surface CLI inventory at merge time, but a later sibling bead could
+introduce drift that no earlier bead's pre-merge check saw (e.g. a command
+added by a later bead that the earlier bead's docs don't reference). Re-running
+at the integration point catches cross-bead drift.
+
+**2. Human holistic read (one step, not mechanical).**
+
+Read `README.md` and `docs/README.md` once end-to-end and confirm:
+
+- The full set of commands the epic shipped reads coherently together.
+- `docs/README.md` still explains why user-facing docs are sparse (if that
+  context still applies).
+- No narrative inconsistencies were introduced across the epic's beads.
+
+Record the epic-close gate result in the epic bead notes (one-line: command
+result + commit SHA), consistent with the gate recording convention in the
+review-gate runbook "Epic-Close Gate" section.
+
 ## Final Review Prompt
 
-Final Review should ask:
+Final Review (per-bead) should ask:
 
-- Does `make docs-reality` pass (no doc/CLI drift)?
+- Does `make docs-reality` pass (no doc/CLI drift)? (Per-bead check; for the
+  epic-close holistic check run `make reconcile` — see "Epic-Close
+  Reconciliation" above.)
 - Does `docs/README.md` still explain why user-facing docs are sparse?
 - Does `README.md` match the final diff?
 - Did any user-facing behavior ship without documentation?
