@@ -64,6 +64,13 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
 recorded artifacts (its output or one of its inputs). Invalid input is rejected without changing the run. A run that carries
 any gates is written as `manifest_version` 3; gate-less runs are unchanged.
 
+A seat's `raw_output.path` must point at a **regular file**: it is opened
+without following symlinks (on Unix, atomically via `O_NOFOLLOW`), so a symlink
+or other non-regular file at that path is rejected rather than read through.
+This prevents a machine-generated gate file from causing `etude` to capture a
+file outside the intended transcript (e.g. via a symlink to a sensitive path).
+Absolute and working-directory-relative paths to regular files are unaffected.
+
 ### Reviewer seat fields
 
 Each seat records its identity on three axes plus its verdict:

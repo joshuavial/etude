@@ -541,7 +541,7 @@ func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.S
 		if mediaType == "" {
 			mediaType = inferMediaType(s.RawOutput.Path)
 		}
-		content, err := os.ReadFile(s.RawOutput.Path)
+		content, err := readRegularFile(s.RawOutput.Path)
 		if err != nil {
 			return runmanifest.SeatResult{}, fmt.Errorf("read raw_output %s: %w", s.RawOutput.Path, err)
 		}
@@ -610,4 +610,24 @@ func inferMediaType(filePath string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// readRegularFile opens path with O_NOFOLLOW so a final-component symlink fails
+// atomically with ELOOP rather than being silently followed. It additionally
+// rejects non-regular files (devices, FIFOs, directories). Use this wherever
+// machine-fed or CI-emitted paths are read to prevent symlink-follow exfiltration.
+func readRegularFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return io.ReadAll(f)
 }

@@ -217,7 +217,23 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 
 	// Step 11: emit the output (--output and --record may coexist).
 	if outputPath != "" {
-		if err := os.WriteFile(outputPath, res.Output, 0o644); err != nil {
+		// Friendly pre-check: if the path already exists and is not a regular file
+		// (e.g. a symlink or directory), reject with a clear message before the
+		// atomic open below would return a less descriptive ELOOP or EISDIR.
+		if fi, statErr := os.Lstat(outputPath); statErr == nil && !fi.Mode().IsRegular() {
+			return fmt.Errorf("write output file: refusing to write --output %s: not a regular file", outputPath)
+		}
+		// Atomic guard: O_NOFOLLOW ensures a final-component symlink fails with
+		// ELOOP rather than being followed, defeating create-time TOCTOU races.
+		f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|nofollowFlag, 0o644)
+		if err != nil {
+			return fmt.Errorf("write output file: %w", err)
+		}
+		if _, err := f.Write(res.Output); err != nil {
+			f.Close()
+			return fmt.Errorf("write output file: %w", err)
+		}
+		if err := f.Close(); err != nil {
 			return fmt.Errorf("write output file: %w", err)
 		}
 		_, err = fmt.Fprintf(out, "output written to %s\n", outputPath)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -737,5 +738,93 @@ func TestReplayHelp(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+// TestReplayOutputSymlinkRejected verifies that --output pointing at an
+// existing symlink is rejected and the symlink target is NOT clobbered.
+func TestReplayOutputSymlinkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on windows")
+	}
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	// Create a file we want to protect, and a symlink that points to it.
+	protectedFile := filepath.Join(t.TempDir(), "protected.txt")
+	if err := os.WriteFile(protectedFile, []byte("do not clobber\n"), 0o644); err != nil {
+		t.Fatalf("write protected file: %v", err)
+	}
+	symlinkOut := filepath.Join(t.TempDir(), "out-link.txt")
+	if err := os.Symlink(protectedFile, symlinkOut); err != nil {
+		t.Skipf("symlink creation unsupported: %v", err)
+	}
+
+	stub := &replay.StubRunner{CannedOutput: []byte("should not reach disk")}
+	_, _, err := executeReplay(stub, runID, "gen", "--output", symlinkOut)
+	if err == nil {
+		t.Fatal("replay accepted --output pointing at a symlink; want rejection")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") && !strings.Contains(err.Error(), symlinkOut) {
+		t.Fatalf("error %q does not indicate symlink rejection", err.Error())
+	}
+
+	// The protected file must be untouched.
+	got, err2 := os.ReadFile(protectedFile)
+	if err2 != nil {
+		t.Fatalf("read protected file: %v", err2)
+	}
+	if string(got) != "do not clobber\n" {
+		t.Fatalf("protected file was clobbered; content = %q", got)
+	}
+}
+
+// TestReplayOutputNewPathCreated verifies that --output to a non-existent path
+// creates the file normally (unchanged happy path).
+func TestReplayOutputNewPathCreated(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	want := []byte("new file output")
+	stub := &replay.StubRunner{CannedOutput: want}
+	outFile := filepath.Join(t.TempDir(), "brand-new-output.txt")
+
+	_, stderr, err := executeReplay(stub, runID, "gen", "--output", outFile)
+	if err != nil {
+		t.Fatalf("replay --output to new path failed: %v\nstderr: %s", err, stderr)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("output file content = %q, want %q", got, want)
+	}
+}
+
+// TestReplayOutputExistingRegularFileOverwritten verifies that --output to an
+// existing regular file truncates and rewrites it (unchanged happy path).
+func TestReplayOutputExistingRegularFileOverwritten(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+
+	want := []byte("overwritten content")
+	stub := &replay.StubRunner{CannedOutput: want}
+	outFile := filepath.Join(t.TempDir(), "existing-output.txt")
+	// Pre-populate the file with different content.
+	if err := os.WriteFile(outFile, []byte("old content that should be replaced"), 0o644); err != nil {
+		t.Fatalf("pre-populate output file: %v", err)
+	}
+
+	_, stderr, err := executeReplay(stub, runID, "gen", "--output", outFile)
+	if err != nil {
+		t.Fatalf("replay --output to existing regular file failed: %v\nstderr: %s", err, stderr)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("output file content = %q, want %q", got, want)
 	}
 }

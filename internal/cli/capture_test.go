@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -725,5 +726,116 @@ func TestCaptureGateRejectsDanglingArtifact(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "dangling") && !strings.Contains(err.Error(), "artifact") {
 		t.Fatalf("error %q does not mention artifact rejection", err.Error())
+	}
+}
+
+// writeGateJSONWithRawOutput writes a gate JSON file that includes a raw_output
+// entry with a seat transcript path. It is used by the symlink-guard tests.
+func writeGateJSONWithRawOutput(t *testing.T, dir, name, gateID, phase string, round int, transcriptPath string) string {
+	t.Helper()
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	content := fmt.Sprintf(`{
+  "gate_id": %q,
+  "phase": %q,
+  "round": %d,
+  "tier": 1,
+  "status": "pass",
+  "reviewed_stages": [{"stage":"plan"}],
+  "seats": [
+    {
+      "seat": "gemini",
+      "harness": {"name":"gemini-cli","version":"3.1"},
+      "provider": {"name":"google","model":"gemini-3.1-pro-preview"},
+      "verdict": "go",
+      "timestamp": %q,
+      "raw_output": {"path": %q}
+    }
+  ],
+  "decision": {},
+  "timestamp": %q
+}`, gateID, phase, round, now, transcriptPath, now)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write gate JSON with raw_output %s: %v", path, err)
+	}
+	return path
+}
+
+// TestCaptureGateRawOutputSymlinkRejected verifies that a gate JSON whose
+// raw_output.path is a symlink is rejected — the O_NOFOLLOW guard must fire
+// and no ref must be written.
+func TestCaptureGateRawOutputSymlinkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on windows")
+	}
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	// Create an existing run to attach the gate to.
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// Create a real transcript file and a symlink pointing at it.
+	realTranscript := filepath.Join(repo, "transcript.txt")
+	if err := os.WriteFile(realTranscript, []byte("transcript content\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	symlinkPath := filepath.Join(repo, "transcript-link.txt")
+	if err := os.Symlink(realTranscript, symlinkPath); err != nil {
+		t.Skipf("symlink creation unsupported: %v", err)
+	}
+
+	gateFile := writeGateJSONWithRawOutput(t, repo, "gate.json", "plan.r1", "plan", 1, symlinkPath)
+
+	_, _, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate accepted a symlink raw_output.path; want rejection")
+	}
+	// The error must mention the path to give useful context.
+	if !strings.Contains(err.Error(), "raw_output") {
+		t.Fatalf("error %q does not mention 'raw_output'", err.Error())
+	}
+}
+
+// TestCaptureGateRawOutputRegularFileAccepted verifies that a gate JSON whose
+// raw_output.path is a real regular file is accepted, and the transcript is
+// hashed into the artifact store.
+func TestCaptureGateRawOutputRegularFileAccepted(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	// Create an existing run to attach the gate to.
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	// Write a real transcript file.
+	transcriptContent := "this is a real transcript\n"
+	transcriptPath := filepath.Join(repo, "transcript.txt")
+	if err := os.WriteFile(transcriptPath, []byte(transcriptContent), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	gateFile := writeGateJSONWithRawOutput(t, repo, "gate.json", "plan.r1", "plan", 1, transcriptPath)
+
+	stdout, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err != nil {
+		t.Fatalf("capture-gate with regular-file raw_output failed: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "captured ") {
+		t.Fatalf("stdout %q does not mention 'captured'", stdout)
+	}
+
+	// The gate should be recorded with a raw_output artifact reference.
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 1 {
+		t.Fatalf("gates count = %d, want 1", len(m.Gates))
+	}
+	seat := m.Gates[0].Seats[0]
+	if seat.RawOutput == nil {
+		t.Fatal("gate seat has no raw_output artifact; want one")
 	}
 }
