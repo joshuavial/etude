@@ -33,8 +33,11 @@ each command end-to-end.
 
 **Runtime Verifier** — Actually builds, runs, and passes on ALL relevant paths —
 not just the host happy path. Includes cross-compile (`GOOS=windows GOARCH=amd64
-go build`), the built binary, heuristic wrong-pick inputs. Produce: command +
-result; for diff-only seats, green-test summary + "did not execute" note.
+go build`), the built binary, heuristic wrong-pick inputs, AND **`make lint`
+(`gofmt -l` + `go vet`) for any Go change** — gofmt drift does NOT fail `go test`,
+so build+test alone let unformatted code ship (caught late at v1 as etude-kb0.5);
+Verify must run lint, not just build+test. Produce: command + result; for
+diff-only seats, green-test summary + "did not execute" note.
 
 **Docs/Reality Checker** — Docs match current code; no unshipped claims; generated-
 doc blast radius complete (every regenerated page). Produce: doc line vs code line;

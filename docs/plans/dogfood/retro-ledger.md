@@ -564,3 +564,28 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
   this retro (dual-output, META=Y). Counter reset.
 - **Remaining:** phase `etude-8hq` is COMPLETE. etude-9ey (cross-retro index) is now
   UNBLOCKED (real sidecar data exists). Phase 1 (xenota/github) USER-BLOCKED.
+
+### B20. Cadence retro (2026-05-27) — etude v1 SHIPPED (kb0 phase: kb0.1–kb0.5)
+- **Trigger/scope:** 3-ticket cadence (check (c)); META=Y. Wrap-up of the `etude-kb0`
+  "Ship v1" phase: kb0.1 (V1-SCOPE.md), kb0.2 (README v1 coherence), kb0.3 (CHANGELOG +
+  version mechanics), kb0.4 (RELEASING.md checklist), kb0.5 (gofmt fix → `make lint`
+  green). Epic etude-kb0 closed; the roadmap is now complete except the USER-BLOCKED
+  Phase 1.
+- **What worked (preserve):** decomposing an open-ended "ship vN" epic over a HEALTHY
+  codebase into a small honest set of release beads (scope doc anchors the rest;
+  defer Phase 1 + still-planned to keep v1 coherent + unblocked). The plan gate caught
+  factual doc drift (V1-SCOPE `prime` row, pointer phrasing) — accuracy review of DOCS
+  pays off, not just code. Planning kb0.4 surfaced a hidden defect before release.
+- **The durable lesson:** unformatted Go code shipped in **etude-8hq.2** and went
+  undetected until v1 — the struct edits broke gofmt alignment, but `go test` passes
+  on gofmt drift, and my Go-bead Verify ran build+test, NOT `make lint`. Caught only
+  when kb0.4's release checklist ran `make lint`. **Fix landed: the runbook Runtime
+  Verifier lens now requires `make lint` (gofmt + go vet) for any Go change.** Also
+  reconfirmed: a phase epic, when it auto-closes, is a runless bead that must be
+  allowlisted (kb0, as B19 noted for 8hq); and codex-exec hung again (proceeded on a
+  degraded gate justified by a mechanical `git diff -w` empty proof).
+- **Landed:** `[IMPLEMENTED]` kb0.1–kb0.5 (V1-SCOPE / README coherence / CHANGELOG /
+  RELEASING.md / gofmt) + the Runtime-Verifier-requires-`make lint` runbook rule +
+  this retro (META=Y). Counter reset.
+- **Remaining:** etude v1 is release-ready (a human cuts the `v1.0.0` tag per
+  RELEASING.md). Roadmap complete except **Phase 1 (USER-BLOCKED)**. etude-9ey available.
