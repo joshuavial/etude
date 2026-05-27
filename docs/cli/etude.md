@@ -25,6 +25,7 @@ etude [flags]
 * [etude capture-gate](etude_capture-gate.md)	 - Append a gate reviewer record to an existing etude run
 * [etude capture-run](etude_capture-run.md)	 - Capture a multi-stage run from a YAML spec in one operation
 * [etude gc](etude_gc.md)	 - Report artifact storage or prune named run refs
+* [etude import](etude_import.md)	 - Import historical runs from an external source (e.g. GitHub PRs)
 * [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs
 * [etude log](etude_log.md)	 - Show a chronological timeline of runs and retros
 * [etude prime](etude_prime.md)	 - Print a structured agent-onboarding primer to stdout
