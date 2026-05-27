@@ -516,3 +516,29 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
 - **Remaining:** phase `etude-8hq` continues — 8hq.3 (retro-meta convention), 8hq.2
   (event-time), 8hq.8 (subject-consistency guard), 8hq.6 (role-based gate), 8hq.7
   (executable checklists), 8hq.5 (backfill sidecars, dep 8hq.3). Phase 1 USER-BLOCKED.
+
+### B18. Cadence retro (2026-05-27) — retro-quality phase: convention, event-time, consistency (8hq.3/8hq.2/8hq.8)
+- **Trigger/scope:** 3-ticket cadence, flagged by `dogfood-completeness-audit.sh`
+  check (c). The FIRST post-cutoff cadence retro — carries a 7-key retro-meta sidecar
+  (the etude-8hq.3 convention), dogfooding the mechanism this cohort built and proving
+  check (f) passes on a compliant new cadence retro. Captured as
+  `META=Y` (dual-output: this ledger + the etude retro artifact).
+- **What worked (preserve):** the multi-round plan gate caught real, escalating bugs
+  that tests alone would not — 8hq.3 took 4 plan rounds (schema gap → date-cutoff
+  ambiguity → lexical fractional-seconds boundary), 8hq.2 caught a log render that hid
+  capture time (1-BLOCK/2-GO, codex right). Adversarial seats that DRY-RAN the logic
+  over the live corpus (8hq.8) caught a parser false-positive pre-merge. P3
+  (not-a-vote-count) paid off on 8hq.2.
+- **What was caught late (the durable lesson):** the cutoff×supersede interaction in
+  8hq.8 — superseding a pre-cutoff retro mints a post-cutoff ref that check (f)
+  hard-gates — was missed by the plan AND all 3 plan-gate seats, surfacing only when
+  the real `make dogfood-audit` ran on the real re-captured ref. Fixture tests + plan
+  review reason about the bead's OWN mechanism in isolation; an artifact-creating bead
+  interacts with ALL active gates.
+- **Landed:** `[IMPLEMENTED]` 8hq.3 (sidecar convention + check (f)), 8hq.2
+  (occurred_at + log EVENT column), 8hq.8 (check (g) + B16 annotation), and a new
+  **review-gate runbook P4** ("artifact-creating beads must be vetted against ALL
+  active mechanical gates on the real artifact"). Counter reset.
+- **Remaining:** phase `etude-8hq` — 8hq.5 (backfill sidecars + re-capture B16,
+  supersession-aware; removes the B16 allowlist entry), 8hq.6 (role-based gate),
+  8hq.7 (executable checklists). Phase 1 USER-BLOCKED.

@@ -812,6 +812,27 @@ weaker design.**
   plan), then re-confirm with the blocking seat; the GO seats' approval of the
   preserved-and-strengthened design carries forward. Do not average verdicts.
 
+**P4. Artifact-creating beads (data repair / backfill / supersede / re-capture)
+must be vetted against ALL active mechanical gates on the REAL artifact — not just
+the gate the bead adds, and not by fixture tests or plan review alone.**
+- **Why:** etude-8hq.8 planned to repair a retro by SUPERSEDE. The plan and all
+  three plan-gate seats approved it. But superseding a pre-cutoff retro mints a NEW
+  ref with a post-cutoff `created` timestamp, which a DIFFERENT shipped check
+  (etude-8hq.3's check (f)) hard-requires carry a sidecar — so the supersede produced
+  a hard GAP and `make dogfood-audit` exited 1. Fixture tests passed (they seed only
+  the new check's inputs); plan review passed (it reasoned about the new guard in
+  isolation). ONLY running the real, composed audit on the actual re-captured ref
+  surfaced the cross-feature interaction.
+- **How to apply:** when a bead CREATES or MUTATES a stored artifact (a new
+  ref/run/retro, a backfill, a supersede, a re-capture), before declaring the plan
+  sound, run the FULL composed mechanical gate (`make dogfood-audit`, the whole
+  check suite) against the real or a realistic artifact — not just the one check the
+  bead introduces. Ask: "what does every OTHER active gate think of the artifact I'm
+  about to mint?" A new artifact inherits the timestamp/scope/shape rules of every
+  shipped check, and those interactions are invisible to fixture seeds and plan
+  reasoning. This is "verify-the-verification" (P1) extended from proofs to data
+  mutations.
+
 ## Epic-Close Gate
 
 Closing an epic is a gated action with a mandatory pass/fail check.
