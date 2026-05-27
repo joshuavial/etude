@@ -248,6 +248,12 @@ Retros are optional, triggered artifacts. They explain what happened in a run,
 phase, gate sequence, or workflow, but they do not replace the gate result,
 test result, or bead status that established what passed or failed.
 
+**Cadence retros require a `--meta-file` sidecar** (etude-8hq.3): from
+2026-05-27 onward every `--trigger cadence-retro` capture must include
+`--meta-file` with the 7-key convention. See
+`docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
+etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
+
 Manual dogfood capture supports these retro triggers now:
 
 - **End-of-run retro**: after a bead closes, summarize what changed, what gates
@@ -506,9 +512,13 @@ exact hard checks (a), (b), (d).
 ### What BLOCKS vs WARNS
 
 - **BLOCK (hard, exit 1):** (a) run ref missing; (b) run has no gate records;
-  (d) run ref not pushed to origin.
-- **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue (not run in
-  `--bead` mode — deadlock avoidance).
+  (d) run ref not pushed to origin; (f) a *post-convention* cadence retro (manifest
+  `created` on/after the `CADENCE_SIDECAR_CUTOFF` instant) missing a valid 7-key
+  `retro-meta` sidecar — batch modes only, not `--bead`.
+- **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue; (f) a
+  *pre-convention* cadence retro lacking the sidecar (one summarizing line — the
+  backfill worklist for etude-8hq.5). (c)/(f) run in batch modes only, not
+  `--bead` — deadlock avoidance.
 
 ### Bypass and defer policy
 

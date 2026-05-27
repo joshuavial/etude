@@ -194,6 +194,127 @@ print(json.dumps(m))
   git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
 }
 
+# Seed a cadence-retro ref WITH a retro-meta sidecar blob.
+# The sidecar JSON is written as a content-addressed blob at
+# artifacts/sha256/<2>/<hash> and referenced from the manifest stages[].
+#
+# Usage: seed_cadence_retro_with_meta <retro-id> <created> <sidecar-json> <subject-run1> [...]
+#   <created>     full ISO-8601 timestamp for manifest.created
+#   <sidecar-json> the JSON string to store as the retro-meta blob
+seed_cadence_retro_with_meta() {
+  local retro_id="$1"; shift
+  local created="$1"; shift
+  local sidecar_json="$1"; shift
+
+  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
+  local i=1
+  for run in "$@"; do
+    refs_json="${refs_json},\"subject_run.$i\":\"$run\""
+    (( i++ )) || true
+  done
+  refs_json="${refs_json}}"
+
+  # Write sidecar blob and compute content-addressed path
+  local sidecar_blob_sha
+  sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
+  local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
+
+  # Build manifest with a retro stage and a retro-meta stage
+  local manifest
+  manifest="$(python3 -c "
+import json
+sidecar_path = '$sidecar_path'
+sidecar_sha  = '$sidecar_blob_sha'
+m = {
+    'manifest_version': 2,
+    'run_id': '$retro_id',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$created',
+    'refs': json.loads('''$refs_json'''),
+    'stages': [
+        {
+            'stage': 'retro',
+            'produced_by': 'retro',
+            'git_sha': '',
+            'inputs': [],
+            'output': {
+                'role': 'retro',
+                'artifact': sidecar_sha,
+                'path': 'artifacts/sha256/' + sidecar_sha[:2] + '/placeholder',
+                'media_type': 'text/markdown; charset=utf-8',
+                'storage': 'content',
+                'size': 0
+            }
+        },
+        {
+            'stage': 'retro-meta',
+            'produced_by': 'retro',
+            'git_sha': '',
+            'inputs': [],
+            'output': {
+                'role': 'retro-meta',
+                'artifact': sidecar_sha,
+                'path': sidecar_path,
+                'media_type': 'application/json',
+                'storage': 'content',
+                'size': len('$sidecar_json'.encode())
+            }
+        }
+    ]
+}
+print(json.dumps(m))
+")"
+
+  # Write the manifest blob and tree with both the manifest and the sidecar artifact path
+  local manifest_blob_sha
+  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
+
+  # Build tree: manifest.json + the sidecar at its content-addressed path
+  local tree_sha
+  tree_sha="$(python3 -c "
+import subprocess, sys
+
+manifest_blob = '$manifest_blob_sha'
+sidecar_blob  = '$sidecar_blob_sha'
+sidecar_path  = '$sidecar_path'
+
+# Build a tree with nested directories for the artifact path
+# e.g. artifacts/sha256/ab/<hash>
+# We need to create sub-trees; use git mktree hierarchically.
+# Simpler: use fast-import-style git mktree with the full path entries.
+# git mktree only accepts flat entries; we need to build sub-trees bottom-up.
+
+parts = sidecar_path.split('/')
+# parts = ['artifacts','sha256','<2-char>','<hash>']
+
+# Level 3 tree: just the blob
+level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
+r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
+tree3 = r3.stdout.strip()
+
+# Level 2 tree: the 2-char dir
+level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
+r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
+tree2 = r2.stdout.strip()
+
+# Level 1 tree: sha256 dir
+level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
+r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
+tree1 = r1.stdout.strip()
+
+# Level 0 tree: artifacts dir + manifest.json
+level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
+level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
+r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
+print(r0.stdout.strip())
+")"
+
+  local commit_sha
+  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
+  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
+}
+
 # bd shim: returns canned closed-bead JSON; accepts being replaced with a
 # custom $BD_SHIM_JSON env var.
 BD_SHIM="$tmpdir/bd"
@@ -248,14 +369,20 @@ run_audit_split() {  # [args...] -> sets $AUDIT_OUT and $AUDIT_RC
 INITIAL_SHA="$(git rev-parse HEAD)"
 
 # ===========================================================================
-# TEST 1: Complete fixture — 2 beads, runs with gates, cadence retro, all pushed
+# TEST 1: Complete fixture — 2 beads, runs with gates, cadence retro with valid
+# 7-key sidecar, all pushed.  Uses a pre-cutoff created date; sidecar present
+# → PASS for check (f) (no WARN, no gap).
 # ===========================================================================
 t_start "complete fixture exits 0"
+
+# Valid 7-key sidecar for TEST 1
+VALID_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-26","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
 
 write_bd_json "test-aaa" "test-bbb"
 seed_run_ref "test-aaa" "$INITIAL_SHA" "plan.r1"
 seed_run_ref "test-bbb" "$INITIAL_SHA" "plan.r1"
-seed_cadence_retro "retro-cohort-test-bbb" "test-aaa" "test-bbb"
+seed_cadence_retro_with_meta "retro-cohort-test-bbb" "2026-05-26T00:00:00Z" \
+  "$VALID_SIDECAR" "test-aaa" "test-bbb"
 
 # Push all refs to bare origin
 git push origin 'refs/etude/*:refs/etude/*' --quiet 2>/dev/null
@@ -497,6 +624,220 @@ assert_exit 2 "$AUDIT_RC" "mutually exclusive mode flags"
 t_start "combining --bead and --last exits 2"
 run_audit_split --bead test-docs --last 9
 assert_exit 2 "$AUDIT_RC" "bead + last mutually exclusive"
+
+# ===========================================================================
+# TEST GROUP: check (f) cadence-sidecar
+# All these tests need a clean ref state; delete all cadence retros first,
+# then seed specifically for each sub-test.
+# ===========================================================================
+
+# Shared sidecar constants
+VALID_SIDECAR_JSON='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
+POST_CUTOFF_TS="2026-05-27T01:00:00Z"
+PRE_CUTOFF_TS="2026-05-26T12:00:00Z"
+FRAC_CUTOFF_TS="2026-05-27T00:00:00.000001Z"
+
+# Helper: delete all retro refs
+delete_all_retros() {
+  git for-each-ref refs/etude/retros --format='%(refname)' | while IFS= read -r r; do
+    git update-ref -d "$r" 2>/dev/null || true
+    git push origin --delete "$r" --quiet 2>/dev/null || true
+  done
+}
+
+# Helper: ensure at least one run ref exists and is pushed so the audit runs
+ensure_run_refs() {
+  write_bd_json "test-aaa" "test-bbb"
+  # test-aaa and test-bbb were seeded + pushed in TEST 1; just make sure bd sees them
+}
+
+# ===========================================================================
+# TEST (f.1): post-cutoff cadence retro WITH a valid 7-key sidecar → PASS (exit 0, no gap)
+# ===========================================================================
+t_start "(f.1) post-cutoff cadence retro with valid sidecar exits 0"
+
+delete_all_retros
+ensure_run_refs
+seed_cadence_retro_with_meta "retro-f1-post-valid" "$POST_CUTOFF_TS" \
+  "$VALID_SIDECAR_JSON" "test-aaa" "test-bbb"
+git push origin "refs/etude/retros/retro-f1-post-valid" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(f.1) post-cutoff valid sidecar"
+
+t_start "(f.1) output shows no cadence-sidecar gap"
+assert_output_not_contains "cadence-sidecar.*GAP\|GAP.*cadence-sidecar" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.2): post-cutoff cadence retro MISSING retro-meta stage → BLOCK (exit 1)
+# ===========================================================================
+t_start "(f.2) post-cutoff cadence retro missing sidecar stage exits 1"
+
+delete_all_retros
+ensure_run_refs
+# seed_cadence_retro creates a retro with NO retro-meta stage, post-cutoff date
+python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': 'retro-f2-post-nosidecar',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$POST_CUTOFF_TS',
+    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
+    'stages': []
+}
+print(json.dumps(m))
+" | {
+  manifest_data=$(cat)
+  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
+  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
+  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f2-post-nosidecar" <<< "")
+  git update-ref "refs/etude/retros/retro-f2-post-nosidecar" "$commit_sha"
+  git push origin "refs/etude/retros/retro-f2-post-nosidecar" --quiet 2>/dev/null
+}
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f.2) post-cutoff missing sidecar → hard gap"
+
+t_start "(f.2) output contains cadence-sidecar gap"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.3): post-cutoff sidecar MISSING one required key → BLOCK (exit 1)
+# ===========================================================================
+t_start "(f.3) post-cutoff sidecar missing required key exits 1"
+
+delete_all_retros
+ensure_run_refs
+# Drop 'durable_changes' from the sidecar
+MISSING_KEY_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[]}'
+seed_cadence_retro_with_meta "retro-f3-missing-key" "$POST_CUTOFF_TS" \
+  "$MISSING_KEY_SIDECAR" "test-aaa"
+git push origin "refs/etude/retros/retro-f3-missing-key" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f.3) post-cutoff missing key → hard gap"
+
+t_start "(f.3) output contains cadence-sidecar gap"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.4): post-cutoff sidecar with WRONG TYPE (failure_modes is string not array) → BLOCK
+# ===========================================================================
+t_start "(f.4) post-cutoff sidecar wrong type exits 1"
+
+delete_all_retros
+ensure_run_refs
+WRONG_TYPE_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":"not-an-array","root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
+seed_cadence_retro_with_meta "retro-f4-wrong-type" "$POST_CUTOFF_TS" \
+  "$WRONG_TYPE_SIDECAR" "test-aaa"
+git push origin "refs/etude/retros/retro-f4-wrong-type" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f.4) post-cutoff wrong type → hard gap"
+
+t_start "(f.4) output contains cadence-sidecar gap"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.5): fractional-seconds boundary — created="2026-05-27T00:00:00.000001Z",
+# no sidecar → BLOCK (exit 1).
+# This locks in the r3 datetime-parse fix: a lexical compare would wrongly WARN
+# because '.' (0x2E) < 'Z' (0x5A).
+# ===========================================================================
+t_start "(f.5) fractional-seconds post-cutoff missing sidecar exits 1 (datetime-parse fix)"
+
+delete_all_retros
+ensure_run_refs
+python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': 'retro-f5-frac-nosidecar',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$FRAC_CUTOFF_TS',
+    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
+    'stages': []
+}
+print(json.dumps(m))
+" | {
+  manifest_data=$(cat)
+  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
+  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
+  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f5-frac-nosidecar" <<< "")
+  git update-ref "refs/etude/retros/retro-f5-frac-nosidecar" "$commit_sha"
+  git push origin "refs/etude/retros/retro-f5-frac-nosidecar" --quiet 2>/dev/null
+}
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f.5) fractional-seconds boundary is post-cutoff → hard gap"
+
+t_start "(f.5) output contains cadence-sidecar gap (not WARN)"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+assert_output_not_contains "pre-convention.*$FRAC_CUTOFF_TS\|$FRAC_CUTOFF_TS.*pre-convention" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.6): pre-cutoff cadence retro MISSING sidecar → WARN only (exit 0),
+# appears in the single summarizing WARN line.
+# ===========================================================================
+t_start "(f.6) pre-cutoff cadence retro missing sidecar is WARN only (exit 0)"
+
+delete_all_retros
+ensure_run_refs
+python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': 'retro-f6-pre-nosidecar',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$PRE_CUTOFF_TS',
+    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
+    'stages': []
+}
+print(json.dumps(m))
+" | {
+  manifest_data=$(cat)
+  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
+  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
+  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f6-pre-nosidecar" <<< "")
+  git update-ref "refs/etude/retros/retro-f6-pre-nosidecar" "$commit_sha"
+  git push origin "refs/etude/retros/retro-f6-pre-nosidecar" --quiet 2>/dev/null
+}
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(f.6) pre-cutoff missing sidecar is WARN, not hard gap"
+
+t_start "(f.6) output contains cadence-sidecar WARN"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+
+t_start "(f.6) WARN summary line mentions retro-f6-pre-nosidecar"
+assert_output_contains "retro-f6-pre-nosidecar" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (f.7): post-cutoff retro with UNREADABLE/GARBLED sidecar blob → BLOCK not crash
+# (The manifest references a blob path that git cat-file returns non-JSON for.)
+# ===========================================================================
+t_start "(f.7) post-cutoff garbled sidecar blob → BLOCK (exit 1), not crash"
+
+delete_all_retros
+ensure_run_refs
+# Write a non-JSON blob and use it as the sidecar
+GARBLED_SIDECAR="this is not JSON {{{"
+seed_cadence_retro_with_meta "retro-f7-garbled" "$POST_CUTOFF_TS" \
+  "$GARBLED_SIDECAR" "test-aaa"
+git push origin "refs/etude/retros/retro-f7-garbled" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f.7) garbled sidecar blob → hard gap, not crash"
+
+t_start "(f.7) output contains cadence-sidecar gap"
+assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
+
+# Clean up all check-f retro refs so subsequent tests don't see them
+delete_all_retros
 
 # ===========================================================================
 # Summary

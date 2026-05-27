@@ -1,0 +1,24 @@
+{
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-27",
+  "failure_modes": [
+    "audit-check-missing",
+    "sidecar-schema-undocumented"
+  ],
+  "root_causes": [
+    "convention existed only in prose, not in a machine-checked example",
+    "no example file committed to the repo for reference"
+  ],
+  "follow_up_beads": [
+    "etude-8hq.5"
+  ],
+  "decisions": [
+    "7-key sidecar schema is the dogfood convention for cadence retros from 2026-05-27 onward",
+    "schema enforced by dogfood-completeness-audit.sh check (f), not etude core"
+  ],
+  "durable_changes": [
+    "scripts/retro-meta-cadence.example.json committed as canonical example",
+    "docs/retro.md convention subsection rewritten to 7-key dogfood schema",
+    "dogfood-completeness-audit.sh check (f) added: BLOCK post-cutoff cadence retros missing sidecar"
+  ]
+}

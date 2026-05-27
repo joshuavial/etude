@@ -58,26 +58,56 @@ renders the sidecar in a `--- retro meta ---` section after the body (see
 [Show a retro](#show-a-retro)), and `retro list` flags its presence in the
 `META` column.
 
-#### Recommended convention
+#### Cadence retro-meta convention (dogfood)
 
-etude does not enforce a sidecar schema, but downstream tooling expects a
-recognized shape. Use these advisory keys so a future cross-retro index can
-aggregate consistently:
+The schema of the JSON is not interpreted by etude — it is stored verbatim for
+downstream tooling (e.g. failure-mode indexing). However, this project's
+**cadence retros** follow a specific 7-key convention that is documented here
+and enforced by `scripts/dogfood-completeness-audit.sh` check (f). This is a
+**dogfood process convention**, not an etude-core schema constraint: `etude
+retro capture` validates only that the sidecar is well-formed JSON (`json.Valid`)
+and stores the bytes verbatim. The 7-key requirement is checked by the dogfood
+audit script reading the retro manifest from git.
+
+A cadence retro-meta sidecar is a JSON object with these required keys
+(presence + type checked; values are never constrained; arrays may be empty):
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `failure_modes` | array of strings | distinct failure modes the retro identified |
-| `root_causes` | array of strings | underlying process/skill/tool/context causes |
+| `retro_type` | string | marks this as a cadence retro sidecar; use `"cadence"` |
+| `original_event_date` | string | date the retro's events actually occurred (`YYYY-MM-DD`); distinct from the capture timestamp |
+| `failure_modes` | array of strings | distinct failure modes identified (may be `[]` for a clean cohort) |
+| `root_causes` | array of strings | underlying process/skill/tool/context causes (may be `[]`) |
+| `follow_up_beads` | array of strings | bead ids spun off by the retro (may be `[]`) |
+| `decisions` | array of strings | decisions or rule-changes the retro landed (may be `[]`) |
+| `durable_changes` | array of strings | concrete skill/formula/doc/script edits that landed as a result (may be `[]`); captures what actually changed, distinct from decisions (intent) and follow-up beads (future work) |
 
-Both are plural arrays (a retro may name several). Additional keys are allowed
-and ignored by current tooling. Example:
+All seven keys must be present and of the correct type. Additional keys are
+allowed and ignored. A canonical example is committed at
+`scripts/retro-meta-cadence.example.json`. See
+`docs/plans/dogfood/retro-ledger.md` for the cadence capture rule.
 
 ```json
 {
-  "failure_modes": ["flaky-gate", "missing-newline-guard"],
-  "root_causes": ["lexical-only path check", "no edge test"]
+  "retro_type": "cadence",
+  "original_event_date": "2026-05-27",
+  "failure_modes": ["audit-check-missing"],
+  "root_causes": ["convention existed only in prose, not machine-checked"],
+  "follow_up_beads": ["etude-8hq.5"],
+  "decisions": ["7-key sidecar required for all cadence retros from 2026-05-27"],
+  "durable_changes": ["dogfood-completeness-audit.sh check (f) added"]
 }
 ```
+
+**Enforcement:** `scripts/dogfood-completeness-audit.sh` check (f) (`cadence-sidecar`)
+runs in batch mode (`--last`/`--since`/default). For each `trigger==cadence-retro`
+retro ref:
+- **POST-convention** (captured on or after `2026-05-27T00:00:00Z`): missing or
+  malformed sidecar is a **hard gap** (exit 1).
+- **PRE-convention** (captured before the cutoff): missing or malformed sidecar
+  is a **WARN** (exit 0) — these are the backfill worklist for etude-8hq.5.
+
+Check (f) is not run in `--bead` mode (which is per-bead, not per-retro).
 
 ## Generate a retro
 

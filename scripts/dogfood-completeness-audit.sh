@@ -31,7 +31,10 @@
 #                                                              [hard batch (repo-wide);
 #                                                               hard bead (that ref only)]
 #   (e) docs drift — make docs-check/docs-reality if docs touched.[WARN only; both modes]
-#   (f) bypass report — print allowlisted beads + reasons.     [info; never affects exit]
+#   (f) cadence-sidecar — every cadence-retro ref on/after     [hard post-cutoff; batch only]
+#       CADENCE_SIDECAR_CUTOFF must have a valid 7-key retro-meta
+#       sidecar; pre-cutoff refs without one are WARN only.
+#   bypass report — print allowlisted beads + reasons.         [info; never affects exit]
 #
 # Allowlist: scripts/dogfood-completeness-allow.txt
 #   Format: <bead-id>  # reason
@@ -39,6 +42,13 @@
 #
 # Style follows scripts/docs-reality-check.sh and scripts/dogfood-capture.sh.
 set -euo pipefail
+
+# Convention-adoption instant (UTC): cadence retros captured on/after this
+# instant MUST carry a valid 7-key retro-meta sidecar (hard gap if missing).
+# Pre-cutoff retros without a sidecar are WARN-only (backfill worklist, etude-8hq.5).
+# Value chosen empirically: the latest existing cadence-retro ref was captured at
+# 2026-05-26T23:43:35Z (~16 min before this cutoff), so the entire backlog is pre-convention.
+CADENCE_SIDECAR_CUTOFF="2026-05-27T00:00:00Z"
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
@@ -401,6 +411,129 @@ print(m.get('created',''))
       "$uncovered_count in-scope bead(s) not covered by any cadence retro (rule: every 3); last cadence retro: $last_retro_label"
   else
     $quiet || echo "  PASS (c) cadence coverage: $uncovered_count uncovered in-scope bead(s) (< 3 threshold)"
+  fi
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# (f) Cadence-sidecar check — hard for post-cutoff, WARN for pre-cutoff, batch only
+# For each cadence-retro ref:
+#   - compare manifest `created` to CADENCE_SIDECAR_CUTOFF using datetime parse
+#     (NOT lexical compare — fractional seconds require chronological comparison)
+#   - post-cutoff AND missing/malformed sidecar → hard gap (exit 1)
+#   - pre-cutoff AND missing/malformed sidecar → WARN (backfill worklist, etude-8hq.5)
+# Required sidecar keys (presence+type; values never checked; arrays may be empty):
+#   retro_type(str), original_event_date(str), failure_modes(arr), root_causes(arr),
+#   follow_up_beads(arr), decisions(arr), durable_changes(arr)
+# ---------------------------------------------------------------------------
+if [[ "$mode" != "bead" ]]; then
+  echo "=== Check (f): cadence-sidecar (hard post-cutoff; WARN pre-cutoff) ==="
+
+  # Accumulate pre-cutoff refs with missing/malformed sidecars for a single WARN line
+  pre_cutoff_warn_refs=()
+
+  while IFS= read -r retro_ref; do
+    manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
+
+    # Check trigger
+    trigger="$(python3 -c "
+import json,sys
+m=json.load(sys.stdin)
+print(m.get('refs',{}).get('trigger',''))
+" <<< "$manifest_data" 2>/dev/null || echo "")"
+
+    [[ "$trigger" == "cadence-retro" ]] || continue
+
+    # Parse created timestamp and compare to cutoff (datetime parse, NOT lexical)
+    is_post_convention="$(python3 -c "
+import json,sys
+from datetime import datetime,timezone
+def _parse(ts):
+    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+m=json.load(sys.stdin)
+created=m.get('created','')
+cutoff='$CADENCE_SIDECAR_CUTOFF'
+if not created:
+    print('pre')
+    sys.exit(0)
+try:
+    created_dt=_parse(created)
+    cutoff_dt=_parse(cutoff)
+    print('post' if created_dt >= cutoff_dt else 'pre')
+except Exception:
+    print('pre')
+" <<< "$manifest_data" 2>/dev/null || echo "pre")"
+
+    # Find retro-meta stage and validate sidecar
+    sidecar_status="$(python3 -c "
+import json,sys,subprocess
+m=json.load(sys.stdin)
+stages=m.get('stages',[])
+meta_stage=None
+for s in stages:
+    if s.get('output',{}).get('role','')=='retro-meta':
+        meta_stage=s
+        break
+if meta_stage is None:
+    print('missing-stage')
+    sys.exit(0)
+blob_path=meta_stage.get('output',{}).get('path','')
+if not blob_path:
+    print('missing-path')
+    sys.exit(0)
+try:
+    result=subprocess.run(
+        ['git','cat-file','-p','$retro_ref:'+blob_path],
+        capture_output=True,text=True,timeout=10
+    )
+    if result.returncode!=0:
+        print('unreadable-blob')
+        sys.exit(0)
+    sidecar=json.loads(result.stdout)
+except json.JSONDecodeError:
+    print('invalid-json')
+    sys.exit(0)
+except Exception:
+    print('unreadable-blob')
+    sys.exit(0)
+if not isinstance(sidecar,dict):
+    print('not-object')
+    sys.exit(0)
+required=[
+    ('retro_type',str),
+    ('original_event_date',str),
+    ('failure_modes',list),
+    ('root_causes',list),
+    ('follow_up_beads',list),
+    ('decisions',list),
+    ('durable_changes',list),
+]
+for key,typ in required:
+    if key not in sidecar:
+        print('missing-key:'+key)
+        sys.exit(0)
+    if not isinstance(sidecar[key],typ):
+        print('wrong-type:'+key)
+        sys.exit(0)
+print('ok')
+" <<< "$manifest_data" 2>/dev/null || echo "parse-error")"
+
+    if [[ "$sidecar_status" == "ok" ]]; then
+      $quiet || echo "  PASS (f) cadence-sidecar valid: $retro_ref"
+    elif [[ "$is_post_convention" == "post" ]]; then
+      log_gap "cadence-sidecar" "$retro_ref" \
+        "post-convention cadence retro missing or malformed sidecar ($sidecar_status); required 7-key retro-meta sidecar"
+    else
+      # Pre-cutoff: accumulate for a single summarizing WARN line
+      pre_cutoff_warn_refs+=("$retro_ref")
+    fi
+  done < <(git for-each-ref refs/etude/retros --format='%(refname)')
+
+  # Emit a single summarizing WARN for all pre-cutoff refs without sidecars
+  if [[ "${#pre_cutoff_warn_refs[@]}" -gt 0 ]]; then
+    warn_refs_list="${pre_cutoff_warn_refs[*]}"
+    log_warn "cadence-sidecar" "pre-cutoff" \
+      "${#pre_cutoff_warn_refs[@]} pre-convention cadence retro(s) lack the required sidecar (backfill worklist, etude-8hq.5): $warn_refs_list"
   fi
   echo ""
 fi

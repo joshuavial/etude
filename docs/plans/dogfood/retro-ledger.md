@@ -404,10 +404,29 @@ The standing autonomous-`/loop` rule is a retro every **3 closed tickets**
 (small fixes inline, large ones become beads). A cadence retro now produces TWO
 durable outputs: (1) an entry appended to this ledger (the human-readable index;
 process-change retros land here), and (2) an `etude retro capture cohort
---subject-run <the closed bead-runs> --trigger cadence-retro` artifact under
-`refs/etude/retros/*` (dogfooding the retro feature + linking the retro to its
-runs), pushed to origin. Retro outputs go ONLY to skills, formulas, repo docs,
-or `etude` retro artifacts — **never to memory.**
+--subject-run <the closed bead-runs> --trigger cadence-retro --meta-file <json>`
+artifact under `refs/etude/retros/*` (dogfooding the retro feature + linking the
+retro to its runs), pushed to origin. Retro outputs go ONLY to skills, formulas,
+repo docs, or `etude` retro artifacts — **never to memory.**
+
+**Cadence retro-meta sidecar (required, etude-8hq.3).** From 2026-05-27 onward,
+every `etude retro capture cohort ... --trigger cadence-retro` MUST include
+`--meta-file <json>` carrying the 7-key convention (see
+`scripts/retro-meta-cadence.example.json` and `docs/retro.md` §"Cadence
+retro-meta convention (dogfood)"). The sidecar keys are: `retro_type` (string),
+`original_event_date` (string), `failure_modes` (array), `root_causes` (array),
+`follow_up_beads` (array), `decisions` (array), `durable_changes` (array). All
+seven must be present with the correct type; arrays may be empty. A post-cutoff
+cadence retro missing or with a malformed sidecar is a **hard gap** (exit 1) in
+`scripts/dogfood-completeness-audit.sh` check (f). Use the example file as a
+starting template:
+
+```bash
+etude retro capture cohort \
+  --subject-run <run1> [--subject-run <run2> ...] \
+  --trigger cadence-retro \
+  --meta-file scripts/retro-meta-cadence.example.json
+```
 
 **Dogfood-completeness check (new, B16).** Because this project's whole point is
 running `etude` on itself, each cadence retro must also verify that — for the 3
