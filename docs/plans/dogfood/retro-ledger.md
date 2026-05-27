@@ -542,3 +542,25 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
 - **Remaining:** phase `etude-8hq` — 8hq.5 (backfill sidecars + re-capture B16,
   supersession-aware; removes the B16 allowlist entry), 8hq.6 (role-based gate),
   8hq.7 (executable checklists). Phase 1 USER-BLOCKED.
+
+### B19. Cadence retro (2026-05-27) — etude-8hq phase COMPLETE (8hq.6/8hq.7/8hq.5)
+- **Trigger/scope:** 3-ticket cadence (check (c)); META=Y. Covers the final three
+  phase beads: 8hq.6 (reviewer lenses), 8hq.7 (executable checklists), 8hq.5 (sidecar
+  backfill + supersession-aware audit). CLOSES phase etude-8hq (all 8 children + epic).
+- **What worked (preserve):** the phase landed its thesis — dogfood completeness is now
+  a MECHANICAL gate (close wrapper + pre-push hook + the full check suite), and
+  `make dogfood-audit` is fully clean. The multi-seat gate caught a Tier-1 bug to the
+  very end: 8hq.5's implement gate had codex find a MASKING hole (a post-cutoff cadence
+  retro missing a sidecar could be hidden by superseding it with a non-validating ref)
+  that gemini AND opus both GO'd — P3 (not-a-vote-count) made it decisive.
+- **Durable lesson (the through-line of 8hq.8 + 8hq.5):** a skip/exemption inside a
+  HARD gate must be applied AFTER the gate's own classification, never before — else it
+  bypasses the check it sits in front of. The cutoff×supersede interaction bit twice
+  (8hq.8 pre→post-cutoff mint; 8hq.5 skip-before-classify); locked by the `f-mask-guard`
+  regression test. Also: **a phase epic, when it auto-closes, is a runless bead that
+  must be added to `dogfood-completeness-allow.txt`** (rollup; children carry the runs) —
+  this recurs every phase and briefly blocked the final push until allowlisted.
+- **Landed:** `[IMPLEMENTED]` 8hq.6/8hq.7/8hq.5 + the etude-8hq epic allowlist entry +
+  this retro (dual-output, META=Y). Counter reset.
+- **Remaining:** phase `etude-8hq` is COMPLETE. etude-9ey (cross-retro index) is now
+  UNBLOCKED (real sidecar data exists). Phase 1 (xenota/github) USER-BLOCKED.
