@@ -86,8 +86,9 @@ make build VERSION=v1.0.0
 ```
 
 Cutting the actual release (tagging the commit and setting `VERSION`) is a
-human release action. The full ordered procedure is covered by the v1 release
-checklist (etude-kb0.4), which references these mechanics.
+human release action. For the full ordered procedure — green-gate checks,
+version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
+[RELEASING.md](RELEASING.md).
 
 ## CLI
 
