@@ -61,6 +61,34 @@ make clean
 
 `make build` writes `bin/etude`.
 
+## Releasing
+
+The `etude` binary reports its version via `etude --version`. The version is
+read from the package-level variable `var version = "dev"` in
+`internal/cli/root.go` (line 11), which is wired to the cobra root command's
+`Version` field (line 24) and printed via the template
+`"{{.Name}} {{.Version}}\n"` (line 35).
+
+The `Makefile` sets `VERSION ?= dev` (line 3) and stamps the binary at build
+time using ldflags (lines 8–10):
+
+```
+go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=$(VERSION)" \
+  -o bin/etude ./cmd/etude
+```
+
+A plain `make build` (or `go build`) therefore produces a binary that reports
+`etude dev`. A release build stamps the correct version:
+
+```bash
+make build VERSION=v1.0.0
+./bin/etude --version   # prints: etude v1.0.0
+```
+
+Cutting the actual release (tagging the commit and setting `VERSION`) is a
+human release action. The full ordered procedure is covered by the v1 release
+checklist (etude-kb0.4), which references these mechanics.
+
 ## CLI
 
 ```bash
