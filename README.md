@@ -42,12 +42,13 @@ packages are Go APIs internal to this module. The implemented CLI surface is
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
 `etude gc`, `etude reindex`, `etude retro capture`, `etude retro generate`,
 `etude retro list`, `etude retro show`, `etude prime`, `etude log`,
-and the root help and version output. (The `eval` package is a library used by `etude bench`;
-there is no standalone `etude eval` CLI yet.)
+and the root help and version output. (The `eval` package is a library used by `etude bench`; there is no standalone `etude eval` cobra command.)
 
-The full design is in
-[`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). Planning notes
-for components that do not exist yet live under [`docs/plans/`](docs/plans/).
+The design rationale is in [`docs/plans/product/BRIEF.md`](docs/plans/product/BRIEF.md). For the current v1 scope and what is deferred, see [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md).
+
+## Still planned / not yet built
+
+v1 ships the CLI surface listed above. The following are confirmed deferred to post-v1 and tracked in [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md): live xenota capture adapter, `etude import` backfill, standalone `etude eval` command, a `query` command over the SQLite index, external artifact pointer capture via the CLI, and a browsable docs site.
 
 ## Build And Test
 

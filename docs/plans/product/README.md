@@ -4,6 +4,7 @@ These notes describe planned `etude` product behavior. They are not shipped
 user-facing documentation.
 
 - [Design brief](BRIEF.md) - current product direction and phased plan.
+- [v1 scope and boundary](V1-SCOPE.md) - what v1 ships vs what is deferred, reconciling BRIEF.md with the shipped state.
 - [Retrospectives](retrospectives.md) - first-class retro artifacts, triggers,
   CLI shape, and manifest integration.
 - [etude retro command](etude-retro-command.md) - concrete design for the

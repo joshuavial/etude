@@ -4,6 +4,8 @@
 
 *Status: design brief — this document is the plan; implementation has not started.*
 
+For the current shipped scope and deferred items, see [V1-SCOPE.md](V1-SCOPE.md).
+
 ## 1. Problem
 
 Improving the skills that drive a coding agent — planning, implementation,
