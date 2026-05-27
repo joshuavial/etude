@@ -147,10 +147,21 @@ allowed and ignored. A canonical example is committed at
 **Enforcement:** `scripts/dogfood-completeness-audit.sh` check (f) (`cadence-sidecar`)
 runs in batch mode (`--last`/`--since`/default). For each `trigger==cadence-retro`
 retro ref:
+- **Superseded PRE-cutoff refs are skipped:** if a newer retro names a
+  *pre-cutoff* ref in its `refs.supersedes` field, that old ref is excluded from
+  check (f). This is the canonical way to clear a ref from the backfill worklist —
+  re-capture the retro with `etude retro capture --supersedes <old-id>
+  --meta-file <sidecar.json>`, which creates a new ref (post-convention, with a
+  valid sidecar) and marks the old ref superseded. The new ref passes check (f);
+  the old ref is skipped. **POST-cutoff cadence refs are NEVER skipped by
+  supersession** — they are always validated, so a missing-sidecar hard gap can
+  never be hidden by superseding a post-cutoff retro with a non-validating ref.
 - **POST-convention** (captured on or after `2026-05-27T00:00:00Z`): missing or
   malformed sidecar is a **hard gap** (exit 1).
 - **PRE-convention** (captured before the cutoff): missing or malformed sidecar
   is a **WARN** (exit 0) — these are the backfill worklist for etude-8hq.5.
+
+Checks (c) and (g) also skip superseded refs by the same mechanism.
 
 Check (f) is not run in `--bead` mode (which is per-bead, not per-retro).
 

@@ -962,6 +962,130 @@ print(r0.stdout.strip())
 }
 
 # ===========================================================================
+# seed_superseding_retro — create a NEW retro ref carrying refs.supersedes=<old-id>
+#
+# Usage:
+#   seed_superseding_retro \
+#     <new-retro-id>   \   # bare id for the new ref (refs/etude/retros/<id>)
+#     <supersedes-id>  \   # bare id of the ref being superseded (stored verbatim)
+#     <created>        \   # ISO-8601 timestamp for manifest.created
+#     <trigger>        \   # e.g. "cadence-retro" or "process-retro"
+#     <sidecar-json>   \   # valid 7-key JSON, or "" for no sidecar
+#     <subject-run1>   ...  # subject_run.* values (optional; none OK for workflow)
+#
+# The supersedes value is stored as a bare retro id exactly as etude retro.go:659 does.
+# ===========================================================================
+seed_superseding_retro() {
+  local new_id="$1"; shift
+  local supersedes_id="$1"; shift
+  local created="$1"; shift
+  local trigger="$1"; shift
+  local sidecar_json="$1"; shift
+
+  # Build refs_json with scope + trigger + supersedes + optional subject_runs
+  local refs_json
+  refs_json="$(python3 -c "
+import json, sys
+refs = {'scope': 'cohort', 'trigger': '$trigger', 'supersedes': '$supersedes_id'}
+i = 1
+for run in sys.argv[1:]:
+    refs['subject_run.' + str(i)] = run
+    i += 1
+print(json.dumps(refs))
+" "$@")"
+
+  if [[ -n "$sidecar_json" ]]; then
+    # Write sidecar blob and build manifest with retro-meta stage
+    local sidecar_blob_sha
+    sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
+    local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
+
+    local manifest
+    manifest="$(python3 -c "
+import json
+sidecar_path = '$sidecar_path'
+sidecar_sha  = '$sidecar_blob_sha'
+m = {
+    'manifest_version': 2,
+    'run_id': '$new_id',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$created',
+    'refs': json.loads('''$refs_json'''),
+    'stages': [
+        {
+            'stage': 'retro-meta',
+            'produced_by': 'retro',
+            'git_sha': '',
+            'inputs': [],
+            'output': {
+                'role': 'retro-meta',
+                'artifact': sidecar_sha,
+                'path': sidecar_path,
+                'media_type': 'application/json',
+                'storage': 'content',
+                'size': len('$sidecar_json'.encode())
+            }
+        }
+    ]
+}
+print(json.dumps(m))
+")"
+
+    local manifest_blob_sha
+    manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
+
+    # Build tree: manifest.json + sidecar at content-addressed path
+    local tree_sha
+    tree_sha="$(python3 -c "
+import subprocess
+manifest_blob = '$manifest_blob_sha'
+sidecar_blob  = '$sidecar_blob_sha'
+sidecar_path  = '$sidecar_path'
+parts = sidecar_path.split('/')
+level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
+r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
+tree3 = r3.stdout.strip()
+level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
+r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
+tree2 = r2.stdout.strip()
+level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
+r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
+tree1 = r1.stdout.strip()
+level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
+level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
+r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
+print(r0.stdout.strip())
+")"
+
+    local commit_sha
+    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
+    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
+  else
+    # No sidecar — simple manifest with no stages
+    local manifest
+    manifest="$(python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': '$new_id',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$created',
+    'refs': json.loads('''$refs_json'''),
+    'stages': []
+}
+print(json.dumps(m))
+")"
+    local blob_sha tree_sha commit_sha
+    blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
+    tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
+    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
+    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
+  fi
+}
+
+# ===========================================================================
 # TEST GROUP: check (g) retro subject consistency
 #
 # NOTE: The id-pattern used by check (g) is ^[a-z0-9]+(\.[a-z0-9]+)*$ which
@@ -1108,31 +1232,338 @@ git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
 git update-ref -d "refs/etude/runs/ga3" 2>/dev/null || true
 git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null || true
 
-# TEST (g.7): a ref id in SUBJECT_CONSISTENCY_ALLOW is SKIPPED even when its
-# title claims a subject absent from manifest refs (the B16 annotation mechanism).
-# Uses the exact hardcoded allowlist entry id so this locks the real B16 skip.
-t_start "(g.7) allowlisted ref with a title/refs mismatch → SKIPPED (no subject-consistency WARN)"
+# TEST (g.7): a superseded ref with a title/refs mismatch → SKIPPED via superseded-set
+# (the B16 repair shape: old ref claims nm6 in title but not in manifest refs;
+# new ref supersedes it AND carries bead.1=etude-nm6 → old skipped, new passes).
+# B16 is no longer in SUBJECT_CONSISTENCY_ALLOW; supersession is the mechanism.
+t_start "(g.7) superseded ref with title/refs mismatch → SKIPPED via superseded-set (no subject-consistency WARN)"
 
 delete_all_retros
-# nm6 is claimed in the title but NOT present in refs → check (g) WOULD WARN, but
-# this ref id is in SUBJECT_CONSISTENCY_ALLOW (the B16 annotation), so it is skipped.
+# Old B16 ref: title claims nm6 but manifest only has 6j8+kig → would WARN
 seed_cadence_retro_with_body "retro-cohort-etude-6j8-20260526T215942Z" \
   "### B16. Cadence retro — closure (6j8/kig/nm6)" \
   "subject_run:etude-6j8" "subject_run:etude-kig"
-git push origin "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null
+# New superseding ref: carries bead.1=etude-nm6 AND supersedes the old one
+# (pre-cutoff created so check (f) does not hard-fail on missing sidecar here)
+seed_superseding_retro \
+  "retro-cohort-etude-6j8-NEW" \
+  "retro-cohort-etude-6j8-20260526T215942Z" \
+  "$PRE_CUTOFF_TS" \
+  "cadence-retro" \
+  "" \
+  "etude-6j8" "etude-kig"
+git push origin \
+  "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" \
+  "refs/etude/retros/retro-cohort-etude-6j8-NEW" \
+  --quiet 2>/dev/null
 
 run_audit_split --last 9
-# The allowlist mechanism is proven by the ABSENCE of a subject-consistency WARN
-# for this mismatching ref (the overall exit code depends on unrelated bead state).
+# The old B16 ref is in the superseded-set (new ref names it in refs.supersedes)
+# → it is SKIPPED; no subject-consistency WARN should appear.
 assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
 
 git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" 2>/dev/null || true
-git push origin --delete "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null || true
+git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-NEW" 2>/dev/null || true
+git push origin \
+  --delete "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" \
+  --delete "refs/etude/retros/retro-cohort-etude-6j8-NEW" \
+  --quiet 2>/dev/null || true
 
 # ===========================================================================
 # Cleanup check-g retro refs
 # ===========================================================================
 delete_all_retros
+
+# ===========================================================================
+# TEST GROUP: supersession-awareness
+#
+# These tests verify that the superseded-set mechanism correctly skips refs
+# named by refs.supersedes in any newer retro ref, across checks (c), (f), (g).
+# Shared run refs for supersession tests: use ga1/ga2 shape short ids.
+# ===========================================================================
+
+# Re-seed short-id run refs (they may have been cleaned up above)
+seed_run_ref "ga1" "$INITIAL_SHA" "plan.r1"
+seed_run_ref "ga2" "$INITIAL_SHA" "plan.r1"
+git push origin "refs/etude/runs/ga1" "refs/etude/runs/ga2" --quiet 2>/dev/null
+write_bd_json "ga1" "ga2"
+
+# ===========================================================================
+# SUPERSESSION TEST (bare-id-assertion): the stored refs.supersedes value is
+# exactly the bare retro id (no refs/etude/retros/ prefix, no trailing slash).
+# This catches a future regression where etude stores the full ref path.
+# ===========================================================================
+t_start "(supersede-bare-id) refs.supersedes is stored as bare id, not full ref path"
+
+delete_all_retros
+OLD_RETRO_ID="retro-sup-bare-old"
+NEW_RETRO_ID="retro-sup-bare-new"
+seed_cadence_retro "$OLD_RETRO_ID" "ga1"
+seed_superseding_retro "$NEW_RETRO_ID" "$OLD_RETRO_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" "ga1"
+git push origin \
+  "refs/etude/retros/$OLD_RETRO_ID" \
+  "refs/etude/retros/$NEW_RETRO_ID" \
+  --quiet 2>/dev/null
+
+# Read back the stored supersedes value from the new ref's manifest
+stored_supersedes="$(git cat-file -p "refs/etude/retros/$NEW_RETRO_ID:manifest.json" | python3 -c "
+import json,sys
+m=json.load(sys.stdin)
+print(m.get('refs',{}).get('supersedes',''))
+")"
+if [[ "$stored_supersedes" == "$OLD_RETRO_ID" ]]; then
+  t_pass
+else
+  t_fail "expected bare id '$OLD_RETRO_ID', got '$stored_supersedes'"
+fi
+
+t_start "(supersede-bare-id) stored value has no refs/etude/retros/ prefix"
+if [[ "$stored_supersedes" != refs/etude/retros/* ]]; then
+  t_pass
+else
+  t_fail "stored supersedes value '$stored_supersedes' has full ref prefix — bare id required"
+fi
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (f-supersede-clears-warn): an OLD pre-cutoff cadence retro
+# with NO sidecar is superseded by a NEW post-cutoff retro WITH a valid sidecar.
+# The OLD ref must be SKIPPED (no WARN), the NEW ref must PASS.
+# ===========================================================================
+t_start "(f-supersede-clears-warn) old pre-cutoff no-sidecar retro is SKIPPED when superseded"
+
+delete_all_retros
+OLD_F_ID="retro-f-sup-old"
+NEW_F_ID="retro-f-sup-new"
+
+# OLD: pre-cutoff, no sidecar (would be pre-cutoff WARN without supersession)
+python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': '$OLD_F_ID',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$PRE_CUTOFF_TS',
+    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'ga1'},
+    'stages': []
+}
+print(json.dumps(m))
+" | {
+  manifest_data=$(cat)
+  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
+  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
+  commit_sha=$(git commit-tree "$tree_sha" -m "retro: $OLD_F_ID" <<< "")
+  git update-ref "refs/etude/retros/$OLD_F_ID" "$commit_sha"
+  git push origin "refs/etude/retros/$OLD_F_ID" --quiet 2>/dev/null
+}
+
+# NEW: post-cutoff, valid sidecar, supersedes=OLD
+seed_superseding_retro "$NEW_F_ID" "$OLD_F_ID" "$POST_CUTOFF_TS" "cadence-retro" \
+  "$VALID_SIDECAR_JSON" "ga1"
+git push origin "refs/etude/retros/$NEW_F_ID" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(f-supersede) superseded old pre-cutoff ref → no WARN, new ref passes"
+
+t_start "(f-supersede-clears-warn) old ref id does NOT appear in any cadence-sidecar WARN"
+assert_output_not_contains "cadence-sidecar.*$OLD_F_ID|$OLD_F_ID.*cadence-sidecar" "$AUDIT_OUT"
+
+t_start "(f-supersede-clears-warn) no pre-convention WARN in output"
+assert_output_not_contains "pre-convention" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ---------------------------------------------------------------------------
+# (f-mask-guard) A POST-cutoff cadence retro with NO sidecar (a HARD gap) must
+# NOT be masked by superseding it with a NON-validating ref. This is the
+# implement-gate codex BLOCK: post-cutoff refs are NEVER skipped via supersession.
+# ---------------------------------------------------------------------------
+t_start "(f-mask-guard) post-cutoff no-sidecar retro superseded by a non-cadence ref still HARD-GAPs"
+
+delete_all_retros
+MASK_OLD_ID="retro-f-mask-old"
+MASK_SUP_ID="retro-f-mask-sup"
+
+# OLD: POST-cutoff, cadence-retro, NO sidecar → a genuine hard gap.
+python3 -c "
+import json
+m = {
+    'manifest_version': 2,
+    'run_id': '$MASK_OLD_ID',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '$POST_CUTOFF_TS',
+    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'ga1'},
+    'stages': []
+}
+print(json.dumps(m))
+" | {
+  manifest_data=$(cat)
+  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
+  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
+  commit_sha=$(git commit-tree "$tree_sha" -m "retro: $MASK_OLD_ID" <<< "")
+  git update-ref "refs/etude/retros/$MASK_OLD_ID" "$commit_sha"
+  git push origin "refs/etude/retros/$MASK_OLD_ID" --quiet 2>/dev/null
+}
+
+# SUPERSEDER: a NON-cadence (manual) ref, no sidecar, that names OLD in supersedes.
+# Under the buggy (pre-fix) logic this would mask OLD's hard gap; the fix keeps OLD
+# validated because it is POST-cutoff.
+seed_superseding_retro "$MASK_SUP_ID" "$MASK_OLD_ID" "$POST_CUTOFF_TS" "manual" \
+  "" "ga1"
+git push origin "refs/etude/retros/$MASK_SUP_ID" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 1 "$AUDIT_RC" "(f-mask-guard) post-cutoff hard gap not masked by non-validating superseder"
+
+t_start "(f-mask-guard) the masked old ref surfaces as a cadence-sidecar GAP"
+assert_output_contains "$MASK_OLD_ID" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (g-supersede-clears-mismatch): old retro claims a subject
+# absent from its manifest → would WARN; new retro supersedes it with that
+# subject present → old SKIPPED, no check-(g) WARN.
+# ===========================================================================
+t_start "(g-supersede-clears-mismatch) old retro with missing subject is SKIPPED when superseded"
+
+delete_all_retros
+OLD_G_ID="retro-g-sup-old"
+NEW_G_ID="retro-g-sup-new"
+
+# OLD: title claims ga1/ga2/ga3 but manifest only has ga1+ga2 → would WARN gc3
+# (using ga3 as the "missing" subject)
+seed_cadence_retro_with_body "$OLD_G_ID" \
+  "# Cadence Retro (ga1/ga2/ga3)" \
+  "subject_run:ga1" "subject_run:ga2"
+
+# NEW: supersedes OLD; body title and manifest both include ga1+ga2 consistently
+# Use seed_superseding_retro (no body stage, but check (g) needs a retro-role stage
+# to parse the title — since it's absent the ref is silently skipped by check (g))
+seed_superseding_retro "$NEW_G_ID" "$OLD_G_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" \
+  "ga1" "ga2"
+
+git push origin \
+  "refs/etude/retros/$OLD_G_ID" \
+  "refs/etude/retros/$NEW_G_ID" \
+  --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g-supersede) old ref with missing subject skipped"
+
+t_start "(g-supersede-clears-mismatch) no subject-consistency WARN for old ref"
+assert_output_not_contains "subject-consistency.*$OLD_G_ID|$OLD_G_ID.*subject-consistency" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (c-coverage-preserved): OLD + NEW both cover the same
+# subject_run. After supersession the bead is still counted as covered and
+# uncovered_count does NOT increase (no double-count, no vanish).
+# ===========================================================================
+t_start "(c-coverage-preserved) subject covered by OLD still covered after supersession"
+
+delete_all_retros
+write_bd_json "ga1" "ga2"
+OLD_C_ID="retro-c-sup-old"
+NEW_C_ID="retro-c-sup-new"
+
+# OLD covers ga1; NEW supersedes OLD and ALSO covers ga1
+seed_cadence_retro "$OLD_C_ID" "ga1" "ga2"
+seed_superseding_retro "$NEW_C_ID" "$OLD_C_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" \
+  "ga1" "ga2"
+git push origin \
+  "refs/etude/retros/$OLD_C_ID" \
+  "refs/etude/retros/$NEW_C_ID" \
+  --quiet 2>/dev/null
+
+run_audit_split --last 9
+# Both ga1 and ga2 are in-scope active beads; the NEW ref covers both.
+# The OLD ref is superseded → skipped. Coverage must still be full → no cadence-overdue.
+assert_exit 0 "$AUDIT_RC" "(c-coverage) subjects still covered after supersession"
+
+t_start "(c-coverage-preserved) no cadence-overdue WARN (coverage intact)"
+assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (empty-supersedes): a retro with NO refs.supersedes does NOT
+# add an empty entry to the superseded-set, so no other ref is wrongly skipped.
+# ===========================================================================
+t_start "(empty-supersedes) retro with no refs.supersedes does not wrongly skip any ref"
+
+delete_all_retros
+write_bd_json "ga1" "ga2"
+
+# A normal cadence retro with NO supersedes field — should be checked normally
+NORMAL_ID="retro-c-no-sup"
+seed_cadence_retro "$NORMAL_ID" "ga1" "ga2"
+git push origin "refs/etude/retros/$NORMAL_ID" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(empty-supersedes) normal retro is not wrongly skipped"
+
+# The normal retro covers ga1+ga2; no cadence-overdue expected
+t_start "(empty-supersedes) normal retro coverage is intact (no cadence-overdue)"
+assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (dangling-supersedes): a retro whose refs.supersedes points
+# at a non-existent retro id must not crash; nothing should be wrongly skipped.
+# ===========================================================================
+t_start "(dangling-supersedes) retro superseding non-existent id does not crash"
+
+delete_all_retros
+write_bd_json "ga1" "ga2"
+
+# Seed a retro that supersedes a NON-EXISTENT id ("retro-does-not-exist")
+DANGLING_ID="retro-dangling-sup"
+seed_superseding_retro "$DANGLING_ID" "retro-does-not-exist" \
+  "$PRE_CUTOFF_TS" "cadence-retro" "" "ga1" "ga2"
+git push origin "refs/etude/retros/$DANGLING_ID" --quiet 2>/dev/null
+
+run_audit_split --last 9
+# Must not crash (exit code ≠ 2); the dangling supersedes value is collected
+# but points at a non-existent ref → no real ref is wrongly skipped.
+# Exit 0 because the dangling retro itself covers ga1+ga2 (not skipped itself).
+assert_exit 0 "$AUDIT_RC" "(dangling-supersedes) no crash on dangling supersedes"
+
+t_start "(dangling-supersedes) audit completes normally (output has summary line)"
+assert_output_contains "audit:" "$AUDIT_OUT"
+
+delete_all_retros
+
+# ===========================================================================
+# SUPERSESSION TEST (regression-no-supersedes): when no retro has refs.supersedes,
+# the superseded-set is empty and existing behaviour is completely unchanged.
+# Re-runs the original complete fixture (TEST 1 shape) without any supersedes.
+# ===========================================================================
+t_start "(regression-no-supersedes) no supersedes present → superseded-set empty → no behaviour change"
+
+delete_all_retros
+write_bd_json "test-aaa" "test-bbb"
+seed_cadence_retro_with_meta "retro-reg-no-sup" "$PRE_CUTOFF_TS" \
+  "$VALID_SIDECAR_JSON" "test-aaa" "test-bbb"
+git push origin "refs/etude/retros/retro-reg-no-sup" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(regression-no-supersedes) complete fixture still exits 0"
+
+t_start "(regression-no-supersedes) output says OK"
+assert_output_contains "audit: OK" "$AUDIT_OUT"
+
+delete_all_retros
+
+# Clean up short-id g-test run refs
+git update-ref -d "refs/etude/runs/ga1" 2>/dev/null || true
+git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
+git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" --quiet 2>/dev/null || true
 
 # ===========================================================================
 # Summary

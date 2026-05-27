@@ -27,6 +27,7 @@
 #   (a) run-ref present — refs/etude/runs/<id> exists.         [hard; both modes]
 #   (b) gated run has gates — manifest.gates non-empty.        [hard; both modes]
 #   (c) cadence retro not overdue — every 3 closed beads.      [WARN only; batch only]
+#       Skips superseded retro refs (a newer ref names them in refs.supersedes).
 #   (d) refs pushed — every refs/etude/{runs,retros}/* matches origin.
 #                                                              [hard batch (repo-wide);
 #                                                               hard bead (that ref only)]
@@ -34,11 +35,15 @@
 #   (f) cadence-sidecar — every cadence-retro ref on/after     [hard post-cutoff; batch only]
 #       CADENCE_SIDECAR_CUTOFF must have a valid 7-key retro-meta
 #       sidecar; pre-cutoff refs without one are WARN only.
+#       Skips only PRE-cutoff superseded refs (a newer ref names them in
+#       refs.supersedes); POST-cutoff cadence refs are ALWAYS validated so a
+#       missing-sidecar hard gap can never be masked by supersession.
 #   (g) retro subject consistency — for each cadence-retro whose [WARN only; batch only]
 #       body title contains a parseable id-list parenthetical,
 #       every claimed id must appear in the manifest's
 #       subject_run.* or bead.* refs. Where-possible: retros
 #       with no parseable id-list are silently skipped.
+#       Skips superseded retro refs (a newer ref names them in refs.supersedes).
 #   bypass report — print allowlisted beads + reasons.         [info; never affects exit]
 #
 # Allowlist: scripts/dogfood-completeness-allow.txt
@@ -359,6 +364,37 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# Build superseded-set — scan every retro ref's manifest for refs.supersedes.
+# Collected ONCE here (batch mode only); checks (c), (f), (g) skip any retro
+# whose bare id (refs/etude/retros/<id> minus prefix) is in this set.
+#
+# The refs.supersedes value is stored verbatim as a bare retro id (no
+# refs/etude/retros/ prefix) by etude retro capture --supersedes (retro.go:659).
+# We compare bare id vs bare stored value — no normalisation needed.
+#
+# Edge cases handled:
+#   - Empty/absent refs.supersedes: python3 returns "" → not added to the set.
+#   - Dangling supersedes (non-existent target id): value is collected regardless;
+#     no crash because we only skip on membership, never dereference the target.
+# ---------------------------------------------------------------------------
+declare -A superseded_set   # bare-retro-id -> 1; retros that have been superseded
+
+if [[ "$mode" != "bead" ]]; then
+  while IFS= read -r retro_ref; do
+    sup_val="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null | python3 -c "
+import json,sys
+m=json.load(sys.stdin)
+v=m.get('refs',{}).get('supersedes','')
+if v:
+    print(v)
+" 2>/dev/null || true)"
+    if [[ -n "$sup_val" ]]; then
+      superseded_set["$sup_val"]=1
+    fi
+  done < <(git for-each-ref refs/etude/retros --format='%(refname)')
+fi
+
+# ---------------------------------------------------------------------------
 # (c) Cadence retro check — WARN ONLY, batch mode only
 # ---------------------------------------------------------------------------
 if [[ "$mode" != "bead" ]]; then
@@ -372,6 +408,11 @@ if [[ "$mode" != "bead" ]]; then
 
   while IFS= read -r retro_ref; do
     manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
+
+    # Skip superseded refs (a newer ref names this one in refs.supersedes)
+    retro_short="${retro_ref#refs/etude/retros/}"
+    [[ -v "superseded_set[$retro_short]" ]] && continue
+
     trigger="$(python3 -c "
 import json,sys
 m=json.load(sys.stdin)
@@ -469,6 +510,16 @@ except Exception:
     print('pre')
 " <<< "$manifest_data" 2>/dev/null || echo "pre")"
 
+    # Skip a SUPERSEDED ref ONLY when it is PRE-cutoff (clears the backfill WARN
+    # for refs replaced by a sidecar-carrying or re-tagged successor). A POST-cutoff
+    # cadence retro is NEVER skipped here: otherwise a missing-sidecar HARD gap could
+    # be masked by superseding it with a non-validating ref (implement-gate codex
+    # BLOCK). Post-cutoff cadence refs are always validated below.
+    retro_short="${retro_ref#refs/etude/retros/}"
+    if [[ "$is_post_convention" == "pre" ]] && [[ -v "superseded_set[$retro_short]" ]]; then
+      continue
+    fi
+
     # Find retro-meta stage and validate sidecar
     sidecar_status="$(python3 -c "
 import json,sys,subprocess
@@ -561,20 +612,22 @@ fi
 #   6. Prefix each surviving token with "etude-" and check against manifest refs.
 #
 # Inline allowlist for known legitimate divergences (keyed by retro ref id):
-# B16's body title legitimately names nm6 (part of the 6j8/kig/nm6 cadence cohort),
-# but nm6 is a data-backfill bead with NO run ref (see dogfood-completeness-allow.txt),
-# so it could not be a --subject-run. Annotated here pending etude-8hq.5, which
-# re-captures B16 with --bead etude-nm6 + a sidecar in one convention-compliant pass
-# (a sidecar-less supersede now would be a post-cutoff cadence retro and fail check (f)).
-# Add entries here if a retro genuinely cannot be repaired:
+# B16 (retro-cohort-etude-6j8-20260526T215942Z) was previously listed here, but
+# etude-8hq.5 re-captures it with --bead etude-nm6 + a sidecar and --supersedes,
+# so the old ref is now skipped via the superseded-set (not allowlisted).
+# Add entries here only for retros that genuinely cannot be repaired:
 #   SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-some-id-TIMESTAMP")
-SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-etude-6j8-20260526T215942Z")
+SUBJECT_CONSISTENCY_ALLOW=()
 
 if [[ "$mode" != "bead" ]]; then
   echo "=== Check (g): retro subject consistency (WARN only) ==="
 
   while IFS= read -r retro_ref; do
     manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
+
+    # Skip superseded refs (a newer ref names this one in refs.supersedes)
+    retro_short="${retro_ref#refs/etude/retros/}"
+    [[ -v "superseded_set[$retro_short]" ]] && continue
 
     # Only process cadence-retro refs
     trigger="$(python3 -c "
@@ -585,7 +638,6 @@ print(m.get('refs',{}).get('trigger',''))
     [[ "$trigger" == "cadence-retro" ]] || continue
 
     # Check inline allowlist
-    retro_short="${retro_ref#refs/etude/retros/}"
     skip_allowed=false
     for allowed_id in "${SUBJECT_CONSISTENCY_ALLOW[@]+"${SUBJECT_CONSISTENCY_ALLOW[@]}"}"; do
       if [[ "$retro_short" == "$allowed_id" ]]; then
