@@ -840,6 +840,301 @@ assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
 delete_all_retros
 
 # ===========================================================================
+# Helper: seed_cadence_retro_with_body
+#
+# Creates a cadence-retro ref whose manifest has a retro-role stage pointing
+# at a content-addressed body blob. The body contains a chosen title line as
+# its first line (so check (g) can parse the subject id-list from it).
+#
+# Also accepts bead refs in addition to subject_run refs.
+#
+# Usage:
+#   seed_cadence_retro_with_body \
+#     <retro-id> \
+#     <title-line> \
+#     "subject_run:etude-aaa" "subject_run:etude-bbb" "bead:etude-ccc" ...
+#
+# The subject/bead args must be prefixed with "subject_run:" or "bead:" to
+# distinguish them.
+# ===========================================================================
+seed_cadence_retro_with_body() {
+  local retro_id="$1"; shift
+  local title_line="$1"; shift
+
+  # Build refs_json from remaining args (subject_run: or bead: prefixed)
+  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
+  local sr_i=1
+  local bead_i=1
+  for arg in "$@"; do
+    local typ="${arg%%:*}"
+    local val="${arg#*:}"
+    if [[ "$typ" == "subject_run" ]]; then
+      refs_json="${refs_json},\"subject_run.$sr_i\":\"$val\""
+      (( sr_i++ )) || true
+    elif [[ "$typ" == "bead" ]]; then
+      refs_json="${refs_json},\"bead.$bead_i\":\"$val\""
+      (( bead_i++ )) || true
+    fi
+  done
+  refs_json="${refs_json}}"
+
+  # Write the body blob (first line = title_line)
+  local body_content
+  body_content="$(printf '%s\n\nBody text.\n' "$title_line")"
+  local body_blob_sha
+  body_blob_sha="$(git hash-object -w --stdin <<< "$body_content")"
+  local body_path="artifacts/sha256/${body_blob_sha:0:2}/$body_blob_sha"
+
+  # Build manifest with a retro-role stage pointing at the body blob
+  local manifest
+  manifest="$(python3 -c "
+import json
+body_path = '$body_path'
+body_sha  = '$body_blob_sha'
+m = {
+    'manifest_version': 2,
+    'run_id': '$retro_id',
+    'workflow': 'retro',
+    'workflow_version': 'retro-v1',
+    'created': '2026-05-26T00:00:00Z',
+    'refs': json.loads('''$refs_json'''),
+    'stages': [
+        {
+            'stage': 'retro',
+            'produced_by': 'retro',
+            'git_sha': '',
+            'inputs': [],
+            'output': {
+                'role': 'retro',
+                'artifact': body_sha,
+                'path': body_path,
+                'media_type': 'text/markdown; charset=utf-8',
+                'storage': 'content',
+                'size': 0
+            }
+        }
+    ]
+}
+print(json.dumps(m))
+")"
+
+  # Write the manifest blob and tree with both manifest.json and the body blob
+  local manifest_blob_sha
+  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
+
+  # Build tree: manifest.json + body at its content-addressed path
+  local tree_sha
+  tree_sha="$(python3 -c "
+import subprocess, sys
+
+manifest_blob = '$manifest_blob_sha'
+body_blob     = '$body_blob_sha'
+body_path     = '$body_path'
+
+parts = body_path.split('/')
+# parts = ['artifacts','sha256','<2-char>','<hash>']
+
+# Level 3 tree: just the blob
+level3_in = '100644 blob {}\t{}\n'.format(body_blob, parts[3])
+r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
+tree3 = r3.stdout.strip()
+
+# Level 2 tree: the 2-char dir
+level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
+r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
+tree2 = r2.stdout.strip()
+
+# Level 1 tree: sha256 dir
+level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
+r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
+tree1 = r1.stdout.strip()
+
+# Level 0 tree: artifacts dir + manifest.json
+level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
+level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
+r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
+print(r0.stdout.strip())
+")"
+
+  local commit_sha
+  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
+  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
+}
+
+# ===========================================================================
+# TEST GROUP: check (g) retro subject consistency
+#
+# NOTE: The id-pattern used by check (g) is ^[a-z0-9]+(\.[a-z0-9]+)*$ which
+# does NOT allow hyphens. The real corpus uses short alphanumeric ids like
+# "6j8", "kig", "nm6". We seed dedicated short-id run refs for these tests
+# rather than reusing the hyphenated test-aaa/test-bbb fixture ids.
+# ===========================================================================
+
+# Seed short-id run refs for g-tests and push them
+seed_run_ref "ga1" "$INITIAL_SHA" "plan.r1"
+seed_run_ref "ga2" "$INITIAL_SHA" "plan.r1"
+seed_run_ref "ga3" "$INITIAL_SHA" "plan.r1"
+git push origin "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null
+
+write_bd_json "ga1" "ga2"
+
+# ===========================================================================
+# TEST (g.1): title "(a/b)" with both a,b present as subject_run → PASS (no WARN)
+# ===========================================================================
+t_start "(g.1) title subjects all present as subject_run → no WARN (exit 0)"
+
+delete_all_retros
+seed_cadence_retro_with_body "retro-g1-pass" \
+  "# Cadence Retro (ga1/ga2)" \
+  "subject_run:ga1" "subject_run:ga2"
+git push origin "refs/etude/retros/retro-g1-pass" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.1) all subjects present"
+
+t_start "(g.1) no subject-consistency WARN in output"
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (g.2): title "(a/b/c)" with a,b as subject_run but c MISSING → WARN + exit 0
+# gc1 is in the title but absent from all manifest refs → WARN naming gc1.
+# ===========================================================================
+t_start "(g.2) title claims missing subject → WARN (exit 0)"
+
+delete_all_retros
+seed_cadence_retro_with_body "retro-g2-warn" \
+  "# Cadence Retro (ga1/ga2/gc1)" \
+  "subject_run:ga1" "subject_run:ga2"
+git push origin "refs/etude/retros/retro-g2-warn" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.2) missing subject is WARN not hard gap"
+
+t_start "(g.2) output contains subject-consistency WARN"
+assert_output_contains "subject-consistency" "$AUDIT_OUT"
+
+t_start "(g.2) WARN names the missing id"
+assert_output_contains "gc1" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (g.3): bead.* ref counts as a present subject (B16/B17 shape)
+# title "(a/b/c)" with a,b as subject_run and c ONLY as bead.N → PASS (no WARN)
+# This directly guards the B16-repair shape (Opus NIT g.5 from design).
+# ===========================================================================
+t_start "(g.3) bead.* ref counts as present subject → no WARN (exit 0)"
+
+delete_all_retros
+seed_cadence_retro_with_body "retro-g3-bead" \
+  "# Cadence Retro (ga1/ga2/ga3)" \
+  "subject_run:ga1" "subject_run:ga2" "bead:ga3"
+git push origin "refs/etude/retros/retro-g3-bead" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.3) bead.* ref accepted as present"
+
+t_start "(g.3) no subject-consistency WARN in output"
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (g.4): title with date parenthetical "(2026-05-25/26)" → SKIP (no WARN)
+# This guards the B5 footgun: "2026-05-25" contains '-' → fails id pattern →
+# entire parenthetical rejected → SKIP (no WARN).
+# ===========================================================================
+t_start "(g.4) date parenthetical in title → SKIP (no WARN, exit 0)"
+
+delete_all_retros
+seed_cadence_retro_with_body "retro-g4-date" \
+  "# Cadence Retro (2026-05-25/26)" \
+  "subject_run:ga1"
+git push origin "refs/etude/retros/retro-g4-date" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.4) date parenthetical → skip, no WARN"
+
+t_start "(g.4) no subject-consistency WARN for date parenthetical"
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (g.5): workflow-style title with no parseable id-list → SKIP (no WARN)
+# Guards the 7 retro-workflow-* refs in the live corpus: titles like
+# "Retro — commit abc1234 (workflow retro)" have a single-token parenthetical
+# that is not a slash/comma-separated id-list → SKIP.
+# ===========================================================================
+t_start "(g.5) workflow retro title with no parseable id-list → SKIP (no WARN, exit 0)"
+
+delete_all_retros
+seed_cadence_retro_with_body "retro-g5-noparse" \
+  "# Retro workflow run abc1234" \
+  "subject_run:ga1"
+git push origin "refs/etude/retros/retro-g5-noparse" --quiet 2>/dev/null
+
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.5) workflow title → skip, no WARN"
+
+t_start "(g.5) no subject-consistency WARN for workflow title"
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+# ===========================================================================
+# TEST (g.6): etude- prefix normalization
+# The manifest subject_run values carry the "etude-" prefix (e.g. "etude-ga1")
+# while the title tokens are bare (e.g. "ga1"). The check must strip the
+# "etude-" prefix from manifest values before comparing so bare title tokens match.
+# ===========================================================================
+t_start "(g.6) etude- prefix normalization: bare title tokens match etude-prefixed manifest values → PASS"
+
+delete_all_retros
+# Pass etude-prefixed values so the manifest has subject_run.1=etude-ga1,
+# subject_run.2=etude-ga2. The title uses bare tokens: (ga1/ga2).
+# Normalization must strip "etude-" from manifest values → ga1 == ga1 → PASS.
+seed_cadence_retro_with_body "retro-g6-prefix" \
+  "# Cadence Retro (ga1/ga2)" \
+  "subject_run:etude-ga1" "subject_run:etude-ga2"
+git push origin "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null
+
+write_bd_json "ga1" "ga2"
+run_audit_split --last 9
+assert_exit 0 "$AUDIT_RC" "(g.6) etude- prefix normalization: no WARN"
+
+t_start "(g.6) no subject-consistency WARN with etude- prefixed manifest values"
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+# Cleanup g6 retro
+git update-ref -d "refs/etude/retros/retro-g6-prefix" 2>/dev/null || true
+git push origin --delete "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null || true
+
+# Cleanup short-id g-test run refs
+git update-ref -d "refs/etude/runs/ga1" 2>/dev/null || true
+git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
+git update-ref -d "refs/etude/runs/ga3" 2>/dev/null || true
+git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null || true
+
+# TEST (g.7): a ref id in SUBJECT_CONSISTENCY_ALLOW is SKIPPED even when its
+# title claims a subject absent from manifest refs (the B16 annotation mechanism).
+# Uses the exact hardcoded allowlist entry id so this locks the real B16 skip.
+t_start "(g.7) allowlisted ref with a title/refs mismatch → SKIPPED (no subject-consistency WARN)"
+
+delete_all_retros
+# nm6 is claimed in the title but NOT present in refs → check (g) WOULD WARN, but
+# this ref id is in SUBJECT_CONSISTENCY_ALLOW (the B16 annotation), so it is skipped.
+seed_cadence_retro_with_body "retro-cohort-etude-6j8-20260526T215942Z" \
+  "### B16. Cadence retro — closure (6j8/kig/nm6)" \
+  "subject_run:etude-6j8" "subject_run:etude-kig"
+git push origin "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null
+
+run_audit_split --last 9
+# The allowlist mechanism is proven by the ABSENCE of a subject-consistency WARN
+# for this mismatching ref (the overall exit code depends on unrelated bead state).
+assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
+
+git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" 2>/dev/null || true
+git push origin --delete "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" --quiet 2>/dev/null || true
+
+# ===========================================================================
+# Cleanup check-g retro refs
+# ===========================================================================
+delete_all_retros
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo ""

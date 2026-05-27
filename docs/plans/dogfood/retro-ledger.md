@@ -463,6 +463,24 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
   gate-capture mandate. Captured as an `etude retro` artifact. Counter reset.
 - **Remaining:** NO non-blocked work — corpus is complete (66 runs / 18 retros / 35 gated
   runs, all consistent). Phase 1 (xenota/github-import) USER-BLOCKED; 8b7 + 9ey deferred.
+- **B16 subject-mismatch repair (etude-8hq.8):** The original B16 ref
+  (`retro-cohort-etude-6j8-20260526T215942Z`) had a subject-consistency defect:
+  the body named `nm6` as a cohort subject but the manifest had no `subject_run.*`
+  or `bead.*` ref for it. Root cause: `nm6` is a data-backfill bead allowlisted in
+  `scripts/dogfood-completeness-allow.txt` — it has no `refs/etude/runs/etude-nm6`
+  (no dev-workflow run), so `--subject-run etude-nm6` would fail validation. The
+  correct form is `--bead etude-nm6` (writes a `bead.N` ref, does not require a run
+  ref). **Resolution (etude-8hq.8): ANNOTATED, not superseded.** A supersede now
+  would mint a NEW ref with a post-cutoff `created` timestamp, which check (f)
+  (etude-8hq.3) hard-requires carry a 7-key retro-meta sidecar — pulling sidecar
+  authorship (etude-8hq.5's job) into this subjects-only bead, and leaving the old
+  pre-cutoff ref still WARNing on check (g) unless the checks become
+  supersession-aware. So B16 is instead annotated: its ref id is recorded in
+  `SUBJECT_CONSISTENCY_ALLOW` in `scripts/dogfood-completeness-audit.sh` with the
+  reason above (an explicit, auditable record of WHY the divergence is legitimate),
+  and check (g) skips it. etude-8hq.5 will re-capture B16 (and the other migrated
+  retros) with `--bead etude-nm6` + a sidecar in one convention-compliant,
+  supersession-aware pass — at which point the allowlist entry can be removed.
 
 ### B17. Cadence retro (2026-05-27) — moving dogfood completeness from memory to a mechanical gate (nm6/8hq.4/8hq.1)
 - **Trigger/scope:** 3-ticket cadence, flagged MECHANICALLY this time by the new

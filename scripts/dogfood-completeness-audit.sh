@@ -34,6 +34,11 @@
 #   (f) cadence-sidecar — every cadence-retro ref on/after     [hard post-cutoff; batch only]
 #       CADENCE_SIDECAR_CUTOFF must have a valid 7-key retro-meta
 #       sidecar; pre-cutoff refs without one are WARN only.
+#   (g) retro subject consistency — for each cadence-retro whose [WARN only; batch only]
+#       body title contains a parseable id-list parenthetical,
+#       every claimed id must appear in the manifest's
+#       subject_run.* or bead.* refs. Where-possible: retros
+#       with no parseable id-list are silently skipped.
 #   bypass report — print allowlisted beads + reasons.         [info; never affects exit]
 #
 # Allowlist: scripts/dogfood-completeness-allow.txt
@@ -535,6 +540,153 @@ print('ok')
     log_warn "cadence-sidecar" "pre-cutoff" \
       "${#pre_cutoff_warn_refs[@]} pre-convention cadence retro(s) lack the required sidecar (backfill worklist, etude-8hq.5): $warn_refs_list"
   fi
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# (g) Retro subject consistency — WARN ONLY, batch mode only
+# For each cadence-retro ref, parse the subject id-list from the BODY title
+# (the retro-role stage output) and compare against manifest subject_run.* +
+# bead.* refs. Where-possible: retros with no parseable id-list are skipped.
+#
+# Parse algorithm (validated against live corpus, zero false positives):
+#   1. Find all (...) groups in the title; take the LAST one.
+#   2. Split on ' + ' and keep only the FIRST chunk (drops "defer" suffixes).
+#   3. Require the chunk to contain '/' and split into >=2 tokens (split on /).
+#      Also accept ',' as a delimiter (handles "(6j8, kig, nm6)" style).
+#   4. Strip whitespace from each token.
+#   5. All-tokens-valid-id rule: every token must match ^[a-z0-9]+(\.[a-z0-9]+)*$
+#      anchored end-to-end. If ANY token fails (e.g. date "2026-05-25" has '-'),
+#      SKIP the entire retro — the parenthetical is not an id-list.
+#   6. Prefix each surviving token with "etude-" and check against manifest refs.
+#
+# Inline allowlist for known legitimate divergences (keyed by retro ref id):
+# B16's body title legitimately names nm6 (part of the 6j8/kig/nm6 cadence cohort),
+# but nm6 is a data-backfill bead with NO run ref (see dogfood-completeness-allow.txt),
+# so it could not be a --subject-run. Annotated here pending etude-8hq.5, which
+# re-captures B16 with --bead etude-nm6 + a sidecar in one convention-compliant pass
+# (a sidecar-less supersede now would be a post-cutoff cadence retro and fail check (f)).
+# Add entries here if a retro genuinely cannot be repaired:
+#   SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-some-id-TIMESTAMP")
+SUBJECT_CONSISTENCY_ALLOW=("retro-cohort-etude-6j8-20260526T215942Z")
+
+if [[ "$mode" != "bead" ]]; then
+  echo "=== Check (g): retro subject consistency (WARN only) ==="
+
+  while IFS= read -r retro_ref; do
+    manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
+
+    # Only process cadence-retro refs
+    trigger="$(python3 -c "
+import json,sys
+m=json.load(sys.stdin)
+print(m.get('refs',{}).get('trigger',''))
+" <<< "$manifest_data" 2>/dev/null || echo "")"
+    [[ "$trigger" == "cadence-retro" ]] || continue
+
+    # Check inline allowlist
+    retro_short="${retro_ref#refs/etude/retros/}"
+    skip_allowed=false
+    for allowed_id in "${SUBJECT_CONSISTENCY_ALLOW[@]+"${SUBJECT_CONSISTENCY_ALLOW[@]}"}"; do
+      if [[ "$retro_short" == "$allowed_id" ]]; then
+        skip_allowed=true
+        break
+      fi
+    done
+    $skip_allowed && continue
+
+    # Find the retro-role stage path and read the body
+    body_path="$(python3 -c "
+import json,sys
+m=json.load(sys.stdin)
+for s in m.get('stages',[]):
+    if s.get('output',{}).get('role','')=='retro':
+        print(s.get('output',{}).get('path',''))
+        break
+" <<< "$manifest_data" 2>/dev/null || echo "")"
+
+    if [[ -z "$body_path" ]]; then
+      # No retro-role stage: no body to parse, skip silently
+      continue
+    fi
+
+    # Read the body and extract the title line (first non-empty line)
+    title_line="$(git cat-file -p "$retro_ref:$body_path" 2>/dev/null | grep -m1 '.' || true)"
+    if [[ -z "$title_line" ]]; then
+      continue
+    fi
+
+    # Parse the subject id-list from the title using Python
+    # Returns: "SKIP" | "WARN:<missing1>,<missing2>" | "PASS"
+    check_result="$(python3 -c "
+import sys, re, json, subprocess
+
+title = sys.argv[1]
+manifest_json = sys.argv[2]
+retro_ref = sys.argv[3]
+
+# Find all (...) groups in the title; take the LAST one
+parens = re.findall(r'\(([^)]+)\)', title)
+if not parens:
+    print('SKIP')
+    sys.exit(0)
+
+last_paren = parens[-1]
+
+# Split on ' + ' and keep only the first chunk
+first_chunk = last_paren.split(' + ')[0].strip()
+
+# Split on '/' or ',' to get tokens
+tokens_raw = re.split(r'[/,]', first_chunk)
+tokens = [t.strip() for t in tokens_raw]
+
+# Must have at least 2 tokens (and the original chunk must contain '/' or ',')
+if len(tokens) < 2 or not re.search(r'[/,]', first_chunk):
+    print('SKIP')
+    sys.exit(0)
+
+# All-tokens-valid-id rule: every token must match ^[a-z0-9]+(\.[a-z0-9]+)*$
+id_pattern = re.compile(r'^[a-z0-9]+(\.[a-z0-9]+)*$')
+for tok in tokens:
+    if not id_pattern.fullmatch(tok):
+        print('SKIP')
+        sys.exit(0)
+
+# Read manifest and collect subject_run.* and bead.* VALUES
+try:
+    m = json.loads(manifest_json)
+except Exception:
+    print('SKIP')
+    sys.exit(0)
+
+refs = m.get('refs', {})
+subject_values = set()
+for k, v in refs.items():
+    if k.startswith('subject_run.') or k.startswith('bead.'):
+        # Normalize: strip 'etude-' prefix for bare comparison
+        bare = v[len('etude-'):] if v.startswith('etude-') else v
+        subject_values.add(bare)
+
+# Check each token against the subject values
+missing = []
+for tok in tokens:
+    if tok not in subject_values:
+        missing.append(tok)
+
+if missing:
+    print('WARN:' + ','.join(missing))
+else:
+    print('PASS')
+" "$title_line" "$manifest_data" "$retro_ref" 2>/dev/null || echo "SKIP")"
+
+    if [[ "$check_result" == "SKIP" || "$check_result" == "PASS" ]]; then
+      $quiet || echo "  PASS (g) subject consistency: $retro_ref"
+    elif [[ "$check_result" == WARN:* ]]; then
+      missing_ids="${check_result#WARN:}"
+      log_warn "subject-consistency" "$retro_ref" \
+        "title claims subject(s) absent from manifest refs: $missing_ids"
+    fi
+  done < <(git for-each-ref refs/etude/retros --format='%(refname)')
   echo ""
 fi
 

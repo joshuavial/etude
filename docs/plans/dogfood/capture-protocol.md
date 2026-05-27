@@ -254,6 +254,24 @@ test result, or bead status that established what passed or failed.
 `docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
 etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
 
+#### Cadence subjects without run refs
+
+When a cadence cohort covers a bead that has **no `refs/etude/runs/<id>`** —
+for example, a data-backfill bead, an allowlisted bead, or any bead that was
+never run through the dev-workflow — record that bead as `--bead <id>` (which
+writes a `bead.N` ref in the manifest), NOT as `--subject-run <id>`.
+
+Using `--subject-run <id>` requires a valid run ref to exist
+(`internal/cli/retro.go:471-474`); it will fail if the run has not been
+captured yet. The `--bead` flag records the bead identity without requiring a
+run ref.
+
+The consistency guard (check (g)) treats both `subject_run.*` and `bead.*`
+refs equally as "subject present in refs", so using `--bead` for these cases
+produces a clean audit result. The canonical example is `etude-nm6`
+(gate-record backfill, allowlisted), which has no run ref and must be recorded
+via `--bead etude-nm6` when it appears as a cohort subject.
+
 Manual dogfood capture supports these retro triggers now:
 
 - **End-of-run retro**: after a bead closes, summarize what changed, what gates
@@ -517,8 +535,10 @@ exact hard checks (a), (b), (d).
   `retro-meta` sidecar — batch modes only, not `--bead`.
 - **WARN (never blocks):** (e) docs drift; (c) cadence retro overdue; (f) a
   *pre-convention* cadence retro lacking the sidecar (one summarizing line — the
-  backfill worklist for etude-8hq.5). (c)/(f) run in batch modes only, not
-  `--bead` — deadlock avoidance.
+  backfill worklist for etude-8hq.5); (g) retro subject consistency — cadence retro
+  body title claims a subject id absent from the manifest's `subject_run.*`/`bead.*`
+  refs (where-possible parse; retros with no parseable id-list are silently skipped).
+  (c)/(f)/(g) run in batch modes only, not `--bead` — deadlock avoidance.
 
 ### Bypass and defer policy
 
@@ -597,6 +617,15 @@ For each in-scope, non-allowlisted bead:
   mode, warns only if the manifest's `git_sha` touched `docs/`.
 - **(f) Bypass report**: always prints allowlisted beads with their reasons so
   exceptions are visible. Never affects exit.
+- **(g) Retro subject consistency** (WARN only, batch mode only): for each
+  cadence-retro ref, parses the subject id-list from the retro body's title
+  line (the last parenthetical group, split on `/`/`,`, all tokens matching
+  `[a-z0-9]+(\.[a-z0-9]+)*`). Compares claimed ids against the manifest's
+  `subject_run.*` and `bead.*` refs. Warns if any claimed id is absent. Retros
+  whose title has no parseable id-list (workflow retros, date parentheticals)
+  are silently skipped — "where possible". Never blocks. Use `--bead` with
+  `bead.*` for subjects without run refs (see
+  [Cadence subjects without run refs](#cadence-subjects-without-run-refs)).
 
 ### Exit codes
 
