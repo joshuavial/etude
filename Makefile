@@ -3,7 +3,7 @@ BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
 
-.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test
+.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -54,3 +54,11 @@ dogfood-audit-test:
 # Fixture-based tests for dogfood-close.sh and the pre-push enforcement block.
 dogfood-close-test:
 	@bash scripts/dogfood-close_test.sh
+
+# Read-only cross-retro failure-mode / root-cause index over current cadence retros.
+retro-index:
+	@bash scripts/retro-meta-index.sh
+
+# Fixture-based tests for retro-meta-index.sh.
+retro-index-test:
+	@bash scripts/retro-meta-index_test.sh

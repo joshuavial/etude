@@ -103,6 +103,11 @@ renders the sidecar in a `--- retro meta ---` section after the body (see
 [Show a retro](#show-a-retro)), and `retro list` flags its presence in the
 `META` column.
 
+For cadence retros that follow the 7-key convention below, `make retro-index`
+runs `scripts/retro-meta-index.sh` — a read-only dogfood-layer aggregation that
+emits a cross-retro index of failure modes, root causes, follow-up beads, and a
+durable-changes timeline across all current (non-superseded) cadence-retro refs.
+
 #### Cadence retro-meta convention (dogfood)
 
 The schema of the JSON is not interpreted by etude — it is stored verbatim for

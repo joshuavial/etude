@@ -65,3 +65,4 @@ For the compact operational checklists, see [Dogfood Checklists](checklists.md).
 | `scripts/dogfood-completeness-audit.sh` | Audit whether closed beads have their run refs, gate records, and pushed refs. |
 | `scripts/docs-reality-check.sh` | Guard against doc/CLI drift (also run via `make docs-reality`). |
 | `scripts/backfill-gate-records.sh` | One-time backfill of missing gate records. |
+| `scripts/retro-meta-index.sh` | Read-only cross-retro index: aggregates failure modes, root causes, follow-up beads, and durable-changes timeline across all current cadence-retro sidecars. Run via `make retro-index`; `--json` for machine form. Standalone analysis tool — not wired into any gate. |
