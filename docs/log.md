@@ -12,26 +12,38 @@ etude log
 ```
 
 Prints a tab-aligned table of run and retro events, ordered **ascending by
-creation time** (oldest first, so the narration reads forward):
+effective time** (oldest first, so the narration reads forward):
 
 ```
-TIMESTAMP             KIND   ID                               SUMMARY
-2026-05-23T10:00:00Z  run    run-1                            manual (2 stages)
-2026-05-23T11:30:00Z  run    run-2                            manual (1 stages); 3 gates
-2026-05-23T12:00:00Z  retro  retro-run-run-1-20260523T120000  scope=run trigger=manual subjects=run-1
+TIMESTAMP             KIND   ID                               EVENT                 SUMMARY
+2026-05-23T10:00:00Z  run    run-1                            -                     manual (2 stages)
+2026-05-23T11:30:00Z  run    run-2                            -                     manual (1 stages); 3 gates
+2026-05-23T12:00:00Z  retro  retro-run-run-1-20260523T120000  -                     scope=run trigger=manual subjects=run-1
+2026-06-01T09:00:00Z  retro  retro-run-run-1-20260601T090000  2026-05-23T10:00:00Z  scope=run trigger=manual subjects=run-1
 ```
 
 Columns:
 
 | Column | Content |
 |--------|---------|
-| `TIMESTAMP` | Manifest `created` time in RFC3339 UTC |
+| `TIMESTAMP` | Manifest `created` time (capture time) in RFC3339 UTC — always shown, never replaced |
 | `KIND` | `run` or `retro` |
 | `ID` | The run id or retro id |
+| `EVENT` | The `occurred_at` event time in RFC3339 UTC when set (backfilled retros), or `-` when absent (all runs, un-backfilled retros) |
 | `SUMMARY` | For a run: `<workflow> (<n> stages)`, plus `; <n> gates` when the run carries review-gate attempts. For a retro: `scope=<scope> trigger=<trigger> subjects=<comma-joined subjects>`, with any empty field omitted. |
 
-Events are sorted by `created` ascending; ties (equal timestamps) are broken
-deterministically by `(kind, id)` so the output is stable.
+Events are sorted by **effective time** ascending: `occurred_at` when present,
+otherwise `created` (capture time). This places a backfilled retro
+chronologically among the runs it retrospects rather than clustering at
+migration time. Ties (equal effective times) are broken deterministically by
+`(kind, id)` so the output is stable.
+
+The `TIMESTAMP` column always shows capture time (`created`). The `EVENT`
+column reveals when the events being retrospected actually occurred — distinct
+from when the retro was written. For runs and retros without `occurred_at`,
+`EVENT` is `-` and the effective sort time equals the capture time, so the
+output is identical to the pre-`occurred_at` behavior (except for the added
+`EVENT=-` column).
 
 When there are no events (after any filters), the command prints
 `no events found` and exits 0.

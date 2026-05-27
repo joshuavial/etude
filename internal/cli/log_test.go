@@ -640,3 +640,166 @@ func TestLogRunSummaryIncludesStageCount(t *testing.T) {
 		t.Fatalf("expected '(1 stages)' in run summary:\n%s", stdout)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// OccurredAt / EVENT column tests (etude-8hq.2)
+// ---------------------------------------------------------------------------
+
+// seedRetroWithOccurredAt writes a retro manifest with both Created and OccurredAt set.
+func seedRetroWithOccurredAt(t *testing.T, repo, retroID, subjectRunID string, created, occurred time.Time) {
+	t.Helper()
+	store := refstore.New(repo)
+	ctx := context.Background()
+
+	aStore := artifactstore.New()
+	artifact, err := aStore.AddContent("retro", "text/markdown; charset=utf-8", []byte("# retro "+retroID))
+	if err != nil {
+		t.Fatalf("AddContent retro %q: %v", retroID, err)
+	}
+	outputRef := runmanifest.ArtifactFromManifestArtifact(artifact)
+	files := aStore.Files()
+
+	m := runmanifest.Manifest{
+		RunID:           retroID,
+		Workflow:        "retro",
+		WorkflowVersion: "retro-v1",
+		Created:         created,
+		OccurredAt:      occurred,
+		Refs: map[string]string{
+			"scope":         "run",
+			"trigger":       "manual",
+			"subject_run.1": subjectRunID,
+		},
+		Stages: []runmanifest.Stage{
+			{
+				Name:       "retro",
+				ProducedBy: "retro",
+				GitSHA:     "0000000000000000000000000000000000000000",
+				Skill: runmanifest.Skill{
+					ID:      "retro",
+					Repo:    "manual",
+					Version: "manual",
+				},
+				Inputs:    []runmanifest.ArtifactRef{},
+				Output:    outputRef,
+				Timestamp: created,
+			},
+		},
+	}
+	if _, err := runmanifest.WriteManifestTree(ctx, store, retrosPrefix, m, files, refstore.WriteOptions{}); err != nil {
+		t.Fatalf("WriteManifestTree retro %q: %v", retroID, err)
+	}
+}
+
+// TestLogHeaderIncludesEventColumn verifies the new EVENT column is in the header.
+func TestLogHeaderIncludesEventColumn(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	captureRunForLog(t, repo, "hdr-run")
+
+	stdout, stderr, err := execute("log")
+	if err != nil {
+		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+	if !strings.Contains(stdout, "EVENT") {
+		t.Fatalf("header missing EVENT column:\n%s", stdout)
+	}
+}
+
+// TestLogEventColumnDashForNoOccurredAt verifies that rows without occurred_at
+// show EVENT="-" and sorts by capture time (degrade guard / golden column test).
+func TestLogEventColumnDashForNoOccurredAt(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	ts := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
+	seedRunWithTimestamp(t, repo, "ev-run-a", ts)
+	seedRetroWithTimestamp(t, repo, "ev-retro-b", "ev-run-a", ts.Add(time.Hour))
+
+	stdout, stderr, err := execute("log")
+	if err != nil {
+		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	// Every data row (non-header) must have EVENT="-" since nothing has occurred_at.
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "TIMESTAMP") {
+			continue
+		}
+		fields := strings.Fields(line)
+		// Header order: TIMESTAMP KIND ID EVENT SUMMARY
+		// EVENT is index 3 (0-based).
+		if len(fields) < 4 {
+			continue
+		}
+		if fields[3] != "-" {
+			t.Fatalf("expected EVENT='-' for row without occurred_at, got %q in line: %s", fields[3], line)
+		}
+	}
+}
+
+// TestLogEventTimeSortBackfilledRetro verifies that a retro with occurred_at
+// set to a time BEFORE two runs sorts BEFORE those runs even though its capture
+// time (Created) is AFTER them. The TIMESTAMP column must still show capture
+// time and the EVENT column must show occurred time.
+func TestLogEventTimeSortBackfilledRetro(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	// Two runs captured at t1 and t2.
+	t1 := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)
+	seedRunWithTimestamp(t, repo, "bk-run-a", t1)
+	seedRunWithTimestamp(t, repo, "bk-run-b", t2)
+
+	// Retro captured AFTER both runs (t3) but with occurred_at BEFORE t1.
+	t3 := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
+	occurred := time.Date(2026, 3, 25, 9, 0, 0, 0, time.UTC) // before both runs
+	seedRetroWithOccurredAt(t, repo, "bk-retro-z", "bk-run-a", t3, occurred)
+
+	stdout, stderr, err := execute("log")
+	if err != nil {
+		t.Fatalf("log returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	// The retro should appear BEFORE both runs (sorted by effective time = occurred).
+	idxRetro := strings.Index(stdout, "bk-retro-z")
+	idxRunA := strings.Index(stdout, "bk-run-a")
+	idxRunB := strings.Index(stdout, "bk-run-b")
+	if idxRetro < 0 || idxRunA < 0 || idxRunB < 0 {
+		t.Fatalf("missing ids in output:\n%s", stdout)
+	}
+	if !(idxRetro < idxRunA && idxRetro < idxRunB) {
+		t.Fatalf("backfilled retro should sort before both runs by event time:\n%s", stdout)
+	}
+
+	// Find the retro row and verify TIMESTAMP shows capture time (t3) and EVENT shows occurred.
+	captureStr := t3.UTC().Format(time.RFC3339)
+	occurredStr := occurred.UTC().Format(time.RFC3339)
+	var retroRow string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "bk-retro-z") {
+			retroRow = line
+			break
+		}
+	}
+	if retroRow == "" {
+		t.Fatalf("could not find retro row in output:\n%s", stdout)
+	}
+	if !strings.Contains(retroRow, captureStr) {
+		t.Fatalf("TIMESTAMP column must show capture time %q:\n%s", captureStr, retroRow)
+	}
+	if !strings.Contains(retroRow, occurredStr) {
+		t.Fatalf("EVENT column must show occurred time %q:\n%s", occurredStr, retroRow)
+	}
+}

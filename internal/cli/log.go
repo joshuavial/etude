@@ -16,10 +16,22 @@ import (
 // logEvent is one timeline entry, built from a single run or retro manifest.
 type logEvent struct {
 	Timestamp  time.Time
+	// Occurred is the original event time for retros that carry occurred_at.
+	// It is zero for runs and retros without occurred_at.
+	Occurred   time.Time
 	Kind       string // "run" or "retro"
 	ID         string
 	Summary    string
 	subjectIDs string // comma-joined subjects (retro only); used for --subject filtering
+}
+
+// effectiveTime returns the event's canonical sort time: Occurred when set
+// (non-zero), otherwise Timestamp (= manifest.Created, the capture time).
+func (e logEvent) effectiveTime() time.Time {
+	if !e.Occurred.IsZero() {
+		return e.Occurred
+	}
+	return e.Timestamp
 }
 
 // logRunner holds the read-only dependencies for the log command.
@@ -126,12 +138,17 @@ func (r *logRunner) run(ctx context.Context, kinds, subjects []string, limit int
 	}
 
 	w := tabwriter.NewWriter(r.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIMESTAMP\tKIND\tID\tSUMMARY")
+	fmt.Fprintln(w, "TIMESTAMP\tKIND\tID\tEVENT\tSUMMARY")
 	for _, e := range events {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		eventCol := "-"
+		if !e.Occurred.IsZero() {
+			eventCol = e.Occurred.UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			e.Timestamp.UTC().Format(time.RFC3339),
 			e.Kind,
 			e.ID,
+			eventCol,
 			e.Summary,
 		)
 	}
@@ -192,6 +209,7 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
 		summary := strings.Join(summaryParts, " ")
 		events = append(events, logEvent{
 			Timestamp:  manifest.Created,
+			Occurred:   manifest.OccurredAt,
 			Kind:       "retro",
 			ID:         id,
 			Summary:    summary,
@@ -199,9 +217,12 @@ func (r *logRunner) buildEvents(ctx context.Context) ([]logEvent, error) {
 		})
 	}
 
-	// Sort ascending by (Timestamp, Kind, ID) for a stable, readable narration.
+	// Sort ascending by (effectiveTime, Kind, ID) for a stable, readable narration.
+	// effectiveTime = occurred_at when present, else created (capture time).
+	// This places backfilled retros chronologically among the runs they retrospect
+	// rather than clustering at migration/capture time.
 	sort.Slice(events, func(i, j int) bool {
-		ti, tj := events[i].Timestamp, events[j].Timestamp
+		ti, tj := events[i].effectiveTime(), events[j].effectiveTime()
 		if !ti.Equal(tj) {
 			return ti.Before(tj)
 		}

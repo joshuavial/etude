@@ -35,11 +35,56 @@ Useful flags:
 --model <model-id>
 --skill-id <id>               # default: retro
 --message <text>              # git commit message override
+--occurred-at <RFC3339>        # original event time (optional; see below)
 --meta-file <path>|-          # optional retro-meta JSON sidecar
 ```
 
 The retro id is auto-assigned from the scope, primary subject, and timestamp.
 Prints `captured <commit-sha>` and `ref refs/etude/retros/<id>` on success.
+
+### Original event time
+
+`--occurred-at <RFC3339>` records the time the retro's events actually happened,
+distinct from the capture timestamp (`created`). It is optional: if omitted,
+`retro show` and `etude log` fall back to showing capture time.
+
+```bash
+etude retro capture run \
+  --file retro.md \
+  --subject-run run-abc \
+  --occurred-at 2026-03-15T10:30:00Z
+```
+
+When set:
+- `retro show` prints an `occurred:` line immediately after `created:`.
+- `etude log` shows the event time in the `EVENT` column and sorts the retro
+  chronologically by event time (so a backfilled retro lands among the runs it
+  retrospects, not at migration time). The `TIMESTAMP` column always shows the
+  capture time.
+
+The value must be a valid RFC3339 timestamp (e.g. `2026-03-15T10:30:00Z` or
+`2026-03-15T10:30:00+09:00`). A malformed value is rejected with a clear error
+before any ref is written.
+
+Both `retro capture` and `retro generate` accept `--occurred-at`.
+
+#### Relationship to the sidecar `original_event_date`
+
+The cadence retro-meta sidecar (see below) has an `original_event_date`
+(`YYYY-MM-DD`) field that serves a similar purpose as a human-readable date
+for downstream analysis. The two fields are independent:
+
+- `occurred_at` (manifest field): canonical RFC3339 instant, used by
+  `retro show`, `etude log` EVENT column, and effective-time sort. This is the
+  machine-readable source of truth for etude-native tooling.
+- `original_event_date` (sidecar): calendar date string, used by downstream
+  cross-retro analysis tools and checked by the dogfood completeness audit.
+  Etude core never parses the sidecar — it stores it verbatim.
+
+When both are set they SHOULD agree on the date (i.e. `occurred_at`'s date
+portion should match `original_event_date`). They do not auto-sync; the
+backfill bead (etude-8hq.5) should set both — `--occurred-at` for the core
+field and `--meta-file` for the sidecar — so they stay coherent.
 
 ### Retro-meta sidecar
 

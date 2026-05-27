@@ -37,6 +37,7 @@ var validRetroScopes = map[string]bool{
 type retroCaptureConfig struct {
 	file           string
 	metaFile       string
+	occurredAt     string
 	subjectRuns    []string
 	beads          []string
 	trigger        string
@@ -57,6 +58,7 @@ type retroCaptureConfig struct {
 }
 
 type retroGenerateConfig struct {
+	occurredAt     string
 	subjectRuns    []string
 	beads          []string
 	trigger        string
@@ -81,6 +83,7 @@ type retroGenerateConfig struct {
 // retroWriteParams carries the parameters shared between capture and generate
 // for the assembleAndWriteRetro call.
 type retroWriteParams struct {
+	occurredAt     string // RFC3339 string; empty = not set
 	subjectRuns    []string
 	beads          []string
 	trigger        string
@@ -300,6 +303,9 @@ func printRetroDetail(store refstore.Store, ctx context.Context, ref string, m r
 		fmt.Fprintf(out, "supersedes: %s\n", v)
 	}
 	fmt.Fprintf(out, "created:   %s\n", m.Created.UTC().Format(time.RFC3339))
+	if !m.OccurredAt.IsZero() {
+		fmt.Fprintf(out, "occurred:  %s\n", m.OccurredAt.UTC().Format(time.RFC3339))
+	}
 
 	// Subjects: collect subject_run.N and bead.N sorted by prefix then index.
 	for _, v := range sortedRetroSubjects(m.Refs) {
@@ -425,6 +431,7 @@ func newRetroCaptureCommand(out, errOut io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&cfg.file, "file", "", "path to retro markdown body, or - for stdin (required)")
 	flags.StringVar(&cfg.metaFile, "meta-file", "", "path to retro-meta JSON sidecar, or - for stdin (optional; must be well-formed JSON)")
+	flags.StringVar(&cfg.occurredAt, "occurred-at", "", "original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)")
 	flags.StringArrayVar(&cfg.subjectRuns, "subject-run", nil, "run id of a subject run (repeatable; >=1 required unless scope=workflow)")
 	flags.StringArrayVar(&cfg.beads, "bead", nil, "bead id of a subject bead (repeatable)")
 	flags.StringVar(&cfg.trigger, "trigger", "manual", "trigger that prompted this retro (e.g. manual, scheduled)")
@@ -543,6 +550,7 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 	}
 
 	p := retroWriteParams{
+		occurredAt:     cfg.occurredAt,
 		subjectRuns:    cfg.subjectRuns,
 		beads:          cfg.beads,
 		trigger:        cfg.trigger,
@@ -731,11 +739,23 @@ func assembleAndWriteRetro(
 		})
 	}
 
+	// Parse --occurred-at when provided. Validation happens here (before any ref
+	// is written) so a malformed value fails fast with a clear error message.
+	var occurredAtTime time.Time
+	if strings.TrimSpace(p.occurredAt) != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.occurredAt))
+		if parseErr != nil {
+			return "", "", fmt.Errorf("--occurred-at %q is not a valid RFC3339 timestamp: %w", p.occurredAt, parseErr)
+		}
+		occurredAtTime = parsed.UTC()
+	}
+
 	manifest := runmanifest.Manifest{
 		RunID:           retroID,
 		Workflow:        "retro",
 		WorkflowVersion: "retro-v1",
 		Created:         now,
+		OccurredAt:      occurredAtTime,
 		Refs:            refsMap,
 		Stages:          stages,
 	}
@@ -807,6 +827,7 @@ func buildRetroGenerateCommand(out, errOut io.Writer, r *retroGenerateRunner) *c
 	flags := cmd.Flags()
 	flags.StringArrayVar(&cfg.subjectRuns, "subject-run", nil, "run id of a subject run (repeatable; >=1 required unless scope=workflow)")
 	flags.StringArrayVar(&cfg.beads, "bead", nil, "bead id of a subject bead (repeatable)")
+	flags.StringVar(&cfg.occurredAt, "occurred-at", "", "original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)")
 	flags.StringVar(&cfg.trigger, "trigger", "manual", "trigger that prompted this retro (e.g. manual, post-bench)")
 	flags.StringVar(&cfg.decision, "decision", "", "retro decision: accepted, deferred, superseded, or informational")
 	flags.StringVar(&cfg.supersedes, "supersedes", "", "retro id this retro supersedes")
@@ -933,6 +954,7 @@ func (r *retroGenerateRunner) run(ctx context.Context, scope string, cfg retroGe
 	}
 
 	p := retroWriteParams{
+		occurredAt:     cfg.occurredAt,
 		subjectRuns:    cfg.subjectRuns,
 		beads:          cfg.beads,
 		trigger:        cfg.trigger,

@@ -40,9 +40,14 @@ type Manifest struct {
 	Workflow        string
 	WorkflowVersion string
 	Created         time.Time
-	Refs            map[string]string
-	Stages          []Stage
-	Gates           []GateAttempt
+	// OccurredAt is the optional original event time for retros (when the
+	// retro's events actually happened), distinct from Created (capture time).
+	// It is zero for runs and for retros that pre-date this field.
+	// When zero it is omitted from JSON serialization.
+	OccurredAt time.Time
+	Refs       map[string]string
+	Stages     []Stage
+	Gates      []GateAttempt
 }
 
 // GateAttempt records one full panel re-examination of one phase gate.
@@ -763,9 +768,13 @@ type manifestJSON struct {
 	Workflow        string            `json:"workflow"`
 	WorkflowVersion string            `json:"workflow_version"`
 	Created         string            `json:"created"`
-	Refs            map[string]string `json:"refs"`
-	Stages          []stageJSON       `json:"stages"`
-	Gates           []gateJSON        `json:"gates,omitempty"`
+	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
+	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
+	// which would defeat omitempty and pollute all existing manifests.
+	OccurredAt string            `json:"occurred_at,omitempty"`
+	Refs       map[string]string `json:"refs"`
+	Stages     []stageJSON       `json:"stages"`
+	Gates      []gateJSON        `json:"gates,omitempty"`
 }
 
 type gateJSON struct {
@@ -936,6 +945,7 @@ func (m Manifest) toJSON() manifestJSON {
 		Workflow:        m.Workflow,
 		WorkflowVersion: m.WorkflowVersion,
 		Created:         formatTime(m.Created),
+		OccurredAt:      formatTimeOmitZero(m.OccurredAt),
 		Refs:            refs,
 		Stages:          stages,
 		Gates:           gatesOut,
@@ -1022,6 +1032,17 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// formatTimeOmitZero returns "" when t is the zero time (so that omitempty
+// drops the JSON key) and formatTime(t) otherwise. Use this for OPTIONAL time
+// fields. Do NOT use it for required fields like Created — those must always
+// serialize so decoding failures surface correctly.
+func formatTimeOmitZero(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return formatTime(t)
+}
+
 func ensureEOF(dec *json.Decoder) error {
 	var extra any
 	if err := dec.Decode(&extra); err == io.EOF {
@@ -1045,6 +1066,13 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 	created, err := parseTime("created", m.Created)
 	if err != nil {
 		return Manifest{}, err
+	}
+	var occurredAt time.Time
+	if m.OccurredAt != "" {
+		occurredAt, err = parseTime("occurred_at", m.OccurredAt)
+		if err != nil {
+			return Manifest{}, err
+		}
 	}
 	stages := make([]Stage, 0, len(m.Stages))
 	for i, stage := range m.Stages {
@@ -1072,6 +1100,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		Workflow:        m.Workflow,
 		WorkflowVersion: m.WorkflowVersion,
 		Created:         created,
+		OccurredAt:      occurredAt,
 		Refs:            refs,
 		Stages:          stages,
 		Gates:           gates,

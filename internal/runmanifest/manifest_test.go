@@ -1775,3 +1775,116 @@ func gateManifest(t *testing.T) Manifest {
 	}
 	return base
 }
+
+// ---------------------------------------------------------------------------
+// OccurredAt tests (etude-8hq.2)
+// ---------------------------------------------------------------------------
+
+// TestOccurredAtRoundTrip verifies that a manifest with OccurredAt set
+// serializes to JSON with "occurred_at" present and parses back equal.
+func TestOccurredAtRoundTrip(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	eventTime := time.Date(2026, 1, 15, 9, 30, 0, 0, time.UTC)
+	m.OccurredAt = eventTime
+
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	text := string(b)
+	if !strings.Contains(text, `"occurred_at"`) {
+		t.Fatalf("JSON missing occurred_at key:\n%s", text)
+	}
+	if !strings.Contains(text, "2026-01-15T09:30:00Z") {
+		t.Fatalf("JSON missing expected occurred_at value:\n%s", text)
+	}
+
+	parsed, err := ParseJSON(b)
+	if err != nil {
+		t.Fatalf("ParseJSON returned error: %v", err)
+	}
+	if !parsed.OccurredAt.Equal(eventTime) {
+		t.Fatalf("parsed OccurredAt = %v, want %v", parsed.OccurredAt, eventTime)
+	}
+}
+
+// TestOccurredAtZeroOmitted verifies that a zero OccurredAt produces NO
+// "occurred_at" key in the JSON and that round-tripping such a manifest leaves
+// OccurredAt zero (byte-stability: the key must never appear for zero time).
+func TestOccurredAtZeroOmitted(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	// OccurredAt is zero by default.
+
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	text := string(b)
+	if strings.Contains(text, "occurred_at") {
+		t.Fatalf("JSON must NOT contain occurred_at when OccurredAt is zero:\n%s", text)
+	}
+
+	// Round-trip: parse and re-serialize; bytes must be identical.
+	parsed, err := ParseJSON(b)
+	if err != nil {
+		t.Fatalf("ParseJSON returned error: %v", err)
+	}
+	if !parsed.OccurredAt.IsZero() {
+		t.Fatalf("parsed OccurredAt should be zero, got %v", parsed.OccurredAt)
+	}
+	b2, err := parsed.JSON()
+	if err != nil {
+		t.Fatalf("second JSON returned error: %v", err)
+	}
+	if string(b) != string(b2) {
+		t.Fatalf("round-trip changed bytes:\nbefore:\n%s\nafter:\n%s", b, b2)
+	}
+}
+
+// TestOccurredAtMalformedRejected verifies that a JSON document with a
+// malformed occurred_at value is rejected by ParseJSON.
+func TestOccurredAtMalformedRejected(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	// Inject a malformed occurred_at after "created".
+	bad := strings.Replace(string(b),
+		`"created":`,
+		`"occurred_at": "not-a-timestamp", "created":`,
+		1,
+	)
+	if _, err := ParseJSON([]byte(bad)); err == nil {
+		t.Fatal("ParseJSON accepted malformed occurred_at; want error")
+	}
+}
+
+// TestOccurredAtExistingManifestNoKey verifies that a manifest document that
+// predates the occurred_at field (no key present) still decodes and validates
+// successfully, with OccurredAt left as the zero time.
+func TestOccurredAtExistingManifestNoKey(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	// The zero-OccurredAt manifest must not contain occurred_at.
+	if strings.Contains(string(b), "occurred_at") {
+		t.Fatalf("pre-condition: base manifest already contains occurred_at:\n%s", b)
+	}
+	parsed, err := ParseJSON(b)
+	if err != nil {
+		t.Fatalf("ParseJSON returned error: %v", err)
+	}
+	if err := parsed.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if !parsed.OccurredAt.IsZero() {
+		t.Fatalf("OccurredAt should be zero for legacy manifest, got %v", parsed.OccurredAt)
+	}
+}

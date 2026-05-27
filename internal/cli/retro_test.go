@@ -1753,3 +1753,192 @@ func TestRetroListMetaColumn(t *testing.T) {
 		t.Fatalf("stderr not empty: %q", stderr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// OccurredAt tests (etude-8hq.2)
+// ---------------------------------------------------------------------------
+
+// TestRetroCaptureOccurredAtSetsField verifies that --occurred-at sets
+// manifest.OccurredAt and that retro show prints an "occurred:" line.
+func TestRetroCaptureOccurredAtSetsField(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nContent.\n")
+	chdir(t, repo)
+
+	eventTime := "2026-01-15T09:30:00Z"
+
+	stdout, stderr, err := execute("retro", "capture", "run",
+		"--file", "retro.md",
+		"--subject-run", "run-occurred-a",
+		"--occurred-at", eventTime,
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	var retroID string
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if strings.HasPrefix(line, "ref refs/etude/retros/") {
+			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
+			break
+		}
+	}
+	if retroID == "" {
+		t.Fatalf("could not extract retro id from stdout: %q", stdout)
+	}
+
+	// Verify manifest has OccurredAt set correctly.
+	manifest := readRetroManifest(t, repo, retroID)
+	want, _ := time.Parse(time.RFC3339, eventTime)
+	if !manifest.OccurredAt.Equal(want.UTC()) {
+		t.Fatalf("manifest.OccurredAt = %v, want %v", manifest.OccurredAt, want)
+	}
+
+	// Verify retro show prints occurred: line.
+	showOut, showErr, showErrResult := execute("retro", "show", retroID)
+	if showErrResult != nil {
+		t.Fatalf("retro show returned error: %v\nstderr: %s", showErrResult, showErr)
+	}
+	if !strings.Contains(showOut, "occurred:") {
+		t.Fatalf("retro show missing 'occurred:' line:\n%s", showOut)
+	}
+	if !strings.Contains(showOut, "2026-01-15T09:30:00Z") {
+		t.Fatalf("retro show missing event time value:\n%s", showOut)
+	}
+}
+
+// TestRetroCaptureWithoutOccurredAtNoLine verifies that omitting --occurred-at
+// leaves manifest.OccurredAt zero and retro show omits the "occurred:" line.
+func TestRetroCaptureWithoutOccurredAtNoLine(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nNo event time.\n")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("retro", "capture", "run",
+		"--file", "retro.md",
+		"--subject-run", "run-no-occurred",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	var retroID string
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if strings.HasPrefix(line, "ref refs/etude/retros/") {
+			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
+			break
+		}
+	}
+	if retroID == "" {
+		t.Fatalf("could not extract retro id from stdout: %q", stdout)
+	}
+
+	// Manifest must have zero OccurredAt.
+	manifest := readRetroManifest(t, repo, retroID)
+	if !manifest.OccurredAt.IsZero() {
+		t.Fatalf("manifest.OccurredAt should be zero, got %v", manifest.OccurredAt)
+	}
+
+	// retro show must NOT print occurred: line.
+	showOut, _, showErr := execute("retro", "show", retroID)
+	if showErr != nil {
+		t.Fatalf("retro show returned error: %v", showErr)
+	}
+	if strings.Contains(showOut, "occurred:") {
+		t.Fatalf("retro show must not print 'occurred:' when OccurredAt is zero:\n%s", showOut)
+	}
+}
+
+// TestRetroCaptureOccurredAtMalformedRejected verifies that a malformed
+// --occurred-at value returns an error before writing any ref.
+func TestRetroCaptureOccurredAtMalformedRejected(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\nContent.\n")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("retro", "capture", "run",
+		"--file", "retro.md",
+		"--subject-run", "run-bad-ts",
+		"--occurred-at", "not-a-timestamp",
+	)
+	if err == nil {
+		t.Fatal("retro capture with malformed --occurred-at returned nil error")
+	}
+	combined := err.Error() + " " + stderr
+	if !strings.Contains(combined, "occurred-at") && !strings.Contains(combined, "RFC3339") {
+		t.Fatalf("error message should mention occurred-at or RFC3339: %q", combined)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout on malformed --occurred-at, got: %q", stdout)
+	}
+
+	// No ref must have been written.
+	store := refstore.New(repo)
+	refs, listErr := store.List(context.Background(), "refs/etude/retros")
+	if listErr != nil {
+		t.Fatalf("List retros: %v", listErr)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("a retro ref was written despite --occurred-at error: %v", refs)
+	}
+}
+
+// TestRetroGenerateOccurredAtSetsField verifies that --occurred-at on
+// retro generate also sets manifest.OccurredAt.
+func TestRetroGenerateOccurredAtSetsField(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	// Capture a run to use as subject.
+	writeFile(t, repo, "gen-out.md", "# plan output\n")
+	_, stderr, err := execute("capture", "plan", "--run", "gen-subject-run", "--output", "output=gen-out.md")
+	if err != nil {
+		t.Fatalf("capture: %v\nstderr: %s", err, stderr)
+	}
+
+	eventTime := "2026-02-20T08:00:00Z"
+
+	var buf bytes.Buffer
+	runner := &retroGenerateRunner{
+		generator: &retro.StubGenerator{CannedBody: []byte("# generated retro\n")},
+		now:       time.Now,
+		store:     refstore.New(repo),
+		stdout:    &buf,
+		timeout:   5 * time.Second,
+	}
+	cfg := retroGenerateConfig{
+		subjectRuns:  []string{"gen-subject-run"},
+		trigger:      "manual",
+		skillID:      "retro",
+		skillRepo:    defaultSkillRepo,
+		skillVersion: defaultSkillVersion,
+		occurredAt:   eventTime,
+	}
+	if err = runner.run(context.Background(), "run", cfg); err != nil {
+		t.Fatalf("retroGenerateRunner.run returned error: %v", err)
+	}
+
+	// Extract the retro id from output.
+	var retroID string
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.HasPrefix(line, "ref refs/etude/retros/") {
+			retroID = strings.TrimPrefix(line, "ref refs/etude/retros/")
+			break
+		}
+	}
+	if retroID == "" {
+		t.Fatalf("could not extract retro id from output: %q", buf.String())
+	}
+
+	manifest := readRetroManifest(t, repo, retroID)
+	want, _ := time.Parse(time.RFC3339, eventTime)
+	if !manifest.OccurredAt.Equal(want.UTC()) {
+		t.Fatalf("manifest.OccurredAt = %v, want %v", manifest.OccurredAt, want)
+	}
+}

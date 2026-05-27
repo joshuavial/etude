@@ -23,6 +23,7 @@ etude retro generate <scope> [flags]
   -h, --help                      help for generate
       --message string            retro ref commit message
       --model string              LLM model used (if any)
+      --occurred-at string        original event time the retro covers, as RFC3339 (optional; defaults to capture time in displays when absent)
       --ref stringArray           additional ref as key=value (repeatable)
       --skill-id string           skill id (default "retro")
       --skill-repo string         skill repo (default "manual")
