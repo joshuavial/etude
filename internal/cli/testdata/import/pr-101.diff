@@ -1,0 +1,25 @@
+diff --git a/feature.go b/feature.go
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/feature.go
+@@ -0,0 +1,10 @@
++package main
++
++// FeatureX implements the new feature.
++func FeatureX() string {
++	return "hello feature X"
++}
+diff --git a/feature_test.go b/feature_test.go
+new file mode 100644
+index 0000000..abcdef0
+--- /dev/null
++++ b/feature_test.go
+@@ -0,0 +1,7 @@
++package main
++
++func TestFeatureX(t *testing.T) {
++	if FeatureX() != "hello feature X" {
++		t.Fatal("unexpected result")
++	}
++}

@@ -28,6 +28,7 @@ Implemented:
 - `etude retro list` and `etude retro show <retro-id>` to list and inspect stored retros.
 - `etude prime` to print a structured agent-onboarding primer to stdout (runs anywhere, no args, no side effects).
 - `etude log` to narrate runs and retros as a chronological timeline (read-only).
+- `etude import --from-github` to backfill historical GitHub PR diffs and bodies as etude run records.
 - Internal `refs/etude/*` Git storage package for run and eval refs.
 - Internal content-addressed artifact storage package for run-tree files,
   external pointer records, and manifest-ready metadata.
@@ -40,7 +41,7 @@ The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
 `etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`,
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
-`etude gc`, `etude reindex`, `etude retro capture`, `etude retro generate`,
+`etude gc`, `etude import`, `etude reindex`, `etude retro capture`, `etude retro generate`,
 `etude retro list`, `etude retro show`, `etude prime`, `etude log`,
 and the root help and version output. (The `eval` package is a library used by `etude bench`; there is no standalone `etude eval` cobra command.)
 
@@ -48,7 +49,7 @@ The design rationale is in [`docs/plans/product/BRIEF.md`](docs/plans/product/BR
 
 ## Still planned / not yet built
 
-v1 ships the CLI surface listed above. The following are confirmed deferred to post-v1 and tracked in [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md): live xenota capture adapter, `etude import` backfill, standalone `etude eval` command, a `query` command over the SQLite index, external artifact pointer capture via the CLI, and a browsable docs site.
+v1 ships the CLI surface listed above. The following are confirmed deferred to post-v1 and tracked in [`docs/plans/product/V1-SCOPE.md`](docs/plans/product/V1-SCOPE.md): live xenota capture adapter, standalone `etude eval` command, a `query` command over the SQLite index, external artifact pointer capture via the CLI, and a browsable docs site.
 
 ## Build And Test
 
@@ -110,6 +111,7 @@ version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
 ./bin/etude bench plan --last 10 --runner ./run.sh --judge ./judge.sh
 ./bin/etude gc
 ./bin/etude reindex
+./bin/etude import --from-github --repo owner/name --last 50
 ./bin/etude retro capture workflow --file retro.md
 ./bin/etude retro generate run --subject-run run-1 --generator ./retro.sh
 ./bin/etude retro list

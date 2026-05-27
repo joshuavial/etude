@@ -17,6 +17,7 @@ This directory holds user-facing documentation for implemented behavior.
 - [Retro](retro.md) - capture, list, and inspect retros stored under `refs/etude/retros/*`.
 - [Prime](cli/etude_prime.md) - print a structured agent-onboarding primer to stdout (runs anywhere, no args).
 - [Log](log.md) - narrate runs and retros as a chronological timeline (read-only).
+- [Import](import.md) - backfill historical GitHub PR diffs and bodies as etude run records (`etude import --from-github`).
 - [Example](../examples/summarize/README.md) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
 - [Plans](plans/README.md) - planning and design notes (some components shipped, some not yet built).
 - [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).

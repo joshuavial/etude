@@ -90,7 +90,6 @@ The following are described in design documents but NOT yet registered as CLI
 commands. Do not invoke them — they will return "unknown command".
 
   eval      Standalone eval CLI (eval logic is a library used internally by bench)
-  import    Capture adapters for xenota and GitHub (Phase 1 import pipeline)
 
 ## Capture Workflow
 

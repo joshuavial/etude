@@ -126,7 +126,7 @@ func TestPrimeDriftGuard(t *testing.T) {
 	}
 
 	// Planned-but-unregistered commands must NOT be real registered commands.
-	plannedNames := []string{"eval", "import"}
+	plannedNames := []string{"eval"}
 	registeredNames := map[string]bool{}
 	for _, c := range root.Commands() {
 		registeredNames[c.Name()] = true
