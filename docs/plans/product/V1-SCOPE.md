@@ -1,0 +1,116 @@
+# etude v1 Scope and Boundary
+
+> This document defines what etude v1 ships versus what is deferred, and
+> reconciles [BRIEF.md](BRIEF.md) (which predates implementation) with the
+> current shipped state. For a narrative design rationale see BRIEF.md; for
+> the shipped CLI reference see `docs/cli/`. A cross-link back from BRIEF.md
+> is tracked under bead etude-kb0.2.
+
+---
+
+## v1 Surface (shipped)
+
+### Top-level commands (13)
+
+| Command | Notes |
+|---|---|
+| `etude init` | Scaffold `workflow.yaml`; register `refs/etude/*` refspec. |
+| `etude capture` | Record a stage artifact for the current run. |
+| `etude capture-gate` | Record a gate decision artifact. |
+| `etude capture-run` | Record a full run manifest. |
+| `etude run` | Parent command; see subcommands below. |
+| `etude sync` | Push / fetch `refs/etude/*`. |
+| `etude replay` | Re-execute a recorded stage end-to-end. |
+| `etude bench` | Benchmark a cohort of runs (headline command). |
+| `etude retro` | Retrospective workflow; see subcommands below. |
+| `etude gc` | Prune unreachable / oversized artifacts. |
+| `etude reindex` | Rebuild the SQLite query cache from the ref store. |
+| `etude prime` | Print a structured agent-onboarding primer (available commands + workflow context) to stdout. |
+| `etude log` | Display the run log. |
+
+Source: `internal/cli/root.go:36-48`.
+
+### Subcommands
+
+- `etude run list`, `etude run show` (`internal/cli/run.go:37-38`)
+- `etude retro capture`, `etude retro generate`, `etude retro list`,
+  `etude retro show` (`internal/cli/retro.go:128-136`)
+
+### Storage and manifest features
+
+- **Git-native `refs/etude/*` store** — run records written atomically to
+  per-run refs; no shared write point (`internal/refstore`).
+- **Content-addressed inline artifacts** — blobs stored by hash inside the
+  ref store (`internal/artifactstore/store.go`).
+- **Run manifests v2 and v3** — v3 adds gate-reviewer records; the producer
+  record is authoritative (`internal/runmanifest/manifest.go:932-935, 1063,
+  1196`).
+- **Retro-meta sidecars** — retrospective metadata stored alongside run
+  records (`internal/cli/retro.go`, `internal/retro/generator.go`).
+
+### `eval` as a library
+
+The `eval` package (`internal/eval`) is a library consumed by `etude bench`
+(and internally by `gc` and `index`). It provides rubric and pairwise
+evaluation. There is no standalone `etude eval` cobra command in v1; `bench`
+is the user-facing entry point for evaluation.
+
+---
+
+## Deferred / Post-v1
+
+The items below are confirmed absent from the shipped CLI. See also the
+`README.md` "Still planned / not yet built" section for the top-level status
+framing.
+
+### Phase 1: live xenota capture adapter + `etude import --from-github`
+
+**Status: USER-BLOCKED.** Requires xenota access and a GitHub token. No
+`import` cobra command exists in `internal/cli/`. The brief's near-term
+phasing (§9 Phase 1, `BRIEF.md:467`) and xenota testbed description (§7,
+`BRIEF.md:429-434`) both lean on this, but it is not in v1.
+
+### Standalone `etude eval` CLI
+
+A dedicated `etude eval` cobra command is not present in v1. Evaluation
+runs exclusively through `etude bench`. The design in `BRIEF.md:381-382`
+shows `etude eval <run-id>` and `etude eval --pairwise ...` as standalone
+commands; those are post-v1.
+
+### `query` command consuming the SQLite index
+
+`etude reindex` builds the SQLite query cache (`internal/index`), but
+nothing reads it from the CLI yet. A `query` command that consumes this
+index is post-v1.
+
+### External artifact pointers via the capture CLI
+
+The artifact store defines a `pointer` storage type and an `AddPointer` API
+(`internal/artifactstore/store.go:19-20, 90`), which supports out-of-tree
+artifact references. This API is **not exposed via the capture CLI** — the
+capture paths (`capture.go`, `capture_run.go`) call `AddContent` only.
+Wiring external pointer capture to the CLI is post-v1.
+
+### Documentation site
+
+A docs site (likely Hugo) has not been built. `docs/cli/` holds generated
+reference pages; a browsable site is post-v1.
+
+---
+
+## Brief Reconciliation
+
+[BRIEF.md](BRIEF.md) is the original product design brief. It predates
+implementation and several sections describe aspirational or planned behavior
+that is not in v1.
+
+| BRIEF.md location | What it says | Reconciled status |
+|---|---|---|
+| Line 5 | *"Status: design brief — this document is the plan; implementation has not started."* | Stale. 13 commands have shipped. The brief remains the canonical design narrative but its status line no longer reflects reality. |
+| §5 CLI surface (~lines 381-382) | Lists `etude eval <run-id> --stage <s>` and `etude eval --pairwise ...` as if present. | Post-v1. `eval` is a library; no standalone `etude eval` command exists. |
+| §5 CLI surface (~line 384) | Lists `etude import --from-github ...` as if present. | Post-v1. USER-BLOCKED; no `import` command exists. |
+| §7 xenota testbed (~lines 429-434) | Describes the Phase 1 capture adapter + `etude import` backfill as the xenota integration plan. | Post-v1. Phase 1 is USER-BLOCKED pending xenota access. |
+| §9 Phasing, Phase 1 row (~line 467) | "Capture adapter for xenota (bead/PR snapshots) + `import` backfill." | Deferred. v1 corresponds to phases 0, 2, 3, and 4 of the brief's phasing table. |
+
+The remaining sections of BRIEF.md (problem statement, architecture, storage
+design, risks) describe the shipped system accurately and remain authoritative.
