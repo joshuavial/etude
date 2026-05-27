@@ -763,11 +763,11 @@ type manifestJSON struct {
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
 	// 3 = schema with gates.
 	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
-	ManifestVersion int               `json:"manifest_version,omitempty"`
-	RunID           string            `json:"run_id"`
-	Workflow        string            `json:"workflow"`
-	WorkflowVersion string            `json:"workflow_version"`
-	Created         string            `json:"created"`
+	ManifestVersion int    `json:"manifest_version,omitempty"`
+	RunID           string `json:"run_id"`
+	Workflow        string `json:"workflow"`
+	WorkflowVersion string `json:"workflow_version"`
+	Created         string `json:"created"`
 	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
 	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
 	// which would defeat omitempty and pollute all existing manifests.

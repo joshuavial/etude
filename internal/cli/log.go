@@ -15,7 +15,7 @@ import (
 
 // logEvent is one timeline entry, built from a single run or retro manifest.
 type logEvent struct {
-	Timestamp  time.Time
+	Timestamp time.Time
 	// Occurred is the original event time for retros that carry occurred_at.
 	// It is zero for runs and retros without occurred_at.
 	Occurred   time.Time
