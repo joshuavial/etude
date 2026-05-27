@@ -10,6 +10,8 @@ it consistently.
 
 Use this runbook for every phase gate while dogfooding `etude`.
 
+Compact gate checklist: [Dogfood Checklists](checklists.md#gate-execution). This runbook is the rationale/reference.
+
 ## Reviewer Roles (review lenses)
 
 Every reviewer seat applies ALL four lenses — lenses are the shared checklist;

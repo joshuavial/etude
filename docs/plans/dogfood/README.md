@@ -24,6 +24,9 @@ After a context clear or when starting a new ticket, boot into productive state:
 10. At bead close, run `scripts/dogfood-close.sh <bead> <commit> <verify> <review> [gate-dir]`
     as the terminal step. A bead is not complete until this exits 0.
 
+For the compact operational checklists, see [Dogfood Checklists](checklists.md).
+
+- [Dogfood Checklists](checklists.md) - compact index of commands and links for the three high-frequency flows (Session Boot, Gate Execution, Close).
 - [Dev workflow audit](dev-workflow-audit.md) - current agent workflow gaps and
   recommended dogfood workflow shape.
 - [Review gate process](review-gate-process.md) - four-reviewer gate process

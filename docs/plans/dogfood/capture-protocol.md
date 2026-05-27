@@ -469,6 +469,8 @@ For each phase:
 
 At bead close:
 
+Compact close checklist: [Dogfood Checklists](checklists.md#close).
+
 Run `scripts/dogfood-close.sh` as the **terminal close step**. It captures the
 run, captures gate records, pushes the etude ref, and runs the completeness
 audit. The bead is **not complete** until it exits 0.
