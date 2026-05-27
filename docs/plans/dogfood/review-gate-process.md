@@ -55,6 +55,13 @@ requires a clean four-reviewer `GO` before the workflow advances.
 
 ## Gate Semantics
 
+**Review lenses.** Every reviewer seat applies the same four review lenses
+(Spec Adversary, Runtime Verifier, Docs/Reality Checker, Security/Data-Integrity
+Checker). Lenses are the shared checklist each seat runs; seats are the redundancy.
+See [Reviewer Roles (review lenses)](review-gate-runbook.md#reviewer-roles-review-lenses)
+in the runbook for the full lens definitions, seat-to-lens mapping, and the lens
+block for the Reviewer Prompt Template.
+
 Each reviewer must return:
 
 - `GO` when the phase artifact can advance as-is

@@ -10,6 +10,54 @@ it consistently.
 
 Use this runbook for every phase gate while dogfooding `etude`.
 
+## Reviewer Roles (review lenses)
+
+Every reviewer seat applies ALL four lenses — lenses are the shared checklist;
+seats are the redundancy (multi-seat unanimity). Lenses are NOT one-per-seat:
+every cross-lens catch in Defect Classes #2 and #7 came from a seat whose
+"assigned" lens would have been different. Model identity is NOT the quality
+mechanism; N independent attempts per lens is.
+
+**Naming guard:** "review lenses" are DISTINCT from the schema's
+`reviewed_stages[].role` field (stage-artifact role: plan/diff/verify — see
+docs/gates.md). This section changes NO schema.
+
+**Spec Adversary** — Acceptance criteria satisfied AS WRITTEN; every struct field
+covered; no validation/provenance/`--ref` bypass; no convenient reinterpretation.
+Includes proof-method validity (P1 — primary home): proof commands/flags exist,
+volatile fields normalized, comparison surface field-complete. Produce: acceptance
+line + artifact line:col; struct fields as covered/omitted; for proofs, trace
+each command end-to-end.
+
+**Runtime Verifier** — Actually builds, runs, and passes on ALL relevant paths —
+not just the host happy path. Includes cross-compile (`GOOS=windows GOARCH=amd64
+go build`), the built binary, heuristic wrong-pick inputs. Produce: command +
+result; for diff-only seats, green-test summary + "did not execute" note.
+
+**Docs/Reality Checker** — Docs match current code; no unshipped claims; generated-
+doc blast radius complete (every regenerated page). Produce: doc line vs code line;
+full set of files the generator emits.
+
+**Security / Data-Integrity Checker** — No data loss/corruption/compat break;
+reserved-key/`--ref`-override holes; round-trip byte stability of optional blocks;
+absent-vs-present-null; refs/git plumbing safety. Produce: adversarial input +
+observed guard/behavior; for round-trip, before/after bytes.
+
+**Seat-to-lens mapping.** Any capable model fills any lens. Current seats: codex
+(openai/gpt-5.5), gemini (google/gemini-3.1-pro-preview), in-harness Opus
+(anthropic/claude-opus-4-7), pi/pilms (lmstudio/qwen3.6-35b-a3b). Each runs the
+SAME full lens checklist. Execution constraints (codex large-input hang, gemini
+GrepTool cross-file bleed, pilms reasoning latency) affect HOW a seat applies
+lenses — see Per-seat execution constraints under Invocation. They are NOT a
+reason to specialize seats to different lenses.
+
+**Scope-fence.** The 1-bead-1-commit / scope discipline is a cross-lens
+orchestrator mechanic — not owned by any single lens. See Scope Discipline below.
+
+Each lens maps to the detailed rationale below: Spec Adversary ← #2, #4, P1, P3;
+Runtime Verifier ← #7, P1; Docs/Reality ← #6, Epic-Close; Security/Data-Integrity
+← #1, #3, #5. P2 and P4 are cross-lens plan-phase disciplines (apply to all).
+
 ## Gate Weight
 
 Match the gate weight to the bead's risk. Pick the tier from the highest-risk
@@ -112,7 +160,7 @@ DIFF on one and could silently MASK a real mutation of the other. Use
 `cp --parents` (or `rsync -R`, or per-file `mkdir -p`) so each snapshot path is
 unique.
 
-Per-seat sandbox constraints (learned from real spirals):
+Per-seat execution constraints — how each seat applies the lenses (learned from real spirals):
 
 - **codex**: its sandbox BLOCKS writes outside the project dir, so do NOT tell it
   to copy the repo to `/tmp` or mutation-test — it will spiral retrying rejected
@@ -262,9 +310,30 @@ Process:
 Review artifacts:
 <exact artifact contents or exact changed excerpts>
 
+Apply these review lenses — every seat covers all four:
+- Spec Adversary: does the artifact satisfy every acceptance criterion AS WRITTEN?
+  Are all struct fields covered? Can any input bypass validation, spoof provenance,
+  or override a generated key? For proof-backed beads: do the exact proof
+  commands/flags exist, are volatile fields normalized, is the comparison surface
+  field-complete? Produce: cite acceptance line + artifact line:col; enumerate struct
+  fields as covered/omitted.
+- Runtime Verifier: does it build, run, and pass on ALL relevant paths (including
+  cross-compile for platform APIs and the built binary)? Produce: command + result;
+  for platform APIs, GOOS=windows GOARCH=amd64 go build result; for diff-only seats,
+  green-test summary + "did not execute" note.
+- Docs/Reality Checker: do docs match the code as it now is? Is the generated-doc
+  blast radius complete (every regenerated page)? Produce: cite doc line vs code
+  line; enumerate all files the generator emits.
+- Security/Data-Integrity: can this lose/corrupt data, break compat, or be abused?
+  Reserved-key overrides, round-trip byte stability, absent-vs-null state, git
+  plumbing safety. Produce: adversarial input tried + observed guard/behavior.
+
+A BLOCK must name WHICH lens failed and cite the evidence, so disputed-claim
+re-verification can target that lens directly.
+
 Return exactly:
 1. GO or BLOCK
-2. required changes if BLOCK
+2. required changes if BLOCK (name the lens + evidence)
 3. optional improvements if GO
 
 Be strict. Give GO only if this artifact can advance to the next phase.
@@ -539,7 +608,7 @@ Defect classes the gate caught repeatedly across the etude-14r feature
 catch up front. Both the implementer and the gate should check them.
 
 **1. Reserve every command-generated `Refs`/manifest key against `--ref` (or any
-passthrough) override.** When a command writes keys into a map that a passthrough
+passthrough) override.** *(lens: Security/Data-Integrity)* When a command writes keys into a map that a passthrough
 flag (`--ref key=value`, `--meta`, …) later MERGES, any generated/validated key the
 passthrough can also write is silently overwritable — letting a user bypass
 validation or falsify provenance.
@@ -559,7 +628,7 @@ validation or falsify provenance.
   BLOCK.
 
 **2. The in-harness (repo-aware) reviewer seat must do ADVERSARIAL + spec-
-completeness review, not just "does it work as the implementer intended."** The
+completeness review, not just "does it work as the implementer intended."** *(lens: Spec Adversary — every seat applies this)* The
 repo-aware seat runs tests and mutation-tests and is excellent at confirming the
 happy path and the implementer's intent — but across q87/8t4/n0t it GO'd four
 times on changes that the spec-focused inlined seats (codex/gemini) correctly
@@ -597,7 +666,7 @@ arbitrary stage of a multi-stage run.
 
 **3. A negative/failure-mode test must exercise the claimed failure path for the
 RIGHT reason — verify it fails on the right injected fault, not a neighbouring
-one.** A test named for fault X that actually trips on fault Y gives false
+one.** *(lens: Security/Data-Integrity + Spec Adversary)* A test named for fault X that actually trips on fault Y gives false
 confidence: the guard for X is unproven.
 - **Why:** caught at etude-712's PLAN gate (a test-only/dev-tooling bead — the
   rigor applies there too, not just product code). The drift guard derives its
@@ -617,7 +686,7 @@ confidence: the guard for X is unproven.
 
 **4. An "X appears in rendered output" assertion must match X at its exact
 rendered SLOT (whole token + position), never via substring/`Contains` — names
-that PREFIX or NEST inside other names will silently satisfy a loose check.**
+that PREFIX or NEST inside other names will silently satisfy a loose check.** *(lens: Spec Adversary)*
 - **Why:** etude-7no's `etude prime` drift guard (assert every registered command
   appears in the primer's command list) took FOUR implement rounds because the
   membership check was too loose, with a fresh collision class surfacing each time:
@@ -643,7 +712,7 @@ that PREFIX or NEST inside other names will silently satisfy a loose check.**
 **5. An OPTIONAL config/struct block must preserve the absent / present-null /
 present-empty distinction — a plain `*T` pointer field conflates absent with
 present-null, and synthesizing defaults on parse destroys the presence bit and
-breaks round-trip.** When adding an optional nested block (e.g. a new
+breaks round-trip.** *(lens: Security/Data-Integrity)* When adding an optional nested block (e.g. a new
 `workflow.yaml` section, an optional manifest field), the three states absent vs
 present-but-null (`block:` / `block: null`) vs present-empty (`block: {}`) are
 distinct and often need distinct behavior.
@@ -669,7 +738,7 @@ distinct and often need distinct behavior.
 
 **6. A change that touches GENERATED artifacts has a blast radius beyond its own
 file — the plan's file-scope must enumerate EVERY generated output the change
-regenerates, not just the obvious one.** Adding, renaming, or removing a command
+regenerates, not just the obvious one.** *(lens: Docs/Reality Checker)* Adding, renaming, or removing a command
 or flag does not regenerate only that command's own page; it also rewrites the
 root/index pages that list or cross-reference it.
 - **Why:** etude-qih's PLAN gate BLOCKED on exactly this. The plan added a new
@@ -692,7 +761,7 @@ root/index pages that list or cross-reference it.
 
 **7. Platform-specific API usage (`syscall.*`, OS-specific flags/constants) must be
 build-tagged AND verified with a CROSS-COMPILE — the native dev build and `go test
-./...` will NOT catch a symbol that is undefined on another GOOS.** A change that
+./...` will NOT catch a symbol that is undefined on another GOOS.** *(lens: Runtime Verifier)* A change that
 references a platform-only symbol compiles and passes every test on the dev host
 yet breaks `GOOS=<other> go build ./...`.
 - **Why:** etude-4n7 used `syscall.O_NOFOLLOW` directly in cross-platform
@@ -723,7 +792,7 @@ implement-gate defect classes above, these are about the plan itself.
 **P1. Verify the verification — when a bead's acceptance rests on an equivalence /
 escape / property proof, the PLAN must specify a proof that actually RUNS, uses
 commands/flags that EXIST, normalizes exactly the volatile fields, and covers the
-full fidelity/threat surface. The gate vets the proof method, not just the change.**
+full fidelity/threat surface. The gate vets the proof method, not just the change.** *(lens: Spec Adversary — proof-method validity is primarily a Spec Adversary check; Runtime Verifier cross-checks executability)*
 - **Why:** etude-21z's PLAN gate was BLOCKED by ALL THREE seats — not on the
   rewrite (a faithful 4-`capture`→1-`capture-run` swap) but on its VERIFICATION,
   which was broken three independent ways: it diffed `etude run show --json` (no
@@ -746,7 +815,7 @@ full fidelity/threat surface. The gate vets the proof method, not just the chang
 
 **P2. Premise-check before designing — confirm the bead's premise holds (the data
 exists, the dependency is stable, the value is real) and recommend DEFER (with the
-concrete prerequisite) rather than building speculative infra over a hypothetical.**
+concrete prerequisite) rather than building speculative infra over a hypothetical.** *(lens: cross-lens plan-phase — applies to all lenses)*
 - **Why:** etude-9ey ("cross-retro failure-mode index") was correctly DEFERRED at
   plan time, not built: (a) ZERO retros carry a sidecar yet (`refs/etude/retros/*`
   is empty), so the aggregation had no input; (b) the retro-meta sidecar is
@@ -787,7 +856,7 @@ concrete prerequisite) rather than building speculative infra over a hypothetica
 
 **P3. A plan's REJECTED-ALTERNATIVES rationale is a prime BLOCK target — re-derive
 each rejection's premise from source, because a wrong rejection silently picks a
-weaker design.**
+weaker design.** *(lens: Spec Adversary)*
 - **Why:** etude-8hq.1's PLAN gate split 2 GO / 1 BLOCK. The plan's "Design
   decision 1" had REJECTED a git pre-push hook (the stronger, mechanical
   enforcement the bead's acceptance actually demanded) with two confidently-stated
@@ -814,7 +883,7 @@ weaker design.**
 
 **P4. Artifact-creating beads (data repair / backfill / supersede / re-capture)
 must be vetted against ALL active mechanical gates on the REAL artifact — not just
-the gate the bead adds, and not by fixture tests or plan review alone.**
+the gate the bead adds, and not by fixture tests or plan review alone.** *(lens: cross-lens plan-phase — applies to all lenses)*
 - **Why:** etude-8hq.8 planned to repair a retro by SUPERSEDE. The plan and all
   three plan-gate seats approved it. But superseding a pre-cutoff retro mints a NEW
   ref with a post-cutoff `created` timestamp, which a DIFFERENT shipped check
