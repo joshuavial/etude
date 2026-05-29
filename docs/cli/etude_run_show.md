@@ -12,6 +12,7 @@ etude run show <run-id> [flags]
 
 ```
   -h, --help   help for show
+      --json   Emit the full run manifest (stages and gate attempts) as JSON
 ```
 
 ### SEE ALSO
