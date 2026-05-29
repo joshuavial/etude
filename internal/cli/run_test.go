@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/runmanifest"
 )
 
 // ---------------------------------------------------------------------------
@@ -287,6 +289,90 @@ func TestRunShowExistingRun(t *testing.T) {
 
 	if stderr != "" {
 		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+func TestRunShowJSON(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan",
+		"--run", "json-run",
+		"--output", "output=out.md",
+	); err != nil {
+		t.Fatalf("capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "json-run", "--json")
+	if err != nil {
+		t.Fatalf("run show --json returned error: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	// Output must be the canonical on-disk manifest schema (snake_case,
+	// re-ingestible), NOT the bare Go struct (PascalCase, lossy).
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(stdout), &manifest); err != nil {
+		t.Fatalf("run show --json did not emit valid JSON: %v\noutput:\n%s", err, stdout)
+	}
+	if strings.Contains(stdout, "run id:") {
+		t.Fatalf("--json must not emit the human detail view:\n%s", stdout)
+	}
+	if manifest["run_id"] != "json-run" {
+		t.Fatalf("--json missing snake_case run_id=json-run:\n%s", stdout)
+	}
+	if _, ok := manifest["stages"]; !ok {
+		t.Fatalf("--json missing 'stages' key:\n%s", stdout)
+	}
+	if strings.Contains(stdout, `"RunID"`) || strings.Contains(stdout, `"ManifestVersion"`) {
+		t.Fatalf("--json leaked PascalCase Go struct fields (bare marshal):\n%s", stdout)
+	}
+	// Decisive contract check: the output must be re-ingestible by etude's own
+	// manifest parser (the buggy bare-struct marshal failed this).
+	if _, err := runmanifest.ParseJSON([]byte(stdout)); err != nil {
+		t.Fatalf("run show --json output not parseable by ParseJSON: %v\noutput:\n%s", err, stdout)
+	}
+}
+
+func TestRunShowJSONIncludesGates(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "out.md", "output content")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan",
+		"--run", "gate-run", "--output", "output=out.md",
+	); err != nil {
+		t.Fatalf("capture: %v\nstderr: %s", err, stderr)
+	}
+	gateFile := writeGateJSON(t, repo, "gate.json", "plan.r1", "plan", 1, "")
+	if _, stderr, err := execute("capture-gate",
+		"--run", "gate-run", "--gate-file", gateFile,
+	); err != nil {
+		t.Fatalf("capture-gate: %v\nstderr: %s", err, stderr)
+	}
+
+	stdout, stderr, err := execute("run", "show", "gate-run", "--json")
+	if err != nil {
+		t.Fatalf("run show --json: %v\nstderr: %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr not empty: %q", stderr)
+	}
+
+	// Gate attempts must survive into --json in the snake_case wire schema and
+	// stay re-ingestible — this is the bead's core "incl gate attempts" claim.
+	parsed, err := runmanifest.ParseJSON([]byte(stdout))
+	if err != nil {
+		t.Fatalf("--json (with gate) not parseable by ParseJSON: %v\noutput:\n%s", err, stdout)
+	}
+	if len(parsed.Gates) != 1 || parsed.Gates[0].GateID != "plan.r1" {
+		t.Fatalf("--json did not carry the gate attempt faithfully; gates=%+v\noutput:\n%s", parsed.Gates, stdout)
+	}
+	if !strings.Contains(stdout, `"gate_id"`) {
+		t.Fatalf("--json gates not in snake_case wire schema:\n%s", stdout)
 	}
 }
 

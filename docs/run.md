@@ -95,6 +95,18 @@ When a run carries review-gate attempts, they are printed after the stages —
 see [Gate reviewer records](gates.md) for the gate output format and how to
 capture gates with `etude capture-gate`.
 
+### Machine-readable output
+
+```bash
+etude run show <run-id> --json
+```
+
+`--json` emits the run's verbatim on-disk manifest — the canonical snake_case
+schema (the same bytes stored as `manifest.json`, including any review-gate
+attempts), so the output is re-ingestible by tooling. The manifest is validated
+before output, so a corrupt manifest still errors rather than printing partial
+JSON.
+
 ### Run id validation
 
 The run id is validated before any git call, so the check works even outside a
@@ -114,5 +126,3 @@ An unknown run id prints `run "<id>" not found` to stderr and exits non-zero.
 
 - Runs are listed by walking `refs/etude/runs/*` directly. There is no query
   index; performance degrades with a large number of runs.
-- There is no `--json` or machine-readable output flag yet. Structured output
-  is deferred to a follow-up.

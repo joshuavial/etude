@@ -58,16 +58,20 @@ func newRunListCommand(runner *runShowListRunner) *cobra.Command {
 }
 
 func newRunShowCommand(runner *runShowListRunner) *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:           "show <run-id>",
 		Short:         "Show details of a run",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runner.show(cmd.Context(), args[0])
+			return runner.show(cmd.Context(), args[0], asJSON)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false,
+		"Emit the full run manifest (stages and gate attempts) as JSON")
+	return cmd
 }
 
 func (r *runShowListRunner) list(ctx context.Context) error {
@@ -97,7 +101,7 @@ func (r *runShowListRunner) list(ctx context.Context) error {
 	return w.Flush()
 }
 
-func (r *runShowListRunner) show(ctx context.Context, id string) error {
+func (r *runShowListRunner) show(ctx context.Context, id string, asJSON bool) error {
 	if err := validateCLIIdentifier("run id", id); err != nil {
 		return err
 	}
@@ -121,6 +125,18 @@ func (r *runShowListRunner) show(ctx context.Context, id string) error {
 	manifest, err := runmanifest.ParseJSON(manifestBytes)
 	if err != nil {
 		return fmt.Errorf("run %q: %w", id, err)
+	}
+
+	if asJSON {
+		// Emit the canonical on-disk manifest bytes (snake_case wire schema,
+		// re-ingestible via runmanifest.ParseJSON). Marshaling the parsed Go
+		// struct would NOT work: runmanifest.Manifest has no JSON tags — the
+		// wire schema is produced separately via manifestJSON — so a bare
+		// marshal yields PascalCase keys + leaked zero-times that no manifest
+		// consumer can parse. ParseJSON above already validated the bytes, so a
+		// corrupt manifest still errors rather than dumping garbage.
+		fmt.Fprintln(r.stdout, strings.TrimRight(string(manifestBytes), "\n"))
+		return nil
 	}
 
 	return printRunDetail(r.stdout, manifest)
