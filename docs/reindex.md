@@ -38,7 +38,7 @@ The database lives inside `.git/` and is never committed. `*.db` is in
 ## Schema version
 
 The index carries a `meta.schema_version` integer. Opening a database whose
-`schema_version` differs from the current expected version (1) returns an error
+`schema_version` differs from the current expected version (2) returns an error
 with a message directing you to run `etude reindex`. There is no migration
 machinery in v1 — reindex whenever the schema changes.
 

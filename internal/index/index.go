@@ -24,7 +24,9 @@ import (
 )
 
 const (
-	SchemaVersion = 1
+	// Bumped to 2 when the gates table was added (xc-w413m.3); an index built
+	// by an older binary reads as stale and triggers a reindex.
+	SchemaVersion = 2
 
 	runsPrefix  = "refs/etude/runs"
 	evalsPrefix = "refs/etude/evals"
@@ -124,6 +126,52 @@ func scanRunRows(rows *sql.Rows) ([]RunRow, error) {
 		result = append(result, r)
 	}
 	return result, rows.Err()
+}
+
+// GateRow holds one indexed gate attempt.
+type GateRow struct {
+	RunID            string
+	GateID           string
+	Phase            string
+	Round            int
+	Tier             int
+	Status           string
+	EscalationReason string
+	DegradedReason   string
+	Timestamp        time.Time
+}
+
+// LatestGate returns the most recent gate attempt (highest round) for the given
+// run and phase. The bool is false when the run has no gate recorded for that
+// phase. This is the fast path an out-of-band gate_contract consumer reads to
+// decide phase advancement; full seat/required-changes detail lives in the run
+// manifest (etude run show --json).
+func (d *DB) LatestGate(runID, phase string) (GateRow, bool, error) {
+	row := d.db.QueryRow(
+		`SELECT run_id, gate_id, phase, round, tier, status,
+		  escalation_reason, degraded_reason, timestamp
+		 FROM gates
+		 WHERE run_id = ? AND phase = ?
+		 ORDER BY round DESC
+		 LIMIT 1`, runID, phase)
+	var g GateRow
+	var ts string
+	if err := row.Scan(&g.RunID, &g.GateID, &g.Phase, &g.Round, &g.Tier,
+		&g.Status, &g.EscalationReason, &g.DegradedReason, &ts); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return GateRow{}, false, nil
+		}
+		return GateRow{}, false, fmt.Errorf("LatestGate: %w", err)
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return GateRow{}, false, fmt.Errorf("parse gate timestamp %q: %w", ts, err)
+		}
+	}
+	g.Timestamp = t.UTC()
+	return g, true, nil
 }
 
 // Reindex builds a fresh SQLite index at dbPath by walking all run and eval
@@ -296,6 +344,29 @@ func insertRun(ctx context.Context, tx *sql.Tx, m runmanifest.Manifest, commit s
 		}
 	}
 
+	// Index each gate attempt. Seat-level detail is intentionally not indexed
+	// here — the gate-level status/round answers the advancement decision; the
+	// full seat/required-changes detail is available via `etude run show --json`
+	// (xc-w413m.3).
+	for _, gate := range m.Gates {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO gates(run_id, gate_id, phase, round, tier, status,
+			  escalation_reason, degraded_reason, timestamp)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.RunID,
+			gate.GateID,
+			gate.Phase,
+			gate.Round,
+			gate.Tier,
+			string(gate.Status),
+			gate.Decision.EscalationReason,
+			gate.Decision.DegradedReason,
+			gate.Timestamp.UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("insert gate %s/%s: %w", m.RunID, gate.GateID, err)
+		}
+	}
+
 	return nil
 }
 
@@ -408,6 +479,19 @@ CREATE TABLE eval_sources (
 	PRIMARY KEY (eval_id, kind, idx)
 );
 
+CREATE TABLE gates (
+	run_id            TEXT NOT NULL,
+	gate_id           TEXT NOT NULL,
+	phase             TEXT NOT NULL,
+	round             INTEGER NOT NULL,
+	tier              INTEGER NOT NULL,
+	status            TEXT NOT NULL,
+	escalation_reason TEXT NOT NULL DEFAULT '',
+	degraded_reason   TEXT NOT NULL DEFAULT '',
+	timestamp         TEXT NOT NULL,
+	PRIMARY KEY (run_id, gate_id)
+);
+
 CREATE TABLE meta (
 	schema_version INTEGER NOT NULL,
 	built_at       TEXT NOT NULL
@@ -417,4 +501,5 @@ CREATE INDEX idx_stages_name    ON stages(name);
 CREATE INDEX idx_stages_skill   ON stages(skill_id);
 CREATE INDEX idx_artifacts_sha  ON artifacts(sha256);
 CREATE INDEX idx_eval_src_run   ON eval_sources(run_id);
+CREATE UNIQUE INDEX idx_gates_run_phase ON gates(run_id, phase, round);
 `
