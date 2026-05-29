@@ -510,3 +510,77 @@ func TestLastRunsLimit(t *testing.T) {
 		t.Fatalf("want 3 rows from LastRuns(3); got %d", len(runs))
 	}
 }
+
+func TestReindexIndexesGatesAndLatestGate(t *testing.T) {
+	_, store := initRepo(t)
+
+	out, outBytes := contentRef(t, "output", []byte("plan output"))
+	stage := makeStage(t, "plan", out, nil)
+	m := makeManifest("gate-run", []runmanifest.Stage{stage})
+
+	now := time.Date(2026, 5, 25, 3, 10, 0, 0, time.UTC)
+	mkGate := func(id string, round int, status runmanifest.GateStatus) runmanifest.GateAttempt {
+		decision := runmanifest.GateDecision{}
+		if status == runmanifest.GateStatusEscalated {
+			// Validate requires escalation_reason when status is escalated.
+			decision.EscalationReason = "rework ceiling reached"
+		}
+		return runmanifest.GateAttempt{
+			GateID:         id,
+			Phase:          "plan",
+			Round:          round,
+			Tier:           1,
+			Status:         status,
+			ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan", Role: "plan"}},
+			Seats: []runmanifest.SeatResult{{
+				Seat:      "gemini",
+				Harness:   runmanifest.Harness{Name: "gemini-cli", Version: "3.1"},
+				Provider:  runmanifest.Provider{Name: "google", Model: "gemini-3.1-pro-preview"},
+				Verdict:   runmanifest.SeatVerdictGo,
+				Timestamp: now,
+			}},
+			Decision:  decision,
+			Timestamp: now,
+		}
+	}
+	// Two rounds for the same phase: the latest (highest round) must win.
+	m.Gates = []runmanifest.GateAttempt{
+		mkGate("plan.r1", 1, runmanifest.GateStatusRerun),
+		mkGate("plan.r2", 2, runmanifest.GateStatusPass),
+	}
+	writeRun(t, store, m, map[string][]byte{out.Path: outBytes})
+
+	// A second run with a same-phase, higher-round gate must not leak into the
+	// first run's LatestGate lookup (run_id scoping).
+	out2, out2Bytes := contentRef(t, "output", []byte("other plan output"))
+	stage2 := makeStage(t, "plan", out2, nil)
+	m2 := makeManifest("other-run", []runmanifest.Stage{stage2})
+	m2.Gates = []runmanifest.GateAttempt{mkGate("plan.r9", 9, runmanifest.GateStatusEscalated)}
+	writeRun(t, store, m2, map[string][]byte{out2.Path: out2Bytes})
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	if _, err := index.Reindex(context.Background(), store, dbPath); err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	db, err := index.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	g, ok, err := db.LatestGate("gate-run", "plan")
+	if err != nil {
+		t.Fatalf("LatestGate: %v", err)
+	}
+	if !ok {
+		t.Fatal("LatestGate: expected a gate, got none")
+	}
+	if g.Round != 2 || g.GateID != "plan.r2" || g.Status != "pass" {
+		t.Fatalf("LatestGate returned the wrong attempt: %+v", g)
+	}
+
+	// A phase with no gate must report not-found, not error.
+	if _, ok, err := db.LatestGate("gate-run", "verify"); err != nil || ok {
+		t.Fatalf("LatestGate(unknown phase): ok=%v err=%v; want ok=false, nil", ok, err)
+	}
+}
