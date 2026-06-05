@@ -1115,3 +1115,200 @@ func minimalWorkflow() Workflow {
 		},
 	}
 }
+
+// ---------------------------------------------------------------------------
+// retros.nudge
+// ---------------------------------------------------------------------------
+
+// TestNudgeAbsentDefaultsOff asserts that a workflow with no nudge: block is
+// disabled by default (NudgeEnabled() == false), and that NudgeThreshold()
+// defaults to 3.
+func TestNudgeAbsentDefaultsOff(t *testing.T) {
+	w := minimalWorkflow()
+	if w.NudgeEnabled() {
+		t.Fatalf("nudge enabled for workflow without retros block")
+	}
+	if got := w.NudgeThreshold(); got != 3 {
+		t.Fatalf("default NudgeThreshold = %d, want 3", got)
+	}
+}
+
+// TestNudgePresentRetrosOmittedNudgeBlock asserts a present retros block with
+// no nudge: sub-block leaves nudge disabled.
+func TestNudgePresentRetrosOmittedNudgeBlock(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.NudgeEnabled() {
+		t.Fatalf("nudge enabled when sub-block omitted")
+	}
+	if got := w.NudgeThreshold(); got != 3 {
+		t.Fatalf("NudgeThreshold = %d, want 3", got)
+	}
+}
+
+// TestNudgeExplicitEnabled asserts retros.nudge.enabled: true activates the
+// nudge and that an explicit threshold replaces the default.
+func TestNudgeExplicitEnabled(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  nudge:
+    enabled: true
+    threshold: 5
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if !w.NudgeEnabled() {
+		t.Fatal("expected NudgeEnabled() == true")
+	}
+	if got := w.NudgeThreshold(); got != 5 {
+		t.Fatalf("NudgeThreshold = %d, want 5", got)
+	}
+}
+
+// TestNudgeEnabledWithoutThresholdDefaultsTo3 asserts enabling the nudge
+// without a threshold uses the default 3.
+func TestNudgeEnabledWithoutThresholdDefaultsTo3(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  nudge:
+    enabled: true
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if !w.NudgeEnabled() {
+		t.Fatal("expected NudgeEnabled() == true")
+	}
+	if got := w.NudgeThreshold(); got != 3 {
+		t.Fatalf("NudgeThreshold = %d, want 3", got)
+	}
+}
+
+// TestNudgeThresholdZeroRejectedWhenEnabled asserts threshold: 0 alongside
+// enabled: true is rejected.
+func TestNudgeThresholdZeroRejectedWhenEnabled(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  nudge:
+    enabled: true
+    threshold: 0
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject nudge threshold: 0 when enabled")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestNudgeThresholdZeroAcceptedWhenDisabled asserts threshold: 0 alongside
+// enabled: false is inert (the validator only fires when the nudge is on).
+func TestNudgeThresholdZeroAcceptedWhenDisabled(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  nudge:
+    enabled: false
+    threshold: 0
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.NudgeEnabled() {
+		t.Fatal("nudge enabled despite enabled: false")
+	}
+}
+
+// TestNudgeKnownFieldsRejectsUnknownInNudgeBlock asserts that an unknown key
+// inside retros.nudge is rejected by KnownFields.
+func TestNudgeKnownFieldsRejectsUnknownInNudgeBlock(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+retros:
+  on_run_close: false
+  nudge:
+    enabled: true
+    threshold: 3
+    surprise: yes
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside nudge:")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestNudgeRoundTripExplicitConfig asserts a workflow with an explicit
+// retros.nudge block survives YAML().ParseYAML() losslessly.
+func TestNudgeRoundTripExplicitConfig(t *testing.T) {
+	enabled := true
+	threshold := 7
+	disabled := false
+	w := minimalWorkflow()
+	w.Retros = &RetrosConfig{
+		OnRunClose: &disabled, // silence the on_run_close default so we don't need a generator
+		Nudge: &NudgeConfig{
+			Enabled:   &enabled,
+			Threshold: &threshold,
+		},
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	got, err := ParseYAML(out)
+	if err != nil {
+		t.Fatalf("ParseYAML round-trip: %v", err)
+	}
+	if !got.NudgeEnabled() {
+		t.Fatal("round-trip lost enabled: true")
+	}
+	if got.NudgeThreshold() != 7 {
+		t.Fatalf("round-trip threshold = %d, want 7", got.NudgeThreshold())
+	}
+	if !strings.Contains(string(out), "nudge:") {
+		t.Fatalf("encoded YAML missing nudge: block\n%s", out)
+	}
+}

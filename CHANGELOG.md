@@ -45,6 +45,11 @@ mechanics.
 - `etude retro capture` / `etude retro generate` / `etude retro list` /
   `etude retro show` — store, generate, list, and inspect retrospectives
   as `refs/etude/retros/*` refs.
+- `etude retro nudge dismiss` / `etude retro nudge status` — opt-in
+  retro-overdue reminder emitted on stderr by any `etude` command when the
+  number of runs since the most recent retro reaches a `retros.nudge`
+  threshold in `.etude/workflow.yaml`; `dismiss` snoozes the reminder for
+  the next N beads, `status` prints the current decision as JSON.
 - `etude gc` — report artifact storage and explicitly prune named run refs.
 - `etude reindex` — rebuild the derived SQLite query index from run and eval
   refs.

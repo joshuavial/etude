@@ -127,6 +127,7 @@ func newRetroCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.AddCommand(newRetroCaptureCommand(out, errOut))
 	cmd.AddCommand(newRetroGenerateCommand(out, errOut, nil))
+	cmd.AddCommand(newRetroNudgeCommand(out, errOut))
 
 	runner := &retroShowListRunner{
 		store:  refstore.New(""),

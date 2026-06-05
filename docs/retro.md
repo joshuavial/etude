@@ -367,8 +367,116 @@ The retro id is validated before any git call. Invalid ids produce
 `invalid retro id "<id>"` and a non-zero exit code. An unknown retro id prints
 `retro "<id>" not found` to stderr and exits non-zero.
 
+## Retro nudge
+
+`etude retro nudge` is an opt-in reminder that surfaces when the number of
+captured runs since the most recent retro reaches a configured threshold.
+The reminder is a single line written to **stderr** by any `etude` invocation
+when it is overdue, so it stays out of machine-readable stdout (including
+`etude run show --json`).
+
+### Enable the nudge
+
+The nudge is off by default. Enable it in `.etude/workflow.yaml` under the
+existing `retros:` block:
+
+```yaml
+retros:
+  on_run_close: false
+  nudge:
+    enabled: true     # default: false
+    threshold: 3      # default: 3 runs since the most recent retro
+```
+
+`threshold` is optional; the default is **3**. When `enabled: true` and
+`threshold` is set explicitly, it must be `>= 1` or the workflow fails
+validation. With no `nudge:` block at all, etude behaves exactly as it did
+before this feature: zero ref I/O, zero stderr.
+
+### When the nudge fires
+
+The trigger counts runs under `refs/etude/runs/*` whose `Created` time is
+strictly after the most recent retro's `Created` time (any scope). With zero
+retros the count is the total run count. When that count is `>= threshold`,
+the reminder appears on stderr after the subcommand finishes:
+
+```
+etude: retro nudge: 4 bead(s) since last retro (threshold 3); run `etude retro generate workflow` or `etude retro nudge dismiss` to silence for now
+```
+
+The nudge fires regardless of whether the subcommand succeeded or failed,
+but is suppressed for `--help`, `-h`, `--version`, `etude help`, the bare
+`etude` invocation (no subcommand), `etude completion …`, the hidden
+`etude __complete …` path used by shell tab-completion, and the entire
+`etude retro nudge` subtree (so `status` JSON output is never crowded by a
+stderr line).
+
+The nudge is a **best-effort side channel**: a missing or malformed
+`workflow.yaml`, a missing snooze file, a corrupted snooze file, a refstore
+read failure, or a cwd outside a git repository all silently disable the
+nudge for that invocation — they never alter the parent command's exit
+status or output.
+
+### Snooze (dismiss for the next N beads)
+
+When a nudge appears at an inconvenient moment, dismiss it:
+
+```bash
+etude retro nudge dismiss          # snooze for the next 1 bead
+etude retro nudge dismiss --for 3  # snooze for the next 3 beads
+```
+
+`dismiss` records the current run count and the snooze depth into
+`.git/etude/retro-nudge-snooze.json` (local-only, not committed). The nudge
+stays silent while `runs_since_last_retro - runs_at_snooze < snooze_for`,
+i.e. until enough new beads have accumulated to land beyond the snooze
+window.
+
+The snooze auto-invalidates when a new retro lands: the recorded
+`last_retro_id_at_snooze` no longer matches the current latest retro id,
+so the next over-threshold event fires fresh.
+
+> **Linked-worktree limitation (v1):** the snooze file lives at
+> `<repo>/.git/etude/retro-nudge-snooze.json`. In a linked git worktree
+> (where `<worktree>/.git` is a file, not a directory) the write will fail
+> and the snooze will not persist. The nudge itself still works in linked
+> worktrees — only the dismiss-snooze does not. A follow-up bead can resolve
+> the real git directory via `git rev-parse --git-common-dir`.
+
+### Inspect the current decision
+
+```bash
+etude retro nudge status
+```
+
+Prints a JSON object to stdout:
+
+```json
+{
+  "enabled": true,
+  "threshold": 3,
+  "runs_since_last_retro": 4,
+  "last_retro_id": "retro-run-bead-x-20260530T100000Z",
+  "overdue": true,
+  "snoozed_until_runs": 0,
+  "would_emit": true
+}
+```
+
+`snoozed_at` (RFC3339) appears as an additional field only when a snooze is
+currently active. `status` exits 0 in the happy path; a refstore failure or
+a corrupted snooze file surfaces as a non-zero exit so the operator notices.
+It prints `enabled: false` and `would_emit: false` when there is no `nudge:`
+block (or no `workflow.yaml` at all).
+
+The status subcommand reads the same workflow and refs the root-command
+emitter uses, so it is the authoritative way to ask "why didn't I see a
+nudge?" or "why am I seeing one?".
+
 ## Current limits
 
 - Retros are listed by walking `refs/etude/retros/*` directly. There is no
   query index; performance degrades with a large number of retros.
-- There is no `--json` or machine-readable output flag yet.
+- There is no `--json` or machine-readable output flag yet for `retro show`
+  or `retro list` (the nudge `status` subcommand is the only JSON output in
+  this area today).

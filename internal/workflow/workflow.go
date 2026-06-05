@@ -67,6 +67,24 @@ type RetrosConfig struct {
 	// Generator is the path to the retro generator script.  Required when any
 	// automated trigger is effectively enabled.
 	Generator string
+	// Nudge holds the retro-nudge sub-block.  Nil means omitted (default OFF
+	// for the nudge).  A non-nil block enables the nudge only when Enabled is
+	// explicitly true.
+	Nudge *NudgeConfig
+}
+
+// NudgeConfig holds the retros.nudge sub-block, the configuration for the
+// best-effort "retro overdue" reminder emitted on stderr by the root command.
+// Pointer fields preserve the omitted-vs-explicit distinction the rest of
+// RetrosConfig relies on.
+type NudgeConfig struct {
+	// Enabled toggles the nudge.  Nil = default OFF.  Only an explicit true
+	// activates it.
+	Enabled *bool
+	// Threshold is the number of runs since the most recent retro that must
+	// be reached before the nudge fires.  Nil = default 3.  Must be >= 1 when
+	// the nudge is enabled.
+	Threshold *int
 }
 
 // RepeatedGateBlock holds the on_repeated_gate_block sub-block.
@@ -139,6 +157,25 @@ func (w Workflow) RetroGenerator() string {
 		return ""
 	}
 	return w.Retros.Generator
+}
+
+// NudgeEnabled returns true only when retros.nudge.enabled is explicitly set
+// to true.  Absent retros block, absent nudge block, and explicit false all
+// return false (nudge is off by default).
+func (w Workflow) NudgeEnabled() bool {
+	if w.Retros == nil || w.Retros.Nudge == nil || w.Retros.Nudge.Enabled == nil {
+		return false
+	}
+	return *w.Retros.Nudge.Enabled
+}
+
+// NudgeThreshold returns the effective threshold for the retro nudge.  When
+// the nudge block or its threshold is absent the default is 3.
+func (w Workflow) NudgeThreshold() int {
+	if w.Retros == nil || w.Retros.Nudge == nil || w.Retros.Nudge.Threshold == nil {
+		return 3
+	}
+	return *w.Retros.Nudge.Threshold
 }
 
 // Stage describes one ordered step in the workflow.
@@ -307,6 +344,13 @@ func validateRetros(w Workflow) error {
 		rgb := w.Retros.OnRepeatedGateBlock
 		if rgb != nil && rgb.Threshold != nil && *rgb.Threshold < 1 {
 			return fmt.Errorf("%w: retros.on_repeated_gate_block.threshold must be >= 1", ErrInvalidWorkflow)
+		}
+	}
+	// nudge threshold must be >= 1 when the nudge is explicitly enabled.
+	if w.NudgeEnabled() {
+		ng := w.Retros.Nudge
+		if ng != nil && ng.Threshold != nil && *ng.Threshold < 1 {
+			return fmt.Errorf("%w: retros.nudge.threshold must be >= 1", ErrInvalidWorkflow)
 		}
 	}
 	return nil
@@ -497,12 +541,20 @@ type retrosYAML struct {
 	OnBlockedState      *bool                  `yaml:"on_blocked_state,omitempty"`
 	PostBench           *bool                  `yaml:"post_bench,omitempty"`
 	Generator           string                 `yaml:"generator,omitempty"`
+	Nudge               *nudgeYAML             `yaml:"nudge,omitempty"`
 }
 
 // repeatedGateBlockYAML is the nested decode/encode struct for
 // on_repeated_gate_block.  A dedicated struct ensures KnownFields(true) rejects
 // unknown keys at this level too.
 type repeatedGateBlockYAML struct {
+	Enabled   *bool `yaml:"enabled,omitempty"`
+	Threshold *int  `yaml:"threshold,omitempty"`
+}
+
+// nudgeYAML is the nested decode/encode struct for retros.nudge.  A dedicated
+// struct ensures KnownFields(true) rejects unknown keys at this level too.
+type nudgeYAML struct {
 	Enabled   *bool `yaml:"enabled,omitempty"`
 	Threshold *int  `yaml:"threshold,omitempty"`
 }
@@ -535,6 +587,12 @@ func (w Workflow) toYAML() workflowYAML {
 			ry.OnRepeatedGateBlock = &repeatedGateBlockYAML{
 				Enabled:   w.Retros.OnRepeatedGateBlock.Enabled,
 				Threshold: w.Retros.OnRepeatedGateBlock.Threshold,
+			}
+		}
+		if w.Retros.Nudge != nil {
+			ry.Nudge = &nudgeYAML{
+				Enabled:   w.Retros.Nudge.Enabled,
+				Threshold: w.Retros.Nudge.Threshold,
 			}
 		}
 		// Encode the retrosYAML struct to a yaml.Node so it can be embedded
@@ -623,6 +681,12 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 			rc.OnRepeatedGateBlock = &RepeatedGateBlock{
 				Enabled:   ry.OnRepeatedGateBlock.Enabled,
 				Threshold: ry.OnRepeatedGateBlock.Threshold,
+			}
+		}
+		if ry.Nudge != nil {
+			rc.Nudge = &NudgeConfig{
+				Enabled:   ry.Nudge.Enabled,
+				Threshold: ry.Nudge.Threshold,
 			}
 		}
 		w.Retros = rc
