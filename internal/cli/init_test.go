@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,17 +305,30 @@ func TestInitFromSubdirectoryScaffoldsAtRoot(t *testing.T) {
 
 // --force with the default origin absent must succeed silently and write NO git
 // config (locks directive D against a refactor accidentally touching config).
+// Strengthened: also asserts the skip-note is ABSENT (--force is silent on refspecs).
 func TestInitForceMissingDefaultOriginSucceeds(t *testing.T) {
 	repo := initCaptureRepo(t)
 	chdir(t, repo)
 
-	if _, stderr, err := execute("init", "--force"); err != nil {
+	stdout, stderr, err := execute("init", "--force")
+	if err != nil {
 		t.Fatalf("init --force with no origin errored: %v (stderr %q)", err, stderr)
 	}
 	// --list always exits 0 (local config exists from initCaptureRepo); assert no
 	// etude refspec was written anywhere.
 	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
 		t.Fatalf("--force should not write refspec config, got %q", out)
+	}
+	// --force must be silent on refspecs: no skip-note, no configure line.
+	// Assert against specific prefixes (NOT bare "configured"/"skipped" which appear in summary).
+	if strings.Contains(stdout, "not found, skipping") {
+		t.Fatalf("--force should not emit skip-note, got %q", stdout)
+	}
+	if strings.Contains(stdout, "plan: configure") {
+		t.Fatalf("--force should not emit configure plan line, got %q", stdout)
+	}
+	if strings.Contains(stdout, "configured remote.") {
+		t.Fatalf("--force should not emit configured refspec line, got %q", stdout)
 	}
 }
 
@@ -450,6 +464,237 @@ func TestInitEtudeIsAFile(t *testing.T) {
 	combined := err.Error() + " " + stderr
 	if !strings.Contains(combined, ".etude") {
 		t.Fatalf("error %q stderr %q do not mention .etude", err, stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --dry-run: writes nothing, reports plan lines and summary.
+// ---------------------------------------------------------------------------
+
+func TestInitDryRunWritesNothing(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("init", "--dry-run")
+	if err != nil {
+		t.Fatalf("init --dry-run returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// No files should be written.
+	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("--dry-run must not write workflow.yaml (stat err=%v)", statErr)
+	}
+
+	// No refspecs should be configured.
+	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
+		t.Fatalf("--dry-run must not modify git config, got %q", out)
+	}
+
+	// Stdout must show plan lines and dry-run summary.
+	if !strings.Contains(stdout, "plan: create") {
+		t.Fatalf("--dry-run stdout missing 'plan: create': %q", stdout)
+	}
+	if !strings.Contains(stdout, "dry-run:") {
+		t.Fatalf("--dry-run stdout missing summary 'dry-run:': %q", stdout)
+	}
+	if !strings.Contains(stdout, "to create") {
+		t.Fatalf("--dry-run stdout missing 'to create': %q", stdout)
+	}
+}
+
+// TestInitDryRunMissingRemoteReports: missing remote under --dry-run exits 0
+// and reports would-skip; nothing is written.
+func TestInitDryRunMissingRemoteReports(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("init", "--dry-run", "--remote", "upstream")
+	if err != nil {
+		t.Fatalf("init --dry-run --remote upstream should not error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Nothing written.
+	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("--dry-run must not write workflow.yaml")
+	}
+
+	// Should report the would-skip note for the remote.
+	if !strings.Contains(stdout, "would skip refspec") {
+		t.Fatalf("--dry-run with missing remote should report would-skip, got %q", stdout)
+	}
+}
+
+// TestInitExplicitMissingRemoteWritesThenErrors: non-dry-run with an explicit
+// missing remote errors BUT the scaffold files are written first (write-then-error).
+func TestInitExplicitMissingRemoteWritesThenErrors(t *testing.T) {
+	// Non-force case.
+	t.Run("non-force", func(t *testing.T) {
+		repo := initCaptureRepo(t)
+		chdir(t, repo)
+
+		_, _, err := execute("init", "--remote", "upstream")
+		if err == nil {
+			t.Fatal("init --remote upstream should have errored")
+		}
+
+		// workflow.yaml must exist despite the error (write-then-error ordering).
+		if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); statErr != nil {
+			t.Fatalf("workflow.yaml must exist after write-then-error, got: %v", statErr)
+		}
+	})
+
+	// --force case: same invariant.
+	t.Run("force", func(t *testing.T) {
+		repo := initCaptureRepo(t)
+		chdir(t, repo)
+
+		_, _, err := execute("init", "--force", "--remote", "upstream")
+		if err == nil {
+			t.Fatal("init --force --remote upstream should have errored")
+		}
+
+		if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); statErr != nil {
+			t.Fatalf("workflow.yaml must exist after write-then-error, got: %v", statErr)
+		}
+	})
+}
+
+// TestInitDryRunExistingScaffoldSkips: dry-run in a populated repo shows skip
+// lines and skip counts; nothing mutated.
+func TestInitDryRunExistingScaffoldSkips(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	// Pre-populate scaffold files via a real init.
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
+	}
+
+	// Record git config state.
+	configBefore := gitCapture(t, repo, "config", "--local", "--list")
+
+	stdout, stderr, err := execute("init", "--dry-run")
+	if err != nil {
+		t.Fatalf("init --dry-run on populated repo returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Must show skip lines, not create.
+	if !strings.Contains(stdout, "plan: skip") {
+		t.Fatalf("--dry-run on populated repo missing 'plan: skip': %q", stdout)
+	}
+
+	// Config must be unchanged.
+	configAfter := gitCapture(t, repo, "config", "--local", "--list")
+	if configBefore != configAfter {
+		t.Fatalf("--dry-run mutated git config: before=%q after=%q", configBefore, configAfter)
+	}
+
+	// Summary must report to-skip count > 0.
+	if !strings.Contains(stdout, "to skip") {
+		t.Fatalf("--dry-run summary missing 'to skip': %q", stdout)
+	}
+}
+
+// TestInitForceDryRun: force + dry-run + present remote → 0 to configure, nothing written.
+func TestInitForceDryRun(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("init", "--force", "--dry-run")
+	if err != nil {
+		t.Fatalf("init --force --dry-run returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Nothing written.
+	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("--force --dry-run must not write files")
+	}
+
+	// No git config changes.
+	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
+		t.Fatalf("--force --dry-run must not modify git config, got %q", out)
+	}
+
+	// Summary must show 0 to configure (--force is silent on refspecs).
+	if !strings.Contains(stdout, "0 to configure") {
+		t.Fatalf("--force --dry-run should show '0 to configure': %q", stdout)
+	}
+
+	// No refspec-related lines (no plan: configure, no skip-note).
+	if strings.Contains(stdout, "plan: configure") {
+		t.Fatalf("--force --dry-run should not emit plan: configure, got %q", stdout)
+	}
+	if strings.Contains(stdout, "not found, skipping") {
+		t.Fatalf("--force --dry-run should not emit skip-note, got %q", stdout)
+	}
+}
+
+// TestInitSummaryCounts: verifies the summary counts on first and second runs.
+func TestInitSummaryCounts(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	// Count how many files will be created (workflow.yaml + rubrics).
+	wf := workflow.Default()
+	rubricCount := 0
+	for _, s := range wf.Stages {
+		if s.Eval != nil && s.Eval.Method == "rubric" {
+			rubricCount++
+		}
+	}
+	expectedCreated := 1 + rubricCount // workflow.yaml + rubrics
+
+	// First run: all created + 2 configured (fetch + push).
+	stdout, stderr, err := execute("init")
+	if err != nil {
+		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
+	}
+	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 2 configured", expectedCreated)
+	if !strings.Contains(stdout, wantSummary1) {
+		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
+	}
+
+	// Second run: all skipped + 2 configured (already-configured → still in configured bucket).
+	stdout2, stderr2, err := execute("init")
+	if err != nil {
+		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
+	}
+	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 2 configured", expectedCreated)
+	if !strings.Contains(stdout2, wantSummary2) {
+		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
+	}
+}
+
+// TestInitDryRunForceMissingRemoteReports: --dry-run --force --remote <missing>
+// must exit 0 and report the condition, writing nothing. This locks the invariant
+// that dry-run NEVER errors on a missing remote, even under --force.
+func TestInitDryRunForceMissingRemoteReports(t *testing.T) {
+	repo := initCaptureRepo(t)
+	// Intentionally do NOT add "missing" remote.
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("init", "--dry-run", "--force", "--remote", "missing")
+	if err != nil {
+		t.Fatalf("init --dry-run --force --remote missing should not error: %v\nstderr: %s", err, stderr)
+	}
+
+	// Nothing written.
+	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "workflow.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("--dry-run must not write files (stat err=%v)", statErr)
+	}
+
+	// No git config changes.
+	if out := gitCapture(t, repo, "config", "--local", "--list"); strings.Contains(out, "refs/etude") {
+		t.Fatalf("--dry-run must not modify git config, got %q", out)
+	}
+
+	// Must report the condition (real run would error).
+	if !strings.Contains(stdout, "would error") {
+		t.Fatalf("--dry-run --force missing remote should report would-error condition: %q", stdout)
 	}
 }
 

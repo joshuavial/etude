@@ -56,12 +56,49 @@ trailing space), init treats it as a different value and adds the canonical one
 alongside it, resulting in two entries for the same key. Init does not attempt
 to detect or merge semantically equivalent refspecs.
 
+## Plan → apply pipeline
+
+`etude init` runs a plan → apply pipeline. `plan` derives an ordered action
+list (read-only: no writes, no git config queries). `apply` executes each
+action and is the sole site that prints output and tallies counts.
+
+After all actions run, a summary line is printed:
+
+```
+init: 2 created, 0 skipped, 2 configured
+```
+
+The `configured` count covers both freshly configured and already-configured
+refspecs. A second `init` run reports `2 configured` (idempotent, already-configured
+entries fall into the same bucket).
+
+## --dry-run
+
+`--dry-run` previews the planned actions without writing any files or modifying
+git config. It prints `plan: create <path>` / `plan: skip <path>` lines for the
+scaffold and `plan: configure fetch refspec on <remote>` / `plan: configure push
+refspec on <remote>` lines for the refspecs, followed by a summary:
+
+```
+dry-run: 2 to create, 0 to skip, 2 to configure
+```
+
+Dry-run behavior:
+- **Never errors on a missing remote.** It reports a would-skip note and exits
+  with code 0. Use this to preview what `init` would do before a remote is added.
+- **Syntactic `--remote` validation still runs.** A malformed name (e.g. `--remote
+  "bad name"`) errors immediately, before any reads.
+- **Workflow self-check still runs.** The YAML round-trip validation runs during
+  plan (read-only) and can error under dry-run.
+- **`--force --dry-run`** previews 0 to configure (force is silent on refspecs).
+
 ## Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Does not modify git config. |
-| `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error. |
+| `--dry-run` | false | Preview the planned actions without writing files or modifying git config. |
+| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Does not modify git config. `--force` is always silent on refspec configuration. |
+| `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error (even under `--force`). |
 
 ## Example
 

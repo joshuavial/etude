@@ -11,6 +11,7 @@ etude init [flags]
 ### Options
 
 ```
+      --dry-run         preview the planned actions without writing files or modifying git config
       --force           overwrite existing scaffolded files with fresh generated content
   -h, --help            help for init
       --remote string   git remote to configure refspecs on (default: origin) (default "origin")

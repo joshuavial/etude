@@ -20,8 +20,8 @@ import (
 // The group itself prints its own help when called with no subcommand.
 func newRetroNudgeCommand(out, errOut io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:           "nudge",
-		Short:         "Manage the retro overdue reminder (nudge)",
+		Use:   "nudge",
+		Short: "Manage the retro overdue reminder (nudge)",
 		Long: "The retro nudge is an opt-in reminder emitted on stderr by any etude " +
 			"command when, per .etude/workflow.yaml, the number of captured runs since " +
 			"the most recent retro has reached a configured threshold. The dismiss " +
@@ -135,4 +135,3 @@ func newRetroNudgeStatusCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	return cmd
 }
-
