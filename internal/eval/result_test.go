@@ -105,6 +105,33 @@ func validAssertionResult() EvalResult {
 	}
 }
 
+func validGateResult() EvalResult {
+	ctxCommit := strings.Repeat("c", 40)
+	ctxArt := strings.Repeat("2", 64)
+	return EvalResult{
+		EvalResultVersion: 1,
+		EvalID:            "gate-run-20260522-plan-20260522T120000Z",
+		Method:            "gate",
+		Score: Score{
+			Kind:   ScoreGate,
+			Passed: ptr(false),
+		},
+		Findings: []Finding{
+			{Severity: SeverityError, Message: "required change", Pointer: "plan"},
+		},
+		Targets: []ArtifactSource{
+			{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s},
+		},
+		Context: []ArtifactSource{
+			{RunID: validRunID, Stage: "gate-prompt", Commit: ctxCommit, Artifact: ctxArt},
+		},
+		Producer: runmanifest.Producer{
+			Model: "gpt-5.5",
+		},
+		Created: time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC),
+	}
+}
+
 // ---- golden / deterministic JSON ----
 
 func TestRubricJSONIsExactAndDeterministic(t *testing.T) {
@@ -268,6 +295,28 @@ func TestAssertionJSONIsExactAndDeterministic(t *testing.T) {
 `
 	if string(got1) != want {
 		t.Errorf("assertion JSON mismatch\ngot:\n%s\nwant:\n%s", got1, want)
+	}
+}
+
+func TestGateJSONRoundTrip(t *testing.T) {
+	r := validGateResult()
+	raw, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	parsed, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	raw2, err := parsed.JSON()
+	if err != nil {
+		t.Fatalf("JSON after round-trip: %v", err)
+	}
+	if string(raw) != string(raw2) {
+		t.Fatalf("gate JSON round-trip changed bytes\ngot:\n%s\nwant:\n%s", raw2, raw)
+	}
+	if parsed.Score.Kind != ScoreGate || parsed.Score.Passed == nil || *parsed.Score.Passed != false {
+		t.Fatalf("parsed gate score = %+v, want gate passed=false", parsed.Score)
 	}
 }
 
@@ -494,6 +543,27 @@ func TestValidateGuardMatrix(t *testing.T) {
 			r.Assertion = &AssertionSpec{Checks: []AssertionCheck{{Kind: "check"}}}
 			r.Targets = []ArtifactSource{{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s}}
 		}},
+		// gate coherence
+		{"gate_nil_passed", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Score.Passed = nil
+		}},
+		{"gate_has_value", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Score.Value = ptr(1.0)
+		}},
+		{"gate_has_max", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Score.Max = ptr(1.0)
+		}},
+		{"gate_has_winner", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Score.Winner = WinnerA
+		}},
+		{"gate_has_confidence", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Score.Confidence = ptr(0.9)
+		}},
 		// method<->config mismatches
 		{"rubric_method_no_rubric_config", func(r *EvalResult) { r.Rubric = nil }},
 		{"rubric_method_has_assertion_config", func(r *EvalResult) {
@@ -549,6 +619,14 @@ func TestValidateGuardMatrix(t *testing.T) {
 				{RunID: "run-20260523", Stage: validStage, Commit: strings.Repeat("b", 40), Artifact: strings.Repeat("2", 64)},
 			}
 		}},
+		{"gate_method_has_rubric_config", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Rubric = &RubricRef{Path: "r.md", Version: "v1"}
+		}},
+		{"gate_method_has_assertion_config", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Assertion = &AssertionSpec{Checks: []AssertionCheck{{Kind: "check"}}}
+		}},
 		// target count
 		{"rubric_wrong_target_count_0", func(r *EvalResult) { r.Targets = nil }},
 		{"rubric_wrong_target_count_2", func(r *EvalResult) {
@@ -565,6 +643,14 @@ func TestValidateGuardMatrix(t *testing.T) {
 			r.Targets = []ArtifactSource{
 				{RunID: validRunID, Stage: validStage, Commit: validCommit, Artifact: validSHA256s},
 			}
+		}},
+		{"gate_wrong_target_count_0", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Targets = nil
+		}},
+		{"gate_wrong_target_count_2", func(r *EvalResult) {
+			*r = validGateResult()
+			r.Targets = append(r.Targets, ArtifactSource{RunID: "run-20260523", Stage: validStage, Commit: strings.Repeat("b", 40), Artifact: strings.Repeat("1", 64)})
 		}},
 		// bad target fields
 		{"target_bad_run_id", func(r *EvalResult) {

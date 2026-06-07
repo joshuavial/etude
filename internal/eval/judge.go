@@ -41,18 +41,20 @@ type JudgeInput struct {
 //	"rubric"   — Targets len 1; Rubric non-nil; judge must return Value+Max.
 //	"pairwise" — Targets len 2 (A=Targets[0], B=Targets[1]); Rubric nil;
 //	             judge must return Winner; Value/Max absent (future bead).
+//	"gate"     — Targets len 1; Context includes exactly one gate-prompt input;
+//	             judge must return Passed; Value/Max/Winner absent.
 //
 // Targets ordering is preserved: ExecJudge materialises them as
 // 00-target-<role>, 01-target-<role>, … so pairwise judges see A before B.
 // Context inputs are materialised similarly as 00-context-<role>, etc.
 type JudgeRequest struct {
-	// Method is the eval method ("rubric" | "pairwise"). Drives output validation.
+	// Method is the eval method ("rubric" | "pairwise" | "gate"). Drives output validation.
 	Method string
-	// Targets are the ordered artifacts being judged. len 1 for rubric, len 2 for pairwise.
+	// Targets are the ordered artifacts being judged. len 1 for rubric/gate, len 2 for pairwise.
 	Targets []JudgeInput
-	// Context are optional unscored inputs (task description, plan, diff, etc.).
+	// Context are optional unscored inputs. Gate requires exactly one gate-prompt context.
 	Context []JudgeInput
-	// Rubric holds the rubric file bytes the judge scores against. Nil for pairwise.
+	// Rubric holds the rubric file bytes the judge scores against. Nil for pairwise/gate.
 	Rubric []byte
 	// Producer carries model/skill/harness identity for the judge invocation.
 	Producer runmanifest.Producer
@@ -63,6 +65,9 @@ type JudgeRequest struct {
 // Rubric judges set Value+Max (Winner="" / Confidence=nil).
 // Pairwise judges (future bead) set Winner and optionally Confidence
 // (Value/Max remain nil).
+// Gate judges set Passed (Value/Max/Winner/Confidence remain nil). Gate and
+// assertion both use a boolean result shape, but are distinguished by Method and
+// Score.Kind.
 //
 // Pointer fields distinguish "absent" from "zero" under JSON round-trips,
 // mirroring eval.Score's per-Kind coherence.
@@ -70,6 +75,7 @@ type JudgeResponse struct {
 	Value      *float64 // rubric only
 	Max        *float64 // rubric only
 	Winner     Winner   // pairwise only ('' | A | B | tie)
+	Passed     *bool    // gate only
 	Confidence *float64 // pairwise only, optional
 	Findings   []Finding
 }

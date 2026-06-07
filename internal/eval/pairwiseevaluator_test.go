@@ -390,6 +390,7 @@ func TestPairwiseEvaluator_MalformedResponse(t *testing.T) {
 	m := 10.0
 	conf15 := 1.5
 	conf_neg := -0.1
+	passed := true
 
 	cases := []struct {
 		name string
@@ -399,6 +400,7 @@ func TestPairwiseEvaluator_MalformedResponse(t *testing.T) {
 		{"unknown winner C", JudgeResponse{Winner: "C"}},
 		{"value set", JudgeResponse{Winner: WinnerA, Value: &v}},
 		{"max set", JudgeResponse{Winner: WinnerA, Max: &m}},
+		{"passed set", JudgeResponse{Winner: WinnerA, Passed: &passed}},
 		{"confidence out of range high", JudgeResponse{Winner: WinnerA, Confidence: &conf15}},
 		{"confidence out of range low", JudgeResponse{Winner: WinnerA, Confidence: &conf_neg}},
 	}

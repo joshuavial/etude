@@ -564,6 +564,7 @@ func TestValidateJudgeOutput_UnsupportedMethod(t *testing.T) {
 func TestValidateJudgeOutput_Pairwise(t *testing.T) {
 	conf05 := 0.5
 	conf15 := 1.5
+	passed := true
 
 	t.Run("valid winner A", func(t *testing.T) {
 		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A"})
@@ -615,12 +616,118 @@ func TestValidateJudgeOutput_Pairwise(t *testing.T) {
 			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
 		}
 	})
+	t.Run("reject passed set", func(t *testing.T) {
+		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Passed: &passed})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
 	t.Run("reject confidence out of range", func(t *testing.T) {
 		err := validateJudgeOutput("pairwise", judgeOutputJSON{Winner: "A", Confidence: &conf15})
 		if !errors.Is(err, ErrJudgeOutputInvalid) {
 			t.Errorf("want ErrJudgeOutputInvalid, got %v", err)
 		}
 	})
+}
+
+func TestValidateJudgeOutput_RubricRejectsPassed(t *testing.T) {
+	v := 5.0
+	m := 10.0
+	passed := true
+
+	err := validateJudgeOutput("rubric", judgeOutputJSON{Value: &v, Max: &m, Passed: &passed})
+	if !errors.Is(err, ErrJudgeOutputInvalid) {
+		t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+	}
+}
+
+func TestValidateJudgeOutput_Gate(t *testing.T) {
+	passedTrue := true
+	passedFalse := false
+	v := 5.0
+	m := 10.0
+	conf := 0.5
+
+	t.Run("valid passed true", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue})
+		if err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+	t.Run("valid passed false", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedFalse})
+		if err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+	t.Run("missing passed", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject value", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Value: &v})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject max", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Max: &m})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject winner", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Winner: "A"})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject confidence", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{Passed: &passedTrue, Confidence: &conf})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+	t.Run("reject bad finding", func(t *testing.T) {
+		err := validateJudgeOutput("gate", judgeOutputJSON{
+			Passed: &passedTrue,
+			Findings: []findingWire{{
+				Severity: "bad",
+				Message:  "x",
+			}},
+		})
+		if !errors.Is(err, ErrJudgeOutputInvalid) {
+			t.Fatalf("want ErrJudgeOutputInvalid, got %v", err)
+		}
+	})
+}
+
+func TestExecJudge_GateOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "judge.sh")
+	writeJudgeScript(t, script, `printf '{"passed":false,"findings":[{"severity":"error","message":"required change"}]}' > "$ETUDE_OUTPUT_FILE"`)
+
+	j := &ExecJudge{Command: []string{script}}
+	resp, err := j.Judge(context.Background(), JudgeRequest{
+		Method:  "gate",
+		Targets: []JudgeInput{{Role: "artifact", Content: []byte("plan")}},
+		Context: []JudgeInput{{Role: GatePromptRole, Content: []byte("prompt")}},
+	})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if resp.Passed == nil || *resp.Passed != false {
+		t.Fatalf("Passed = %v, want false", resp.Passed)
+	}
+	if len(resp.Findings) != 1 || resp.Findings[0].Message != "required change" {
+		t.Fatalf("Findings = %+v, want required change", resp.Findings)
+	}
 }
 
 func TestExecJudge_RoleWithPathSeparator(t *testing.T) {

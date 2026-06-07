@@ -56,9 +56,9 @@ func (r EvalResult) Validate() error {
 	if err := validateEvalIdentifier("method", r.Method); err != nil {
 		return err
 	}
-	validMethods := map[string]bool{"rubric": true, "pairwise": true, "assertion": true}
+	validMethods := map[string]bool{"rubric": true, "pairwise": true, "assertion": true, "gate": true}
 	if !validMethods[r.Method] {
-		return fmt.Errorf("%w: method %q must be one of rubric, pairwise, assertion", ErrInvalidEvalResult, r.Method)
+		return fmt.Errorf("%w: method %q must be one of rubric, pairwise, assertion, gate", ErrInvalidEvalResult, r.Method)
 	}
 	if string(r.Score.Kind) != r.Method {
 		return fmt.Errorf("%w: score.kind %q must match method %q", ErrInvalidEvalResult, r.Score.Kind, r.Method)
@@ -141,6 +141,22 @@ func validateScoreCoherence(method string, s Score) error {
 		if s.Confidence != nil {
 			return fmt.Errorf("%w: assertion score.confidence must be absent", ErrInvalidEvalResult)
 		}
+	case "gate":
+		if s.Passed == nil {
+			return fmt.Errorf("%w: gate score.passed required", ErrInvalidEvalResult)
+		}
+		if s.Value != nil {
+			return fmt.Errorf("%w: gate score.value must be absent", ErrInvalidEvalResult)
+		}
+		if s.Max != nil {
+			return fmt.Errorf("%w: gate score.max must be absent", ErrInvalidEvalResult)
+		}
+		if s.Winner != WinnerNone {
+			return fmt.Errorf("%w: gate score.winner must be absent", ErrInvalidEvalResult)
+		}
+		if s.Confidence != nil {
+			return fmt.Errorf("%w: gate score.confidence must be absent", ErrInvalidEvalResult)
+		}
 	}
 	return nil
 }
@@ -181,6 +197,13 @@ func validateMethodConfig(method string, rubric *RubricRef, assertion *Assertion
 		}
 		if assertion != nil {
 			return fmt.Errorf("%w: pairwise method must not have assertion config", ErrInvalidEvalResult)
+		}
+	case "gate":
+		if rubric != nil {
+			return fmt.Errorf("%w: gate method must not have rubric config", ErrInvalidEvalResult)
+		}
+		if assertion != nil {
+			return fmt.Errorf("%w: gate method must not have assertion config", ErrInvalidEvalResult)
 		}
 	}
 	return nil

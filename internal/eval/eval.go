@@ -13,6 +13,7 @@ const (
 	ScoreRubric    ScoreKind = "rubric"
 	ScorePairwise  ScoreKind = "pairwise"
 	ScoreAssertion ScoreKind = "assertion"
+	ScoreGate      ScoreKind = "gate"
 )
 
 // Winner is the pairwise outcome enum. Empty for non-pairwise.
@@ -84,6 +85,7 @@ type AssertionSpec struct {
 //	pairwise:  Kind=pairwise; Winner in {A,B,tie}; Value=Max=Passed=nil.
 //	rubric:    Kind=rubric; Value in [0,Max], Max>0 (non-nil); Winner=""; Passed=nil.
 //	assertion: Kind=assertion; Passed set (non-nil); Value=Max=nil; Winner="".
+//	gate:      Kind=gate; Passed set (non-nil); Value=Max=nil; Winner="".
 //
 // bench win-rate over a pairwise cohort:
 //
@@ -95,7 +97,7 @@ type Score struct {
 	Value      *float64 // rubric only
 	Max        *float64 // rubric only
 	Winner     Winner   // pairwise only
-	Passed     *bool    // assertion only
+	Passed     *bool    // assertion and gate only
 	Confidence *float64 // optional; pairwise only (omitempty)
 }
 
@@ -121,6 +123,8 @@ type Evaluation struct {
 //   - Targets are the artifact(s) being scored: len 1 for rubric/assertion,
 //     len 2 (A, B) for pairwise.
 //   - Context are unscored inputs the evaluator may read (task/plan/diff); optional.
+//     Gate evaluations use a context input with Role "gate-prompt" as the prompt
+//     variant convention; additional context inputs may be forwarded to the judge.
 //
 // Method is explicit — never inferred from which config pointer is set.
 type EvalRequest struct {

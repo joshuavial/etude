@@ -137,6 +137,9 @@ func (r *RubricEvaluator) Evaluate(ctx context.Context, req EvalRequest) (Evalua
 	if resp.Winner != WinnerNone {
 		return Evaluation{}, fmt.Errorf("%w: rubric response must not set winner", ErrJudgeOutputInvalid)
 	}
+	if resp.Passed != nil {
+		return Evaluation{}, fmt.Errorf("%w: rubric response must not set passed", ErrJudgeOutputInvalid)
+	}
 	if resp.Confidence != nil {
 		return Evaluation{}, fmt.Errorf("%w: rubric response must not set confidence", ErrJudgeOutputInvalid)
 	}

@@ -47,6 +47,7 @@ var ErrJudgeOutputTooLarge = errors.New("judge output too large")
 //	Value      → "value"      (*float64, omitempty) — required for rubric method
 //	Max        → "max"        (*float64, omitempty) — required for rubric method
 //	Winner     → "winner"     (string,   omitempty) — required for pairwise method (future)
+//	Passed     → "passed"     (*bool,    omitempty) — required for gate method
 //	Confidence → "confidence" (*float64, omitempty) — optional, pairwise only
 //	Findings   → "findings"   ([]object, omitempty) — optional structured observations
 //	  severity → "severity"   (string) — "info" | "warning" | "error"
@@ -82,12 +83,14 @@ var _ Judge = (*ExecJudge)(nil)
 //	Value      → "value"
 //	Max        → "max"
 //	Winner     → "winner"
+//	Passed     → "passed"
 //	Confidence → "confidence"
 //	Findings   → "findings"
 type judgeOutputJSON struct {
 	Value      *float64      `json:"value,omitempty"`
 	Max        *float64      `json:"max,omitempty"`
 	Winner     string        `json:"winner,omitempty"`
+	Passed     *bool         `json:"passed,omitempty"`
 	Confidence *float64      `json:"confidence,omitempty"`
 	Findings   []findingWire `json:"findings,omitempty"`
 }
@@ -257,6 +260,7 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
 		Value:      wire.Value,
 		Max:        wire.Max,
 		Winner:     Winner(wire.Winner),
+		Passed:     wire.Passed,
 		Confidence: wire.Confidence,
 	}
 	if len(wire.Findings) > 0 {
@@ -291,6 +295,9 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
 		if w.Winner != "" {
 			return fmt.Errorf("%w: rubric method must not set winner", ErrJudgeOutputInvalid)
 		}
+		if w.Passed != nil {
+			return fmt.Errorf("%w: rubric method must not set passed", ErrJudgeOutputInvalid)
+		}
 		if w.Confidence != nil {
 			return fmt.Errorf("%w: rubric method must not set confidence", ErrJudgeOutputInvalid)
 		}
@@ -305,8 +312,27 @@ func validateJudgeOutput(method string, w judgeOutputJSON) error {
 		if w.Max != nil {
 			return fmt.Errorf("%w: pairwise method must not set max", ErrJudgeOutputInvalid)
 		}
+		if w.Passed != nil {
+			return fmt.Errorf("%w: pairwise method must not set passed", ErrJudgeOutputInvalid)
+		}
 		if w.Confidence != nil && (*w.Confidence < 0 || *w.Confidence > 1) {
 			return fmt.Errorf("%w: pairwise confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *w.Confidence)
+		}
+	case "gate":
+		if w.Passed == nil {
+			return fmt.Errorf("%w: gate method requires passed", ErrJudgeOutputInvalid)
+		}
+		if w.Value != nil {
+			return fmt.Errorf("%w: gate method must not set value", ErrJudgeOutputInvalid)
+		}
+		if w.Max != nil {
+			return fmt.Errorf("%w: gate method must not set max", ErrJudgeOutputInvalid)
+		}
+		if w.Winner != "" {
+			return fmt.Errorf("%w: gate method must not set winner", ErrJudgeOutputInvalid)
+		}
+		if w.Confidence != nil {
+			return fmt.Errorf("%w: gate method must not set confidence", ErrJudgeOutputInvalid)
 		}
 	default:
 		return fmt.Errorf("%w: unsupported method %q", ErrJudgeOutputInvalid, method)

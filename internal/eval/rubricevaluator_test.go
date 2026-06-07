@@ -337,6 +337,7 @@ func TestRubricEvaluator_MalformedJudgeResponse_Matrix(t *testing.T) {
 	m := 10.0
 	winnerA := WinnerA
 	conf := 0.9
+	passed := true
 
 	tests := []struct {
 		name string
@@ -361,6 +362,10 @@ func TestRubricEvaluator_MalformedJudgeResponse_Matrix(t *testing.T) {
 		{
 			name: "winner set for rubric",
 			resp: JudgeResponse{Value: &v, Max: &m, Winner: winnerA},
+		},
+		{
+			name: "passed set for rubric",
+			resp: JudgeResponse{Value: &v, Max: &m, Passed: &passed},
 		},
 		{
 			name: "confidence set for rubric",

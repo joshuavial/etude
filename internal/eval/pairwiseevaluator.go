@@ -246,6 +246,9 @@ func checkResponseCoherence(resp JudgeResponse) error {
 	if resp.Max != nil {
 		return fmt.Errorf("%w: pairwise response must not set max", ErrJudgeOutputInvalid)
 	}
+	if resp.Passed != nil {
+		return fmt.Errorf("%w: pairwise response must not set passed", ErrJudgeOutputInvalid)
+	}
 	if resp.Confidence != nil && (*resp.Confidence < 0 || *resp.Confidence > 1) {
 		return fmt.Errorf("%w: pairwise response confidence must be in [0, 1], got %v", ErrJudgeOutputInvalid, *resp.Confidence)
 	}
