@@ -107,7 +107,14 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 	engine := &liverun.Engine{
 		Store:         refstore.New(root),
 		ResolveRunner: resolveRunner,
-		Root:          root,
+		ResolveCheck: func(r workflow.Runner) (liverun.CheckRunner, error) {
+			return liverun.ResolveCheckRunner(reg, r, timeout)
+		},
+		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
+			return liverun.ResolveGateSeat(reg, seatName, timeout)
+		},
+		Tiers: liverun.ResolveTiers(reg),
+		Root:  root,
 	}
 
 	opts := liverun.RunOptions{
@@ -124,6 +131,10 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 			// Print only the resume hint here; the error itself is printed once
 			// by the root command from the returned err (avoid a double print).
 			fmt.Fprintf(errOut, "resume with: etude run %s --resume %s\n", workflowName, stageErr.RunID)
+		}
+		var gateEscErr *liverun.GateEscalationError
+		if errors.As(err, &gateEscErr) {
+			fmt.Fprintf(errOut, "gate escalation: resume with: etude run %s --resume %s\n", workflowName, gateEscErr.RunID)
 		}
 		return err
 	}

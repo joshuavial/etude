@@ -190,6 +190,57 @@ characters other than letters, digits, `-`, `_`, and `.`.
 Reserved workflow names `show` and `list` are rejected with a clear error
 because they are shadowed by the `run` subcommands.
 
+### Gate execution
+
+When a workflow stage carries a `gate` block, the engine runs it after the
+stage completes, before advancing to the next stage.
+
+A gate has two seat kinds:
+
+- **checks** — deterministic runners (scripts, lint, tests). The runner is
+  invoked through the external-runner contract (`ETUDE_INPUTS_DIR`,
+  `ETUDE_OUTPUT_FILE`). Exit 0 passes; any nonzero exit, launch failure, or
+  timeout is a hard BLOCK — no threshold applies, and even a unanimous seat
+  `go` cannot override a failing check.
+- **seats** — model/variant runners that write a verdict JSON envelope to
+  `ETUDE_OUTPUT_FILE`:
+
+  ```json
+  {"verdict":"go","required":[],"optional":[]}
+  ```
+
+  `verdict` is `"go"` or `"block"`. `required` lists required changes on a
+  block; `optional` lists suggestions on a go. Seats that cannot launch, time
+  out, produce no output, or produce non-JSON output are recorded as
+  `failed`/`empty`/`malfunction` and excluded from the vote count.
+
+**Synthesis** is fail-closed:
+
+1. Any failing check → not a pass (skip seat vote).
+2. Checks-only gate (no seats), all checks pass → **pass**.
+3. Usable seat count (valid envelope received) < min(2, configured seats) →
+   **escalated** (insufficient usable seats; escalation_reason recorded).
+4. `goCount / usableCount >= pass_threshold` (default 1.0) → **pass**;
+   otherwise not a pass.
+5. Not-pass with rounds remaining → **rerun**; rounds exhausted → **escalated**.
+
+On **rerun**: the engine builds a `gate-feedback` artifact (failed check
+details + blocking seats' `required[]`) and re-runs the guarded stage with
+that artifact appended to its inputs (role `gate-feedback`). The re-run stage
+is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
+against its output.
+
+On **escalated**: the engine advances the tier ladder toward L1 (strongest)
+and re-runs the gate against the latest stage output at the stronger tier. If
+no stronger tier exists (already at L1, or the gate used inline seats with no
+tier ladder), the run halts with a `GateEscalationError` — the partial run is
+valid, inspectable via `etude run show`, and resumable.
+
+Each gate attempt is recorded automatically as a `GateAttempt` in the run
+manifest (`manifest_version` 3); gate attempts appear after stages in
+`etude run show`. No separate `etude capture-gate` call is required for live
+runs.
+
 ### Forward replay
 
 Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
@@ -210,9 +261,6 @@ prints the failure to stderr, and exits non-zero:
 stage "<name>" failed: <error>
 resume with: etude run <workflow> --resume <id>
 ```
-
-A stage that carries a `gate` block logs `gate "<name>" deferred to etude-04i`
-and runs without gate evaluation; live gate execution is not yet wired.
 
 To continue from where the run stopped:
 

@@ -1,9 +1,9 @@
 # Live execution (`etude run`) — design
 
 Status: mixed. §1 (live workflow orchestration) is **implemented** as of bead
-etude-xin. §2 (live gate execution) and §3 (scoped secret passthrough) remain
-**planned**. Durable failed-stage status capture (decision 6 below) is
-deferred to bead etude-dp7.
+etude-xin. §2 (live gate execution) is **implemented** as of bead etude-04i.
+§3 (scoped secret passthrough) remains **planned**. Durable failed-stage
+status capture (decision 6 below) is deferred to bead etude-dp7.
 
 Today etude supports both capture-and-replay and live orchestration: it records
 runs, `etude replay <run-id> <stage>` re-runs a single recorded stage, and
@@ -98,8 +98,8 @@ What is implemented:
   run.
 - On a stage failure (non-zero/timeout) outside a gate: stop and leave the
   partial run. Resume later with `etude run --resume <id>` from the frontier
-  (first stage not yet captured). Gate blocks in the workflow schema are
-  read but treated as a no-op (deferred to etude-04i).
+  (first stage not yet captured). Gate blocks in workflow stages are executed
+  during the run (see §2).
 - Forward replay: `etude replay <run-id>` (1 arg) re-runs all stages in order
   in a single evolving worktree using recorded (content-addressed) inputs.
   `etude replay <run-id> <stage>` (2 args) retains the original single-stage
@@ -121,11 +121,11 @@ stages; failure is surfaced via nonzero exit and stderr only.
 
 ## 2. Live gate execution
 
-**Planned (etude-04i).** Gate execution during a live run is not yet built.
-`etude capture-gate` records reviewer verdicts after the fact (capture-only).
-Gate blocks in a workflow stage schema are read but treated as a no-op.
+**Implemented (etude-04i).** Gate blocks in workflow stages are now executed
+during live runs. See [docs/run.md](../run.md#gate-execution) for user-facing
+documentation.
 
-**Planned:** gate execution during a live run that:
+What is implemented:
 
 - A gate is attached to the stage it guards (`stage.gate`), with two seat kinds:
   - **checks** — deterministic runners (tests/build/lint); any failure is a hard
@@ -141,13 +141,14 @@ Gate blocks in a workflow stage schema are read but treated as a no-op.
 - Drives the loop: `rerun` re-runs the guarded stage with seat feedback and
   increments the round (`<stage>.r<round>`); `escalated` advances the tier
   (stronger / more seats, or human).
-- Calls `capture-gate` for the executed outcome automatically.
+- Records each gate attempt automatically through the existing `capture-gate`
+  path (no CLI subprocess; the engine writes directly to the manifest).
 
 Gate config lives on the stage (`checks`, `seats`/`tier`, `pass_threshold`,
 `max_rounds`, `abstraction`); seat/tier *definitions* live in the shared
 registry (the former `gates.yaml`).
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
 - A workflow stage with a gate runs its checks + seats live and records a gate
   attempt with the synthesized verdict.

@@ -62,6 +62,18 @@ type Engine struct {
 	// ResolveRunner returns a runner for the given stage.
 	// Tests inject a StubRunner; production code resolves from workflow/registry config.
 	ResolveRunner func(stage workflow.Stage) (replay.Runner, error)
+	// ResolveCheck resolves a CheckRunner for a gate check.
+	// Required when any stage has a gate with checks configured.
+	// Tests inject a stub; production wires from registry.
+	ResolveCheck func(r workflow.Runner) (CheckRunner, error)
+	// ResolveSeat resolves a seat runner and its provider/harness metadata.
+	// Required when any stage has a gate with seats or a tier configured.
+	// Tests inject a stub returning canned envelope JSON.
+	ResolveSeat func(seatName string) (replay.Runner, SeatMeta, error)
+	// Tiers returns the seat names and next-stronger tier name for a given
+	// registry tier name. Returns ok=false when the tier is not found.
+	// Required when any stage has a gate with a Tier configured.
+	Tiers func(tierName string) (seats []string, nextStronger string, ok bool)
 	// Root is the repository root directory used for worktree checkout and HEAD resolution.
 	Root string
 	// Now returns the current time. Defaults to time.Now when nil.
@@ -242,13 +254,12 @@ func (e *Engine) executeStages(
 	completedStages := make([]runmanifest.Stage, len(preCompleted), len(wf.Stages))
 	copy(completedStages, preCompleted)
 
+	// gateAttempts accumulates across all gates in this run so each
+	// subsequent manifest write carries the full history.
+	var gateAttempts []runmanifest.GateAttempt
+
 	for i, stage := range wf.Stages[frontier:] {
 		stageIdx := frontier + i
-
-		// Gate block is a NO-OP in this bead (etude-04i executes gates).
-		if stage.Gate != nil {
-			fmt.Fprintf(out, "gate %q deferred to etude-04i\n", stage.Name)
-		}
 
 		// Build inputs from chain.
 		var inputRefs []runmanifest.ArtifactRef
@@ -273,84 +284,141 @@ func (e *Engine) executeStages(
 			})
 		}
 
-		runner, err := e.ResolveRunner(stage)
-		if err != nil {
-			return &StageError{StageName: stage.Name, RunID: runID, Err: err}
-		}
-
-		stageSkill := runmanifest.Skill{
-			ID:      stage.Skill,
-			Repo:    "manual",
-			Version: "manual",
-		}
-		producer := runmanifest.Producer{Skill: stageSkill}
-
 		// Per-stage scratch subdir avoids output file collision between stages.
 		stageScratch := fmt.Sprintf("%s/stage%02d", scratch, stageIdx)
 		if err := os.MkdirAll(stageScratch, 0o755); err != nil {
 			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("mkdir stage scratch: %w", err)}
 		}
 
-		res, err := runner.Run(ctx, replay.RunRequest{
-			WorktreeDir:     worktreeDir,
-			ScratchDir:      stageScratch,
-			Inputs:          runInputs,
-			OutputRole:      stage.Produces,
-			OutputMediaType: "application/octet-stream",
-			Producer:        producer,
-		})
+		outputRef, outputContent, newStages, newCommit, err := e.runAndCaptureStage(
+			ctx, out, runID, gitSHA, created, wf,
+			stage, stage.Name, inputRefs, runInputs,
+			stageScratch, as, completedStages, gateAttempts, prevCommit, worktreeDir,
+		)
 		if err != nil {
 			return &StageError{StageName: stage.Name, RunID: runID, Err: err}
 		}
-
-		outputMediaType := res.MediaType
-		if outputMediaType == "" {
-			outputMediaType = "application/octet-stream"
-		}
-		outputArtifact, err := as.AddContent(stage.Produces, outputMediaType, res.Output)
-		if err != nil {
-			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("store output: %w", err)}
-		}
-		outputRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
-		chain[stage.Produces] = roleArtifact{ref: outputRef, content: res.Output}
-
-		completedStages = append(completedStages, runmanifest.Stage{
-			Name:       stage.Name,
-			ProducedBy: "original",
-			GitSHA:     gitSHA,
-			Skill:      stageSkill,
-			Producer:   producer,
-			Inputs:     inputRefs,
-			Output:     outputRef,
-			Timestamp:  e.clock(),
-		})
-
-		manifest := runmanifest.Manifest{
-			RunID:           runID,
-			Workflow:        wf.Name,
-			WorkflowVersion: wf.Name + "-v1",
-			Created:         created,
-			Refs:            map[string]string{},
-			Stages:          completedStages,
-		}
-
-		newCommit, err := runmanifest.WriteManifestTree(
-			ctx, e.Store, runsPrefix, manifest,
-			filesForManifest(manifest, as),
-			refstore.WriteOptions{
-				ExpectedOld: prevCommit,
-				Message:     fmt.Sprintf("live run %s: stage %s", runID, stage.Name),
-			},
-		)
-		if err != nil {
-			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("write manifest: %w", err)}
-		}
+		completedStages = newStages
 		prevCommit = newCommit
-		fmt.Fprintf(out, "captured %s\n", newCommit)
+		chain[stage.Produces] = roleArtifact{ref: outputRef, content: outputContent}
+
+		// Execute the gate when configured.
+		if stage.Gate != nil {
+			allAttempts, updatedStages, newCommit2, finalOutputRef, finalOutputContent, gateErr := e.runGate(
+				ctx, out, runID, gitSHA, created, wf,
+				stage, stageIdx, inputRefs, runInputs,
+				as, completedStages, gateAttempts, prevCommit,
+				outputRef, outputContent, worktreeDir, scratch,
+			)
+			if gateErr != nil {
+				return gateErr // GateEscalationError or infra error
+			}
+			gateAttempts = allAttempts
+			completedStages = updatedStages
+			prevCommit = newCommit2
+			chain[stage.Produces] = roleArtifact{ref: finalOutputRef, content: finalOutputContent}
+		}
 	}
 
 	fmt.Fprintf(out, "ref %s%s\n", runsPrefix, runID)
 	return nil
+}
+
+// runAndCaptureStage executes a single stage run: resolves the runner,
+// invokes it, stores the output artifact, appends the Stage record to
+// completedStages, and writes an incremental CAS manifest commit.
+//
+// stageName may differ from stage.Name for gate-rerun stages (e.g. "plan.r2").
+// scratchSubDir must be pre-created by the caller.
+// gateAttempts are included in the manifest write for consistency.
+//
+// Returns the output ArtifactRef, output bytes, updated completedStages slice,
+// new CAS commit OID, and any error.
+func (e *Engine) runAndCaptureStage(
+	ctx context.Context,
+	out io.Writer,
+	runID, gitSHA string,
+	created time.Time,
+	wf workflow.Workflow,
+	stage workflow.Stage,
+	stageName string,
+	inputRefs []runmanifest.ArtifactRef,
+	runInputs []replay.RunInput,
+	scratchSubDir string,
+	as *artifactstore.Store,
+	completedStages []runmanifest.Stage,
+	gateAttempts []runmanifest.GateAttempt,
+	prevCommit string,
+	worktreeDir string,
+) (outputRef runmanifest.ArtifactRef, outputContent []byte, newCompletedStages []runmanifest.Stage, newCommit string, returnErr error) {
+	runner, err := e.ResolveRunner(stage)
+	if err != nil {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+	}
+
+	stageSkill := runmanifest.Skill{
+		ID:      stage.Skill,
+		Repo:    "manual",
+		Version: "manual",
+	}
+	producer := runmanifest.Producer{Skill: stageSkill}
+
+	res, err := runner.Run(ctx, replay.RunRequest{
+		WorktreeDir:     worktreeDir,
+		ScratchDir:      scratchSubDir,
+		Inputs:          runInputs,
+		OutputRole:      stage.Produces,
+		OutputMediaType: "application/octet-stream",
+		Producer:        producer,
+	})
+	if err != nil {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+	}
+
+	outputMediaType := res.MediaType
+	if outputMediaType == "" {
+		outputMediaType = "application/octet-stream"
+	}
+	outputArtifact, err := as.AddContent(stage.Produces, outputMediaType, res.Output)
+	if err != nil {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store output: %w", err)
+	}
+	outRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
+
+	newStages := append(append([]runmanifest.Stage(nil), completedStages...), runmanifest.Stage{
+		Name:       stageName,
+		ProducedBy: "original",
+		GitSHA:     gitSHA,
+		Skill:      stageSkill,
+		Producer:   producer,
+		Inputs:     inputRefs,
+		Output:     outRef,
+		Timestamp:  e.clock(),
+	})
+
+	manifest := runmanifest.Manifest{
+		RunID:           runID,
+		Workflow:        wf.Name,
+		WorkflowVersion: wf.Name + "-v1",
+		Created:         created,
+		Refs:            map[string]string{},
+		Stages:          newStages,
+		Gates:           gateAttempts,
+	}
+
+	newCommit, err = runmanifest.WriteManifestTree(
+		ctx, e.Store, runsPrefix, manifest,
+		filesForManifest(manifest, as),
+		refstore.WriteOptions{
+			ExpectedOld: prevCommit,
+			Message:     fmt.Sprintf("live run %s: stage %s", runID, stageName),
+		},
+	)
+	if err != nil {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("write manifest: %w", err)
+	}
+	fmt.Fprintf(out, "captured %s\n", newCommit)
+	return outRef, res.Output, newStages, newCommit, nil
 }
 
 // filesForManifest returns only the artifact files referenced by the manifest.

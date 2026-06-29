@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,73 @@ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workf
 		Timeout:        timeout,
 		MaxOutputBytes: 64 << 20,
 	}, nil
+}
+
+// ResolveCheckRunner returns a CheckRunner for the given gate check runner config.
+// Inline Command runners are wrapped in execCheckRunner; Name runners are looked
+// up in the registry seats map to get the Invoke command.
+func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.Duration) (CheckRunner, error) {
+	var cmd string
+	if r.Command != "" {
+		cmd = r.Command
+	} else {
+		seat, ok := reg.Seats[r.Name]
+		if !ok {
+			return nil, fmt.Errorf("check runner name %q not found in registry", r.Name)
+		}
+		cmd = seat.Invoke
+	}
+	return &execCheckRunner{
+		command: strings.Fields(cmd),
+		timeout: timeout,
+	}, nil
+}
+
+// ResolveGateSeat returns a replay.Runner and SeatMeta for a named seat.
+// The runner is an ExecRunner built from the seat's Invoke command with
+// Timeout and MaxOutputBytes set (matching buildRunnerFactory).
+// SeatMeta carries the split provider name and model from Seat.Provider.
+func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration) (replay.Runner, SeatMeta, error) {
+	seat, ok := reg.Seats[seatName]
+	if !ok {
+		return nil, SeatMeta{}, fmt.Errorf("seat %q not found in registry", seatName)
+	}
+	providerName, model := splitProvider(seat.Provider)
+	meta := SeatMeta{
+		HarnessName:  seat.Harness,
+		ProviderName: providerName,
+		Model:        model,
+	}
+	runner := &replay.ExecRunner{
+		Command:        strings.Fields(seat.Invoke),
+		Timeout:        timeout,
+		MaxOutputBytes: 64 << 20,
+	}
+	return runner, meta, nil
+}
+
+// ResolveTiers returns a Tiers function that resolves tier seat lists and
+// next-stronger tier names from the registry. The tier ladder is ordered by
+// numeric suffix toward L1 (strongest): L3 → L2 → L1.
+func ResolveTiers(reg registry.Registry) func(string) ([]string, string, bool) {
+	return func(name string) ([]string, string, bool) {
+		tier, ok := reg.Tiers[name]
+		if !ok {
+			return nil, "", false
+		}
+		// Compute next stronger tier by decrementing the numeric suffix.
+		nextStronger := ""
+		if len(name) >= 2 && name[0] == 'L' {
+			n, err := strconv.Atoi(name[1:])
+			if err == nil && n > 1 {
+				candidate := fmt.Sprintf("L%d", n-1)
+				if _, exists := reg.Tiers[candidate]; exists {
+					nextStronger = candidate
+				}
+			}
+		}
+		return tier.Seats, nextStronger, true
+	}
 }
 
 // DeriveFrontier returns the index of the first workflow stage whose Produces role
