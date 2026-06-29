@@ -18,14 +18,14 @@ quorum: unanimous
 tiers:
   L1:
     name: Full four-seat gate
-    seats: [gemini, opus, codex, grok]
+    seats: [gemini, opus, codex]
     use: >-
       Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage
       format / ref-namespace / git-plumbing changes that could lose or corrupt
       data, or break backward compatibility.
   L2:
     name: Strong three-seat gate
-    seats: [opus, codex, grok]
+    seats: [opus, codex]
     use: >-
       The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any
       change touching product/CLI behavior, schema/format, refs/etude/*, or docs
@@ -44,7 +44,7 @@ tiers:
       (test-only additions or docs/planning-only changes).
 
 # Per-phase gate strength for the dev-workflow loop (escalate UP on risk).
-# PLAN and VERIFY are the heavy-QA gates (grok included). Each entry also pins
+# PLAN and VERIFY are the heavy-QA gates. Each entry also pins
 # the ABSTRACTION LEVEL the gate prompt must tell seats to review at, so a plan
 # gate does not spiral on implementation minutiae (push those to OPTIONAL / the
 # implement+verify gates, where a failing test settles disputes objectively).
@@ -97,9 +97,3 @@ seats:
     invoke: "env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p"
     model_fallbacks: [gemini-3-pro-preview, gemini-3-flash-preview, gemini-2.5-pro]
     mode: inline-no-tools                   # inline the code; reason WITHOUT calling tools (its GrepTool bleeds across files)
-  grok:
-    provider: xai/grok-build
-    harness: grok
-    invoke: "grok --prompt-file - -m grok-build"  # large prompts via --prompt-file <path>; -p <text> for short
-    model_fallbacks: [grok-composer-2.5-fast]
-    mode: inline-no-tools                   # agentic CLI — inline the artifact; tell it to reason without tools/web
