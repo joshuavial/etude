@@ -1,5 +1,12 @@
 # Agent Instructions
 
+## Skills
+
+Agent skills must be symlinked so `.claude/skills` and `.agent/skills` resolve to
+the same directory, in user space (`~`) and in this project. `.claude/skills`
+holds the real skills; `.agent/skills` is a symlink to it. Ensure this link
+exists when adding/removing skills or setting up the repo.
+
 ## Issue Tracking
 
 This project uses **bd (beads)** for issue tracking with embedded Dolt storage.
