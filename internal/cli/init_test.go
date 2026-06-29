@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/joshuavial/etude/internal/registry"
 	"github.com/joshuavial/etude/internal/workflow"
 )
 
@@ -86,6 +87,77 @@ func TestInitCreatesScaffoldAndRefspecs(t *testing.T) {
 	// Output must mention "created" lines.
 	if !strings.Contains(stdout, "created") {
 		t.Fatalf("init stdout did not mention 'created': %q", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Registry.yaml scaffold tests
+// ---------------------------------------------------------------------------
+
+// TestInitCreatesRegistryYAML asserts that etude init creates .etude/registry.yaml
+// and that it is parseable by registry.ParseYAML.
+func TestInitCreatesRegistryYAML(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	regPath := filepath.Join(repo, ".etude", "registry.yaml")
+	content, err := os.ReadFile(regPath)
+	if err != nil {
+		t.Fatalf("registry.yaml not created: %v", err)
+	}
+	if _, err := registry.ParseYAML(content); err != nil {
+		t.Fatalf("registry.ParseYAML failed on scaffolded file: %v", err)
+	}
+}
+
+// TestInitDryRunListsRegistryYAML asserts that --dry-run lists registry.yaml in
+// its output (plan: create ... registry.yaml).
+func TestInitDryRunListsRegistryYAML(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("init", "--dry-run")
+	if err != nil {
+		t.Fatalf("init --dry-run returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "registry.yaml") {
+		t.Fatalf("--dry-run output missing 'registry.yaml': %q", stdout)
+	}
+}
+
+// TestInitForceRegeneratesRegistryYAML asserts that --force recreates registry.yaml
+// even when it already exists.
+func TestInitForceRegeneratesRegistryYAML(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	// First run: create registry.yaml.
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("first init error: %v\nstderr: %s", err, stderr)
+	}
+	regPath := filepath.Join(repo, ".etude", "registry.yaml")
+
+	// Overwrite with garbage.
+	if err := os.WriteFile(regPath, []byte("garbage\n"), 0o644); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+
+	// --force must regenerate.
+	if _, stderr, err := execute("init", "--force"); err != nil {
+		t.Fatalf("init --force error: %v\nstderr: %s", err, stderr)
+	}
+	content, err := os.ReadFile(regPath)
+	if err != nil {
+		t.Fatalf("read registry.yaml after --force: %v", err)
+	}
+	if _, err := registry.ParseYAML(content); err != nil {
+		t.Fatalf("registry.yaml not valid after --force: %v", err)
 	}
 }
 
@@ -638,7 +710,7 @@ func TestInitSummaryCounts(t *testing.T) {
 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
 	chdir(t, repo)
 
-	// Count how many files will be created (workflow.yaml + rubrics).
+	// Count how many files will be created.
 	wf := workflow.Default()
 	rubricCount := 0
 	for _, s := range wf.Stages {
@@ -646,7 +718,7 @@ func TestInitSummaryCounts(t *testing.T) {
 			rubricCount++
 		}
 	}
-	expectedCreated := 1 + rubricCount // workflow.yaml + rubrics
+	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
 
 	// First run: all created + 2 configured (fetch + push).
 	stdout, stderr, err := execute("init")

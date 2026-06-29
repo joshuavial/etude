@@ -34,10 +34,67 @@ var validEvalMethods = map[string]bool{
 	"assertion": true,
 }
 
+// Runner identifies a step executor by registry seat name OR inline shell
+// command.  Exactly one of Name or Command must be non-empty; the two fields
+// are mutually exclusive.
+type Runner struct {
+	// Name is a registry seat reference (e.g. "opus").
+	Name string
+	// Command is an inline shell command (e.g. "make test").
+	Command string
+}
+
+// GateConfig holds the optional gate block for a stage, defining how the
+// stage output is reviewed.  At least one of Checks, Seats, or Tier must be
+// set (an explicit empty checks: [] list is treated as unset).
+type GateConfig struct {
+	// Checks holds deterministic hard-veto runners.  An explicit empty list
+	// is treated as absent; a gate with only Checks: [] and no Seats/Tier is
+	// invalid.
+	Checks []Runner
+	// Seats holds an inline list of seat names that vote on the stage output.
+	// Mutually exclusive with Tier.
+	Seats []string
+	// Tier is a registry tier reference (e.g. "L2").  Mutually exclusive with
+	// Seats.
+	Tier string
+	// PassThreshold is the weighted pass fraction for seat votes.  Nil means
+	// the default (1.0 — unanimous).  Must be 0 < t ≤ 1 when set.
+	PassThreshold *float64
+	// MaxRounds is the maximum number of gate rounds before escalation.  Nil
+	// means the default (3).  Must be ≥ 1 when set.
+	MaxRounds *int
+	// Abstraction is free prose describing the altitude at which seats should
+	// review.  No format constraint; no validation applied.
+	Abstraction string
+}
+
+// EffectivePassThreshold returns the pass threshold, defaulting to 1.0 when
+// PassThreshold is nil (or when g is nil).
+func (g *GateConfig) EffectivePassThreshold() float64 {
+	if g == nil || g.PassThreshold == nil {
+		return 1.0
+	}
+	return *g.PassThreshold
+}
+
+// EffectiveMaxRounds returns the max rounds, defaulting to 3 when MaxRounds
+// is nil (or when g is nil).
+func (g *GateConfig) EffectiveMaxRounds() int {
+	if g == nil || g.MaxRounds == nil {
+		return 3
+	}
+	return *g.MaxRounds
+}
+
 // Workflow is the top-level model for .etude/workflow.yaml.
 type Workflow struct {
 	Name   string
 	Stages []Stage
+	// DefaultRunner is the optional workflow-level runner, applied to any
+	// stage that does not specify its own runner.  Nil means no default is
+	// configured.
+	DefaultRunner *Runner
 	// Retros holds the optional retros: block from workflow.yaml.  Nil means
 	// the block is absent (legacy / Default()).  A non-nil pointer means the
 	// operator explicitly authored the block.  Use the accessor methods on
@@ -198,6 +255,12 @@ type Stage struct {
 	// Eval holds the evaluation configuration for this stage.  May be nil
 	// (no eval configured).
 	Eval *Eval
+	// Runner is an optional runner binding for this stage.  Nil means the
+	// stage uses the workflow-level DefaultRunner (if set) or no runner.
+	Runner *Runner
+	// Gate is the optional gate configuration for this stage.  Nil means no
+	// gate review is configured.
+	Gate *GateConfig
 }
 
 // Eval holds the evaluation configuration for a stage.
@@ -235,6 +298,11 @@ func (w Workflow) Validate() error {
 
 	if err := validateRetros(w); err != nil {
 		return err
+	}
+	if w.DefaultRunner != nil {
+		if err := validateRunner("default_runner", w.DefaultRunner); err != nil {
+			return err
+		}
 	}
 
 	for i, s := range w.Stages {
@@ -303,6 +371,16 @@ func (w Workflow) Validate() error {
 				return err
 			}
 		}
+		if s.Runner != nil {
+			if err := validateRunner(prefix+".runner", s.Runner); err != nil {
+				return err
+			}
+		}
+		if s.Gate != nil {
+			if err := validateGate(prefix+".gate", s.Gate); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -320,6 +398,59 @@ func validateEval(prefix string, e *Eval) error {
 		if strings.TrimSpace(e.Rubric) != "" {
 			return fmt.Errorf("%w: %s rubric path must not be set for method %q", ErrInvalidWorkflow, prefix, e.Method)
 		}
+	}
+	return nil
+}
+
+// validateRunner checks a Runner value.  Exactly one of Name or Command must
+// be set; both set or both empty are errors.  Name (when set) is validated
+// against the manifest identifier charset.
+func validateRunner(prefix string, r *Runner) error {
+	if r.Name == "" && r.Command == "" {
+		return fmt.Errorf("%w: %s: requires name or command", ErrInvalidWorkflow, prefix)
+	}
+	if r.Name != "" && r.Command != "" {
+		return fmt.Errorf("%w: %s: only one of name or command may be set", ErrInvalidWorkflow, prefix)
+	}
+	if r.Name != "" {
+		for _, ch := range r.Name {
+			if !isIdentChar(ch) {
+				return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateGate checks a GateConfig value.  At least one of checks (non-empty),
+// seats, or tier must be set.  Seats and tier are mutually exclusive.
+// PassThreshold must be in (0,1] when set; MaxRounds must be >= 1 when set.
+// An explicit checks: [] (empty slice) is treated as unset.
+// Abstraction is free prose with no validation constraint.
+func validateGate(prefix string, g *GateConfig) error {
+	for i := range g.Checks {
+		c := g.Checks[i]
+		if err := validateRunner(fmt.Sprintf("%s.checks[%d]", prefix, i), &c); err != nil {
+			return err
+		}
+	}
+	hasChecks := len(g.Checks) > 0
+	hasSeats := len(g.Seats) > 0
+	hasTier := g.Tier != ""
+	if !hasChecks && !hasSeats && !hasTier {
+		return fmt.Errorf("%w: %s: empty gate: at least one of checks, seats, or tier must be set", ErrInvalidWorkflow, prefix)
+	}
+	if hasSeats && hasTier {
+		return fmt.Errorf("%w: %s: seats and tier are mutually exclusive", ErrInvalidWorkflow, prefix)
+	}
+	if g.PassThreshold != nil {
+		pt := *g.PassThreshold
+		if pt <= 0 || pt > 1 {
+			return fmt.Errorf("%w: %s.pass_threshold must be 0 < t <= 1, got %g", ErrInvalidWorkflow, prefix, pt)
+		}
+	}
+	if g.MaxRounds != nil && *g.MaxRounds < 1 {
+		return fmt.Errorf("%w: %s.max_rounds must be >= 1, got %d", ErrInvalidWorkflow, prefix, *g.MaxRounds)
 	}
 	return nil
 }
@@ -505,18 +636,23 @@ func Default() Workflow {
 // workflowYAML is the internal struct used for YAML decode/encode, with
 // yaml struct tags.  It is the counterpart to manifestJSON in runmanifest.
 //
-// Retros is a yaml.Node rather than *retrosYAML so that presence detection is
-// possible: a zero Node (Kind == 0) means the key was absent; any non-zero Node
-// means the key was present, even when its value is bare/null.  This lets
-// present-null behave identically to present-empty ({}) rather than silently
-// collapsing to absent.  The omitempty tag suppresses a zero Node on re-encode
-// so absent → nil Workflow.Retros → no retros: key in the output.
+// Retros and DefaultRunner are yaml.Node rather than typed structs so that
+// presence detection is possible: a zero Node (Kind == 0) means the key was
+// absent; any non-zero Node means the key was present, even when its value is
+// bare/null.  This lets present-null behave identically to present-empty ({})
+// rather than silently collapsing to absent.  The omitempty tag suppresses a
+// zero Node on re-encode so absent fields emit nothing in the output.
 type workflowYAML struct {
-	Name   string      `yaml:"name"`
-	Stages []stageYAML `yaml:"stages"`
-	Retros yaml.Node   `yaml:"retros,omitempty"`
+	Name          string      `yaml:"name"`
+	DefaultRunner yaml.Node   `yaml:"default_runner,omitempty"`
+	Stages        []stageYAML `yaml:"stages"`
+	Retros        yaml.Node   `yaml:"retros,omitempty"`
 }
 
+// stageYAML is the decode/encode counterpart to Stage.  Runner and Gate are
+// yaml.Node fields for the same presence-detection reason as workflowYAML.Retros:
+// a bare `runner:` key must be treated as present (not absent), and omitempty
+// on a zero Node suppresses the field for legacy stages that have neither.
 type stageYAML struct {
 	Name     string    `yaml:"name"`
 	Produces string    `yaml:"produces"`
@@ -524,6 +660,24 @@ type stageYAML struct {
 	Skill    string    `yaml:"skill"`
 	Optional bool      `yaml:"optional,omitempty"`
 	Eval     *evalYAML `yaml:"eval,omitempty"`
+	Runner   yaml.Node `yaml:"runner,omitempty"`
+	Gate     yaml.Node `yaml:"gate,omitempty"`
+}
+
+// runnerYAML is the decode/encode counterpart to Runner.
+type runnerYAML struct {
+	Name    string `yaml:"name,omitempty"`
+	Command string `yaml:"command,omitempty"`
+}
+
+// gateYAML is the decode/encode counterpart to GateConfig.
+type gateYAML struct {
+	Checks        []runnerYAML `yaml:"checks,omitempty"`
+	Seats         []string     `yaml:"seats,omitempty"`
+	Tier          string       `yaml:"tier,omitempty"`
+	PassThreshold *float64     `yaml:"pass_threshold,omitempty"`
+	MaxRounds     *int         `yaml:"max_rounds,omitempty"`
+	Abstraction   string       `yaml:"abstraction,omitempty"`
 }
 
 type evalYAML struct {
@@ -572,9 +726,39 @@ func (w Workflow) toYAML() workflowYAML {
 		if s.Eval != nil {
 			sy.Eval = &evalYAML{Method: s.Eval.Method, Rubric: s.Eval.Rubric}
 		}
+		if s.Runner != nil {
+			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
+			var n yaml.Node
+			if err := n.Encode(rn); err == nil {
+				sy.Runner = n
+			}
+		}
+		if s.Gate != nil {
+			gy := gateYAML{
+				Seats:         s.Gate.Seats,
+				Tier:          s.Gate.Tier,
+				PassThreshold: s.Gate.PassThreshold,
+				MaxRounds:     s.Gate.MaxRounds,
+				Abstraction:   s.Gate.Abstraction,
+			}
+			for _, c := range s.Gate.Checks {
+				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
+			}
+			var n yaml.Node
+			if err := n.Encode(gy); err == nil {
+				sy.Gate = n
+			}
+		}
 		stages = append(stages, sy)
 	}
 	out := workflowYAML{Name: w.Name, Stages: stages}
+	if w.DefaultRunner != nil {
+		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
+		var n yaml.Node
+		if err := n.Encode(dr); err == nil {
+			out.DefaultRunner = n
+		}
+	}
 	if w.Retros != nil {
 		ry := &retrosYAML{
 			OnRunClose:     w.Retros.OnRunClose,
@@ -649,6 +833,66 @@ func decodeRetrosNode(node yaml.Node) (*retrosYAML, error) {
 	return &ry, nil
 }
 
+// decodeRunnerNode converts a yaml.Node captured for a runner: or
+// default_runner: key into a *runnerYAML.  Returns (nil, nil) when the node
+// is the zero value (key was absent).  Returns a zero-value *runnerYAML for
+// a null scalar, mirroring the "present means present" rule from
+// decodeRetrosNode.  Unknown keys are rejected via a KnownFields(true) inner
+// decoder.
+func decodeRunnerNode(node yaml.Node) (*runnerYAML, error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return &runnerYAML{}, nil
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&node); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	dec := yaml.NewDecoder(&buf)
+	dec.KnownFields(true)
+	var rn runnerYAML
+	if err := dec.Decode(&rn); err != nil {
+		return nil, err
+	}
+	return &rn, nil
+}
+
+// decodeGateNode converts a yaml.Node captured for a gate: key into a
+// *gateYAML.  Returns (nil, nil) when absent; a zero-value *gateYAML for a
+// null scalar; a populated struct for a mapping.  Unknown keys are rejected
+// via a KnownFields(true) inner decoder.
+func decodeGateNode(node yaml.Node) (*gateYAML, error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return &gateYAML{}, nil
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&node); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	dec := yaml.NewDecoder(&buf)
+	dec.KnownFields(true)
+	var gn gateYAML
+	if err := dec.Decode(&gn); err != nil {
+		return nil, err
+	}
+	return &gn, nil
+}
+
 func (d workflowYAML) toWorkflow() (Workflow, error) {
 	stages := make([]Stage, 0, len(d.Stages))
 	for _, s := range d.Stages {
@@ -662,9 +906,40 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 		if s.Eval != nil {
 			st.Eval = &Eval{Method: s.Eval.Method, Rubric: s.Eval.Rubric}
 		}
+		rn, err := decodeRunnerNode(s.Runner)
+		if err != nil {
+			return Workflow{}, fmt.Errorf("%w: stage %q decode runner: %v", ErrInvalidWorkflow, s.Name, err)
+		}
+		if rn != nil {
+			st.Runner = &Runner{Name: rn.Name, Command: rn.Command}
+		}
+		gn, err := decodeGateNode(s.Gate)
+		if err != nil {
+			return Workflow{}, fmt.Errorf("%w: stage %q decode gate: %v", ErrInvalidWorkflow, s.Name, err)
+		}
+		if gn != nil {
+			gate := &GateConfig{
+				Seats:         gn.Seats,
+				Tier:          gn.Tier,
+				PassThreshold: gn.PassThreshold,
+				MaxRounds:     gn.MaxRounds,
+				Abstraction:   gn.Abstraction,
+			}
+			for _, c := range gn.Checks {
+				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command})
+			}
+			st.Gate = gate
+		}
 		stages = append(stages, st)
 	}
 	w := Workflow{Name: d.Name, Stages: stages}
+	drn, err := decodeRunnerNode(d.DefaultRunner)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)
+	}
+	if drn != nil {
+		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command}
+	}
 	ry, err := decodeRetrosNode(d.Retros)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("%w: decode retros: %v", ErrInvalidWorkflow, err)

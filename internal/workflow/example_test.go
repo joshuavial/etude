@@ -35,6 +35,37 @@ stages:
 	// plan
 }
 
+// ExampleParseYAML_withRunnerAndGate shows how to parse a workflow that
+// includes the optional per-stage runner and gate blocks.
+func ExampleParseYAML_withRunnerAndGate() {
+	yaml := `name: reviewed
+stages:
+  - name: implement
+    produces: diff
+    inputs:
+      - task
+      - repo-state
+    skill: dev-coder
+    runner:
+      name: opus
+    gate:
+      tier: L3
+      max_rounds: 3
+      abstraction: "code correctness"
+`
+	wf, err := workflow.ParseYAML([]byte(yaml))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(wf.Name)
+	fmt.Println(wf.Stages[0].Runner.Name)
+	fmt.Println(wf.Stages[0].Gate.Tier)
+	// Output:
+	// reviewed
+	// opus
+	// L3
+}
+
 // ExampleDefault shows the canonical six-stage workflow returned by Default.
 func ExampleDefault() {
 	wf := workflow.Default()
