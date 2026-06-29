@@ -16,5 +16,5 @@ etude run list [flags]
 
 ### SEE ALSO
 
-* [etude run](etude_run.md)	 - Inspect etude runs
+* [etude run](etude_run.md)	 - Execute a workflow or inspect runs
 

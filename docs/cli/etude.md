@@ -30,8 +30,8 @@ etude [flags]
 * [etude log](etude_log.md)	 - Show a chronological timeline of runs and retros
 * [etude prime](etude_prime.md)	 - Print a structured agent-onboarding primer to stdout
 * [etude reindex](etude_reindex.md)	 - Rebuild the SQLite query index from all run and eval refs
-* [etude replay](etude_replay.md)	 - Replay a recorded stage end-to-end
+* [etude replay](etude_replay.md)	 - Replay a recorded stage or entire run
 * [etude retro](etude_retro.md)	 - Manage etude retro artifacts
-* [etude run](etude_run.md)	 - Inspect etude runs
+* [etude run](etude_run.md)	 - Execute a workflow or inspect runs
 * [etude sync](etude_sync.md)	 - Push and fetch refs/etude/* with a git remote
 

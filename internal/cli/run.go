@@ -5,38 +5,145 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/joshuavial/etude/internal/liverun"
 	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/registry"
+	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
 const runsPrefix = "refs/etude/runs/"
 
+// reservedWorkflowNames are shadowed by run subcommand names.
+var reservedWorkflowNames = map[string]bool{"show": true, "list": true}
+
 func newRunCommand(out, errOut io.Writer) *cobra.Command {
+	var taskFile, runID, gitSHA, resumeID, runnerSpec string
+	var timeout time.Duration
+
 	cmd := &cobra.Command{
-		Use:           "run",
-		Short:         "Inspect etude runs",
+		Use:           "run [workflow]",
+		Short:         "Execute a workflow or inspect runs",
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			workflowName := args[0]
+			if reservedWorkflowNames[workflowName] {
+				return fmt.Errorf("workflow name %q is reserved (conflicts with run subcommands show/list)", workflowName)
+			}
+			return runWorkflow(cmd.Context(), out, errOut, workflowName, taskFile, runID, gitSHA, resumeID, runnerSpec, timeout)
 		},
 	}
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 
-	runner := &runShowListRunner{
-		store:  refstore.New(""),
-		stdout: out,
-	}
+	flags := cmd.Flags()
+	flags.StringVar(&taskFile, "task", "", "path to task input file")
+	flags.StringVar(&runID, "run-id", "", "explicit run id (auto-generated if not set)")
+	flags.StringVar(&gitSHA, "git-sha", "", "git commit SHA for the run (defaults to HEAD)")
+	flags.StringVar(&runnerSpec, "runner", "", "runner command override for all stages")
+	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "per-stage runner timeout")
+	flags.StringVar(&resumeID, "resume", "", "resume a partial run by id")
+
+	runner := &runShowListRunner{store: refstore.New(""), stdout: out}
 	cmd.AddCommand(newRunListCommand(runner))
 	cmd.AddCommand(newRunShowCommand(runner))
 	return cmd
+}
+
+// runWorkflow loads the workflow and registry, then delegates to the Engine.
+func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskFile, runID, gitSHA, resumeID, runnerSpec string, timeout time.Duration) error {
+	root, err := repoRoot(ctx)
+	if err != nil {
+		return err
+	}
+
+	wfBytes, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
+	if err != nil {
+		return fmt.Errorf("load workflow: %w", err)
+	}
+	wf, err := workflow.ParseYAML(wfBytes)
+	if err != nil {
+		return fmt.Errorf("parse workflow: %w", err)
+	}
+	if wf.Name != workflowName {
+		return fmt.Errorf("workflow name %q does not match .etude/workflow.yaml name %q", workflowName, wf.Name)
+	}
+
+	// Registry is optional (workflows may use inline command runners).
+	var reg registry.Registry
+	regBytes, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+	if err == nil {
+		reg, err = registry.ParseYAML(regBytes)
+		if err != nil {
+			return fmt.Errorf("parse registry: %w", err)
+		}
+	}
+
+	// Build the runner factory.
+	resolveRunner := buildRunnerFactory(wf, reg, runnerSpec, timeout)
+
+	var taskBytes []byte
+	if resumeID == "" && taskFile != "" {
+		taskBytes, err = os.ReadFile(taskFile)
+		if err != nil {
+			return fmt.Errorf("read task file: %w", err)
+		}
+	}
+
+	engine := &liverun.Engine{
+		Store:         refstore.New(root),
+		ResolveRunner: resolveRunner,
+		Root:          root,
+	}
+
+	opts := liverun.RunOptions{
+		TaskBytes: taskBytes,
+		TaskFile:  taskFile,
+		RunID:     runID,
+		GitSHA:    gitSHA,
+		ResumeID:  resumeID,
+	}
+
+	if err := engine.Run(ctx, out, wf, opts); err != nil {
+		var stageErr *liverun.StageError
+		if errors.As(err, &stageErr) {
+			// Print only the resume hint here; the error itself is printed once
+			// by the root command from the returned err (avoid a double print).
+			fmt.Fprintf(errOut, "resume with: etude run %s --resume %s\n", workflowName, stageErr.RunID)
+		}
+		return err
+	}
+	return nil
+}
+
+// buildRunnerFactory returns a ResolveRunner factory. If runnerSpec is set,
+// all stages use that command; otherwise stages resolve from workflow/registry.
+func buildRunnerFactory(wf workflow.Workflow, reg registry.Registry, runnerSpec string, timeout time.Duration) func(workflow.Stage) (replay.Runner, error) {
+	if runnerSpec != "" {
+		r := &replay.ExecRunner{
+			Command:        strings.Fields(runnerSpec),
+			Timeout:        timeout,
+			MaxOutputBytes: 64 << 20,
+		}
+		return func(workflow.Stage) (replay.Runner, error) { return r, nil }
+	}
+	return func(stage workflow.Stage) (replay.Runner, error) {
+		return liverun.ResolveStageRunner(wf, reg, stage, timeout)
+	}
 }
 
 type runShowListRunner struct {

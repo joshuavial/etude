@@ -122,6 +122,120 @@ code. The following are rejected:
 
 An unknown run id prints `run "<id>" not found` to stderr and exits non-zero.
 
+## Live run
+
+`etude run <workflow>` executes a workflow's stage graph live, capturing each
+stage incrementally as it completes.
+
+```bash
+etude run <workflow> --task <task-file> [flags]
+```
+
+Example:
+
+```bash
+etude run dev-pipeline --task bead.md
+etude run dev-pipeline --task bead.md --run-id my-run-001
+etude run dev-pipeline --task bead.md --timeout 30m
+```
+
+### How it works
+
+The engine reads `.etude/workflow.yaml` and `.etude/registry.yaml`, resolves
+each stage's runner (from the registry or inline), and walks the stage graph
+in dependency order. All stages share a single evolving worktree checked out
+at the run's git SHA, so mutations from earlier stages are visible to later
+ones.
+
+After each stage completes its runner, the engine chains the stage's output
+artifact into the next stage's inputs by role (matching `capture-run`
+semantics), then captures the stage to `refs/etude/runs/<id>` via an
+atomic compare-and-swap append. Every intermediate commit is a valid,
+parseable run manifest, so `etude run show <id>` works mid-run and a crash
+leaves a valid partial run.
+
+Per stage the command prints:
+
+```
+captured <commit>
+```
+
+On completion:
+
+```
+ref refs/etude/runs/<id>
+```
+
+`etude run list` and `etude run show <id>` work immediately after the first
+stage completes, before the run finishes.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--task <file>` | Path to the task input file. Seeds the special `task` role. Required for a fresh run. |
+| `--run-id <id>` | Explicit run id (auto-generated as `<workflow>-<timestamp>-<rand>` if omitted). Must be unique; errors on collision. |
+| `--git-sha <sha>` | Git commit SHA for the worktree (defaults to `HEAD`). |
+| `--runner <command>` | Runner command override applied to all stages. |
+| `--timeout <duration>` | Per-stage runner timeout (default `10m`; `0` disables). |
+| `--resume <id>` | Resume a partial run. See [Resume](#resume). |
+
+### Run id
+
+When `--run-id` is omitted, the engine generates a sortable id of the form
+`<workflow>-<UTC:yyyymmddThhmmssZ>-<8-hex>` (4 random bytes). Explicit ids are validated before
+any git call and must not contain `/`, `..`, leading or trailing `.`, or
+characters other than letters, digits, `-`, `_`, and `.`.
+
+Reserved workflow names `show` and `list` are rejected with a clear error
+because they are shadowed by the `run` subcommands.
+
+### Forward replay
+
+Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
+re-executes all its stages forward in a single evolving worktree, using the
+recorded (content-addressed) inputs for each stage. This is the inverse of
+a live run: it replays what was captured, in order.
+
+Single-stage flags (`--record`, `--output`, producer overrides) are not valid
+in forward-replay mode and return an error if supplied.
+
+## Resume
+
+When a stage runner exits non-zero or times out, `etude run` stops, leaves
+the partial run (all previously-completed stages remain durably captured),
+prints the failure to stderr, and exits non-zero:
+
+```
+stage "<name>" failed: <error>
+resume with: etude run <workflow> --resume <id>
+```
+
+A stage that carries a `gate` block logs `gate "<name>" deferred to etude-04i`
+and runs without gate evaluation; live gate execution is not yet wired.
+
+To continue from where the run stopped:
+
+```bash
+etude run <workflow> --resume <id>
+```
+
+`--resume` loads the partial run manifest, derives the frontier (the first
+stage whose output role has not been produced yet), reseeds all previously-
+captured artifact blobs (including the task input) from the run commit, and
+continues CAS-appending from the current run ref head. The worktree is
+re-opened at the git SHA recorded in the partial run manifest (not the
+current `HEAD`), so a moved `HEAD` between the failure and the resume cannot
+silently change the worktree base.
+
+`--task` and `--run-id` are ignored when `--resume` is set (both come from
+the existing partial run). The resumed run is the same run ref: it gains
+additional commits, one per newly-completed stage.
+
+Failed-stage status is not yet durably recorded in the run manifest (tracked
+in etude-dp7). `etude run show` on a partial run shows the successfully-
+completed stages only; the frontier stage has not been captured.
+
 ## Current limits
 
 - Runs are listed by walking `refs/etude/runs/*` directly. There is no query

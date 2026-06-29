@@ -12,16 +12,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshuavial/etude/internal/liverun"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/workflow"
 )
 
-// executeReplay runs the replay command with a pre-injected runner. It mirrors
-// the execute() helper but wires a custom replayRunner instead of a plain one.
+// executeReplay runs the replay command with a pre-injected single-stage runner.
 func executeReplay(stub *replay.StubRunner, args ...string) (string, string, error) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	r := &replayRunner{runner: stub}
+	r := &replayRunner{runner: stub, now: time.Now}
+	cmd := buildReplayCommand(&out, &errOut, r)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(&errOut, err)
+	}
+	return out.String(), errOut.String(), err
+}
+
+// executeReplayForward runs the forward replay (1-arg) with a pre-injected
+// forwardRunner so tests don't need workflow.yaml or registry.yaml.
+func executeReplayForward(stub *replay.StubRunner, args ...string) (string, string, error) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	r := &replayRunner{forwardRunner: stub, now: time.Now}
 	cmd := buildReplayCommand(&out, &errOut, r)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
@@ -826,5 +842,101 @@ func TestReplayOutputExistingRegularFileOverwritten(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("output file content = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AC2: forward replay (etude replay <run> — no stage arg)
+// ---------------------------------------------------------------------------
+
+// createLiveRun creates a 3-stage run in repo using liverun.Engine with a StubRunner.
+// Used as setup for forward replay tests.
+func createLiveRun(t *testing.T, repo, runID string) {
+	t.Helper()
+	headSHA := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	store := refstore.New(repo)
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "stage-a", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+			{Name: "stage-b", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+			{Name: "stage-c", Skill: "sk", Produces: "review", Inputs: []string{"diff"}},
+		},
+	}
+	stub := &replay.StubRunner{CannedOutput: []byte("stub-output"), CannedMediaType: "application/octet-stream"}
+	e := liverun.Engine{
+		Store:         store,
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+		Root:          repo,
+		Now:           func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
+	}
+	if err := e.Run(context.Background(), &bytes.Buffer{}, wf, liverun.RunOptions{
+		TaskBytes: []byte("task data"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    headSHA,
+	}); err != nil {
+		t.Fatalf("create live run: %v", err)
+	}
+}
+
+// AC2: etude replay <id> (no stage) forward re-executes all stages.
+func TestReplayForwardAllStages(t *testing.T) {
+	repo := initCaptureRepo(t)
+	runID := "mywf-20260101T000000Z-forward1"
+	createLiveRun(t, repo, runID)
+	chdir(t, repo)
+
+	// Forward replay with a stub that returns "replayed" for every stage.
+	stub := &replay.StubRunner{CannedOutput: []byte("replayed"), CannedMediaType: "text/plain; charset=utf-8"}
+	stdout, stderr, err := executeReplayForward(stub, runID)
+	if err != nil {
+		t.Fatalf("forward replay returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// All 3 stage outputs ("replayed") must appear concatenated in stdout.
+	want := "replayedreplayedreplayed"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+// TestReplayForwardSingleStageOnlyFlagsRejected verifies that --record and --output
+// are rejected in 1-arg (forward replay) mode.
+func TestReplayForwardSingleStageOnlyFlagsRejected(t *testing.T) {
+	repo := initCaptureRepo(t)
+	runID := "mywf-20260101T000000Z-forward2"
+	createLiveRun(t, repo, runID)
+	chdir(t, repo)
+
+	for _, flag := range []string{"--record", "--output", "--skill-id"} {
+		args := []string{runID, flag}
+		if flag == "--output" || flag == "--skill-id" {
+			args = append(args, "dummy")
+		}
+		stub := &replay.StubRunner{}
+		_, stderr, err := executeReplayForward(stub, args...)
+		if err == nil {
+			t.Errorf("expected error for %s in forward replay mode", flag)
+			continue
+		}
+		if !strings.Contains(stderr, "only valid for single-stage replay") {
+			t.Errorf("%s: stderr = %q, want 'only valid for single-stage replay'", flag, stderr)
+		}
+	}
+}
+
+// TestReplayForwardMissingRunErrors verifies that a missing run id returns an error.
+func TestReplayForwardMissingRunErrors(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &replay.StubRunner{}
+	_, stderr, err := executeReplayForward(stub, "mywf-20260101T000000Z-notexist")
+	if err == nil {
+		t.Fatal("expected error for missing run")
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("stderr = %q, want 'not found'", stderr)
 	}
 }

@@ -1,11 +1,15 @@
 # Live execution (`etude run`) — design
 
-Status: planning note. This describes **planned** live-execution behavior. None
-of it is implemented yet. Today etude is capture-and-replay only: it records
-runs and `etude replay <run-id> <stage>` re-runs a single recorded stage. This
-note specifies the missing half — **driving and gating a workflow live** — so
-that a captured run is a *byproduct* of execution rather than a separate import
-step.
+Status: mixed. §1 (live workflow orchestration) is **implemented** as of bead
+etude-xin. §2 (live gate execution) and §3 (scoped secret passthrough) remain
+**planned**. Durable failed-stage status capture (decision 6 below) is
+deferred to bead etude-dp7.
+
+Today etude supports both capture-and-replay and live orchestration: it records
+runs, `etude replay <run-id> <stage>` re-runs a single recorded stage, and
+`etude replay <run-id>` re-runs all stages forward. This note retains the
+original planning context; implemented behavior is documented in
+[docs/run.md](../run.md).
 
 It is the etude-side companion to the xenota "dev projection" plan, which wants
 to use etude as the live runner **and** tracker so that capture can never drift
@@ -69,16 +73,20 @@ research-style workflow lands later as an explicit generality test.
 
 ## 1. Live workflow orchestration
 
-**Implemented today:** `etude replay <run-id> <stage>` re-runs one recorded
-stage through the runner contract. There is no command to walk a workflow.
+**Implemented (etude-xin).** `etude run <workflow>` walks an arbitrary stage
+graph live, capturing each stage incrementally, and `etude replay <run-id>`
+(no stage arg) re-runs all stages forward. See [docs/run.md](../run.md) for
+user-facing documentation.
 
-**Planned:** `etude run <workflow>` (live) that:
+What is implemented:
 
-- Reads the workflow's (arbitrary) stage graph and executes stages in dependency
-  order. Stage names/edges are user-defined; no phase names are hardcoded.
-- Resolves each stage's `runner` (a name into the shared registry, or inline)
-  and invokes the external-runner contract per stage (`ETUDE_INPUTS_DIR`,
-  `ETUDE_OUTPUT_FILE`). A runner may be an LLM or a deterministic script.
+- Reads the workflow's (arbitrary) stage graph from `.etude/workflow.yaml` and
+  executes stages in dependency order. Stage names/edges are user-defined; no
+  phase names are hardcoded.
+- Resolves each stage's `runner` (a name into the shared registry from
+  `.etude/registry.yaml`, or inline) and invokes the external-runner contract
+  per stage (`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`). A runner may be an LLM
+  or a deterministic script.
 - Runs all stages in a **single evolving worktree** per run, so git-lifecycle
   stages (checkout/branch/commit) and later stages that read earlier mutations
   work without artifact round-tripping.
@@ -88,15 +96,21 @@ stage through the runner contract. There is no command to walk a workflow.
 - Captures each stage **incrementally** as it completes (compare-and-swap on the
   run ref), so `etude run show` works mid-run and a crash leaves a valid partial
   run.
-- On a stage failure (non-zero/timeout) outside a gate: stop-and-capture; resume
-  later with `etude run --resume <id>` from the last good stage.
-- Branches/reruns on gate outcomes (§2).
+- On a stage failure (non-zero/timeout) outside a gate: stop and leave the
+  partial run. Resume later with `etude run --resume <id>` from the frontier
+  (first stage not yet captured). Gate blocks in the workflow schema are
+  read but treated as a no-op (deferred to etude-04i).
+- Forward replay: `etude replay <run-id>` (1 arg) re-runs all stages in order
+  in a single evolving worktree using recorded (content-addressed) inputs.
+  `etude replay <run-id> <stage>` (2 args) retains the original single-stage
+  behavior unchanged.
 
-This generalizes the previously-deferred "live execution capture via xenota
-adapter" into a runner-agnostic capability: any runner script behind the
-contract works, so a repertoire harness needs **no** etude change of its own.
+**Note:** Durable failed-stage status capture — recording which stage failed
+and surfacing it in `etude run show` — is deferred to bead **etude-dp7**
+(depends on etude-xin). A partial run shows only successfully-completed
+stages; failure is surfaced via nonzero exit and stderr only.
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
 - `etude run <workflow>` executes all stages of an arbitrary stage graph live and
   produces a captured run inspectable via `etude run show` (including mid-run).
@@ -107,8 +121,9 @@ contract works, so a repertoire harness needs **no** etude change of its own.
 
 ## 2. Live gate execution
 
-**Implemented today:** `etude capture-gate` records reviewer verdicts after the
-fact (capture-only).
+**Planned (etude-04i).** Gate execution during a live run is not yet built.
+`etude capture-gate` records reviewer verdicts after the fact (capture-only).
+Gate blocks in a workflow stage schema are read but treated as a no-op.
 
 **Planned:** gate execution during a live run that:
 
@@ -143,8 +158,9 @@ registry (the former `gates.yaml`).
 
 ## 3. Scoped secret / env passthrough
 
-**Implemented today:** replay strips runner env to `PATH`, `ETUDE_INPUTS_DIR`,
-`ETUDE_OUTPUT_FILE` — correct for hermetic replay.
+**Planned (etude-3a2).** Secret passthrough is not yet built. Both live runs
+and replay strip runner env to `PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`
+— hermetic by default, unchanged from before etude-xin.
 
 **Planned:** a configurable allowlist / secret-injection mechanism for runners
 during live runs (opt-in for replay), e.g. `etude.runner.env-allowlist` or a

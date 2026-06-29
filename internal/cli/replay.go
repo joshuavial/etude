@@ -7,22 +7,27 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/joshuavial/etude/internal/liverun"
 	"github.com/joshuavial/etude/internal/refstore"
+	"github.com/joshuavial/etude/internal/registry"
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/workflow"
 	"github.com/joshuavial/etude/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
 type replayRunner struct {
-	// runner is the Runner to use. If nil, an ExecRunner is built from the
-	// resolved --runner spec at run time. Tests inject a *replay.StubRunner here.
+	// runner is the Runner to use for single-stage replay. If nil, an ExecRunner
+	// is built from the resolved --runner spec at run time. Tests inject a StubRunner.
 	runner replay.Runner
-	// now returns the current time. Defaults to time.Now; tests inject a fixed clock
-	// to make replay run ids deterministic.
+	// forwardRunner, when non-nil, is used for all stages in forward replay (tests only).
+	forwardRunner replay.Runner
+	// now returns the current time. Defaults to time.Now; tests inject a fixed clock.
 	now func() time.Time
 	// timeout overrides the default ExecRunner timeout when non-zero.
 	timeout time.Duration
@@ -42,14 +47,28 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
 	var timeoutFlag time.Duration
 
+	// singleStageOnlyFlags are rejected in forward-replay (1-arg) mode.
+	const singleStageOnly = "only valid for single-stage replay (requires a stage argument)"
+
 	cmd := &cobra.Command{
-		Use:           "replay <run> <stage>",
-		Short:         "Replay a recorded stage end-to-end",
-		Args:          cobra.ExactArgs(2),
+		Use:           "replay <run> [<stage>]",
+		Short:         "Replay a recorded stage or entire run",
+		Args:          cobra.RangeArgs(1, 2),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r.timeout = timeoutFlag
+
+			if len(args) == 1 {
+				// Forward replay: error on single-stage-only flags.
+				for _, flag := range []string{"record", "output", "skill-id", "skill-repo", "skill-version", "model", "harness", "harness-version"} {
+					if cmd.Flags().Changed(flag) {
+						return fmt.Errorf("--%s is %s", flag, singleStageOnly)
+					}
+				}
+				return r.runForward(cmd.Context(), out, args[0], runnerSpec, timeoutFlag)
+			}
+
 			producerFlags := replayProducerFlags{
 				skillIDChanged:        cmd.Flags().Changed("skill-id"),
 				skillRepoChanged:      cmd.Flags().Changed("skill-repo"),
@@ -293,6 +312,64 @@ func (r *replayRunner) resolveRunner(ctx context.Context, spec string) (replay.R
 		Timeout:        r.timeout,
 		MaxOutputBytes: 64 << 20,
 	}, nil
+}
+
+// runForward performs a forward replay of all stages in a run (1-arg mode).
+func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, runnerSpec string, timeout time.Duration) error {
+	root, err := repoRoot(ctx)
+	if err != nil {
+		return err
+	}
+
+	store := refstore.New(root)
+
+	// Build the stage-name→runner factory for forward replay.
+	var resolveRunner func(stageName string) (replay.Runner, error)
+
+	switch {
+	case r.forwardRunner != nil:
+		// Test injection: one stub for all stages.
+		fwd := r.forwardRunner
+		resolveRunner = func(string) (replay.Runner, error) { return fwd, nil }
+
+	case runnerSpec != "":
+		// CLI --runner override: same ExecRunner for all stages.
+		er := &replay.ExecRunner{
+			Command:        strings.Fields(runnerSpec),
+			Timeout:        timeout,
+			MaxOutputBytes: 64 << 20,
+		}
+		resolveRunner = func(string) (replay.Runner, error) { return er, nil }
+
+	default:
+		// Resolve from workflow/registry per stage.
+		wfBytes, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
+		if err != nil {
+			return fmt.Errorf("load workflow for forward replay: %w", err)
+		}
+		wf, err := workflow.ParseYAML(wfBytes)
+		if err != nil {
+			return fmt.Errorf("parse workflow: %w", err)
+		}
+		var reg registry.Registry
+		regBytes, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+		if err == nil {
+			reg, err = registry.ParseYAML(regBytes)
+			if err != nil {
+				return fmt.Errorf("parse registry: %w", err)
+			}
+		}
+		resolveRunner = func(stageName string) (replay.Runner, error) {
+			for _, s := range wf.Stages {
+				if s.Name == stageName {
+					return liverun.ResolveStageRunner(wf, reg, s, timeout)
+				}
+			}
+			return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
+		}
+	}
+
+	return liverun.ReplayForward(ctx, store, root, out, runID, resolveRunner)
 }
 
 // gitConfigGet reads a single git config value for key using any scope.

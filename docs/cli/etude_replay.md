@@ -2,10 +2,10 @@
 
 ## etude replay
 
-Replay a recorded stage end-to-end
+Replay a recorded stage or entire run
 
 ```
-etude replay <run> <stage> [flags]
+etude replay <run> [<stage>] [flags]
 ```
 
 ### Options

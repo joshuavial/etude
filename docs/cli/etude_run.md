@@ -2,16 +2,22 @@
 
 ## etude run
 
-Inspect etude runs
+Execute a workflow or inspect runs
 
 ```
-etude run [flags]
+etude run [workflow] [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for run
+      --git-sha string     git commit SHA for the run (defaults to HEAD)
+  -h, --help               help for run
+      --resume string      resume a partial run by id
+      --run-id string      explicit run id (auto-generated if not set)
+      --runner string      runner command override for all stages
+      --task string        path to task input file
+      --timeout duration   per-stage runner timeout (default 10m0s)
 ```
 
 ### SEE ALSO
