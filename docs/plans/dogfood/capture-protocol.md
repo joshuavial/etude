@@ -219,7 +219,7 @@ For Verify, record:
 - internal loop count, when QA sends work back to test-writer before the final
   Verify artifact
 
-Only the final parent Verify artifact goes through the four-reviewer gate. If
+Only the final parent Verify artifact goes through the three-reviewer gate. If
 an internal lane reveals required implementation work, Verify returns `fail`
 and the bead moves back to Implement.
 
@@ -234,7 +234,7 @@ test pollutes real dogfood data with throwaway runs (observed: a first
 working repo that had to be hand-deleted). The manual test is still required —
 it catches stateful/integration bugs that static code review cannot (the
 `etude bench` cohort-recursion bug — bench re-benchmarking its own recorded
-replays — was invisible to all four review seats and only surfaced from running
+replays — was invisible to the review seats and only surfaced from running
 the built binary twice). Isolate it; do not skip it.
 
 For planning-only beads, Verify may record that test-writer and manual-test
@@ -374,7 +374,7 @@ final-review` sequence. They are explanatory artifacts that can be produced
 after a close, after a repeated blocker, or on request.
 
 If a later bead makes a retro itself the artifact under review, that bead uses
-the normal four-reviewer gate for its own phase. Otherwise, retro capture does
+the normal three-reviewer gate for its own phase. Otherwise, retro capture does
 not block product work from advancing.
 
 ### Retro Import
@@ -400,7 +400,6 @@ After every phase gate, append reviewer results to the bead notes:
 - Gemini Pro: GO | BLOCK | failed (<reason>)
 - Claude Opus: GO | BLOCK | failed (<reason>)
 - fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
-- pi/pilms: GO | BLOCK | failed (<reason>)
 - required changes incorporated: <summary or none>
 - optional improvements handled: <summary or deferred bead>
 - result: pass | rerun required | escalated
@@ -423,7 +422,7 @@ mapping (incl. `failure_note` for failed/empty/malfunction/disregarded) live in
 This replaces the prior need to hand-parse prose gate summaries on import.
 
 The normal `plan`, `implement`, `verify`, `docs`, and `final-review` stages go
-through the four-reviewer gate. Retro artifacts do not gate the main workflow
+through the three-reviewer gate. Retro artifacts do not gate the main workflow
 unless a later bead explicitly makes a retro the artifact being advanced.
 For retro-specific interpretation of gate results, see
 [Retro Capture](#retro-capture).
