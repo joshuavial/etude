@@ -91,8 +91,8 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("codex seat missing")
 	}
-	if !strings.Contains(codex.Invoke, `model_reasoning_effort="high"`) {
-		t.Errorf("codex invoke missing model_reasoning_effort=\"high\": %q", codex.Invoke)
+	if !strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
+		t.Errorf("codex invoke missing model_reasoning_effort=\"xhigh\": %q", codex.Invoke)
 	}
 	if !strings.Contains(codex.Invoke, "-s read-only") {
 		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)
