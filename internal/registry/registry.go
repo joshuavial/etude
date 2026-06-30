@@ -170,7 +170,7 @@ func ensureEOF(dec *yaml.Decoder) error {
 }
 
 // Default returns the canonical scaffold registry for etude init.  The seats
-// and tiers mirror the proven gates.yaml definitions in a concise form that
+// and tiers are modeled on the prior tier/seat config in a concise form that
 // users edit to configure their own reviewers.
 func Default() Registry {
 	return Registry{

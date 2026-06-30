@@ -33,9 +33,8 @@ recorded → gate. Otherwise → review (this skill).
    Do NOT assign roles like "Systems Critic" / "Security Auditor" / "Pragmatist"
    — that is the `design-council` skill and it manufactures review axes the user
    did not ask for. Divergence must come from model diversity alone.
-2. **Tiers come from `.etude/gates.yaml`** — read it; never hardcode the panel.
-   L1 = heaviest (Gemini + Opus + Codex + Grok), L2 = three (Opus + Codex +
-   Grok), L3 = two (Opus + Codex), L4 = one (Opus). Higher number = lighter.
+2. **Tiers and seats come from `.etude/registry.yaml`** — read it; never
+   hardcode the panel. L1 = heaviest, L4 = lightest. Higher number = lighter.
    Match the tier to risk; when unsure, go heavier.
 3. **Unanimous.** GO only if every seat returns GO. Any BLOCK → BLOCK. A seat
    failure (auth/quota/empty/truncation) is NOT a GO — reroll it (smaller input)
@@ -47,10 +46,10 @@ recorded → gate. Otherwise → review (this skill).
 ## Steps
 
 ### 1. Resolve the panel
-Read `.etude/gates.yaml`. Take the requested tier (default L2 if unspecified and
-the target is code; L4 for docs-only/no shipping-code changes, or the matching
-`phase_gates` tier when a phase is named). Expand to its `seats` and each seat's
-`invoke` + `mode`.
+Read `.etude/registry.yaml`. Take the requested tier (default L2 if unspecified
+and the target is code; L4 for docs-only/no shipping-code changes, or the
+matching stage's `gate.tier` in `.etude/workflow.yaml` when a phase is named).
+Expand to its `seats` and each seat's `invoke` + `mode`.
 
 ### 2. Gather inputs and write a working dir
 Put scratch in `.etude/reviews/<topic>/` (kebab topic from the subject). Write
@@ -64,12 +63,13 @@ dispatching, and re-verify the snapshot is unchanged after the seats run.
 
 ### 3. Build ONE shared prompt
 Same text for every seat. **Lead the prompt with the phase's `abstraction` block
-from `.etude/gates.yaml` `phase_gates`** — it sets the review altitude and is the
-first thing each seat reads. For a PLAN gate this is the validated wording ("BLOCK
-only if the plan (a) misses a requirement, (b) regresses/loosens an observable
-behavior/contract, or (c) specifies an unimplementable mechanism; implementation
-minutiae → OPTIONAL"). This is not optional polish: a bench (Variant B vs A on the
-Dolt-recovered etude-2bm.1 plan rounds) showed it cuts the plan-gate review-spiral
+from the matching stage's `gate` block in `.etude/workflow.yaml`** — it sets the
+review altitude and is the first thing each seat reads. For a PLAN gate this is
+the validated wording ("BLOCK only if the plan (a) misses a requirement,
+(b) regresses/loosens an observable behavior/contract, or (c) specifies an
+unimplementable mechanism; implementation minutiae → OPTIONAL"). This is not
+optional polish: a bench (Variant B vs A on the Dolt-recovered etude-2bm.1 plan
+rounds) showed it cuts the plan-gate review-spiral
 — stopping false blocks on minutiae while still catching real regressions. Then
 include: what the artifact is, the artifact/diff inlined, the cited ground-truth
 facts, and this return contract:

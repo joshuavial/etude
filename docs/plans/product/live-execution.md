@@ -38,10 +38,11 @@ is planned.
 3. **Config lives on the stage; the seat/runner library is shared.** Each stage
    carries its own `runner` and optional `gate` block. How to *invoke* a named
    runner/seat (e.g. `opus`, `codex`) lives in a single shared **registry** file
-   (the former `gates.yaml`, renamed — it is a runner/seat registry, not gate
-   bindings) referenced by name from stage runners, gate seats, and
-   `etude-review`'s ephemeral panels alike. Tier presets (`L1–L4`) remain as
-   optional named seat-groups; inline seat lists are allowed for one-offs.
+   (`.etude/registry.yaml` — the renamed former `gates.yaml`; it is a
+   runner/seat registry, not gate bindings) referenced by name from stage
+   runners, gate seats, and `etude-review`'s ephemeral panels alike. Tier
+   presets (`L1–L4`) remain as optional named seat-groups; inline seat lists are
+   allowed for one-offs.
 4. **Gates execute, with hard checks and soft seats.** Live mode adds gate
    *execution*. A gate has two seat kinds: **checks** (deterministic; any failure
    is a hard BLOCK, no threshold) and **seats** (model votes; weighted
@@ -146,7 +147,7 @@ What is implemented:
 
 Gate config lives on the stage (`checks`, `seats`/`tier`, `pass_threshold`,
 `max_rounds`, `abstraction`); seat/tier *definitions* live in the shared
-registry (the former `gates.yaml`).
+registry (`.etude/registry.yaml` — the renamed former `gates.yaml`).
 
 ### Acceptance criteria (met)
 
@@ -176,15 +177,25 @@ passthrough explicit and auditable.
 
 ## Sequencing
 
-The **schema + registry foundation** lands first: per-stage `runner` and `gate`
-blocks, run-level default runner, and the shared seat/runner registry (the
-renamed `gates.yaml`) with tier presets. Orchestration (§1) is the spine and
-builds on the schema. Gate execution (§2) builds on orchestration and is the
-largest piece. Secret passthrough (§3) is small and independent — it depends only
-on the schema, and is only *exercised* once a live LLM runner exists.
+The **schema + registry foundation** landed first (etude-2pc.1): per-stage
+`runner` and `gate` blocks, run-level default runner, and the shared seat/runner
+registry (`.etude/registry.yaml` — the renamed historical `gates.yaml`) with tier
+presets. Orchestration (§1) is the spine and builds on the schema. Gate execution
+(§2) builds on orchestration and is the largest piece. Secret passthrough (§3) is
+small and independent — it depends only on the schema, and is only *exercised*
+once a live LLM runner exists.
 
-The proof path lands after §1+§2: convert the existing dev workflow to the new
-schema, migrate `gates.yaml` (seats/tiers → registry; `phase_gates` → per-stage
-gate blocks), update the `dev-workflow` and `etude-review` skills to read the new
-files, and delete `gates.yaml`. A second, research-style workflow lands later as
-an explicit generality test.
+The **proof path has landed (etude-2pc.2)**: the existing dev workflow was
+converted to the new schema — historical `gates.yaml` seats/tiers/quorum migrated
+to `.etude/registry.yaml`; `phase_gates` migrated to per-stage `gate` blocks in
+`.etude/workflow.yaml`; the `etude-review` skill now reads the new files; the
+historical `gates.yaml` is deleted. The deterministic-check gate (verify stage)
+and orchestration walk were proven live via `etude run` with a throwaway repo.
+
+**Real-LLM end-to-end run is deferred to bead etude-s6z** (depends on
+etude-2pc.2 + etude-3a2 secret passthrough): running the real `dev` stage runner
+(`claude -p`) and model-seat gates (opus/codex/gemini) live requires secret
+passthrough (§3), which is not yet built.
+
+A second, research-style workflow lands later as an explicit generality test
+(etude-2pc.3).
