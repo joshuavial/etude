@@ -1,0 +1,67 @@
+site_name: etude
+site_description: Agent workflow capture and replay tooling
+site_url: https://joshuavial.github.io/etude/
+repo_url: https://github.com/joshuavial/etude
+repo_name: joshuavial/etude
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+
+nav:
+  - Home: README.md
+  - Guides:
+      - Init: init.md
+      - Manual Capture: capture.md
+      - Batch Capture: capture-run.md
+      - Runs: run.md
+      - Gate Reviewer Records: gates.md
+      - Sync: sync.md
+      - Replay: replay.md
+      - Bench: bench.md
+      - GC: gc.md
+      - Reindex: reindex.md
+      - Retro: retro.md
+      - Log: log.md
+      - Import: import.md
+  - CLI Reference:
+      - etude: cli/etude.md
+      - bench: cli/etude_bench.md
+      - capture: cli/etude_capture.md
+      - capture-gate: cli/etude_capture-gate.md
+      - capture-run: cli/etude_capture-run.md
+      - gc: cli/etude_gc.md
+      - import: cli/etude_import.md
+      - init: cli/etude_init.md
+      - log: cli/etude_log.md
+      - prime: cli/etude_prime.md
+      - reindex: cli/etude_reindex.md
+      - replay: cli/etude_replay.md
+      - retro: cli/etude_retro.md
+      - run: cli/etude_run.md
+      - sync: cli/etude_sync.md
+  - Planning:
+      - Overview: plans/README.md
+      - Product:
+          - Brief: plans/product/BRIEF.md
+          - V1 Scope: plans/product/V1-SCOPE.md
+      - Dogfood:
+          - Overview: plans/dogfood/README.md
+          - Checklists: plans/dogfood/checklists.md
+          - Review Gate Runbook: plans/dogfood/review-gate-runbook.md

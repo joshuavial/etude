@@ -2,7 +2,7 @@
 
 This section holds planning and design notes — some describe components that now
 ship, others sketch work that is not built yet. It is not shipped user-facing
-documentation (that lives in the top-level [docs/](../README.md)).
+documentation (that lives in the top-level [docs](../README.md)).
 
 The source of truth for the current product direction is still the full
 [design brief](product/BRIEF.md). Use this section for smaller implementation
@@ -54,7 +54,7 @@ behavior.
 
 ## Components
 
-**Shipped** (see the top-level [docs/](../README.md) for user docs):
+**Shipped** (see the top-level [docs](../README.md) for user docs):
 
 - **Go CLI** - command structure, errors, and generated command docs.
 - **Workflow schema** - `.etude/workflow.yaml` validation and versioning.

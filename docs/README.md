@@ -1,4 +1,7 @@
-# etude docs
+# etude
+
+`etude` captures agent workflow runs as Git refs so work can be inspected,
+replayed, benchmarked, and synchronized alongside the codebase.
 
 This directory holds user-facing documentation for implemented behavior.
 
@@ -18,12 +21,13 @@ This directory holds user-facing documentation for implemented behavior.
 - [Prime](cli/etude_prime.md) - print a structured agent-onboarding primer to stdout (runs anywhere, no args).
 - [Log](log.md) - narrate runs and retros as a chronological timeline (read-only).
 - [Import](import.md) - backfill historical GitHub PR diffs and bodies as etude run records (`etude import --from-github`).
-- [Example](../examples/summarize/README.md) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
+- [Example: summarize](https://github.com/joshuavial/etude/tree/main/examples/summarize) - tracker-agnostic end-to-end walkthrough (no beads, no LLM, just git + sh + etude).
+- [Example: research](https://github.com/joshuavial/etude/tree/main/examples/research) - non-dev workflow walkthrough (research → fact-check → draft → review → tone-police) proving the engine has no dev-specific assumptions; live gate + forward replay, no LLM.
 - [Plans](plans/README.md) - planning and design notes (some components shipped, some not yet built).
 - [CLI reference](cli/etude.md) - generated per-command flag/synopsis reference (do not edit; run `make docs` to regenerate).
 
 The current implemented state is summarized in the top-level
-[README](../README.md).
+[README](https://github.com/joshuavial/etude#readme).
 
 The storage and manifest packages that exist today are Go APIs internal to this
 module. The top-level README mentions them as implementation status; user-facing
