@@ -258,14 +258,86 @@ orchestrator is Claude Code.
 ### Example launch pattern
 
 ```text
-Gemini Pro:     gemini -m gemini-3.1-pro-preview -p "<gate prompt>"
+Gemini Pro:     GEMINI_CLI_TRUST_WORKSPACE=true gemini --skip-trust \
+                -m gemini-3.1-pro-preview -p "<gate prompt>"
 Claude Opus:    in-harness Task(subagent_type="general-purpose", model="opus",
                 prompt="<gate prompt>") when Claude orchestrates;
                 otherwise claude --model opus -p "<gate prompt>"
-GPT-5.5 xhigh:  spawn a new fresh GPT-5.5 (codex) agent with reasoning_effort=xhigh
+GPT-5.5 xhigh:  codex exec --skip-git-repo-check -m gpt-5.5 \
+                -c model_reasoning_effort=xhigh - < <gate-prompt-file>
+                (a fresh agent, no carry-over context)
 ```
 
+**Headless trust flags are REQUIRED when dispatching from a scratch / non-repo
+cwd** (e.g. a `/tmp` scratchpad): `gemini` errors "not running in a trusted
+directory" without `--skip-trust` (+ `GEMINI_CLI_TRUST_WORKSPACE=true`), and
+`codex exec` errors "Not inside a trusted directory" without
+`--skip-git-repo-check`. Omitting them costs a guaranteed failed reroll on the
+first gate of every fresh environment. (etude-8ub)
+
 Do not advance until all three reviewers return.
+
+## Gate Orchestration (Claude Code)
+
+When Claude Code drives the loop, the orchestrator's own discipline is as
+load-bearing as the panel. These rules were distilled from the etude-2pc
+live-execution epic, where the panel never shipped a defect but several
+sub-agent handoffs silently failed and were caught ONLY by independent
+orchestrator verification. Treat them as mandatory, not optional.
+
+### Pre-gate verification (do this BEFORE dispatching any gate)
+
+Sub-agent reports are trusted-but-UNVERIFIED. Before every gate, independently
+verify the artifacts — do not rely on the agent's prose summary:
+
+1. **The design field holds THIS bead's plan.** `bd show <bead>` and read the
+   Goal line. (A planner once `cat`'d a stale `scratchpad/design.md` and wrote
+   the WRONG bead's plan into the design field; caught only by reading it back.)
+2. **The planned tests actually exist.** `grep -c` for the test function names
+   the plan promised. (A coder once shipped production code with ZERO of the
+   planned tests — including a security-critical leak test — while reporting
+   "all checks pass.") For a security/data-integrity bead this is non-negotiable.
+3. **Re-run build/test/lint yourself** rather than trusting the report:
+   `make build && go test ./<touched-pkgs>/... && make lint`. Cross-compile and
+   `make docs` (zero-diff) when relevant.
+4. **Scope-check** `git status` + the diff against the plan's Files list (see
+   Scope Discipline). Investigate and revert anything the plan did not name.
+
+### Scratchpad + gate-prompt hygiene
+
+- Sub-agents that write a plan/prompt to scratch use a PER-BEAD unique filename
+  (`<bead-id>-design.md`), never a generic shared name — a long-lived scratch dir
+  carries stale files from prior sessions.
+- After `bd update <bead> --design-file -`, READ IT BACK and assert the first
+  line is this bead's Goal.
+- Build gate-prompt files with ABSOLUTE paths. Assembling a prompt with relative
+  `cat`/`sed` from the wrong cwd silently produces an EMPTY payload (observed:
+  an empty inlined diff made a seat correctly BLOCK three times in a row). After
+  assembling, sanity-check the prompt's byte size / grep for an expected token
+  before dispatching.
+
+### Gate-JSON `reviewed_stages` must name an EXISTING run stage
+
+A captured run has stages `plan/implement/verify/review` (NOT `docs` — docs is
+not a captured stage). A `GateAttempt.reviewed_stages[].stage` that names a
+non-existent stage makes `dogfood-close` / `capture-gate` abort with
+`stage "<x>" not found in manifest`. Map the **docs-phase** and **final-review**
+gates onto the `implement` diff stage (role `diff`), and the verify gate onto
+`verify`. (Observed: a `docs` reviewed-stage aborted a close mid-capture.)
+
+### Commit scope vs the baseline-dirty set
+
+- At loop start, snapshot `git status` as the BASELINE DIRTY SET (unrelated
+  in-flight work). Every bead commit stages by EXPLICIT path and asserts nothing
+  from the baseline set is staged — NEVER `git add -A` / `git commit -a`.
+- After committing, `git show --stat HEAD` and confirm no baseline/scratch file
+  leaked in. (A stray gate-prompt file once landed in the repo root from a
+  wrong-cwd write; pre-existing mkdocs files were dirty the entire epic and had
+  to be excluded from all six commits.)
+- When a this-bead doc edit is entangled in the same hunk as a baseline-dirty
+  change (e.g. both touch `docs/README.md`), prefer dropping the entangled edit
+  from the bead commit (put the content where it is clean, e.g. root `README.md`)
+  rather than dragging the unrelated change in.
 
 ## Reviewer Prompt Template
 
