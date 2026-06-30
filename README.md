@@ -1,5 +1,12 @@
 # etude
 
+> ⚠️ **Work in progress — pre-release, exploratory.** This is an active
+> exploration of ideas, not a finished or supported tool. Nothing here is set in
+> stone: commands, schemas (`workflow.yaml`/`registry.yaml`, run-manifest
+> formats), `refs/etude/*` layouts, and behavior can change or break at any time
+> without notice or migration. No version has been released (`etude --version`
+> reports `dev`). Don't depend on it for anything you can't afford to redo.
+
 ## Status
 
 Current implementation: `etude init`, manual capture (`etude capture` and
