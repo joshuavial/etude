@@ -12,16 +12,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshuavial/etude/internal/liverun"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/workflow"
 )
 
-// executeReplay runs the replay command with a pre-injected runner. It mirrors
-// the execute() helper but wires a custom replayRunner instead of a plain one.
+// executeReplay runs the replay command with a pre-injected single-stage runner.
 func executeReplay(stub *replay.StubRunner, args ...string) (string, string, error) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	r := &replayRunner{runner: stub}
+	r := &replayRunner{runner: stub, now: time.Now}
+	cmd := buildReplayCommand(&out, &errOut, r)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(&errOut, err)
+	}
+	return out.String(), errOut.String(), err
+}
+
+// executeReplayForward runs the forward replay (1-arg) with a pre-injected
+// forwardRunner so tests don't need workflow.yaml or registry.yaml.
+func executeReplayForward(stub *replay.StubRunner, args ...string) (string, string, error) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	r := &replayRunner{forwardRunner: stub, now: time.Now}
 	cmd := buildReplayCommand(&out, &errOut, r)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
@@ -826,5 +842,179 @@ func TestReplayOutputExistingRegularFileOverwritten(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("output file content = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AC2: forward replay (etude replay <run> — no stage arg)
+// ---------------------------------------------------------------------------
+
+// createLiveRun creates a 3-stage run in repo using liverun.Engine with a StubRunner.
+// Used as setup for forward replay tests.
+func createLiveRun(t *testing.T, repo, runID string) {
+	t.Helper()
+	headSHA := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	store := refstore.New(repo)
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "stage-a", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+			{Name: "stage-b", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+			{Name: "stage-c", Skill: "sk", Produces: "review", Inputs: []string{"diff"}},
+		},
+	}
+	stub := &replay.StubRunner{CannedOutput: []byte("stub-output"), CannedMediaType: "application/octet-stream"}
+	e := liverun.Engine{
+		Store:         store,
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+		Root:          repo,
+		Now:           func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
+	}
+	if err := e.Run(context.Background(), &bytes.Buffer{}, wf, liverun.RunOptions{
+		TaskBytes: []byte("task data"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    headSHA,
+	}); err != nil {
+		t.Fatalf("create live run: %v", err)
+	}
+}
+
+// AC2: etude replay <id> (no stage) forward re-executes all stages.
+func TestReplayForwardAllStages(t *testing.T) {
+	repo := initCaptureRepo(t)
+	runID := "mywf-20260101T000000Z-forward1"
+	createLiveRun(t, repo, runID)
+	chdir(t, repo)
+
+	// Forward replay with a stub that returns "replayed" for every stage.
+	stub := &replay.StubRunner{CannedOutput: []byte("replayed"), CannedMediaType: "text/plain; charset=utf-8"}
+	stdout, stderr, err := executeReplayForward(stub, runID)
+	if err != nil {
+		t.Fatalf("forward replay returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	// All 3 stage outputs ("replayed") must appear concatenated in stdout.
+	want := "replayedreplayedreplayed"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+// TestReplayForwardSingleStageOnlyFlagsRejected verifies that --record and --output
+// are rejected in 1-arg (forward replay) mode.
+func TestReplayForwardSingleStageOnlyFlagsRejected(t *testing.T) {
+	repo := initCaptureRepo(t)
+	runID := "mywf-20260101T000000Z-forward2"
+	createLiveRun(t, repo, runID)
+	chdir(t, repo)
+
+	for _, flag := range []string{"--record", "--output", "--skill-id"} {
+		args := []string{runID, flag}
+		if flag == "--output" || flag == "--skill-id" {
+			args = append(args, "dummy")
+		}
+		stub := &replay.StubRunner{}
+		_, stderr, err := executeReplayForward(stub, args...)
+		if err == nil {
+			t.Errorf("expected error for %s in forward replay mode", flag)
+			continue
+		}
+		if !strings.Contains(stderr, "only valid for single-stage replay") {
+			t.Errorf("%s: stderr = %q, want 'only valid for single-stage replay'", flag, stderr)
+		}
+	}
+}
+
+// TestReplayForwardMissingRunErrors verifies that a missing run id returns an error.
+func TestReplayForwardMissingRunErrors(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	stub := &replay.StubRunner{}
+	_, stderr, err := executeReplayForward(stub, "mywf-20260101T000000Z-notexist")
+	if err == nil {
+		t.Fatal("expected error for missing run")
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("stderr = %q, want 'not found'", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// --allow-env tests
+// ---------------------------------------------------------------------------
+
+// TestReplayAllowEnv covers three scenarios:
+//  1. Forward replay WITHOUT --allow-env: hermetic (marker absent from runner output).
+//  2. Forward replay WITH --allow-env: marker reaches runner.
+//  3. --record + --allow-env: rejected with a clear error.
+func TestReplayAllowEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+
+	repo, runID := captureStageForReplay(t) // also calls chdir(t, repo)
+
+	// workflow.yaml with env_allowlist — required for --allow-env to pick up names.
+	etDir := filepath.Join(repo, ".etude")
+	if err := os.MkdirAll(etDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wfContent := "name: mywf\nenv_allowlist: [ETUDE_TEST_MARKER]\nstages:\n  - name: gen\n    skill: s\n    produces: output\n    inputs: [task]\n"
+	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(wfContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runner writes the marker value (ABSENT when not set in child env).
+	scriptPath := filepath.Join(repo, "env-replay-runner.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s' \"${ETUDE_TEST_MARKER:-ABSENT}\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ETUDE_TEST_MARKER", "replaymarker")
+	chdir(t, repo)
+
+	// Scenario 1: forward replay WITHOUT --allow-env → hermetic (marker absent).
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "--runner", scriptPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("without --allow-env: %v\nstderr: %s", err, errOut.String())
+		}
+		if strings.Contains(out.String(), "replaymarker") {
+			t.Errorf("without --allow-env: marker leaked into output: %q", out.String())
+		}
+		if !strings.Contains(out.String(), "ABSENT") {
+			t.Errorf("without --allow-env: expected ABSENT in output: %q", out.String())
+		}
+	}
+
+	// Scenario 2: forward replay WITH --allow-env → marker reaches runner.
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "--runner", scriptPath, "--allow-env"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("with --allow-env: %v\nstderr: %s", err, errOut.String())
+		}
+		if !strings.Contains(out.String(), "replaymarker") {
+			t.Errorf("with --allow-env: expected marker in output: %q", out.String())
+		}
+	}
+
+	// Scenario 3: --record + --allow-env → rejected (single-stage form).
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "gen", "--runner", scriptPath, "--record", "--allow-env"})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("--record --allow-env should return an error")
+		}
+		if !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("expected 'cannot be combined' in error: %v", err)
+		}
 	}
 }

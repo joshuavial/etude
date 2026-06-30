@@ -8,12 +8,28 @@ stages:
     eval:
       method: rubric
       rubric: evals/plan-rubric.md
+    runner:
+      name: dev
+    gate:
+      tier: L2
+      abstraction: >-
+        ABSTRACTION LEVEL: review at design/contract/behavior-preservation altitude —
+        NOT implementation minutiae. BLOCK only if the plan (a) misses a requirement,
+        (b) regresses or loosens an observable behavior/contract, or (c) specifies a
+        mechanism that cannot be implemented as described. Anything that is an
+        implementation detail a coder would naturally resolve, or that a test would
+        catch, goes in OPTIONAL — do NOT block on it.
   - name: implement
     produces: diff
     inputs:
       - plan
       - repo-state
     skill: dev-executor
+    runner:
+      name: dev
+    gate:
+      tier: L3
+      abstraction: "code correctness against the approved plan"
   - name: verify
     produces: verify
     inputs:
@@ -23,12 +39,25 @@ stages:
     eval:
       method: rubric
       rubric: evals/verify-rubric.md
+    runner:
+      name: dev
+    gate:
+      tier: L2
+      abstraction: "test adequacy + real built-binary behavior"
+      checks:
+        - command: "make test"
+        - command: "make lint"
   - name: docs
     produces: docs-diff
     inputs:
       - diff
     skill: dev-docs-writer
     optional: true
+    runner:
+      name: dev
+    gate:
+      tier: L4
+      abstraction: "docs match implemented behavior; docs policy"
   - name: review
     produces: review
     inputs:
@@ -38,3 +67,8 @@ stages:
     skill: dev-pr-reviewer
     eval:
       method: pairwise
+    runner:
+      name: dev
+    gate:
+      tier: L4
+      abstraction: "bead-level readiness; diff vs plan"

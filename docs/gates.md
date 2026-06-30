@@ -160,6 +160,62 @@ guessed. The strict parser will backfill runs whose notes use the canonical
 format going forward, and honestly declines the rest. Capturing gates live with
 `etude capture-gate` (per the dogfood conventions) is the reliable path.
 
+## Live gate execution
+
+During a live `etude run`, the engine executes gate blocks automatically —
+no manual `etude capture-gate` call is needed. See [Runs](run.md#gate-execution)
+for the full live execution semantics (check/seat invocation, synthesis,
+rerun, escalate). This section documents the **seat output envelope** contract
+that seat runners must satisfy when invoked by the live engine.
+
+### Seat output envelope
+
+A seat runner writes a JSON object to `ETUDE_OUTPUT_FILE`:
+
+```json
+{"verdict":"go","required":[],"optional":[]}
+```
+
+Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `verdict` | `"go"` or `"block"` | The seat's vote |
+| `required` | array of strings | Required changes; meaningful on block |
+| `optional` | array of strings | Suggestions; meaningful on go |
+
+The envelope is parsed strictly. A runner that exits 0 but writes no file, an
+empty file, or non-JSON content is recorded as `empty` or `malfunction` and
+excluded from the vote. A runner that exits nonzero is recorded as `failed`
+regardless of output. All three carry a `failure_note` in the stored
+`SeatResult` (see the capture-gate record schema above).
+
+**Check runners** do not write an output envelope. Their verdict is the
+process exit code: 0 = pass, nonzero = hard BLOCK. A check that cannot
+launch, times out, or exits nonzero is always a hard veto, independent of seat
+votes.
+
+### Synthesis and the stored record
+
+After synthesis the engine writes the gate attempt directly to the run
+manifest (same CAS path as stage captures). The stored `GateAttempt` follows
+the same schema used by `etude capture-gate` (see above), with these
+live-specific characteristics:
+
+- `gate_id` is `"<phase>.r<round>"` where round is 1-based and monotonically
+  increases across reruns and tier changes.
+- Check seats appear as `SeatResult` entries with `harness.name="exec"` and
+  `provider.name="deterministic"`.
+- `decision.degraded_reason` is set whenever any seat is non-usable (failed,
+  empty, or malfunction) — even when the gate still passes — so the audit
+  record reflects a degraded panel.
+- `decision.escalation_reason` is required when `status="escalated"`.
+- A run that carries any gate attempts is stored as `manifest_version` 3.
+
+For the dogfood operational checklist (manual reviewer seats, runbook format,
+degraded-gate policy), see
+[Review Gate Runbook](plans/dogfood/review-gate-runbook.md).
+
 ## See also
 
 - [Manual Capture](capture.md) and [Runs](run.md) — capturing stages and

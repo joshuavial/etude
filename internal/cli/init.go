@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/joshuavial/etude/internal/registry"
 	"github.com/joshuavial/etude/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -128,11 +129,25 @@ func plan(ctx context.Context, root string, force bool, remote string, remoteCha
 		}
 	}
 
+	// Generate registry.yaml bytes and self-check.
+	reg := registry.Default()
+	registryBytes, err := reg.YAML()
+	if err != nil {
+		return nil, fmt.Errorf("generate registry.yaml: %w", err)
+	}
+	if _, err := registry.ParseYAML(registryBytes); err != nil {
+		return nil, fmt.Errorf("registry.yaml self-check failed: %w", err)
+	}
+
 	var actions []initAction
 
 	// Workflow.yaml write action.
 	workflowPath := filepath.Join(etudDir, "workflow.yaml")
 	actions = append(actions, writeAction(workflowPath, yamlBytes))
+
+	// Registry.yaml write action.
+	registryPath := filepath.Join(etudDir, "registry.yaml")
+	actions = append(actions, writeAction(registryPath, registryBytes))
 
 	// Rubric placeholder write actions.
 	for _, entry := range rubrics {

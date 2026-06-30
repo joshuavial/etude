@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// ptrFloat64 returns a pointer to the given float64 value — helper for test data.
+func ptrFloat64(f float64) *float64 { return &f }
+
 // goldenDefaultYAML is the exact byte output expected from Default().YAML().
 // This locks what etude-init-command scaffolds verbatim.
 const goldenDefaultYAML = `name: default
@@ -1117,6 +1120,799 @@ func minimalWorkflow() Workflow {
 }
 
 // ---------------------------------------------------------------------------
+// Runner tests
+// ---------------------------------------------------------------------------
+
+// TestRunnerParseName verifies runner: {name: opus} is parsed and validated.
+func TestRunnerParseName(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      name: opus
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Stages[0].Runner == nil {
+		t.Fatal("expected Runner != nil")
+	}
+	if w.Stages[0].Runner.Name != "opus" {
+		t.Fatalf("Runner.Name = %q, want %q", w.Stages[0].Runner.Name, "opus")
+	}
+	if w.Stages[0].Runner.Command != "" {
+		t.Fatalf("Runner.Command should be empty, got %q", w.Stages[0].Runner.Command)
+	}
+}
+
+// TestRunnerParseCommand verifies runner: {command: "make test"} is parsed.
+func TestRunnerParseCommand(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      command: make test
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Stages[0].Runner == nil {
+		t.Fatal("expected Runner != nil")
+	}
+	if w.Stages[0].Runner.Command != "make test" {
+		t.Fatalf("Runner.Command = %q, want %q", w.Stages[0].Runner.Command, "make test")
+	}
+}
+
+// TestRunnerBothSetErrors asserts that setting both name and command is rejected.
+func TestRunnerBothSetErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      name: opus
+      command: make test
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject runner with both name and command")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRunnerKnownFieldsRejectsUnknown asserts KnownFields(true) rejects an
+// unknown key inside a runner block.
+func TestRunnerKnownFieldsRejectsUnknown(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      name: opus
+      surprise: yes
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside runner:")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRunnerAbsentIsNil asserts that a stage with no runner: key has Runner==nil.
+func TestRunnerAbsentIsNil(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Stages[0].Runner != nil {
+		t.Fatalf("expected Runner==nil for absent key, got %+v", w.Stages[0].Runner)
+	}
+}
+
+// TestRunnerPresentNullErrors asserts that a bare runner: key (null value) is
+// treated as present and fails validation (no name or command).
+func TestRunnerPresentNullErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should error: present-null runner is present but empty")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestRunnerPresentEmptyErrors asserts that runner: {} is treated as present
+// and fails validation.
+func TestRunnerPresentEmptyErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner: {}
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should error: runner: {} is present but has no name/command")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gate tests
+// ---------------------------------------------------------------------------
+
+// TestGateParseFullBlock parses a gate with all fields set.
+func TestGateParseFullBlock(t *testing.T) {
+	threshold := 0.8
+	rounds := 2
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      checks:
+        - command: make lint
+        - name: custom-check
+      seats:
+        - opus
+        - codex
+      pass_threshold: 0.8
+      max_rounds: 2
+      abstraction: review at design altitude
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	g := w.Stages[0].Gate
+	if g == nil {
+		t.Fatal("expected Gate != nil")
+	}
+	if len(g.Checks) != 2 {
+		t.Fatalf("Checks count = %d, want 2", len(g.Checks))
+	}
+	if g.Checks[0].Command != "make lint" {
+		t.Fatalf("Checks[0].Command = %q", g.Checks[0].Command)
+	}
+	if g.Checks[1].Name != "custom-check" {
+		t.Fatalf("Checks[1].Name = %q", g.Checks[1].Name)
+	}
+	if len(g.Seats) != 2 || g.Seats[0] != "opus" || g.Seats[1] != "codex" {
+		t.Fatalf("Seats = %v", g.Seats)
+	}
+	if g.PassThreshold == nil || *g.PassThreshold != threshold {
+		t.Fatalf("PassThreshold = %v, want %v", g.PassThreshold, threshold)
+	}
+	if g.MaxRounds == nil || *g.MaxRounds != rounds {
+		t.Fatalf("MaxRounds = %v, want %v", g.MaxRounds, rounds)
+	}
+	if g.Abstraction != "review at design altitude" {
+		t.Fatalf("Abstraction = %q", g.Abstraction)
+	}
+	_ = threshold
+}
+
+// TestGateParseTier parses a gate with a tier ref.
+func TestGateParseTier(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      tier: L2
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Stages[0].Gate == nil {
+		t.Fatal("expected Gate != nil")
+	}
+	if w.Stages[0].Gate.Tier != "L2" {
+		t.Fatalf("Tier = %q, want %q", w.Stages[0].Gate.Tier, "L2")
+	}
+}
+
+// TestGateSeatsAndTierErrors asserts that setting both seats and tier is rejected.
+func TestGateSeatsAndTierErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      seats: [opus]
+      tier: L2
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject gate with both seats and tier")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateEmptyErrors asserts that a gate with no checks/seats/tier is rejected.
+func TestGateEmptyErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate: {}
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject empty gate")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateEmptyChecksListErrors asserts that checks: [] with no seats/tier is
+// rejected — an explicit empty list is treated as unset.
+func TestGateEmptyChecksListErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      checks: []
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject gate with only empty checks: []")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGatePassThresholdZeroErrors asserts pass_threshold: 0 is rejected.
+func TestGatePassThresholdZeroErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      seats: [opus]
+      pass_threshold: 0
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject pass_threshold: 0")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGatePassThresholdNegativeErrors asserts a negative pass_threshold is rejected.
+func TestGatePassThresholdNegativeErrors(t *testing.T) {
+	w := minimalWorkflow()
+	pt := -0.5
+	w.Stages[0].Gate = &GateConfig{Seats: []string{"opus"}, PassThreshold: &pt}
+	if err := w.Validate(); err == nil {
+		t.Fatal("Validate should reject negative pass_threshold")
+	} else if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGatePassThresholdAboveOneErrors asserts pass_threshold > 1 is rejected.
+func TestGatePassThresholdAboveOneErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      seats: [opus]
+      pass_threshold: 1.5
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject pass_threshold: 1.5")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateMaxRoundsZeroErrors asserts max_rounds: 0 is rejected.
+func TestGateMaxRoundsZeroErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      seats: [opus]
+      max_rounds: 0
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject max_rounds: 0")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateMaxRoundsNegativeErrors asserts a negative max_rounds is rejected.
+func TestGateMaxRoundsNegativeErrors(t *testing.T) {
+	w := minimalWorkflow()
+	mr := -1
+	w.Stages[0].Gate = &GateConfig{Seats: []string{"opus"}, MaxRounds: &mr}
+	if err := w.Validate(); err == nil {
+		t.Fatal("Validate should reject negative max_rounds")
+	} else if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateCheckBothNameAndCommandErrors asserts that a check with both name
+// and command set is rejected.
+func TestGateCheckBothNameAndCommandErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      checks:
+        - name: my-check
+          command: make check
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject check with both name and command")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateKnownFieldsRejectsUnknownInGate asserts unknown key inside gate: is rejected.
+func TestGateKnownFieldsRejectsUnknownInGate(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      seats: [opus]
+      bogus_key: oops
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside gate:")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateKnownFieldsRejectsUnknownInCheck asserts unknown key inside a check
+// entry is rejected.
+func TestGateKnownFieldsRejectsUnknownInCheck(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      checks:
+        - command: make lint
+          weird_field: yes
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown key inside gate.checks entry")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestGateAbsentIsNil asserts that a stage with no gate: key has Gate==nil.
+func TestGateAbsentIsNil(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.Stages[0].Gate != nil {
+		t.Fatalf("expected Gate==nil for absent key, got %+v", w.Stages[0].Gate)
+	}
+}
+
+// TestGatePresentNullErrors asserts that a bare gate: key (null value) is
+// treated as present and fails validation.
+func TestGatePresentNullErrors(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should error: present-null gate is present but empty")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DefaultRunner (workflow-level) tests
+// ---------------------------------------------------------------------------
+
+// TestDefaultRunnerParse verifies default_runner at workflow level is parsed.
+func TestDefaultRunnerParse(t *testing.T) {
+	input := `name: w
+default_runner:
+  name: opus
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.DefaultRunner == nil {
+		t.Fatal("expected DefaultRunner != nil")
+	}
+	if w.DefaultRunner.Name != "opus" {
+		t.Fatalf("DefaultRunner.Name = %q, want %q", w.DefaultRunner.Name, "opus")
+	}
+}
+
+// TestDefaultRunnerBothSetErrors asserts that setting both name and command in
+// default_runner is rejected.
+func TestDefaultRunnerBothSetErrors(t *testing.T) {
+	input := `name: w
+default_runner:
+  name: opus
+  command: make run
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject default_runner with both name and command")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestDefaultRunnerAbsentIsNil asserts that a workflow without default_runner:
+// has DefaultRunner==nil.
+func TestDefaultRunnerAbsentIsNil(t *testing.T) {
+	w, err := ParseYAML([]byte(`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if w.DefaultRunner != nil {
+		t.Fatalf("expected DefaultRunner==nil, got %+v", w.DefaultRunner)
+	}
+}
+
+// TestDefaultRunnerPresentNullErrors asserts bare default_runner: is present
+// and fails validation.
+func TestDefaultRunnerPresentNullErrors(t *testing.T) {
+	input := `name: w
+default_runner:
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should error: present-null default_runner")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// TestDefaultRunnerPresentEmptyErrors asserts default_runner: {} is present
+// and fails validation.
+func TestDefaultRunnerPresentEmptyErrors(t *testing.T) {
+	input := `name: w
+default_runner: {}
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should error: default_runner: {} has no name/command")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Effective-default accessor tests
+// ---------------------------------------------------------------------------
+
+// TestGateEffectiveDefaultsWhenUnset verifies accessor defaults for nil GateConfig.
+func TestGateEffectiveDefaultsWhenUnset(t *testing.T) {
+	var g *GateConfig
+	if got := g.EffectivePassThreshold(); got != 1.0 {
+		t.Fatalf("EffectivePassThreshold() = %g, want 1.0", got)
+	}
+	if got := g.EffectiveMaxRounds(); got != 3 {
+		t.Fatalf("EffectiveMaxRounds() = %d, want 3", got)
+	}
+}
+
+// TestGateEffectiveDefaultsWhenFieldsNil verifies accessor defaults when
+// the GateConfig is non-nil but the fields are nil.
+func TestGateEffectiveDefaultsWhenFieldsNil(t *testing.T) {
+	g := &GateConfig{Seats: []string{"opus"}}
+	if got := g.EffectivePassThreshold(); got != 1.0 {
+		t.Fatalf("EffectivePassThreshold() = %g, want 1.0", got)
+	}
+	if got := g.EffectiveMaxRounds(); got != 3 {
+		t.Fatalf("EffectiveMaxRounds() = %d, want 3", got)
+	}
+}
+
+// TestGateEffectiveDefaultsWhenExplicit verifies explicit values are returned.
+func TestGateEffectiveDefaultsWhenExplicit(t *testing.T) {
+	pt := 0.75
+	mr := 5
+	g := &GateConfig{
+		Seats:         []string{"opus"},
+		PassThreshold: &pt,
+		MaxRounds:     &mr,
+	}
+	if got := g.EffectivePassThreshold(); got != 0.75 {
+		t.Fatalf("EffectivePassThreshold() = %g, want 0.75", got)
+	}
+	if got := g.EffectiveMaxRounds(); got != 5 {
+		t.Fatalf("EffectiveMaxRounds() = %d, want 5", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AC#3: arbitrary stage names (no phase hardcoding)
+// ---------------------------------------------------------------------------
+
+// TestArbitraryStageNamesWithRunnerAndGate asserts that a workflow with stage
+// names that don't match the default phase names (plan/implement/etc.) parses
+// and validates cleanly when runner + gate are present.
+func TestArbitraryStageNamesWithRunnerAndGate(t *testing.T) {
+	input := `name: research-workflow
+stages:
+  - name: research
+    produces: research
+    inputs:
+      - task
+    skill: researcher
+    runner:
+      name: opus
+    gate:
+      tier: L2
+  - name: fact-check
+    produces: fact-check
+    inputs:
+      - research
+    skill: fact-checker
+    runner:
+      command: make fact-check
+  - name: draft
+    produces: draft
+    inputs:
+      - fact-check
+    skill: writer
+    gate:
+      seats:
+        - opus
+        - codex
+      pass_threshold: 1.0
+      max_rounds: 3
+      abstraction: "review prose accuracy and tone"
+  - name: tone-police
+    produces: final
+    inputs:
+      - draft
+    skill: tone-editor
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate error: %v", err)
+	}
+	if len(w.Stages) != 4 {
+		t.Fatalf("expected 4 stages, got %d", len(w.Stages))
+	}
+	if w.Stages[0].Runner == nil || w.Stages[0].Runner.Name != "opus" {
+		t.Fatalf("stage[0].Runner.Name mismatch: %+v", w.Stages[0].Runner)
+	}
+	if w.Stages[0].Gate == nil || w.Stages[0].Gate.Tier != "L2" {
+		t.Fatalf("stage[0].Gate.Tier mismatch: %+v", w.Stages[0].Gate)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Byte-stable round-trip tests
+// ---------------------------------------------------------------------------
+
+// TestLegacyStageNoRunnerOrGateRoundTrip asserts that a legacy stage (skill
+// only, no runner/gate/default_runner) round-trips byte-stable and the output
+// contains none of the new keys.
+func TestLegacyStageNoRunnerOrGateRoundTrip(t *testing.T) {
+	legacy := `name: w
+stages:
+  - name: plan
+    produces: plan
+    inputs:
+      - task
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(legacy))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	if string(out) != legacy {
+		t.Fatalf("legacy round-trip not byte-stable\ngot:\n%s\nwant:\n%s", out, legacy)
+	}
+	for _, key := range []string{"runner:", "gate:", "default_runner:"} {
+		if strings.Contains(string(out), key) {
+			t.Fatalf("re-encoded legacy workflow must not contain %q:\n%s", key, out)
+		}
+	}
+}
+
+// TestGoldenDefaultYAMLLegacyRoundTrip is the companion to TestLegacyStageNoRunnerOrGateRoundTrip
+// for the full Default() workflow: it must round-trip byte-stable and contain
+// none of the new keys (Default() is deliberately unchanged).
+func TestGoldenDefaultYAMLLegacyRoundTrip(t *testing.T) {
+	b, err := Default().YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	w, err := ParseYAML(b)
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("re-encode error: %v", err)
+	}
+	if string(out) != string(b) {
+		t.Fatalf("Default() round-trip not byte-stable\nfirst:\n%s\nre-encode:\n%s", b, out)
+	}
+	for _, key := range []string{"runner:", "gate:", "default_runner:"} {
+		if strings.Contains(string(out), key) {
+			t.Fatalf("Default() re-encode must not contain %q:\n%s", key, out)
+		}
+	}
+}
+
+// TestNewShapeWorkflowRoundTrip asserts that a workflow with runner, gate, and
+// default_runner round-trips parse→encode→parse→encode byte-stable.
+func TestNewShapeWorkflowRoundTrip(t *testing.T) {
+	pt := 1.0
+	mr := 3
+	w := Workflow{
+		Name:          "research-workflow",
+		DefaultRunner: &Runner{Name: "opus"},
+		Stages: []Stage{
+			{
+				Name:     "plan",
+				Produces: "plan",
+				Inputs:   []string{"task"},
+				Skill:    "dev-planner",
+				Runner:   &Runner{Name: "opus"},
+				Gate: &GateConfig{
+					Tier:          "L2",
+					PassThreshold: &pt,
+					MaxRounds:     &mr,
+					Abstraction:   "review at design altitude",
+				},
+			},
+			{
+				Name:     "implement",
+				Produces: "diff",
+				Inputs:   []string{"plan", "repo-state"},
+				Skill:    "dev-coder",
+				Runner:   &Runner{Command: "make implement"},
+				Gate: &GateConfig{
+					Seats:     []string{"opus", "codex"},
+					MaxRounds: &mr,
+				},
+			},
+		},
+	}
+	first, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	w2, err := ParseYAML(first)
+	if err != nil {
+		t.Fatalf("first ParseYAML error: %v", err)
+	}
+	second, err := w2.YAML()
+	if err != nil {
+		t.Fatalf("second YAML error: %v", err)
+	}
+	if string(second) != string(first) {
+		t.Fatalf("new-shape round-trip not byte-stable\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	// Verify the new keys are present.
+	for _, key := range []string{"runner:", "gate:", "default_runner:"} {
+		if !strings.Contains(string(first), key) {
+			t.Fatalf("encoded new-shape workflow must contain %q:\n%s", key, first)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // retros.nudge
 // ---------------------------------------------------------------------------
 
@@ -1274,6 +2070,92 @@ retros:
 	}
 	if !errors.Is(err, ErrInvalidWorkflow) {
 		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnvAllowlist tests
+// ---------------------------------------------------------------------------
+
+// TestWorkflowEnvAllowlist_Parse verifies env_allowlist parses from YAML.
+func TestWorkflowEnvAllowlist_Parse(t *testing.T) {
+	input := `name: w
+env_allowlist: [FOO, BAR]
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    inputs: [task]
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML: %v", err)
+	}
+	if len(w.EnvAllowlist) != 2 || w.EnvAllowlist[0] != "FOO" || w.EnvAllowlist[1] != "BAR" {
+		t.Errorf("EnvAllowlist = %v, want [FOO BAR]", w.EnvAllowlist)
+	}
+}
+
+// TestWorkflowEnvAllowlist_ValidationRejects verifies invalid names are rejected by Validate.
+func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		names []string
+	}{
+		{"contains equals", []string{"FOO=bar"}},
+		{"empty string", []string{""}},
+		{"starts with digit", []string{"1FOO"}},
+		{"reserved PATH", []string{"PATH"}},
+		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
+		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
+		{"duplicate", []string{"FOO", "FOO"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := minimalWorkflow()
+			w.EnvAllowlist = tc.names
+			if err := w.Validate(); err == nil {
+				t.Errorf("expected error for %v, got nil", tc.names)
+			}
+		})
+	}
+}
+
+// TestWorkflowEnvAllowlist_AbsentStaysAbsent verifies no env_allowlist key in YAML
+// output when the field is nil.
+func TestWorkflowEnvAllowlist_AbsentStaysAbsent(t *testing.T) {
+	w := minimalWorkflow()
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	if strings.Contains(string(out), "env_allowlist") {
+		t.Errorf("env_allowlist key should be absent when nil:\n%s", out)
+	}
+}
+
+// TestWorkflowEnvAllowlist_RoundTrip verifies env_allowlist survives YAML().ParseYAML()
+// and that two encodings produce identical bytes.
+func TestWorkflowEnvAllowlist_RoundTrip(t *testing.T) {
+	w := minimalWorkflow()
+	w.EnvAllowlist = []string{"FOO", "BAR_BAZ"}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	got, err := ParseYAML(out)
+	if err != nil {
+		t.Fatalf("ParseYAML round-trip: %v", err)
+	}
+	if len(got.EnvAllowlist) != 2 || got.EnvAllowlist[0] != "FOO" || got.EnvAllowlist[1] != "BAR_BAZ" {
+		t.Errorf("round-trip EnvAllowlist = %v, want [FOO BAR_BAZ]", got.EnvAllowlist)
+	}
+	out2, err := got.YAML()
+	if err != nil {
+		t.Fatalf("YAML second encode: %v", err)
+	}
+	if string(out) != string(out2) {
+		t.Errorf("YAML not byte-stable:\nfirst:\n%s\nsecond:\n%s", out, out2)
 	}
 }
 

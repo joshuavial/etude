@@ -13,6 +13,7 @@ and works whether or not `init` configured the remote.
 ```
 .etude/
   workflow.yaml           # canonical 6-stage default workflow
+  registry.yaml           # seat/tier registry (edit to configure reviewers)
   evals/
     plan-rubric.md        # rubric placeholder for the plan stage
     test-plan-rubric.md   # rubric placeholder for the test-plan stage
@@ -65,7 +66,7 @@ action and is the sole site that prints output and tallies counts.
 After all actions run, a summary line is printed:
 
 ```
-init: 2 created, 0 skipped, 2 configured
+init: 4 created, 0 skipped, 2 configured
 ```
 
 The `configured` count covers both freshly configured and already-configured
@@ -80,7 +81,7 @@ scaffold and `plan: configure fetch refspec on <remote>` / `plan: configure push
 refspec on <remote>` lines for the refspecs, followed by a summary:
 
 ```
-dry-run: 2 to create, 0 to skip, 2 to configure
+dry-run: 4 to create, 0 to skip, 2 to configure
 ```
 
 Dry-run behavior:
@@ -151,6 +152,99 @@ Defaults and rules:
 - **Automated firing** — auto-firing is not yet wired; this block is parsed and
   validated only.  See `docs/plans/product/etude-retro-command.md §4` for the
   full trigger table and Phase C roadmap.
+
+## registry.yaml — seat and tier configuration
+
+The scaffolded `registry.yaml` defines the named seats (model + harness
+invocations) and tier presets that live-execution gate blocks reference.
+
+```yaml
+quorum: unanimous          # optional; "unanimous" (default) or "majority"
+
+seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: "claude -p --model opus"
+    mode: inline            # optional; execution constraint for the seat
+    model_fallbacks:        # optional; ordered list of fallback model ids
+      - claude-opus-old
+  codex:
+    provider: openai/gpt-5.5
+    harness: codex
+    invoke: "codex exec --ephemeral -m gpt-5.5 -s read-only -"
+    mode: diff-only
+
+tiers:
+  L1:
+    name: Full three-seat gate   # optional human-readable label
+    seats: [gemini, opus, codex] # required; every entry must resolve to a seat
+    use: "Reserve for the riskiest changes."  # optional prose
+  L2:
+    seats: [opus, codex]
+```
+
+Validation rules:
+
+- **`quorum`** — if set, must be `"unanimous"` or `"majority"`.  Omitting it
+  is equivalent to `"unanimous"`.
+- **`seats`** — `provider`, `harness`, and `invoke` are required per seat.
+  `mode` and `model_fallbacks` are optional.  Seat and tier map keys must match
+  `[A-Za-z0-9_.-]`.
+- **`tiers`** — `seats` is required and must be non-empty.  Every seat key in
+  a tier must reference a seat defined in the same file (intra-file check; no
+  cross-file resolution at schema time).  `name` and `use` are optional prose.
+  The scaffold ships four tier presets, `L1`–`L4`.
+- **Unknown fields** are rejected at parse time (strict mode).
+- **Trailing documents** after the first are rejected.
+
+## workflow.yaml — optional stage runner, gate, and default_runner fields
+
+These fields are additive; existing `skill`-based workflows remain valid
+without them.
+
+```yaml
+name: my-workflow
+
+default_runner:            # optional; applied to stages that have no own runner
+  name: opus               # registry seat reference  OR  command: "make run"
+
+stages:
+  - name: implement
+    produces: diff
+    inputs: [task, repo-state]
+    skill: dev-coder
+    runner:                # optional; overrides default_runner for this stage
+      name: opus           # -- OR --
+      # command: "make implement"  (name and command are mutually exclusive)
+    gate:                  # optional review gate for this stage's output
+      checks:              # deterministic hard-veto runners (optional)
+        - command: make test
+        - command: make lint
+      seats: [opus, codex] # inline seat list  -- OR --
+      # tier: L2           # tier preset (mutually exclusive with seats)
+      pass_threshold: 1.0  # 0 < t <= 1; default 1.0
+      max_rounds: 3        # >= 1; default 3
+      abstraction: "review code correctness against the approved plan"
+```
+
+Runner and gate validation rules:
+
+- **`runner`** — exactly one of `name` or `command` must be set; both empty or
+  both set is an error.  A bare `runner:` key (null value) is treated as
+  present and fails validation.
+- **`gate`** — at least one of `checks` (non-empty), `seats`, or `tier` must
+  be set; `checks: []` (explicit empty list) is treated as unset.  `seats` and
+  `tier` are mutually exclusive.  `abstraction` is free prose; no constraint.
+- **`default_runner`** — same rules as per-stage `runner`.
+
+Cross-file reference resolution (e.g. verifying that `runner.name: opus`
+exists in `registry.yaml`) is deferred to execution-time; the schema layer
+validates intra-file structure only.
+
+Live execution — runner invocation and gate evaluation are not yet wired;
+these fields are parsed and validated only.  See
+`docs/plans/product/live-execution.md` for the execution roadmap.
 
 ## Notes
 

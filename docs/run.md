@@ -77,6 +77,16 @@ stage: plan
 The `refs:` block appears only when the run has external refs; its keys are
 printed in sorted order.
 
+When the workflow's `env_allowlist` is non-empty, an `env allowlist:` line
+appears in the header immediately after `created:` (before `refs:` when present),
+listing the configured names (never values):
+
+```
+env allowlist:    ETUDE_TEST_MARKER, ANTHROPIC_API_KEY
+```
+
+See [Env passthrough](#env-passthrough) for details.
+
 Per stage, the detail view shows:
 
 - `produced_by`, `git sha`
@@ -121,6 +131,210 @@ code. The following are rejected:
 - Contains characters other than letters, digits, `-`, `_`, and `.`
 
 An unknown run id prints `run "<id>" not found` to stderr and exits non-zero.
+
+## Live run
+
+`etude run <workflow>` executes a workflow's stage graph live, capturing each
+stage incrementally as it completes.
+
+```bash
+etude run <workflow> --task <task-file> [flags]
+```
+
+Example:
+
+```bash
+etude run dev-pipeline --task bead.md
+etude run dev-pipeline --task bead.md --run-id my-run-001
+etude run dev-pipeline --task bead.md --timeout 30m
+```
+
+### How it works
+
+The engine reads `.etude/workflow.yaml` and `.etude/registry.yaml`, resolves
+each stage's runner (from the registry or inline), and walks the stage graph
+in dependency order. All stages share a single evolving worktree checked out
+at the run's git SHA, so mutations from earlier stages are visible to later
+ones.
+
+After each stage completes its runner, the engine chains the stage's output
+artifact into the next stage's inputs by role (matching `capture-run`
+semantics), then captures the stage to `refs/etude/runs/<id>` via an
+atomic compare-and-swap append. Every intermediate commit is a valid,
+parseable run manifest, so `etude run show <id>` works mid-run and a crash
+leaves a valid partial run.
+
+Per stage the command prints:
+
+```
+captured <commit>
+```
+
+On completion:
+
+```
+ref refs/etude/runs/<id>
+```
+
+`etude run list` and `etude run show <id>` work immediately after the first
+stage completes, before the run finishes.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--task <file>` | Path to the task input file. Seeds the special `task` role. Required for a fresh run. |
+| `--run-id <id>` | Explicit run id (auto-generated as `<workflow>-<timestamp>-<rand>` if omitted). Must be unique; errors on collision. |
+| `--git-sha <sha>` | Git commit SHA for the worktree (defaults to `HEAD`). |
+| `--runner <command>` | Runner command override applied to all stages. |
+| `--timeout <duration>` | Per-stage runner timeout (default `10m`; `0` disables). |
+| `--resume <id>` | Resume a partial run. See [Resume](#resume). |
+
+### Run id
+
+When `--run-id` is omitted, the engine generates a sortable id of the form
+`<workflow>-<UTC:yyyymmddThhmmssZ>-<8-hex>` (4 random bytes). Explicit ids are validated before
+any git call and must not contain `/`, `..`, leading or trailing `.`, or
+characters other than letters, digits, `-`, `_`, and `.`.
+
+Reserved workflow names `show` and `list` are rejected with a clear error
+because they are shadowed by the `run` subcommands.
+
+### Gate execution
+
+When a workflow stage carries a `gate` block, the engine runs it after the
+stage completes, before advancing to the next stage.
+
+A gate has two seat kinds:
+
+- **checks** — deterministic runners (scripts, lint, tests). The runner is
+  invoked through the external-runner contract (`ETUDE_INPUTS_DIR`,
+  `ETUDE_OUTPUT_FILE`). Exit 0 passes; any nonzero exit, launch failure, or
+  timeout is a hard BLOCK — no threshold applies, and even a unanimous seat
+  `go` cannot override a failing check.
+- **seats** — model/variant runners that write a verdict JSON envelope to
+  `ETUDE_OUTPUT_FILE`:
+
+  ```json
+  {"verdict":"go","required":[],"optional":[]}
+  ```
+
+  `verdict` is `"go"` or `"block"`. `required` lists required changes on a
+  block; `optional` lists suggestions on a go. Seats that cannot launch, time
+  out, produce no output, or produce non-JSON output are recorded as
+  `failed`/`empty`/`malfunction` and excluded from the vote count.
+
+**Synthesis** is fail-closed:
+
+1. Any failing check → not a pass (skip seat vote).
+2. Checks-only gate (no seats), all checks pass → **pass**.
+3. Usable seat count (valid envelope received) < min(2, configured seats) →
+   **escalated** (insufficient usable seats; escalation_reason recorded).
+4. `goCount / usableCount >= pass_threshold` (default 1.0) → **pass**;
+   otherwise not a pass.
+5. Not-pass with rounds remaining → **rerun**; rounds exhausted → **escalated**.
+
+On **rerun**: the engine builds a `gate-feedback` artifact (failed check
+details + blocking seats' `required[]`) and re-runs the guarded stage with
+that artifact appended to its inputs (role `gate-feedback`). The re-run stage
+is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
+against its output.
+
+On **escalated**: the engine advances the tier ladder toward L1 (strongest)
+and re-runs the gate against the latest stage output at the stronger tier. If
+no stronger tier exists (already at L1, or the gate used inline seats with no
+tier ladder), the run halts with a `GateEscalationError` — the partial run is
+valid, inspectable via `etude run show`, and resumable.
+
+Each gate attempt is recorded automatically as a `GateAttempt` in the run
+manifest (`manifest_version` 3); gate attempts appear after stages in
+`etude run show`. No separate `etude capture-gate` call is required for live
+runs.
+
+### Env passthrough
+
+By default, each stage runner receives a hermetic environment containing only
+`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
+vars (such as API keys) to live runners, declare an allowlist of names in
+`.etude/workflow.yaml`:
+
+```yaml
+env_allowlist: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
+```
+
+At run time, etude reads each listed name's value from the orchestrator's own
+process env and passes it to each stage runner and gate model seat. Values are
+never stored in the manifest or artifact files; only the names are recorded.
+
+**Scope.** The allowlist applies to live stage runners and gate model seats.
+Deterministic gate checks are always hermetic (they receive no allowlist entries
+regardless of configuration).
+
+**Validation.** Each entry must be a valid POSIX env var name
+(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
+`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
+
+**Audit.** The configured names (never values) appear in `etude run show` as an
+`env allowlist:` header line and in the run manifest (`env_allowlist` field).
+The manifest records the configured names as intent/policy: a name is only
+passed to the child process when it is present in the orchestrator's env —
+"listed" does not mean "value delivered". Secret values never appear in the
+manifest or `etude run show` output. If a runner echoes its own secret into its
+output artifact, that is operator responsibility; etude's guarantee is that
+values cross only into the child process environment.
+
+**Replay.** By default, `etude replay` stays hermetic (no passthrough). Pass
+`--allow-env` to load the workflow's `env_allowlist` and apply it during replay:
+
+```bash
+etude replay <run-id> --allow-env
+etude replay <run-id> <stage> --allow-env
+```
+
+`--allow-env` and `--record` cannot be combined (rejected with a clear error).
+
+### Forward replay
+
+Once a live run is captured, `etude replay <run-id>` (one argument, no stage)
+re-executes all its stages forward in a single evolving worktree, using the
+recorded (content-addressed) inputs for each stage. This is the inverse of
+a live run: it replays what was captured, in order.
+
+Single-stage flags (`--record`, `--output`, producer overrides) are not valid
+in forward-replay mode and return an error if supplied.
+
+## Resume
+
+When a stage runner exits non-zero or times out, `etude run` stops, leaves
+the partial run (all previously-completed stages remain durably captured),
+prints the failure to stderr, and exits non-zero:
+
+```
+stage "<name>" failed: <error>
+resume with: etude run <workflow> --resume <id>
+```
+
+To continue from where the run stopped:
+
+```bash
+etude run <workflow> --resume <id>
+```
+
+`--resume` loads the partial run manifest, derives the frontier (the first
+stage whose output role has not been produced yet), reseeds all previously-
+captured artifact blobs (including the task input) from the run commit, and
+continues CAS-appending from the current run ref head. The worktree is
+re-opened at the git SHA recorded in the partial run manifest (not the
+current `HEAD`), so a moved `HEAD` between the failure and the resume cannot
+silently change the worktree base.
+
+`--task` and `--run-id` are ignored when `--resume` is set (both come from
+the existing partial run). The resumed run is the same run ref: it gains
+additional commits, one per newly-completed stage.
+
+Failed-stage status is not yet durably recorded in the run manifest (tracked
+in etude-dp7). `etude run show` on a partial run shows the successfully-
+completed stages only; the frontier stage has not been captured.
 
 ## Current limits
 

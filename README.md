@@ -136,3 +136,7 @@ See [CLI reference](docs/cli/etude.md) for the generated per-command reference.
 
 For a no-tracker walkthrough (no beads, no LLM, just git + sh + etude), see
 [examples/summarize/README.md](examples/summarize/README.md).
+
+For a non-dev workflow walkthrough proving the engine has no dev-specific
+assumptions (research → fact-check → draft → review → tone-police, with a live
+gate), see [examples/research/README.md](examples/research/README.md).

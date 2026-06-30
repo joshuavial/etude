@@ -1,7 +1,7 @@
 # Review Gate Runbook
 
 Status: planning note. This is the operational checklist for running the
-four-reviewer dogfood gate defined in [Review Gate Process](review-gate-process.md).
+three-reviewer dogfood gate defined in [Review Gate Process](review-gate-process.md).
 
 ## Purpose
 
@@ -50,9 +50,9 @@ observed guard/behavior; for round-trip, before/after bytes.
 
 **Seat-to-lens mapping.** Any capable model fills any lens. Current seats: codex
 (openai/gpt-5.5), gemini (google/gemini-3.1-pro-preview), in-harness Opus
-(anthropic/claude-opus-4-7), pi/pilms (lmstudio/qwen3.6-35b-a3b). Each runs the
+(anthropic/claude-opus-4-7). Each runs the
 SAME full lens checklist. Execution constraints (codex large-input hang, gemini
-GrepTool cross-file bleed, pilms reasoning latency) affect HOW a seat applies
+GrepTool cross-file bleed) affect HOW a seat applies
 lenses — see Per-seat execution constraints under Invocation. They are NOT a
 reason to specialize seats to different lenses.
 
@@ -70,8 +70,8 @@ surface the bead touches; when unsure, go heavier. Every tier still requires a
 UNANIMOUS pass of its seats — no tier advances on partial approval — and every
 seat failure (auth/quota/tool/empty) still escalates per Waiting And Status.
 
-**Tier 1 — Full four-seat gate** (Gemini Pro + in-harness Claude Opus + fresh
-GPT-5.5 xhigh + pi/pilms). The default and required tier for anything that can
+**Tier 1 — Full three-seat gate** (Gemini Pro + in-harness Claude Opus + fresh
+GPT-5.5 xhigh). The default and required tier for anything that can
 affect users, data, or future compatibility:
 
 - product code and public CLI behavior;
@@ -83,7 +83,7 @@ affect users, data, or future compatibility:
 Examples this tier caught real bugs on: `etude sync`, refstore hardening.
 
 **Tier 2 — Lightened two-seat gate** (in-harness Claude Opus + fresh GPT-5.5
-xhigh — the two highest-signal seats; drop the slower Gemini and pi/pilms seats).
+xhigh — the two highest-signal seats; drop the slower Gemini seat).
 Use for LOW-RISK code changes that touch none of the Tier-1 surfaces: small
 polish, localized refactors, validation tightening, or test strengthening on an
 existing, already-gated component. Example: tightening `capture --git-sha`
@@ -137,12 +137,11 @@ source rather than treating the paraphrase as authoritative.
 
 ## Invocation
 
-Run the four reviewers in parallel:
+Run the three reviewers in parallel:
 
 - Gemini Pro
 - Claude Opus
 - a fresh GPT-5.5 xhigh agent (codex)
-- pi/pilms (local qwen via LM Studio)
 
 Each reviewer should run as a non-interactive prompt invocation that receives
 only the gate prompt and repository files. They must not rely on hidden
@@ -259,35 +258,86 @@ orchestrator is Claude Code.
 ### Example launch pattern
 
 ```text
-Gemini Pro:     gemini -m gemini-3.1-pro-preview -p "<gate prompt>"
+Gemini Pro:     GEMINI_CLI_TRUST_WORKSPACE=true gemini --skip-trust \
+                -m gemini-3.1-pro-preview -p "<gate prompt>"
 Claude Opus:    in-harness Task(subagent_type="general-purpose", model="opus",
                 prompt="<gate prompt>") when Claude orchestrates;
                 otherwise claude --model opus -p "<gate prompt>"
-GPT-5.5 xhigh:  spawn a new fresh GPT-5.5 (codex) agent with reasoning_effort=xhigh
-pi/pilms:       pilms --tools read,grep,find,ls,bash -p "<gate prompt>"
+GPT-5.5 xhigh:  codex exec --skip-git-repo-check -m gpt-5.5 \
+                -c model_reasoning_effort=xhigh - < <gate-prompt-file>
+                (a fresh agent, no carry-over context)
 ```
 
-`pilms` is the canonical invocation for the pi seat: it is a shell function that
-pins the local provider and model
-(`pilms () { pi --provider lmstudio --model qwen/qwen3.6-35b-a3b "$@" }`), so it
-runs `pi` against the local LM Studio qwen3.6-35b-a3b model with no API auth.
+**Headless trust flags are REQUIRED when dispatching from a scratch / non-repo
+cwd** (e.g. a `/tmp` scratchpad): `gemini` errors "not running in a trusted
+directory" without `--skip-trust` (+ `GEMINI_CLI_TRUST_WORKSPACE=true`), and
+`codex exec` errors "Not inside a trusted directory" without
+`--skip-git-repo-check`. Omitting them costs a guaranteed failed reroll on the
+first gate of every fresh environment. (etude-8ub)
 
-**The pi seat MUST run with a read-only tool allowlist — never `--no-tools`.**
-`pi` is an agentic CLI; a reviewer is only useful if it can independently read
-the actual files and run `git diff` / `go test` rather than trust the
-orchestrator's summary. Use `--tools read,grep,find,ls,bash` (read + inspect +
-shell, no edit/write). Two failure modes to avoid:
+Do not advance until all three reviewers return.
 
-- Leaving ALL tools enabled (the default) can hang `pi` in `-p` mode. Restrict
-  to the read-only allowlist above.
-- `--no-tools` makes the seat blind, so it rubber-stamps the prompt summary and
-  catches nothing. Do not use it.
+## Gate Orchestration (Claude Code)
 
-The gate prompt for this seat should tell it to USE its tools to read the
-changed files and the diff (it cannot review what it cannot see). The prompt may
-be passed inline as the final arg (shown above) or piped via stdin.
+When Claude Code drives the loop, the orchestrator's own discipline is as
+load-bearing as the panel. These rules were distilled from the etude-2pc
+live-execution epic, where the panel never shipped a defect but several
+sub-agent handoffs silently failed and were caught ONLY by independent
+orchestrator verification. Treat them as mandatory, not optional.
 
-Do not advance until all four reviewers return.
+### Pre-gate verification (do this BEFORE dispatching any gate)
+
+Sub-agent reports are trusted-but-UNVERIFIED. Before every gate, independently
+verify the artifacts — do not rely on the agent's prose summary:
+
+1. **The design field holds THIS bead's plan.** `bd show <bead>` and read the
+   Goal line. (A planner once `cat`'d a stale `scratchpad/design.md` and wrote
+   the WRONG bead's plan into the design field; caught only by reading it back.)
+2. **The planned tests actually exist.** `grep -c` for the test function names
+   the plan promised. (A coder once shipped production code with ZERO of the
+   planned tests — including a security-critical leak test — while reporting
+   "all checks pass.") For a security/data-integrity bead this is non-negotiable.
+3. **Re-run build/test/lint yourself** rather than trusting the report:
+   `make build && go test ./<touched-pkgs>/... && make lint`. Cross-compile and
+   `make docs` (zero-diff) when relevant.
+4. **Scope-check** `git status` + the diff against the plan's Files list (see
+   Scope Discipline). Investigate and revert anything the plan did not name.
+
+### Scratchpad + gate-prompt hygiene
+
+- Sub-agents that write a plan/prompt to scratch use a PER-BEAD unique filename
+  (`<bead-id>-design.md`), never a generic shared name — a long-lived scratch dir
+  carries stale files from prior sessions.
+- After `bd update <bead> --design-file -`, READ IT BACK and assert the first
+  line is this bead's Goal.
+- Build gate-prompt files with ABSOLUTE paths. Assembling a prompt with relative
+  `cat`/`sed` from the wrong cwd silently produces an EMPTY payload (observed:
+  an empty inlined diff made a seat correctly BLOCK three times in a row). After
+  assembling, sanity-check the prompt's byte size / grep for an expected token
+  before dispatching.
+
+### Gate-JSON `reviewed_stages` must name an EXISTING run stage
+
+A captured run has stages `plan/implement/verify/review` (NOT `docs` — docs is
+not a captured stage). A `GateAttempt.reviewed_stages[].stage` that names a
+non-existent stage makes `dogfood-close` / `capture-gate` abort with
+`stage "<x>" not found in manifest`. Map the **docs-phase** and **final-review**
+gates onto the `implement` diff stage (role `diff`), and the verify gate onto
+`verify`. (Observed: a `docs` reviewed-stage aborted a close mid-capture.)
+
+### Commit scope vs the baseline-dirty set
+
+- At loop start, snapshot `git status` as the BASELINE DIRTY SET (unrelated
+  in-flight work). Every bead commit stages by EXPLICIT path and asserts nothing
+  from the baseline set is staged — NEVER `git add -A` / `git commit -a`.
+- After committing, `git show --stat HEAD` and confirm no baseline/scratch file
+  leaked in. (A stray gate-prompt file once landed in the repo root from a
+  wrong-cwd write; pre-existing mkdocs files were dirty the entire epic and had
+  to be excluded from all six commits.)
+- When a this-bead doc edit is entangled in the same hunk as a baseline-dirty
+  change (e.g. both touch `docs/README.md`), prefer dropping the entangled edit
+  from the bead commit (put the content where it is clean, e.g. root `README.md`)
+  rather than dragging the unrelated change in.
 
 ## Reviewer Prompt Template
 
@@ -296,14 +346,14 @@ Each prompt should request the same structured result:
 ```text
 Gate review for <bead-id>, <phase> gate, attempt <n>.
 
-You are only the <reviewer-name> reviewer seat, one of four reviewer seats. Do
+You are only the <reviewer-name> reviewer seat, one of three reviewer seats. Do
 not act as the orchestrator. Do not invoke other reviewers, judge whether other
 reviewer seats ran, or escalate because another reviewer is unavailable. Return
 only your reviewer-seat verdict.
 
 Process:
 - no human approval gates
-- gate passes only if Gemini Pro, Claude Opus, fresh GPT-5.5 xhigh, and pi/pilms
+- gate passes only if Gemini Pro, Claude Opus, and fresh GPT-5.5 xhigh
   all return clear GO
 - any BLOCK requires incorporating required feedback and rerunning the full
   gate
@@ -361,42 +411,10 @@ While reviewers are running:
   tooling failure, stop and escalate to the user
 
 A failed invocation is not a `GO`. Any seat's failure to run still escalates.
-Because pi/pilms runs against a local LM Studio model, a pi/pilms failure usually
-means LM Studio is not running; start it and rerun the seat rather than skipping
-it.
 
 Default wait heuristic: poll quietly for at least 10 minutes before treating a
 silent reviewer as suspect. If the process is still alive after that, inspect
 the process state and escalate to the user rather than killing or skipping it.
-
-The pi/pilms model `qwen/qwen3.6-35b-a3b` is reasoning-first: it emits a large
-`reasoning_content` chain-of-thought (often 2,500+ tokens) BEFORE any answer
-`content`. In `pi --mode text` nothing prints until the reasoning finishes, so a
-pi/pilms seat legitimately sits at zero output for a long time and looks hung
-when it is not. With `--tools` enabled each agentic round pays that reasoning
-cost again, so a single seat can take many minutes. Do NOT kill it on a short
-(1-5 minute) timeout or assume an empty output file means failure — give it a
-generous budget (~15 minutes) and let it finish. The reasoning cannot be turned
-off here: `pi --thinking off`, the qwen `/no_think` token, and
-`chat_template_kwargs.enable_thinking=false` were all verified NOT to suppress it
-on this LM Studio build. An occasional truly-empty completion is a model glitch;
-rerun the seat (LM Studio is up) rather than treating one empty run as a verdict.
-
-**Third failure mode — `pi` client 0-CPU hang with a healthy backend.** Distinct
-from slow-reasoning (above) and LM-Studio-down. Symptom: the `pi` process stays
-alive but emits ZERO output indefinitely, and `ps` shows it at `0:00.00` CPU.
-Diagnose it cheaply rather than waiting the full 15-minute reasoning budget:
-after the seat has been silent ~2 minutes, check BOTH (a) `ps aux | grep "[p]i --provider lmstudio"`
-for `0:00.00` CPU and (b) `curl -s -m5 localhost:1234/v1/models` for a 200 with
-the model listed. If the process is at 0 CPU AND the backend is healthy, the
-client is hung (NOT reasoning, NOT a down backend) and will never produce a
-verdict — kill it immediately; do not wait out the 15-minute budget. This was
-reproducible across an entire session (rubric-eval gate ×2, pairwise-eval plan +
-impl gates) in both tool-mode and inline `-p` mode while LM Studio served other
-clients fine. Because it is a known, root-caused client artifact, ONE 0-CPU hang
-(after a single reroll confirming it recurs) satisfies the "reproducible tooling
-outage" bar for the Degraded Gate Policy below — do not burn four 15-minute
-waits re-confirming a hang you have already diagnosed this session.
 
 Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
 hangs, empties, or errors twice in a session, stop blind rerun/kill cycles and
@@ -410,9 +428,9 @@ around it.
 
 ## Result Classification
 
-After all four reviewers return:
+After all three reviewers return:
 
-- all four `GO`: gate passes after optional improvements are handled
+- all three `GO`: gate passes after optional improvements are handled
 - any `BLOCK`: gate fails; incorporate all required changes and rerun the full
   gate
 - any reviewer failure: gate is incomplete; escalate to the user
@@ -420,7 +438,7 @@ After all four reviewers return:
 **Reviewer failure / tooling outage.** A reviewer failure (auth/quota/empty/hang/
 tool error) makes the gate INCOMPLETE — escalate, never treat as `GO`. The single
 bounded exception — when one outage seat may be `disregarded` and a degraded gate
-may still pass on the other three substantive `GO`s — is the **Degraded Gate
+may still pass on the other two substantive `GO`s — is the **Degraded Gate
 Policy** below.
 
 When a `BLOCK` rests on a disputed factual claim about tool behavior (e.g. "this
@@ -474,28 +492,27 @@ process matches real practice; it does not weaken the default.
 **1. Block vs. recoverable retry.** A seat that exits with
 auth/quota/model-access/timeout/tool-invocation failure, or returns empty/no
 verdict, is FIRST a recoverable retry: reroll and root-cause per "Waiting And
-Status" (the second-occurrence debug rule, the pi/pilms reasoning budget, the
-0-CPU-hang diagnosis under "Third failure mode"). Until it is resolved or meets
+Status" (the second-occurrence debug rule). Until it is resolved or meets
 the disregard bar below, the gate is INCOMPLETE (verdict `failed`/`empty`) — an
 unresolved or undiagnosed failure is never a `GO`.
 
 **2. Disregarding a seat (the bounded exception).** A SINGLE seat may be
 `disregarded` ONLY when ALL hold: (a) it is a reproducible TOOLING outage
 (empty/hang/auth/quota), NOT substantive dissent; (b) root-caused to a known
-tooling artifact (e.g. the pi/pilms 0-CPU client hang, codex go-test hang, pilms
-empty completion); (c) REROLL BAR — `>=2` rerolls to ESTABLISH a NOVEL outage as
+tooling artifact (e.g. the codex go-test hang or large-input truncation);
+(c) REROLL BAR — `>=2` rerolls to ESTABLISH a NOVEL outage as
 reproducible, or, for an outage ALREADY documented here as a known root-caused
-artifact (e.g. the pi/pilms 0-CPU hang under "Third failure mode"), a single
+artifact (e.g. the codex go-test hang under "Per-seat execution constraints"), a single
 confirming reroll — this shortcut is bounded to already-known/root-caused
-artifacts, NOT a general 1-reroll allowance; (d) the OTHER THREE seats are
+artifacts, NOT a general 1-reroll allowance; (d) the OTHER TWO seats are
 unanimous substantive `GO` after thorough review. A DISPROVEN `BLOCK`
 (ground-truth contradicts a factual claim) is NOT a disregard — it is handled by
 the disputed-factual-claim rule under Result Classification (verify empirically,
 do not apply the change, rerun with the evidence embedded). A substantive `BLOCK`
 is never disregarded.
 
-**3. Degraded 3-seat gate — allowed, authorized, recorded.** When rule 2 holds,
-the gate MAY pass on the three substantive `GO`s. WHO authorizes: inside an
+**3. Degraded 2-seat gate — allowed, authorized, recorded.** When rule 2 holds,
+the gate MAY pass on the two substantive `GO`s. WHO authorizes: inside an
 autonomous `/loop` there is no real-time user, so the ORCHESTRATOR authorizes
 under exactly these conditions; OUTSIDE an autonomous loop, escalate to the user
 instead. It is always RECORDED: which seat, the artifact/diagnosis, and the
@@ -511,7 +528,7 @@ docs/plans/product/gate-reviewer-record-schema.md).
 
 ## Reruns
 
-Every rerun is a full re-examination by all four reviewers. Prior `GO` results
+Every rerun is a full re-examination by all three reviewers. Prior `GO` results
 do not carry over.
 
 Prior reviewer results are context only on rerun. They explain why the artifact
@@ -566,7 +583,7 @@ plus three reruns), escalate to the user with:
 - proposed resolution
 
 The user can provide direction, but the gate still needs a clean
-four-reviewer `GO` before advancing.
+three-reviewer `GO` before advancing.
 
 ## Scope Discipline (implement → gate)
 
@@ -930,7 +947,7 @@ Epic-close gate: make reconcile exit 0, <commit SHA> — closing.
 ```
 
 This is consistent with the normal gate attempt note format (phase, result,
-commit reference). No four-seat reviewer panel is required for the epic-close
+commit reference). No three-seat reviewer panel is required for the epic-close
 gate (it is a mechanical pass/fail command, not a design/code review); the gate
 passes on `make reconcile` exit 0 + the holistic README/index read.
 
@@ -943,7 +960,6 @@ Record gate results in bead notes:
 - Gemini Pro: GO | BLOCK | failed (<reason>)
 - Claude Opus: GO | BLOCK | failed (<reason>)
 - fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
-- pi/pilms: GO | BLOCK | failed (<reason>)
 - required changes incorporated: <summary or none>
 - optional improvements handled: <summary or deferred bead>
 - result: pass | rerun required | escalated
@@ -957,7 +973,6 @@ Implement gate attempt 2:
 - Gemini Pro: GO
 - Claude Opus: GO
 - fresh GPT-5.5 xhigh: GO
-- pi/pilms: GO
 - required changes incorporated: none
 - optional improvements handled: clarified runbook examples
 - result: pass
@@ -1033,7 +1048,6 @@ Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema
 | opus   | claude-code  | anthropic     | claude-opus-4-7           |
 | gemini | gemini-cli   | google        | gemini-3.1-pro-preview    |
 | codex  | codex        | openai        | gpt-5.5                   |
-| pilms  | pi           | lmstudio      | qwen/qwen3.6-35b-a3b      |
 
 **Verdict mapping** (per seat, covering every outcome):
 
@@ -1048,9 +1062,9 @@ Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema
 
 `failure_note` is REQUIRED for every non-`go`/`block` verdict
 (`failed`/`empty`/`malfunction`/`disregarded`) and FORBIDDEN on `go`/`block` —
-`capture-gate`'s validation enforces this. So a skipped pilms seat always carries
-both `failure_note` (what broke) and `decision.degraded_reason` (why the gate
-still passed under the Degraded Gate Policy).
+`capture-gate`'s validation enforces this. So a skipped/disregarded seat always
+carries both `failure_note` (what broke) and `decision.degraded_reason` (why the
+gate still passed under the Degraded Gate Policy).
 
 ## Safe Bead Updates
 
