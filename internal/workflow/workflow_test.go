@@ -26,36 +26,31 @@ stages:
     inputs:
       - plan
       - repo-state
-    skill: dev-coder
-  - name: test-plan
-    produces: test-plan
+    skill: dev-executor
+  - name: verify
+    produces: verify
     inputs:
       - plan
       - diff
-    skill: dev-test-writer
+    skill: dev-qa
     eval:
       method: rubric
-      rubric: evals/test-plan-rubric.md
-  - name: test
-    produces: test-diff
-    inputs:
-      - test-plan
-      - diff
-    skill: dev-test-writer
-  - name: review
-    produces: review
-    inputs:
-      - diff
-      - plan
-    skill: dev-pr-reviewer
-    eval:
-      method: pairwise
+      rubric: evals/verify-rubric.md
   - name: docs
     produces: docs-diff
     inputs:
       - diff
     skill: dev-docs-writer
     optional: true
+  - name: review
+    produces: review
+    inputs:
+      - diff
+      - plan
+      - verify
+    skill: dev-pr-reviewer
+    eval:
+      method: pairwise
 `
 
 // TestDefaultYAMLIsDeterministicAndExact asserts exact byte output from

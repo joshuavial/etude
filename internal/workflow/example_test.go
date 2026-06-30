@@ -66,7 +66,7 @@ stages:
 	// L3
 }
 
-// ExampleDefault shows the canonical six-stage workflow returned by Default.
+// ExampleDefault shows the canonical five-stage workflow returned by Default.
 func ExampleDefault() {
 	wf := workflow.Default()
 	fmt.Println(wf.Name)
@@ -76,11 +76,10 @@ func ExampleDefault() {
 	}
 	// Output:
 	// default
-	// 6
+	// 5
 	// plan
 	// implement
-	// test-plan
-	// test
-	// review
+	// verify
 	// docs
+	// review
 }

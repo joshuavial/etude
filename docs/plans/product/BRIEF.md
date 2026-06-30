@@ -98,6 +98,14 @@ code-reviews, so they live in the normal working tree on `main`:
 
 Example `workflow.yaml`:
 
+> **Non-current.** This early six-stage `test-plan`/`test` listing (skills
+> `dev-coder`/`dev-test-writer`) is a historical illustration and is NOT the
+> shipped default. The canonical default that `etude init` scaffolds is now the
+> five-stage Etude-native loop `plan → implement → verify → docs → review`
+> (skills `dev-executor`/`dev-qa`) — see `workflow.Default()` and this repo's
+> `.etude/workflow.yaml`. The block below is kept only to show the original
+> design sketch.
+
 ```yaml
 name: default
 stages:

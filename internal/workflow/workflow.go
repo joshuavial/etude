@@ -636,8 +636,18 @@ func ensureEOF(dec *yaml.Decoder) error {
 	return fmt.Errorf("%w: trailing data after first document", ErrInvalidWorkflow)
 }
 
-// Default returns the canonical 6-stage workflow from BRIEF.md §4.1.
-// This is the workflow that etude-init-command scaffolds via Default().YAML().
+// Default returns the canonical 5-stage Etude-native workflow that
+// etude-init-command scaffolds via Default().YAML(): plan -> implement ->
+// verify -> docs -> review. It mirrors the stage shape of this repo's own
+// .etude/workflow.yaml (the dogfood loop).
+//
+// Default() deliberately emits NO per-stage gate or runner blocks. Those are
+// repo-specific customizations (gate tiers, runner bindings to named registry
+// seats) that a freshly-initialized project does not yet have; baking them into
+// the scaffold would reference seats/tiers that do not exist in the new repo.
+// "Same shape as .etude/workflow.yaml" means the stage sequence, produced/input
+// roles, skills, optionality, and eval config — not the gate tuning a project
+// layers on afterward.
 func Default() Workflow {
 	rubricEval := func(path string) *Eval { return &Eval{Method: "rubric", Rubric: path} }
 	return Workflow{
@@ -654,27 +664,14 @@ func Default() Workflow {
 				Name:     "implement",
 				Produces: "diff",
 				Inputs:   []string{"plan", "repo-state"},
-				Skill:    "dev-coder",
+				Skill:    "dev-executor",
 			},
 			{
-				Name:     "test-plan",
-				Produces: "test-plan",
+				Name:     "verify",
+				Produces: "verify",
 				Inputs:   []string{"plan", "diff"},
-				Skill:    "dev-test-writer",
-				Eval:     rubricEval("evals/test-plan-rubric.md"),
-			},
-			{
-				Name:     "test",
-				Produces: "test-diff",
-				Inputs:   []string{"test-plan", "diff"},
-				Skill:    "dev-test-writer",
-			},
-			{
-				Name:     "review",
-				Produces: "review",
-				Inputs:   []string{"diff", "plan"},
-				Skill:    "dev-pr-reviewer",
-				Eval:     &Eval{Method: "pairwise"},
+				Skill:    "dev-qa",
+				Eval:     rubricEval("evals/verify-rubric.md"),
 			},
 			{
 				Name:     "docs",
@@ -682,6 +679,13 @@ func Default() Workflow {
 				Inputs:   []string{"diff"},
 				Skill:    "dev-docs-writer",
 				Optional: true,
+			},
+			{
+				Name:     "review",
+				Produces: "review",
+				Inputs:   []string{"diff", "plan", "verify"},
+				Skill:    "dev-pr-reviewer",
+				Eval:     &Eval{Method: "pairwise"},
 			},
 		},
 	}

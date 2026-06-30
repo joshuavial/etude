@@ -12,11 +12,11 @@ and works whether or not `init` configured the remote.
 
 ```
 .etude/
-  workflow.yaml           # canonical 6-stage default workflow
+  workflow.yaml           # canonical 5-stage default workflow
   registry.yaml           # seat/tier registry (edit to configure reviewers)
   evals/
     plan-rubric.md        # rubric placeholder for the plan stage
-    test-plan-rubric.md   # rubric placeholder for the test-plan stage
+    verify-rubric.md      # rubric placeholder for the verify stage
 ```
 
 All files are written to the working tree for normal review and commit on main.
@@ -213,7 +213,7 @@ stages:
   - name: implement
     produces: diff
     inputs: [task, repo-state]
-    skill: dev-coder
+    skill: dev-executor
     runner:                # optional; overrides default_runner for this stage
       name: opus           # -- OR --
       # command: "make implement"  (name and command are mutually exclusive)
