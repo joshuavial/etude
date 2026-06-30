@@ -35,10 +35,18 @@ mechanics.
 - `etude capture-gate` — append a structured gate-reviewer record to a run.
 - `etude capture-run` — record a complete multi-stage run from a single YAML
   spec in one operation.
+- `etude run <workflow>` — drive a workflow's stage graph LIVE: resolve each
+  stage's runner, invoke the external-runner contract, chain output→input
+  roles, execute per-stage gates, and capture each stage incrementally so the
+  run is a byproduct of execution. `--resume <id>` continues a partial run from
+  its frontier; `--task`/`--run-id`/`--git-sha`/`--runner`/`--timeout` flags.
 - `etude run list` / `etude run show` — list all stored runs; inspect the
-  detail (including gate records) of one run.
+  detail (including gate records) of one run; `run show` works mid-run.
 - `etude sync` — push and fetch `refs/etude/*` with a git remote.
-- `etude replay` — re-execute a recorded stage end-to-end and emit its output.
+- `etude replay` — `etude replay <run> <stage>` re-executes one recorded stage;
+  `etude replay <run>` (no stage) FORWARD-replays all stages in order from the
+  captured artifacts. `--allow-env` opts a replay into the workflow's env
+  allowlist (hermetic by default).
 - `etude bench` — benchmark a cohort of runs by replaying and judging
   replay-vs-original; `eval` is available as an internal library consumed by
   this command (no standalone `etude eval` command in v1).
@@ -57,6 +65,35 @@ mechanics.
   args, no side effects).
 - `etude log` — narrate runs and retros as a chronological timeline
   (read-only).
+
+**Live execution** (the `etude-2pc` epic — drive and gate arbitrary workflows
+live, not just replay)
+
+- Live workflow orchestration — `etude run` walks an arbitrary stage graph in a
+  single evolving worktree, auto-generates a sortable run id, captures each
+  stage by compare-and-swap on the run ref (valid partial run on crash), and is
+  resumable from the frontier. Replay is redefined as forward replay.
+- Live gate execution — a stage's `gate` runs deterministic **checks** (any
+  failure hard-blocks) and weighted model **seats**, synthesizes a fail-closed
+  `pass | rerun | escalated` verdict, re-runs the guarded stage with feedback on
+  `rerun`, climbs the tier ladder on `escalated`, and records each attempt as a
+  `GateAttempt` automatically.
+- Workflow schema — optional per-stage `runner` and `gate` blocks, a run-level
+  `default_runner`, and a workflow-level `env_allowlist`, all additive and
+  byte-stable round-tripping for legacy files.
+- Shared seat/runner registry — `.etude/registry.yaml` defines named seats,
+  tier presets (L1–L4), and quorum, referenced by stage runners, gate seats,
+  and the `etude-review` skill alike.
+- Scoped secret/env passthrough — live runners receive only an operator-declared
+  env allowlist (hermetic by default; replay opt-in); the passed NAMES (never
+  values) are recorded in the run manifest for audit.
+
+**Configuration**
+
+- The dev workflow is migrated to the new schema; the former `.etude/gates.yaml`
+  is retired — its seats/tiers/quorum move to `.etude/registry.yaml` and its
+  per-phase gate bindings move onto the workflow stages. `etude init` scaffolds
+  `registry.yaml`.
 
 **Storage**
 
