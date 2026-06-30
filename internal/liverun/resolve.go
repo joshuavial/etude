@@ -30,7 +30,9 @@ func GenerateRunID(workflowName string) (string, error) {
 
 // ResolveStageRunner returns a runner for the stage. It prefers stage.Runner,
 // then wf.DefaultRunner. Returns an error when neither is configured.
-func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration) (replay.Runner, error) {
+// envAllowlist is the list of env var NAMES (never values) to pass through to
+// the runner; nil/empty means hermetic (default, unchanged behavior).
+func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration, envAllowlist []string) (replay.Runner, error) {
 	r := stage.Runner
 	if r == nil {
 		r = wf.DefaultRunner
@@ -52,6 +54,7 @@ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workf
 		Command:        strings.Fields(cmd),
 		Timeout:        timeout,
 		MaxOutputBytes: 64 << 20,
+		EnvAllowlist:   envAllowlist,
 	}, nil
 }
 
@@ -79,7 +82,10 @@ func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.D
 // The runner is an ExecRunner built from the seat's Invoke command with
 // Timeout and MaxOutputBytes set (matching buildRunnerFactory).
 // SeatMeta carries the split provider name and model from Seat.Provider.
-func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration) (replay.Runner, SeatMeta, error) {
+// envAllowlist is the list of env var NAMES (never values) to pass through to
+// the seat runner; nil/empty means hermetic (default, unchanged behavior).
+// Note: checks use ResolveCheckRunner (not this function) and remain hermetic.
+func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) (replay.Runner, SeatMeta, error) {
 	seat, ok := reg.Seats[seatName]
 	if !ok {
 		return nil, SeatMeta{}, fmt.Errorf("seat %q not found in registry", seatName)
@@ -94,6 +100,7 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
 		Command:        strings.Fields(seat.Invoke),
 		Timeout:        timeout,
 		MaxOutputBytes: 64 << 20,
+		EnvAllowlist:   envAllowlist,
 	}
 	return runner, meta, nil
 }

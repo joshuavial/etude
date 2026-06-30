@@ -93,8 +93,10 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 		}
 	}
 
-	// Build the runner factory.
-	resolveRunner := buildRunnerFactory(wf, reg, runnerSpec, timeout)
+	// Build the runner factory. The same allowlist drives both runner passthrough
+	// and the audit field in engine.EnvAllowlist so the two stay in sync.
+	envAllowlist := wf.EnvAllowlist
+	resolveRunner := buildRunnerFactory(wf, reg, runnerSpec, timeout, envAllowlist)
 
 	var taskBytes []byte
 	if resumeID == "" && taskFile != "" {
@@ -111,10 +113,11 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 			return liverun.ResolveCheckRunner(reg, r, timeout)
 		},
 		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
-			return liverun.ResolveGateSeat(reg, seatName, timeout)
+			return liverun.ResolveGateSeat(reg, seatName, timeout, envAllowlist)
 		},
-		Tiers: liverun.ResolveTiers(reg),
-		Root:  root,
+		Tiers:        liverun.ResolveTiers(reg),
+		Root:         root,
+		EnvAllowlist: envAllowlist,
 	}
 
 	opts := liverun.RunOptions{
@@ -143,17 +146,20 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 
 // buildRunnerFactory returns a ResolveRunner factory. If runnerSpec is set,
 // all stages use that command; otherwise stages resolve from workflow/registry.
-func buildRunnerFactory(wf workflow.Workflow, reg registry.Registry, runnerSpec string, timeout time.Duration) func(workflow.Stage) (replay.Runner, error) {
+// envAllowlist is threaded to the ExecRunner so secrets reach the runner
+// (NAMES only from the caller; values read by ExecRunner from os.Environ).
+func buildRunnerFactory(wf workflow.Workflow, reg registry.Registry, runnerSpec string, timeout time.Duration, envAllowlist []string) func(workflow.Stage) (replay.Runner, error) {
 	if runnerSpec != "" {
 		r := &replay.ExecRunner{
 			Command:        strings.Fields(runnerSpec),
 			Timeout:        timeout,
 			MaxOutputBytes: 64 << 20,
+			EnvAllowlist:   envAllowlist,
 		}
 		return func(workflow.Stage) (replay.Runner, error) { return r, nil }
 	}
 	return func(stage workflow.Stage) (replay.Runner, error) {
-		return liverun.ResolveStageRunner(wf, reg, stage, timeout)
+		return liverun.ResolveStageRunner(wf, reg, stage, timeout, envAllowlist)
 	}
 }
 
@@ -286,6 +292,10 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 	fmt.Fprintf(out, "workflow:         %s\n", m.Workflow)
 	fmt.Fprintf(out, "workflow version: %s\n", m.WorkflowVersion)
 	fmt.Fprintf(out, "created:          %s\n", m.Created.UTC().Format(time.RFC3339))
+	// Render allowlist NAMES (never values) for audit visibility.
+	if len(m.EnvAllowlist) > 0 {
+		fmt.Fprintf(out, "env allowlist:    %s\n", strings.Join(m.EnvAllowlist, ", "))
+	}
 
 	// Refs sorted by key for deterministic output.
 	if len(m.Refs) > 0 {

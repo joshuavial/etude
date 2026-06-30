@@ -940,3 +940,81 @@ func TestReplayForwardMissingRunErrors(t *testing.T) {
 		t.Errorf("stderr = %q, want 'not found'", stderr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// --allow-env tests
+// ---------------------------------------------------------------------------
+
+// TestReplayAllowEnv covers three scenarios:
+//  1. Forward replay WITHOUT --allow-env: hermetic (marker absent from runner output).
+//  2. Forward replay WITH --allow-env: marker reaches runner.
+//  3. --record + --allow-env: rejected with a clear error.
+func TestReplayAllowEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+
+	repo, runID := captureStageForReplay(t) // also calls chdir(t, repo)
+
+	// workflow.yaml with env_allowlist — required for --allow-env to pick up names.
+	etDir := filepath.Join(repo, ".etude")
+	if err := os.MkdirAll(etDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wfContent := "name: mywf\nenv_allowlist: [ETUDE_TEST_MARKER]\nstages:\n  - name: gen\n    skill: s\n    produces: output\n    inputs: [task]\n"
+	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(wfContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runner writes the marker value (ABSENT when not set in child env).
+	scriptPath := filepath.Join(repo, "env-replay-runner.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s' \"${ETUDE_TEST_MARKER:-ABSENT}\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ETUDE_TEST_MARKER", "replaymarker")
+	chdir(t, repo)
+
+	// Scenario 1: forward replay WITHOUT --allow-env → hermetic (marker absent).
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "--runner", scriptPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("without --allow-env: %v\nstderr: %s", err, errOut.String())
+		}
+		if strings.Contains(out.String(), "replaymarker") {
+			t.Errorf("without --allow-env: marker leaked into output: %q", out.String())
+		}
+		if !strings.Contains(out.String(), "ABSENT") {
+			t.Errorf("without --allow-env: expected ABSENT in output: %q", out.String())
+		}
+	}
+
+	// Scenario 2: forward replay WITH --allow-env → marker reaches runner.
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "--runner", scriptPath, "--allow-env"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("with --allow-env: %v\nstderr: %s", err, errOut.String())
+		}
+		if !strings.Contains(out.String(), "replaymarker") {
+			t.Errorf("with --allow-env: expected marker in output: %q", out.String())
+		}
+	}
+
+	// Scenario 3: --record + --allow-env → rejected (single-stage form).
+	{
+		var out, errOut bytes.Buffer
+		cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+		cmd.SetArgs([]string{runID, "gen", "--runner", scriptPath, "--record", "--allow-env"})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("--record --allow-env should return an error")
+		}
+		if !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("expected 'cannot be combined' in error: %v", err)
+		}
+	}
+}

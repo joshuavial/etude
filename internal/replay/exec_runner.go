@@ -48,6 +48,12 @@ type ExecRunner struct {
 	// file. Outputs exceeding the cap are rejected with ErrOutputTooLarge.
 	// Zero means unlimited (default, backward compatible).
 	MaxOutputBytes int64
+	// EnvAllowlist is the list of env var NAMES (never values) whose values
+	// are resolved from os.Environ() at run time and appended to the child's
+	// strict environment.  Nil/empty = current hermetic behavior (unchanged).
+	// Callers pass NAMES only; ExecRunner reads values itself so values never
+	// live in a caller-visible struct.
+	EnvAllowlist []string
 }
 
 // compile-time interface satisfaction assertion.
@@ -127,12 +133,41 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		defer cancel()
 	}
 
-	// Step 7: build strict env — only PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE.
-	pathVal := extractPATH(os.Environ())
+	// Step 7: build strict env — PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE,
+	// then any allowlisted names resolved from the orchestrator's own env.
+	//
+	// Reserved names (PATH, ETUDE_INPUTS_DIR, ETUDE_OUTPUT_FILE) are always
+	// set from the base vars above; allowlist entries for these names are
+	// silently skipped so the allowlist cannot shadow or duplicate them.
+	// This skip is defense-in-depth: workflow.Validate already rejects
+	// reserved names in env_allowlist at parse time (fail-fast).
+	//
+	// SECURITY: cmd.Env is the ONLY place where allowlisted secret values
+	// cross the process boundary.  NEVER log cmd.Env, cmd.String(), or any
+	// other representation that includes cmd.Env — doing so would leak secret
+	// values to log sinks.  This comment is a durable guardrail for future
+	// maintainers; do not remove it.
+	environ := os.Environ()
 	env := []string{
-		"PATH=" + pathVal,
+		"PATH=" + extractEnv(environ, "PATH"),
 		"ETUDE_INPUTS_DIR=" + inputsDir,
 		"ETUDE_OUTPUT_FILE=" + outputPath,
+	}
+	reservedEnv := map[string]bool{
+		"PATH":              true,
+		"ETUDE_INPUTS_DIR":  true,
+		"ETUDE_OUTPUT_FILE": true,
+	}
+	for _, name := range r.EnvAllowlist {
+		if reservedEnv[name] {
+			continue // defense-in-depth: cannot shadow the 3 base vars
+		}
+		if val, ok := lookupEnv(environ, name); ok {
+			env = append(env, name+"="+val)
+		}
+		// When a name is listed but not present in os.Environ(), it is silently
+		// skipped — the manifest records the configured NAMES (policy/intent),
+		// not which values were actually delivered.
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -233,19 +268,26 @@ func resolveDir(path string) (string, error) {
 	return resolved, nil
 }
 
-// extractPATH returns the value of the PATH variable from the provided
-// environment slice. It splits each entry on the FIRST '=' and matches
-// by exact key "PATH" — using HasPrefix("PATH=") would match MYPATH=
-// and similar variables.
-func extractPATH(environ []string) string {
+// extractEnv returns the value of the given key from the provided environment
+// slice. It splits each entry on the FIRST '=' and matches by exact key —
+// using HasPrefix would match MYKEY= or KEYEXT= instead of the exact KEY.
+// Returns "" when the key is absent.
+func extractEnv(environ []string, key string) string {
+	val, _ := lookupEnv(environ, key)
+	return val
+}
+
+// lookupEnv returns the value and true when key is present in environ,
+// or ("", false) when absent. Matches by exact key (split on first '=').
+func lookupEnv(environ []string, key string) (string, bool) {
 	for _, entry := range environ {
 		idx := strings.IndexByte(entry, '=')
 		if idx < 0 {
 			continue
 		}
-		if entry[:idx] == "PATH" {
-			return entry[idx+1:]
+		if entry[:idx] == key {
+			return entry[idx+1:], true
 		}
 	}
-	return ""
+	return "", false
 }

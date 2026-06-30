@@ -2073,6 +2073,92 @@ retros:
 	}
 }
 
+// ---------------------------------------------------------------------------
+// EnvAllowlist tests
+// ---------------------------------------------------------------------------
+
+// TestWorkflowEnvAllowlist_Parse verifies env_allowlist parses from YAML.
+func TestWorkflowEnvAllowlist_Parse(t *testing.T) {
+	input := `name: w
+env_allowlist: [FOO, BAR]
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    inputs: [task]
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML: %v", err)
+	}
+	if len(w.EnvAllowlist) != 2 || w.EnvAllowlist[0] != "FOO" || w.EnvAllowlist[1] != "BAR" {
+		t.Errorf("EnvAllowlist = %v, want [FOO BAR]", w.EnvAllowlist)
+	}
+}
+
+// TestWorkflowEnvAllowlist_ValidationRejects verifies invalid names are rejected by Validate.
+func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
+	cases := []struct {
+		name  string
+		names []string
+	}{
+		{"contains equals", []string{"FOO=bar"}},
+		{"empty string", []string{""}},
+		{"starts with digit", []string{"1FOO"}},
+		{"reserved PATH", []string{"PATH"}},
+		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
+		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
+		{"duplicate", []string{"FOO", "FOO"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := minimalWorkflow()
+			w.EnvAllowlist = tc.names
+			if err := w.Validate(); err == nil {
+				t.Errorf("expected error for %v, got nil", tc.names)
+			}
+		})
+	}
+}
+
+// TestWorkflowEnvAllowlist_AbsentStaysAbsent verifies no env_allowlist key in YAML
+// output when the field is nil.
+func TestWorkflowEnvAllowlist_AbsentStaysAbsent(t *testing.T) {
+	w := minimalWorkflow()
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	if strings.Contains(string(out), "env_allowlist") {
+		t.Errorf("env_allowlist key should be absent when nil:\n%s", out)
+	}
+}
+
+// TestWorkflowEnvAllowlist_RoundTrip verifies env_allowlist survives YAML().ParseYAML()
+// and that two encodings produce identical bytes.
+func TestWorkflowEnvAllowlist_RoundTrip(t *testing.T) {
+	w := minimalWorkflow()
+	w.EnvAllowlist = []string{"FOO", "BAR_BAZ"}
+	out, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	got, err := ParseYAML(out)
+	if err != nil {
+		t.Fatalf("ParseYAML round-trip: %v", err)
+	}
+	if len(got.EnvAllowlist) != 2 || got.EnvAllowlist[0] != "FOO" || got.EnvAllowlist[1] != "BAR_BAZ" {
+		t.Errorf("round-trip EnvAllowlist = %v, want [FOO BAR_BAZ]", got.EnvAllowlist)
+	}
+	out2, err := got.YAML()
+	if err != nil {
+		t.Fatalf("YAML second encode: %v", err)
+	}
+	if string(out) != string(out2) {
+		t.Errorf("YAML not byte-stable:\nfirst:\n%s\nsecond:\n%s", out, out2)
+	}
+}
+
 // TestNudgeRoundTripExplicitConfig asserts a workflow with an explicit
 // retros.nudge block survives YAML().ParseYAML() losslessly.
 func TestNudgeRoundTripExplicitConfig(t *testing.T) {

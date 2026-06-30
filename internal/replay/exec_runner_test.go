@@ -618,10 +618,10 @@ func TestExecRunner_ScratchSymlinksUnderWorktree(t *testing.T) {
 	}
 }
 
-// TestExecRunner_PATHExactKeyMatch proves that extractPATH uses exact key
-// matching ("PATH") rather than HasPrefix("PATH"), which would accidentally
-// return the value of PATHEXT=, MYPATH=, or PATH_X= instead.
-func TestExecRunner_PATHExactKeyMatch(t *testing.T) {
+// TestExecRunner_ExtractEnvExactKeyMatch proves that extractEnv uses exact key
+// matching rather than HasPrefix, which would accidentally return the value of
+// PATHEXT=, MYPATH=, or PATH_X= instead of PATH.
+func TestExecRunner_ExtractEnvExactKeyMatch(t *testing.T) {
 	// Decoys placed BEFORE the real PATH= entry to ensure a HasPrefix("PATH")
 	// implementation would return the wrong value on the first match.
 	env := []string{
@@ -630,9 +630,9 @@ func TestExecRunner_PATHExactKeyMatch(t *testing.T) {
 		"PATH=/real/bin",
 		"PATH_X=wrong-path-x",
 	}
-	got := extractPATH(env)
+	got := extractEnv(env, "PATH")
 	if got != "/real/bin" {
-		t.Errorf("extractPATH: want %q, got %q (decoy key matched instead of exact PATH=)", "/real/bin", got)
+		t.Errorf("extractEnv(PATH): want %q, got %q (decoy key matched instead of exact PATH=)", "/real/bin", got)
 	}
 }
 
@@ -750,6 +750,110 @@ func TestExecRunner_OutputWithinCap(t *testing.T) {
 	}
 	if string(res.Output) != "hello" {
 		t.Errorf("want output %q, got %q", "hello", res.Output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnvAllowlist tests
+// ---------------------------------------------------------------------------
+
+// TestExecRunner_EnvAllowlist_MarkerReachesRunner verifies that an allowlisted var
+// name is resolved from the parent environment and passed to the child process.
+func TestExecRunner_EnvAllowlist_MarkerReachesRunner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	t.Setenv("ETUDE_TEST_MARKER", "secretval")
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `printf '%s' "$ETUDE_TEST_MARKER" > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command:      []string{scriptPath},
+		EnvAllowlist: []string{"ETUDE_TEST_MARKER"},
+	}
+	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if string(res.Output) != "secretval" {
+		t.Errorf("output = %q, want %q", res.Output, "secretval")
+	}
+}
+
+// TestExecRunner_EnvAllowlist_ForbiddenVarBlocked verifies that a var NOT in the
+// allowlist does not reach the child process.
+func TestExecRunner_EnvAllowlist_ForbiddenVarBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	t.Setenv("ETUDE_TEST_FORBIDDEN", "nope")
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `printf '%s' "${ETUDE_TEST_FORBIDDEN:-ABSENT}" > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command:      []string{scriptPath},
+		EnvAllowlist: []string{"ETUDE_TEST_MARKER"}, // FORBIDDEN not listed
+	}
+	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if string(res.Output) != "ABSENT" {
+		t.Errorf("output = %q, want ABSENT (forbidden var leaked)", res.Output)
+	}
+}
+
+// TestExecRunner_EnvAllowlist_NilIsHermetic verifies that nil EnvAllowlist gives
+// a hermetic environment where no extra parent vars reach the child.
+func TestExecRunner_EnvAllowlist_NilIsHermetic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	t.Setenv("ETUDE_TEST_MARKER", "secretval")
+
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `printf '%s' "${ETUDE_TEST_MARKER:-ABSENT}" > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{Command: []string{scriptPath}} // EnvAllowlist nil → hermetic
+	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if string(res.Output) != "ABSENT" {
+		t.Errorf("output = %q, want ABSENT (nil allowlist must be hermetic)", res.Output)
+	}
+}
+
+// TestExecRunner_EnvAllowlist_ReservedNameNotOverridable verifies that a reserved
+// name in the allowlist (ETUDE_OUTPUT_FILE) is skipped; the child still sees the
+// scratch path, not any value injected via the parent environment.
+func TestExecRunner_EnvAllowlist_ReservedNameNotOverridable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	t.Setenv("ETUDE_OUTPUT_FILE", "/attacker/path")
+
+	// Script echoes the ETUDE_OUTPUT_FILE path it sees, then writes to it.
+	scriptPath := filepath.Join(scratch, "script.sh")
+	writeScript(t, scriptPath, `printf '%s' "$ETUDE_OUTPUT_FILE" > "$ETUDE_OUTPUT_FILE"`)
+
+	r := &ExecRunner{
+		Command:      []string{scriptPath},
+		EnvAllowlist: []string{"ETUDE_OUTPUT_FILE"}, // reserved — must be skipped
+	}
+	res, err := r.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// The child wrote its ETUDE_OUTPUT_FILE path to the output; it must not be the attacker path.
+	if strings.Contains(string(res.Output), "attacker") {
+		t.Errorf("reserved ETUDE_OUTPUT_FILE was overridden by allowlist — guard failed: output = %q", res.Output)
 	}
 }
 

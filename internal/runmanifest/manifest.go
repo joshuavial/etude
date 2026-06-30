@@ -48,6 +48,11 @@ type Manifest struct {
 	Refs       map[string]string
 	Stages     []Stage
 	Gates      []GateAttempt
+	// EnvAllowlist records the env var NAMES (never values) that were
+	// configured for passthrough to live runners during this run.
+	// Absent/nil/empty all mean "no passthrough" (semantically equivalent).
+	// Values are never stored here — only the configured names for audit.
+	EnvAllowlist []string
 }
 
 // GateAttempt records one full panel re-examination of one phase gate.
@@ -236,6 +241,12 @@ func (m Manifest) Validate() error {
 	stageIndex := make(map[string]Stage, len(m.Stages))
 	for _, stage := range m.Stages {
 		stageIndex[stage.Name] = stage
+	}
+
+	for _, name := range m.EnvAllowlist {
+		if !isValidEnvName(name) {
+			return fmt.Errorf("%w: env_allowlist entry %q is not a valid env var name", ErrInvalidManifest, name)
+		}
 	}
 
 	seenGateIDs := make(map[string]struct{}, len(m.Gates))
@@ -655,6 +666,25 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 	return paths
 }
 
+// isValidEnvName reports whether name is a valid POSIX env var name:
+// [A-Za-z_][A-Za-z0-9_]* (non-empty; first char letter or underscore;
+// remaining chars letter, digit, or underscore; no = or control chars).
+func isValidEnvName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	r0 := rune(name[0])
+	if !((r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z') || r0 == '_') {
+		return false
+	}
+	for _, r := range name[1:] {
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // IsValidIdentifier reports whether value is a non-empty string using only
 // the [A-Za-z0-9_.-] character set.
 func IsValidIdentifier(value string) bool {
@@ -775,6 +805,10 @@ type manifestJSON struct {
 	Refs       map[string]string `json:"refs"`
 	Stages     []stageJSON       `json:"stages"`
 	Gates      []gateJSON        `json:"gates,omitempty"`
+	// EnvAllowlist records the env var NAMES configured for passthrough (never
+	// values). Absent/null/empty all mean "no passthrough" (omitempty is correct;
+	// no manifest_version bump — additive leaf, same as occurred_at).
+	EnvAllowlist []string `json:"env_allowlist,omitempty"`
 }
 
 type gateJSON struct {
@@ -949,6 +983,7 @@ func (m Manifest) toJSON() manifestJSON {
 		Refs:            refs,
 		Stages:          stages,
 		Gates:           gatesOut,
+		EnvAllowlist:    m.EnvAllowlist,
 	}
 }
 
@@ -1104,6 +1139,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		Refs:            refs,
 		Stages:          stages,
 		Gates:           gates,
+		EnvAllowlist:    m.EnvAllowlist,
 	}, nil
 }
 

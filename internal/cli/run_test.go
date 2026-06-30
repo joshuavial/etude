@@ -929,6 +929,108 @@ stages:
 	}
 }
 
+// TestRunWorkflowEnvAllowlistPassthrough is the P1 security integration test for
+// env_allowlist. It verifies that:
+// (a) an allowlisted var VALUE reaches the runner,
+// (b) a non-allowlisted var is blocked,
+// (c) the NAME appears in run show output,
+// (d) the VALUE never appears in manifest bytes or run show output.
+func TestRunWorkflowEnvAllowlistPassthrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	repo := initCaptureRepo(t)
+
+	content := `name: mywf
+env_allowlist: [ETUDE_TEST_MARKER]
+stages:
+  - name: stage-a
+    skill: env-test-skill
+    produces: plan
+    inputs: [task]
+`
+	etDir := filepath.Join(repo, ".etude")
+	if err := os.MkdirAll(etDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runner writes marker|forbidden so each can be asserted independently.
+	scriptPath := filepath.Join(repo, "env-runner.sh")
+	script := "#!/bin/sh\nprintf '%s|%s' \"${ETUDE_TEST_MARKER:-ABSENT_MARKER}\" \"${ETUDE_TEST_FORBIDDEN:-ABSENT_FORBIDDEN}\" > \"$ETUDE_OUTPUT_FILE\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, repo, "task.txt", "hello")
+	chdir(t, repo)
+
+	t.Setenv("ETUDE_TEST_MARKER", "secretval")
+	t.Setenv("ETUDE_TEST_FORBIDDEN", "nope")
+
+	runID := "mywf-20260101T000000Z-envtest1"
+	_, stderr, err := execute("run", "mywf",
+		"--task", "task.txt",
+		"--run-id", runID,
+		"--runner", scriptPath,
+	)
+	if err != nil {
+		t.Fatalf("run returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, runID)
+	if len(m.Stages) != 1 {
+		t.Fatalf("manifest stages = %d, want 1", len(m.Stages))
+	}
+
+	// Read the stage output artifact to verify runner env.
+	artifactBytes, err := refstore.New(repo).ReadFile(
+		context.Background(),
+		"refs/etude/runs/"+runID,
+		m.Stages[0].Output.Path,
+	)
+	if err != nil {
+		t.Fatalf("ReadFile artifact: %v", err)
+	}
+	artifact := string(artifactBytes)
+
+	// (a) Allowlisted marker reached the runner.
+	if !strings.Contains(artifact, "secretval") {
+		t.Errorf("(a) marker did not reach runner: artifact = %q", artifact)
+	}
+	// (b) Non-allowlisted var was blocked.
+	if !strings.Contains(artifact, "ABSENT_FORBIDDEN") {
+		t.Errorf("(b) forbidden var reached runner: artifact = %q", artifact)
+	}
+
+	// (c) NAME "ETUDE_TEST_MARKER" appears in run show output.
+	showOut, showErr, err := execute("run", "show", runID)
+	if err != nil {
+		t.Fatalf("run show: %v\nstderr: %s", err, showErr)
+	}
+	if !strings.Contains(showOut, "ETUDE_TEST_MARKER") {
+		t.Errorf("(c) NAME missing from run show output:\n%s", showOut)
+	}
+
+	// (d) VALUE "secretval" must NEVER appear in manifest bytes or run show output.
+	manifestBytes, err := refstore.New(repo).ReadFile(
+		context.Background(),
+		"refs/etude/runs/"+runID,
+		"manifest.json",
+	)
+	if err != nil {
+		t.Fatalf("ReadFile manifest: %v", err)
+	}
+	if strings.Contains(string(manifestBytes), "secretval") {
+		t.Errorf("SECURITY (d): value 'secretval' found in manifest bytes:\n%s", manifestBytes)
+	}
+	if strings.Contains(showOut, "secretval") {
+		t.Errorf("SECURITY (d): value 'secretval' found in run show output:\n%s", showOut)
+	}
+}
+
 // TestRunReservedWorkflowNames checks that 'show' and 'list' are rejected.
 func TestRunReservedWorkflowNames(t *testing.T) {
 	repo := initCaptureRepo(t)

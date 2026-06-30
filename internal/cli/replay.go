@@ -31,6 +31,9 @@ type replayRunner struct {
 	now func() time.Time
 	// timeout overrides the default ExecRunner timeout when non-zero.
 	timeout time.Duration
+	// envAllowlist holds the NAMES (never values) to pass through to runners
+	// when --allow-env is set. Nil/empty means hermetic (default).
+	envAllowlist []string
 }
 
 func newReplayCommand(out, errOut io.Writer) *cobra.Command {
@@ -44,6 +47,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	var runnerSpec string
 	var outputPath string
 	var record bool
+	var allowEnv bool
 	var skillVersion, skillID, skillRepo, model, harness, harnessVersion string
 	var timeoutFlag time.Duration
 
@@ -58,6 +62,31 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r.timeout = timeoutFlag
+
+			// --record + --allow-env is rejected: replay --record passes values
+			// to the runner but does not record the allowlist names in the audit
+			// manifest. Use etude run for live runs with audited env passthrough.
+			if record && allowEnv {
+				return fmt.Errorf("--record and --allow-env cannot be combined: use etude run for live runs with audited env passthrough")
+			}
+
+			// When --allow-env is set, load the workflow to get the allowlist
+			// names and set them on the runner. Values are never stored here.
+			if allowEnv {
+				root, rootErr := repoRoot(cmd.Context())
+				if rootErr != nil {
+					return rootErr
+				}
+				wfBytes, wfErr := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
+				if wfErr != nil {
+					return fmt.Errorf("load workflow for --allow-env: %w", wfErr)
+				}
+				wf, wfErr := workflow.ParseYAML(wfBytes)
+				if wfErr != nil {
+					return fmt.Errorf("parse workflow: %w", wfErr)
+				}
+				r.envAllowlist = wf.EnvAllowlist
+			}
 
 			if len(args) == 1 {
 				// Forward replay: error on single-stage-only flags.
@@ -91,6 +120,7 @@ func buildReplayCommand(out, errOut io.Writer, r *replayRunner) *cobra.Command {
 	cmd.Flags().StringVar(&runnerSpec, "runner", "", "runner command spec (e.g. ./run.sh)")
 	cmd.Flags().StringVar(&outputPath, "output", "", "write output to this file instead of stdout")
 	cmd.Flags().BoolVar(&record, "record", false, "persist the replay output as a new linked run")
+	cmd.Flags().BoolVar(&allowEnv, "allow-env", false, "pass the workflow env_allowlist vars to the runner (default: hermetic; cannot combine with --record)")
 	cmd.Flags().StringVar(&skillVersion, "skill-version", "", "override skill version in recorded producer")
 	cmd.Flags().StringVar(&skillID, "skill-id", "", "override skill id in recorded producer")
 	cmd.Flags().StringVar(&skillRepo, "skill-repo", "", "override skill repo in recorded producer")
@@ -311,6 +341,7 @@ func (r *replayRunner) resolveRunner(ctx context.Context, spec string) (replay.R
 		Command:        strings.Fields(spec),
 		Timeout:        r.timeout,
 		MaxOutputBytes: 64 << 20,
+		EnvAllowlist:   r.envAllowlist,
 	}, nil
 }
 
@@ -338,6 +369,7 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
 			Command:        strings.Fields(runnerSpec),
 			Timeout:        timeout,
 			MaxOutputBytes: 64 << 20,
+			EnvAllowlist:   r.envAllowlist,
 		}
 		resolveRunner = func(string) (replay.Runner, error) { return er, nil }
 
@@ -362,7 +394,7 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
 		resolveRunner = func(stageName string) (replay.Runner, error) {
 			for _, s := range wf.Stages {
 				if s.Name == stageName {
-					return liverun.ResolveStageRunner(wf, reg, s, timeout)
+					return liverun.ResolveStageRunner(wf, reg, s, timeout, r.envAllowlist)
 				}
 			}
 			return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)

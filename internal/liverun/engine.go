@@ -78,6 +78,11 @@ type Engine struct {
 	Root string
 	// Now returns the current time. Defaults to time.Now when nil.
 	Now func() time.Time
+	// EnvAllowlist is the list of env var NAMES configured for passthrough to
+	// live runners.  It is written to every manifest for audit (NAMES only;
+	// VALUES are never stored).  The same list must drive both the runner
+	// closures (ResolveRunner/ResolveSeat) and this field so audit cannot lie.
+	EnvAllowlist []string
 }
 
 func (e *Engine) clock() time.Time {
@@ -404,6 +409,7 @@ func (e *Engine) runAndCaptureStage(
 		Refs:            map[string]string{},
 		Stages:          newStages,
 		Gates:           gateAttempts,
+		EnvAllowlist:    e.EnvAllowlist,
 	}
 
 	newCommit, err = runmanifest.WriteManifestTree(

@@ -1,8 +1,9 @@
 # Live execution (`etude run`) — design
 
-Status: mixed. §1 (live workflow orchestration) is **implemented** as of bead
-etude-xin. §2 (live gate execution) is **implemented** as of bead etude-04i.
-§3 (scoped secret passthrough) remains **planned**. Durable failed-stage
+Status: **all three sections implemented.** §1 (live workflow orchestration) is
+implemented as of bead etude-xin. §2 (live gate execution) is implemented as of
+bead etude-04i. §3 (scoped secret/env passthrough) is implemented as of bead
+etude-3a2. Decision 7 (hermetic-by-default) is realized. Durable failed-stage
 status capture (decision 6 below) is deferred to bead etude-dp7.
 
 Today etude supports both capture-and-replay and live orchestration: it records
@@ -17,8 +18,7 @@ from execution. That consumer context is non-normative; everything below is an
 etude feature in its own right.
 
 What ships today vs. what is planned is marked per section. "Implemented" refers
-to code under `internal/` on `main`; everything attributed to `etude run` (live)
-is planned.
+to code under `internal/` on this branch.
 
 ## Summary of decisions
 
@@ -160,20 +160,36 @@ registry (`.etude/registry.yaml` — the renamed former `gates.yaml`).
 
 ## 3. Scoped secret / env passthrough
 
-**Planned (etude-3a2).** Secret passthrough is not yet built. Both live runs
-and replay strip runner env to `PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`
-— hermetic by default, unchanged from before etude-xin.
+**Implemented (etude-3a2).** An operator declares an explicit allowlist of env
+var names in `.etude/workflow.yaml`. Values are read from the orchestrator's
+process env at runner-construction time and passed to live stage runners and
+gate model seats. Deterministic gate checks are left hermetic. With no
+`env_allowlist` configured, behavior is unchanged: the runner receives only
+`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`.
 
-**Planned:** a configurable allowlist / secret-injection mechanism for runners
-during live runs (opt-in for replay), e.g. `etude.runner.env-allowlist` or a
-secrets file referenced from config. Keep hermetic-by-default; make the
-passthrough explicit and auditable.
+**Mechanism:**
 
-### Acceptance criteria
+- Add `env_allowlist: [NAME, ...]` at the top level of `.etude/workflow.yaml`.
+  Each entry is an env var NAME (not a value). Reserved names (`PATH`,
+  `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow validation.
+- The allowlist names are resolved and passed to live stage runners and to gate
+  model seats. Deterministic gate checks are not affected and remain hermetic.
+- `etude replay <id> --allow-env` opts replay into the same passthrough;
+  default replay stays hermetic. `--record` and `--allow-env` cannot be combined.
+- Audit: the allowlist NAMES (never values) are recorded in the run manifest and
+  shown as `env allowlist:` in `etude run show`. The manifest records the
+  configured names (intent/policy); a name is passed to the child only when
+  present in the orchestrator's env — "listed" does not mean "value delivered".
+  Secret values never appear in the manifest or `etude run show` output. A
+  runner that echoes its own secret into its output is operator responsibility.
+
+See [docs/run.md](../run.md#env-passthrough) for user-facing documentation.
+
+### Acceptance criteria (met)
 
 - An operator declares exactly which env vars / secrets reach the runner.
 - Default behavior remains hermetic (nothing beyond the current three vars).
-- The passthrough is visible in run metadata for auditability.
+- The passthrough is visible in run metadata for auditability (names only).
 
 ## Sequencing
 
@@ -192,10 +208,9 @@ to `.etude/registry.yaml`; `phase_gates` migrated to per-stage `gate` blocks in
 historical `gates.yaml` is deleted. The deterministic-check gate (verify stage)
 and orchestration walk were proven live via `etude run` with a throwaway repo.
 
-**Real-LLM end-to-end run is deferred to bead etude-s6z** (depends on
-etude-2pc.2 + etude-3a2 secret passthrough): running the real `dev` stage runner
-(`claude -p`) and model-seat gates (opus/codex/gemini) live requires secret
-passthrough (§3), which is not yet built.
+**Real-LLM end-to-end run is deferred to bead etude-s6z** (now unblocked by
+etude-3a2): running the real `dev` stage runner (`claude -p`) and model-seat
+gates (opus/codex/gemini) live with real credentials is etude-s6z's scope.
 
 A second, research-style workflow lands later as an explicit generality test
 (etude-2pc.3).

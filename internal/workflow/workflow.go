@@ -27,6 +27,15 @@ var specialRoles = map[string]bool{
 	"repo-state": true,
 }
 
+// reservedEnvNames are the three env var names that ExecRunner always controls.
+// They must not appear in env_allowlist (fail-fast at validation; the runtime
+// reserved-skip in ExecRunner is defense-in-depth only).
+var reservedEnvNames = map[string]bool{
+	"PATH":              true,
+	"ETUDE_INPUTS_DIR":  true,
+	"ETUDE_OUTPUT_FILE": true,
+}
+
 // validEvalMethods is the closed set of eval method strings.
 var validEvalMethods = map[string]bool{
 	"rubric":    true,
@@ -102,6 +111,11 @@ type Workflow struct {
 	// methods apply the correct defaults and never require callers to nil-check
 	// the pointer.
 	Retros *RetrosConfig
+	// EnvAllowlist is the optional list of env var NAMES (never values) whose
+	// values are passed through to live stage runners and model seat runners.
+	// Replay stays hermetic unless --allow-env is passed.  Checks always remain
+	// hermetic regardless of this list.  Nil/empty means no passthrough (default).
+	EnvAllowlist []string
 }
 
 // RetrosConfig holds the parsed retros: configuration block.  Fields use
@@ -299,6 +313,9 @@ func (w Workflow) Validate() error {
 	if err := validateRetros(w); err != nil {
 		return err
 	}
+	if err := validateEnvAllowlist(w.EnvAllowlist); err != nil {
+		return err
+	}
 	if w.DefaultRunner != nil {
 		if err := validateRunner("default_runner", w.DefaultRunner); err != nil {
 			return err
@@ -487,6 +504,45 @@ func validateRetros(w Workflow) error {
 	return nil
 }
 
+// validateEnvAllowlist validates each entry is a valid POSIX env var name
+// ([A-Za-z_][A-Za-z0-9_]*), is not one of the three reserved names that
+// ExecRunner always controls, and that there are no duplicates.
+func validateEnvAllowlist(names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !isValidEnvNameWorkflow(name) {
+			return fmt.Errorf("%w: env_allowlist entry %q is not a valid env var name ([A-Za-z_][A-Za-z0-9_]*)", ErrInvalidWorkflow, name)
+		}
+		if reservedEnvNames[name] {
+			return fmt.Errorf("%w: env_allowlist entry %q is reserved (controlled by etude; cannot be in allowlist)", ErrInvalidWorkflow, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("%w: duplicate env_allowlist entry %q", ErrInvalidWorkflow, name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+// isValidEnvNameWorkflow reports whether name is a valid POSIX env var name:
+// [A-Za-z_][A-Za-z0-9_]* — non-empty, first char letter or underscore,
+// remaining chars letter, digit, or underscore.  No = or control chars.
+func isValidEnvNameWorkflow(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	r0 := rune(name[0])
+	if !((r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z') || r0 == '_') {
+		return false
+	}
+	for _, r := range name[1:] {
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // validateStageName applies the manifest identifier charset to stage names:
 // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
 // rule is kept as a local per-rune predicate (isIdentChar) rather than calling
@@ -647,6 +703,9 @@ type workflowYAML struct {
 	DefaultRunner yaml.Node   `yaml:"default_runner,omitempty"`
 	Stages        []stageYAML `yaml:"stages"`
 	Retros        yaml.Node   `yaml:"retros,omitempty"`
+	// EnvAllowlist is a plain []string: absent/null/empty all mean "no
+	// passthrough", so omitempty is correct and no yaml.Node machinery is needed.
+	EnvAllowlist []string `yaml:"env_allowlist,omitempty"`
 }
 
 // stageYAML is the decode/encode counterpart to Stage.  Runner and Gate are
@@ -751,7 +810,7 @@ func (w Workflow) toYAML() workflowYAML {
 		}
 		stages = append(stages, sy)
 	}
-	out := workflowYAML{Name: w.Name, Stages: stages}
+	out := workflowYAML{Name: w.Name, Stages: stages, EnvAllowlist: w.EnvAllowlist}
 	if w.DefaultRunner != nil {
 		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
 		var n yaml.Node
@@ -932,7 +991,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 		}
 		stages = append(stages, st)
 	}
-	w := Workflow{Name: d.Name, Stages: stages}
+	w := Workflow{Name: d.Name, Stages: stages, EnvAllowlist: d.EnvAllowlist}
 	drn, err := decodeRunnerNode(d.DefaultRunner)
 	if err != nil {
 		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)

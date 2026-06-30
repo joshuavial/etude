@@ -77,6 +77,16 @@ stage: plan
 The `refs:` block appears only when the run has external refs; its keys are
 printed in sorted order.
 
+When the workflow's `env_allowlist` is non-empty, an `env allowlist:` line
+appears in the header immediately after `created:` (before `refs:` when present),
+listing the configured names (never values):
+
+```
+env allowlist:    ETUDE_TEST_MARKER, ANTHROPIC_API_KEY
+```
+
+See [Env passthrough](#env-passthrough) for details.
+
 Per stage, the detail view shows:
 
 - `produced_by`, `git sha`
@@ -240,6 +250,48 @@ Each gate attempt is recorded automatically as a `GateAttempt` in the run
 manifest (`manifest_version` 3); gate attempts appear after stages in
 `etude run show`. No separate `etude capture-gate` call is required for live
 runs.
+
+### Env passthrough
+
+By default, each stage runner receives a hermetic environment containing only
+`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
+vars (such as API keys) to live runners, declare an allowlist of names in
+`.etude/workflow.yaml`:
+
+```yaml
+env_allowlist: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
+```
+
+At run time, etude reads each listed name's value from the orchestrator's own
+process env and passes it to each stage runner and gate model seat. Values are
+never stored in the manifest or artifact files; only the names are recorded.
+
+**Scope.** The allowlist applies to live stage runners and gate model seats.
+Deterministic gate checks are always hermetic (they receive no allowlist entries
+regardless of configuration).
+
+**Validation.** Each entry must be a valid POSIX env var name
+(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
+`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
+
+**Audit.** The configured names (never values) appear in `etude run show` as an
+`env allowlist:` header line and in the run manifest (`env_allowlist` field).
+The manifest records the configured names as intent/policy: a name is only
+passed to the child process when it is present in the orchestrator's env —
+"listed" does not mean "value delivered". Secret values never appear in the
+manifest or `etude run show` output. If a runner echoes its own secret into its
+output artifact, that is operator responsibility; etude's guarantee is that
+values cross only into the child process environment.
+
+**Replay.** By default, `etude replay` stays hermetic (no passthrough). Pass
+`--allow-env` to load the workflow's `env_allowlist` and apply it during replay:
+
+```bash
+etude replay <run-id> --allow-env
+etude replay <run-id> <stage> --allow-env
+```
+
+`--allow-env` and `--record` cannot be combined (rejected with a clear error).
 
 ### Forward replay
 

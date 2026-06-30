@@ -11,6 +11,7 @@ etude replay <run> [<stage>] [flags]
 ### Options
 
 ```
+      --allow-env                pass the workflow env_allowlist vars to the runner (default: hermetic; cannot combine with --record)
       --harness string           override harness name in recorded producer
       --harness-version string   override harness version in recorded producer
   -h, --help                     help for replay

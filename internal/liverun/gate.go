@@ -649,6 +649,7 @@ func (e *Engine) runGate(
 			Refs:            map[string]string{},
 			Stages:          completedStages,
 			Gates:           allAttempts,
+			EnvAllowlist:    e.EnvAllowlist,
 		}
 		newCommit2, err := runmanifest.WriteManifestTree(
 			ctx, e.Store, runsPrefix, manifest,

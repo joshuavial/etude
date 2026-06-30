@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/joshuavial/etude/internal/registry"
+	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/workflow"
 )
@@ -40,7 +41,7 @@ func TestResolveStageRunnerInlineCommand(t *testing.T) {
 				Runner: &workflow.Runner{Command: "echo hello"}},
 		},
 	}
-	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
+	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("ResolveStageRunner: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestResolveStageRunnerDefaultRunner(t *testing.T) {
 			{Name: "plan", Skill: "my-skill", Produces: "plan"},
 		},
 	}
-	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
+	runner, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("ResolveStageRunner with default: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestResolveStageRunnerNoRunnerError(t *testing.T) {
 			{Name: "plan", Skill: "my-skill", Produces: "plan"},
 		},
 	}
-	_, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second)
+	_, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil)
 	if err == nil {
 		t.Fatal("expected error when no runner configured")
 	}
@@ -92,12 +93,51 @@ func TestResolveStageRunnerByName(t *testing.T) {
 			"myrunner": {Provider: "test", Harness: "test", Invoke: "cat"},
 		},
 	}
-	runner, err := ResolveStageRunner(wf, reg, wf.Stages[0], 10*time.Second)
+	runner, err := ResolveStageRunner(wf, reg, wf.Stages[0], 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("ResolveStageRunner by name: %v", err)
 	}
 	if runner == nil {
 		t.Fatal("expected non-nil runner")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnvAllowlist propagation tests
+// ---------------------------------------------------------------------------
+
+// TestResolveGateSeatPropagatesEnvAllowlist verifies that the envAllowlist passed
+// to ResolveGateSeat is set on the returned ExecRunner.
+func TestResolveGateSeatPropagatesEnvAllowlist(t *testing.T) {
+	reg := registry.Registry{
+		Seats: map[string]registry.Seat{
+			"myseat": {Provider: "test/model", Harness: "test", Invoke: "cat"},
+		},
+	}
+	wantAllowlist := []string{"ETUDE_TEST_MARKER"}
+	runner, _, err := ResolveGateSeat(reg, "myseat", 10*time.Second, wantAllowlist)
+	if err != nil {
+		t.Fatalf("ResolveGateSeat: %v", err)
+	}
+	er, ok := runner.(*replay.ExecRunner)
+	if !ok {
+		t.Fatalf("runner is %T, want *replay.ExecRunner", runner)
+	}
+	if len(er.EnvAllowlist) != 1 || er.EnvAllowlist[0] != "ETUDE_TEST_MARKER" {
+		t.Errorf("EnvAllowlist = %v, want [ETUDE_TEST_MARKER]", er.EnvAllowlist)
+	}
+}
+
+// TestResolveCheckRunnerIsHermetic verifies that ResolveCheckRunner returns an
+// execCheckRunner, which has no allowlist and never propagates parent env vars.
+func TestResolveCheckRunnerIsHermetic(t *testing.T) {
+	r := workflow.Runner{Command: "echo test"}
+	cr, err := ResolveCheckRunner(registry.Registry{}, r, 10*time.Second)
+	if err != nil {
+		t.Fatalf("ResolveCheckRunner: %v", err)
+	}
+	if _, ok := cr.(*execCheckRunner); !ok {
+		t.Errorf("ResolveCheckRunner returned %T, want *execCheckRunner", cr)
 	}
 }
 

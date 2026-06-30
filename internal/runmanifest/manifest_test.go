@@ -1863,6 +1863,94 @@ func TestOccurredAtMalformedRejected(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// EnvAllowlist tests
+// ---------------------------------------------------------------------------
+
+// TestManifestEnvAllowlist_AbsentOmitted verifies no env_allowlist key in JSON
+// when EnvAllowlist is nil.
+func TestManifestEnvAllowlist_AbsentOmitted(t *testing.T) {
+	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if strings.Contains(string(b), "env_allowlist") {
+		t.Errorf("env_allowlist key present when nil:\n%s", b)
+	}
+}
+
+// TestManifestEnvAllowlist_EmptyOmitted verifies no env_allowlist key when the
+// field is an empty slice (omitempty semantics).
+func TestManifestEnvAllowlist_EmptyOmitted(t *testing.T) {
+	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	m.EnvAllowlist = []string{}
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if strings.Contains(string(b), "env_allowlist") {
+		t.Errorf("env_allowlist key present when empty slice:\n%s", b)
+	}
+}
+
+// TestManifestEnvAllowlist_Present verifies env_allowlist round-trips and contains
+// only NAMES (never values).
+func TestManifestEnvAllowlist_Present(t *testing.T) {
+	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	m.EnvAllowlist = []string{"FOO", "BAR"}
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(b), `"env_allowlist"`) {
+		t.Fatalf("env_allowlist key missing:\n%s", b)
+	}
+	// Paranoia: no secret values should appear in the manifest bytes.
+	if strings.Contains(string(b), "secretval") {
+		t.Errorf("value leaked into manifest bytes")
+	}
+	got, err := ParseJSON(b)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if len(got.EnvAllowlist) != 2 || got.EnvAllowlist[0] != "FOO" || got.EnvAllowlist[1] != "BAR" {
+		t.Errorf("round-trip EnvAllowlist = %v, want [FOO BAR]", got.EnvAllowlist)
+	}
+}
+
+// TestManifestEnvAllowlist_NoVersionBump verifies manifest_version stays 2
+// when env_allowlist is present (additive omitempty field, no version bump).
+func TestManifestEnvAllowlist_NoVersionBump(t *testing.T) {
+	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	m.EnvAllowlist = []string{"FOO"}
+	b, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(b), `"manifest_version": 2`) {
+		t.Errorf("manifest_version != 2 with env_allowlist:\n%s", b)
+	}
+}
+
+// TestManifestEnvAllowlist_ByteStable verifies two JSON() calls on the same
+// manifest with env_allowlist produce identical bytes.
+func TestManifestEnvAllowlist_ByteStable(t *testing.T) {
+	m := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	m.EnvAllowlist = []string{"FOO", "BAR"}
+	b1, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON first: %v", err)
+	}
+	b2, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON second: %v", err)
+	}
+	if string(b1) != string(b2) {
+		t.Errorf("JSON not byte-stable:\nfirst:\n%s\nsecond:\n%s", b1, b2)
+	}
+}
+
 // TestOccurredAtExistingManifestNoKey verifies that a manifest document that
 // predates the occurred_at field (no key present) still decodes and validates
 // successfully, with OccurredAt left as the zero time.
