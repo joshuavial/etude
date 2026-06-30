@@ -1047,6 +1047,236 @@ func TestRunReservedWorkflowNames(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// AC tests: research (non-dev) workflow — generality proof
+// ---------------------------------------------------------------------------
+
+// writeResearchFiles writes deterministic runner/seat/check scripts and
+// .etude/workflow.yaml + .etude/registry.yaml with absolute paths into repo.
+// Returns the absolute path to the stage-runner script (used to verify the
+// registry wiring in assertions).
+func writeResearchFiles(t *testing.T, repo string) string {
+	t.Helper()
+
+	// stage-runner.sh: concatenate sorted inputs to output file.
+	stageRunnerPath := filepath.Join(repo, "stage-runner.sh")
+	if err := os.WriteFile(stageRunnerPath, []byte(
+		"#!/bin/sh\n: > \"$ETUDE_OUTPUT_FILE\"\n"+
+			"for f in $(ls \"$ETUDE_INPUTS_DIR\" | sort); do\n"+
+			"    cat \"$ETUDE_INPUTS_DIR/$f\" >> \"$ETUDE_OUTPUT_FILE\"\ndone\n",
+	), 0o755); err != nil {
+		t.Fatalf("write stage-runner.sh: %v", err)
+	}
+
+	// approve-seat.sh: always votes go.
+	approvePath := filepath.Join(repo, "approve-seat.sh")
+	if err := os.WriteFile(approvePath, []byte(
+		"#!/bin/sh\nprintf '{\"verdict\":\"go\"}' > \"$ETUDE_OUTPUT_FILE\"\n",
+	), 0o755); err != nil {
+		t.Fatalf("write approve-seat.sh: %v", err)
+	}
+
+	// gate-check.sh: exits 0 when the reviewed artifact is non-empty.
+	gateCheckPath := filepath.Join(repo, "gate-check.sh")
+	if err := os.WriteFile(gateCheckPath, []byte(
+		"#!/bin/sh\nfor f in \"$ETUDE_INPUTS_DIR\"/*; do\n"+
+			"    [ -f \"$f\" ] || continue\n"+
+			"    [ -s \"$f\" ] && exit 0\ndone\nexit 1\n",
+	), 0o755); err != nil {
+		t.Fatalf("write gate-check.sh: %v", err)
+	}
+
+	// .etude/workflow.yaml: 5-stage research workflow.
+	workflowContent := fmt.Sprintf(`name: research
+stages:
+  - name: research
+    produces: findings
+    inputs:
+      - task
+    skill: research-skill
+    runner:
+      name: stage-runner
+  - name: fact-check
+    produces: checked
+    inputs:
+      - task
+      - findings
+    skill: fact-check-skill
+    runner:
+      name: stage-runner
+  - name: draft
+    produces: draft
+    inputs:
+      - checked
+    skill: draft-skill
+    runner:
+      name: stage-runner
+  - name: review
+    produces: reviewed
+    inputs:
+      - draft
+    skill: review-skill
+    runner:
+      name: stage-runner
+    gate:
+      tier: L1
+      max_rounds: 1
+      checks:
+        - command: %s
+  - name: tone-police
+    produces: toned
+    inputs:
+      - reviewed
+    skill: tone-police-skill
+    runner:
+      name: stage-runner
+`, gateCheckPath)
+	etDir := filepath.Join(repo, ".etude")
+	if err := os.MkdirAll(etDir, 0o755); err != nil {
+		t.Fatalf("mkdir .etude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(etDir, "workflow.yaml"), []byte(workflowContent), 0o644); err != nil {
+		t.Fatalf("write workflow.yaml: %v", err)
+	}
+
+	// .etude/registry.yaml: stage-runner + approver seats + L1 tier.
+	registryContent := fmt.Sprintf(`quorum: unanimous
+seats:
+  stage-runner:
+    provider: deterministic/stage-runner
+    harness: shell
+    invoke: %s
+  approver:
+    provider: deterministic/approver
+    harness: shell
+    invoke: %s
+tiers:
+  L1:
+    name: Research review tier
+    seats:
+      - approver
+`, stageRunnerPath, approvePath)
+	if err := os.WriteFile(filepath.Join(etDir, "registry.yaml"), []byte(registryContent), 0o644); err != nil {
+		t.Fatalf("write registry.yaml: %v", err)
+	}
+
+	return stageRunnerPath
+}
+
+// TestRunWorkflowResearch is the generality-proof test for etude-2pc.3.
+// It verifies that the engine has no dev-specific assumptions by running a
+// genuinely non-dev research workflow live, then asserting:
+//  1. Manifest has exactly 5 stages with output roles findings/checked/draft/
+//     reviewed/toned (non-dev roles) and produced_by=original.
+//  2. Artifact-ref chaining: fact-check input[findings].Artifact ==
+//     research output.Artifact (registry-mechanism reuse proof).
+//  3. The recorded review gate attempt has Status==pass AND seat "approver"
+//     reflects the registry-resolved stub (catches silent RERUN regression).
+//  4. etude replay <id> (forward) re-executes all 5 stages without error.
+func TestRunWorkflowResearch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh scripts not supported on Windows")
+	}
+	repo := initCaptureRepo(t)
+	writeResearchFiles(t, repo)
+	writeFile(t, repo, "topic.txt", "research task content\n")
+	chdir(t, repo)
+
+	runID := "research-20260101T000000Z-genproof1"
+	stdout, stderr, err := execute("run", "research",
+		"--task", "topic.txt",
+		"--run-id", runID,
+	)
+	if err != nil {
+		t.Fatalf("etude run research returned error: %v\nstderr: %s\nstdout: %s", err, stderr, stdout)
+	}
+
+	// The stdout must include a captured gate pass line and the ref line.
+	if !strings.Contains(stdout, "captured gate review.r1 status=pass") {
+		t.Errorf("stdout missing 'captured gate review.r1 status=pass':\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "ref refs/etude/runs/"+runID) {
+		t.Errorf("stdout missing ref line:\n%s", stdout)
+	}
+
+	m := readRunManifest(t, repo, runID)
+
+	// AC1: exactly 5 stages with non-dev output roles.
+	wantRoles := []string{"findings", "checked", "draft", "reviewed", "toned"}
+	if len(m.Stages) != 5 {
+		t.Fatalf("manifest stages = %d, want 5", len(m.Stages))
+	}
+	for i, s := range m.Stages {
+		if s.Output.Role != wantRoles[i] {
+			t.Errorf("stage[%d].output.role = %q, want %q", i, s.Output.Role, wantRoles[i])
+		}
+		if s.ProducedBy != "original" {
+			t.Errorf("stage[%d].produced_by = %q, want original", i, s.ProducedBy)
+		}
+	}
+
+	// AC2: artifact-ref chaining — fact-check input[findings] == research output.
+	// Stage indices: 0=research, 1=fact-check.
+	researchOut := m.Stages[0].Output
+	// fact-check has inputs [task, findings]; findings is at index 1.
+	factCheckInputs := m.Stages[1].Inputs
+	var findingsInput *runmanifest.ArtifactRef
+	for i := range factCheckInputs {
+		if factCheckInputs[i].Role == "findings" {
+			findingsInput = &factCheckInputs[i]
+			break
+		}
+	}
+	if findingsInput == nil {
+		t.Fatal("fact-check stage has no 'findings' input")
+	}
+	if findingsInput.Artifact != researchOut.Artifact {
+		t.Errorf("fact-check input[findings].Artifact %q != research output.Artifact %q",
+			findingsInput.Artifact, researchOut.Artifact)
+	}
+	if findingsInput.Path != researchOut.Path {
+		t.Errorf("fact-check input[findings].Path %q != research output.Path %q",
+			findingsInput.Path, researchOut.Path)
+	}
+
+	// AC3: gate attempt has Status==pass and registry-resolved approver seat.
+	if len(m.Gates) != 1 {
+		t.Fatalf("manifest gates = %d, want 1", len(m.Gates))
+	}
+	g := m.Gates[0]
+	if g.GateID != "review.r1" {
+		t.Errorf("gate_id = %q, want review.r1", g.GateID)
+	}
+	if g.Status != runmanifest.GateStatusPass {
+		t.Errorf("gate status = %q, want pass", g.Status)
+	}
+	// Find the registry-resolved approver seat.
+	foundApprover := false
+	for _, seat := range g.Seats {
+		if seat.Seat == "approver" {
+			foundApprover = true
+			if seat.Verdict != runmanifest.SeatVerdictGo {
+				t.Errorf("approver seat verdict = %q, want go", seat.Verdict)
+			}
+		}
+	}
+	if !foundApprover {
+		t.Errorf("registry-resolved approver seat not found in gate attempt; seats=%v", g.Seats)
+	}
+
+	// AC4: forward replay re-executes all 5 stages without error.
+	// etude replay <runID> (1-arg forward replay) uses .etude/workflow.yaml
+	// and .etude/registry.yaml to resolve runners for each stage name.
+	replayOut, replaySderr, replayErr := execute("replay", runID)
+	if replayErr != nil {
+		t.Fatalf("etude replay returned error: %v\nstderr: %s\nstdout: %s", replayErr, replaySderr, replayOut)
+	}
+	// Forward replay output is the concatenated output of all 5 stages.
+	if len(replayOut) == 0 {
+		t.Error("forward replay produced no output")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

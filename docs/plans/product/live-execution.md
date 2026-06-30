@@ -212,5 +212,12 @@ and orchestration walk were proven live via `etude run` with a throwaway repo.
 etude-3a2): running the real `dev` stage runner (`claude -p`) and model-seat
 gates (opus/codex/gemini) live with real credentials is etude-s6z's scope.
 
-A second, research-style workflow lands later as an explicit generality test
-(etude-2pc.3).
+The **generality test has landed (etude-2pc.3)**: a genuinely non-dev 5-stage
+research workflow (research → fact-check → draft → review → tone-police) runs
+live via `etude run`, captures by construction, and forward-replays
+deterministically with no engine change. The example lives at
+`examples/research/` and the hermetic in-process test is
+`internal/cli/TestRunWorkflowResearch` + smoke test
+`internal/example/TestResearchWalkthroughSmokeTest`. The proof-by-diff:
+`git diff --name-only <pre-2pc.3-commit> -- ':!**/*_test.go' | grep '^internal/'`
+returns empty — this bead adds zero non-test Go under `internal/`.
