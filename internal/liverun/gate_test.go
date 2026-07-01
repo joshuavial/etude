@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -33,6 +34,35 @@ func envelopeJSON(verdict string, required []string) []byte {
 	env := seatEnvelope{Verdict: verdict, Required: required}
 	b, _ := json.Marshal(env)
 	return b
+}
+
+func sessionEnvelopeJSON(verdict string) []byte {
+	env := seatEnvelope{
+		Verdict: verdict,
+		Session: &seatSessionEnvelope{
+			SessionID:      "session-123",
+			TranscriptPath: "transcript.txt",
+		},
+	}
+	b, _ := json.Marshal(env)
+	return b
+}
+
+type transcriptSeatRunner struct {
+	envelope   []byte
+	transcript []byte
+}
+
+func (r transcriptSeatRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	if err := os.WriteFile(req.ScratchDir+"/transcript.txt", r.transcript, 0o644); err != nil {
+		return replay.RunResult{}, err
+	}
+	res := replay.RunResult{
+		Output:    r.envelope,
+		MediaType: "application/json",
+		Producer:  req.Producer,
+	}
+	return res, nil
 }
 
 // stubSeats is a call-indexed seat stub: each call index returns the next
@@ -246,6 +276,156 @@ func TestGateAC1_RecordsGateAttempt(t *testing.T) {
 		if s.Provider.Model != "stub-model" {
 			t.Errorf("seat %q provider.model = %q, want stub-model", s.Seat, s.Provider.Model)
 		}
+	}
+}
+
+func TestGateAgenticSeatRequiresSessionEvidence(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+
+	goEnv := envelopeJSON("go", nil)
+	ss := &stubSeats{responses: [][]byte{goEnv}}
+	one := 1
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
+			return ss.runner(), SeatMeta{
+				HarnessName:            "codex",
+				ProviderName:           "openai",
+				Model:                  "gpt-5.5",
+				RequireSessionEvidence: true,
+			}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"codex"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
+	runID := "mywf-20260101T000000Z-session01"
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    sha,
+	})
+	var gateErr *GateEscalationError
+	if !errors.As(err, &gateErr) {
+		t.Fatalf("expected gate escalation from missing session evidence, got %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	seat := m.Gates[0].Seats[0]
+	if seat.Verdict != runmanifest.SeatVerdictMalfunction {
+		t.Fatalf("seat verdict = %q, want malfunction", seat.Verdict)
+	}
+	if seat.FailureNote != "agentic seat did not provide session evidence" {
+		t.Fatalf("failure note = %q", seat.FailureNote)
+	}
+}
+
+func TestGateAgenticSeatStoresTranscriptEvidence(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
+			runner := transcriptSeatRunner{
+				envelope:   sessionEnvelopeJSON("go"),
+				transcript: []byte("full transcript without secrets"),
+			}
+			meta := SeatMeta{
+				HarnessName:            "codex",
+				ProviderName:           "openai",
+				Model:                  "gpt-5.5",
+				RequireSessionEvidence: true,
+			}
+			return runner, meta, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"codex"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1"})
+	runID := "mywf-20260101T000000Z-session02"
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    sha,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	seat := m.Gates[0].Seats[0]
+	if seat.Session == nil {
+		t.Fatal("session evidence missing")
+	}
+	if seat.Session.SessionID != "session-123" {
+		t.Fatalf("session id = %q", seat.Session.SessionID)
+	}
+	if seat.Session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+		t.Fatalf("retrieval status = %q", seat.Session.RetrievalStatus)
+	}
+	if seat.Session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+		t.Fatalf("redaction status = %q", seat.Session.RedactionStatus)
+	}
+	if seat.Session.TranscriptArtifact == nil {
+		t.Fatal("transcript artifact missing")
+	}
+}
+
+func TestGateAgenticSeatFailsClosedOnSecretTranscript(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+
+	one := 1
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
+			runner := transcriptSeatRunner{
+				envelope:   sessionEnvelopeJSON("go"),
+				transcript: []byte("token ghp_123456789012345678901234567890123456"),
+			}
+			meta := SeatMeta{
+				HarnessName:            "codex",
+				ProviderName:           "openai",
+				Model:                  "gpt-5.5",
+				RequireSessionEvidence: true,
+			}
+			return runner, meta, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"codex"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
+	runID := "mywf-20260101T000000Z-session03"
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    sha,
+	})
+	var gateErr *GateEscalationError
+	if !errors.As(err, &gateErr) {
+		t.Fatalf("expected gate escalation from secret transcript, got %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	seat := m.Gates[0].Seats[0]
+	if seat.Verdict != runmanifest.SeatVerdictMalfunction {
+		t.Fatalf("seat verdict = %q, want malfunction", seat.Verdict)
+	}
+	if seat.Session == nil || seat.Session.RedactionStatus != runmanifest.SessionEvidenceFailed {
+		t.Fatalf("redaction status = %#v, want failed", seat.Session)
 	}
 }
 

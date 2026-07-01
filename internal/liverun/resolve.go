@@ -92,9 +92,10 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
 	}
 	providerName, model := splitProvider(seat.Provider)
 	meta := SeatMeta{
-		HarnessName:  seat.Harness,
-		ProviderName: providerName,
-		Model:        model,
+		HarnessName:            seat.Harness,
+		ProviderName:           providerName,
+		Model:                  model,
+		RequireSessionEvidence: requiresSessionEvidence(providerName, seat.Harness),
 	}
 	runner := &replay.ExecRunner{
 		Command:        strings.Fields(seat.Invoke),
@@ -103,6 +104,18 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
 		EnvAllowlist:   envAllowlist,
 	}
 	return runner, meta, nil
+}
+
+func requiresSessionEvidence(providerName, harnessName string) bool {
+	provider := strings.ToLower(strings.TrimSpace(providerName))
+	harness := strings.ToLower(strings.TrimSpace(harnessName))
+	if provider == "" || harness == "" {
+		return false
+	}
+	if provider == "deterministic" || harness == "shell" {
+		return false
+	}
+	return true
 }
 
 // ResolveTiers returns a Tiers function that resolves tier seat lists and

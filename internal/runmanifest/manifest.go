@@ -89,8 +89,18 @@ type SeatResult struct {
 	Required    []string
 	Optional    []string
 	RawOutput   *ArtifactRef
+	Session     *SessionEvidence
 	FailureNote string
 	Timestamp   time.Time
+}
+
+// SessionEvidence records durable transcript/session evidence for agentic seats.
+type SessionEvidence struct {
+	SessionID          string
+	TranscriptURI      string
+	TranscriptArtifact *ArtifactRef
+	RetrievalStatus    string
+	RedactionStatus    string
 }
 
 // Provider names the model provider and model for a reviewer seat.
@@ -123,6 +133,11 @@ const (
 	SeatVerdictEmpty       SeatVerdict = "empty"
 	SeatVerdictMalfunction SeatVerdict = "malfunction"
 	SeatVerdictDisregarded SeatVerdict = "disregarded"
+
+	SessionEvidenceRetrievalImported = "imported"
+	SessionEvidenceFailed            = "failed"
+	SessionEvidenceNotApplicable     = "not_applicable"
+	SessionEvidenceRedactionPassed   = "passed"
 )
 
 // ReplayLink records the durable source identity for a produced_by:"replay" stage.
@@ -317,6 +332,9 @@ func ArtifactPaths(manifest Manifest) []string {
 			if seat.RawOutput != nil {
 				seen[seat.RawOutput.Path] = struct{}{}
 			}
+			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+				seen[seat.Session.TranscriptArtifact.Path] = struct{}{}
+			}
 		}
 	}
 	paths := make([]string, 0, len(seen))
@@ -362,6 +380,20 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
 		}
 		if err := verifyArtifactFile(stage.Output, files, hashes); err != nil {
 			return "", err
+		}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				if err := verifyArtifactFile(*seat.RawOutput, files, hashes); err != nil {
+					return "", err
+				}
+			}
+			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+				if err := verifyArtifactFile(*seat.Session.TranscriptArtifact, files, hashes); err != nil {
+					return "", err
+				}
+			}
 		}
 	}
 
@@ -540,8 +572,64 @@ func validateSeat(gatePrefix string, index int, seat SeatResult) error {
 			return fmt.Errorf("%w: %s raw_output: %v", ErrInvalidManifest, prefix, err)
 		}
 	}
+	if seat.Session != nil {
+		if err := validateSessionEvidence(prefix+".session", *seat.Session); err != nil {
+			return err
+		}
+	}
 	if seat.Timestamp.IsZero() {
 		return fmt.Errorf("%w: %s timestamp required", ErrInvalidManifest, prefix)
+	}
+	return nil
+}
+
+func validateSessionEvidence(prefix string, evidence SessionEvidence) error {
+	if strings.TrimSpace(evidence.SessionID) == "" && strings.TrimSpace(evidence.TranscriptURI) == "" {
+		return fmt.Errorf("%w: %s requires session_id or transcript_uri", ErrInvalidManifest, prefix)
+	}
+	if evidence.SessionID != "" {
+		if err := validateFreeText(prefix+".session_id", evidence.SessionID); err != nil {
+			return err
+		}
+	}
+	if evidence.TranscriptURI != "" {
+		if err := validateFreeText(prefix+".transcript_uri", evidence.TranscriptURI); err != nil {
+			return err
+		}
+	}
+	if !isSessionEvidenceRetrievalStatus(evidence.RetrievalStatus) {
+		return fmt.Errorf("%w: %s retrieval_status %q is not one of {imported, failed, not_applicable}", ErrInvalidManifest, prefix, evidence.RetrievalStatus)
+	}
+	if !isSessionEvidenceRedactionStatus(evidence.RedactionStatus) {
+		return fmt.Errorf("%w: %s redaction_status %q is not one of {passed, failed, not_applicable}", ErrInvalidManifest, prefix, evidence.RedactionStatus)
+	}
+	if evidence.TranscriptArtifact != nil {
+		if err := validateArtifactRef(*evidence.TranscriptArtifact); err != nil {
+			return fmt.Errorf("%w: %s transcript_artifact: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
+	return nil
+}
+
+func isSessionEvidenceRetrievalStatus(status string) bool {
+	return status == SessionEvidenceRetrievalImported || status == SessionEvidenceFailed || status == SessionEvidenceNotApplicable
+}
+
+func isSessionEvidenceRedactionStatus(status string) bool {
+	return status == SessionEvidenceRedactionPassed || status == SessionEvidenceFailed || status == SessionEvidenceNotApplicable
+}
+
+func validateFreeText(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s required", ErrInvalidManifest, name)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s invalid utf-8", ErrInvalidManifest, name)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s contains control character", ErrInvalidManifest, name)
+		}
 	}
 	return nil
 }
@@ -660,6 +748,9 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 		for _, seat := range gate.Seats {
 			if seat.RawOutput != nil {
 				paths[seat.RawOutput.Path] = struct{}{}
+			}
+			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+				paths[seat.Session.TranscriptArtifact.Path] = struct{}{}
 			}
 		}
 	}
@@ -838,8 +929,17 @@ type seatResultJSON struct {
 	Required    []string      `json:"required,omitempty"`
 	Optional    []string      `json:"optional,omitempty"`
 	RawOutput   *artifactJSON `json:"raw_output,omitempty"`
+	Session     *sessionJSON  `json:"session,omitempty"`
 	FailureNote string        `json:"failure_note,omitempty"`
 	Timestamp   string        `json:"timestamp"`
+}
+
+type sessionJSON struct {
+	SessionID          string        `json:"session_id,omitempty"`
+	TranscriptURI      string        `json:"transcript_uri,omitempty"`
+	TranscriptArtifact *artifactJSON `json:"transcript_artifact,omitempty"`
+	RetrievalStatus    string        `json:"retrieval_status"`
+	RedactionStatus    string        `json:"redaction_status"`
 }
 
 type providerJSON struct {
@@ -1041,6 +1141,23 @@ func (s SeatResult) toJSON() seatResultJSON {
 		aj := s.RawOutput.toJSON()
 		sj.RawOutput = &aj
 	}
+	if s.Session != nil {
+		sj.Session = s.Session.toJSON()
+	}
+	return sj
+}
+
+func (e SessionEvidence) toJSON() *sessionJSON {
+	sj := &sessionJSON{
+		SessionID:       e.SessionID,
+		TranscriptURI:   e.TranscriptURI,
+		RetrievalStatus: e.RetrievalStatus,
+		RedactionStatus: e.RedactionStatus,
+	}
+	if e.TranscriptArtifact != nil {
+		aj := e.TranscriptArtifact.toJSON()
+		sj.TranscriptArtifact = &aj
+	}
 	return sj
 }
 
@@ -1195,6 +1312,10 @@ func (s seatResultJSON) toSeatResult(gateIndex, seatIndex int) (SeatResult, erro
 		a := s.RawOutput.toArtifactRef()
 		rawOutput = &a
 	}
+	var session *SessionEvidence
+	if s.Session != nil {
+		session = s.Session.toSessionEvidence()
+	}
 	return SeatResult{
 		Seat: s.Seat,
 		Harness: Harness{
@@ -1210,9 +1331,24 @@ func (s seatResultJSON) toSeatResult(gateIndex, seatIndex int) (SeatResult, erro
 		Required:    s.Required,
 		Optional:    s.Optional,
 		RawOutput:   rawOutput,
+		Session:     session,
 		FailureNote: s.FailureNote,
 		Timestamp:   ts,
 	}, nil
+}
+
+func (s sessionJSON) toSessionEvidence() *SessionEvidence {
+	evidence := &SessionEvidence{
+		SessionID:       s.SessionID,
+		TranscriptURI:   s.TranscriptURI,
+		RetrievalStatus: s.RetrievalStatus,
+		RedactionStatus: s.RedactionStatus,
+	}
+	if s.TranscriptArtifact != nil {
+		a := s.TranscriptArtifact.toArtifactRef()
+		evidence.TranscriptArtifact = &a
+	}
+	return evidence
 }
 
 func (s stageJSON) toStage(index int) (Stage, error) {

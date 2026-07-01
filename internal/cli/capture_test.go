@@ -840,6 +840,115 @@ func TestCaptureGateRawOutputRegularFileAccepted(t *testing.T) {
 	}
 }
 
+func TestCaptureGateSessionTranscriptImported(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	transcriptPath := filepath.Join(repo, "session-transcript.txt")
+	if err := os.WriteFile(transcriptPath, []byte("full transcript without secrets\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	now := time.Date(2026, 5, 25, 3, 20, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id":"plan.r1",
+  "phase":"plan",
+  "round":1,
+  "tier":1,
+  "status":"pass",
+  "reviewed_stages":[{"stage":"plan"}],
+  "seats":[{
+    "seat":"codex",
+    "harness":{"name":"codex","version":"x"},
+    "provider":{"name":"openai","model":"gpt-5.5"},
+    "verdict":"go",
+    "session":{"session_id":"session-123","transcript_path":%q},
+    "timestamp":%q
+  }],
+  "decision":{},
+  "timestamp":%q
+}`, transcriptPath, now, now)
+	gateFile := filepath.Join(repo, "gate-session.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+
+	if _, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile); err != nil {
+		t.Fatalf("capture-gate session transcript failed: %v\nstderr: %s", err, stderr)
+	}
+	m := readRunManifest(t, repo, "run-1")
+	seat := m.Gates[0].Seats[0]
+	if seat.Session == nil {
+		t.Fatal("session evidence missing")
+	}
+	if seat.Session.SessionID != "session-123" {
+		t.Fatalf("session id = %q", seat.Session.SessionID)
+	}
+	if seat.Session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+		t.Fatalf("retrieval status = %q", seat.Session.RetrievalStatus)
+	}
+	if seat.Session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+		t.Fatalf("redaction status = %q", seat.Session.RedactionStatus)
+	}
+	if seat.Session.TranscriptArtifact == nil {
+		t.Fatal("transcript artifact missing")
+	}
+}
+
+func TestCaptureGateSessionTranscriptSecretRejected(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	transcriptPath := filepath.Join(repo, "session-secret.txt")
+	if err := os.WriteFile(transcriptPath, []byte("token ghp_123456789012345678901234567890123456\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	now := time.Date(2026, 5, 25, 3, 21, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id":"plan.r1",
+  "phase":"plan",
+  "round":1,
+  "tier":1,
+  "status":"pass",
+  "reviewed_stages":[{"stage":"plan"}],
+  "seats":[{
+    "seat":"codex",
+    "harness":{"name":"codex","version":"x"},
+    "provider":{"name":"openai","model":"gpt-5.5"},
+    "verdict":"go",
+    "session":{"session_id":"session-123","transcript_path":%q},
+    "timestamp":%q
+  }],
+  "decision":{},
+  "timestamp":%q
+}`, transcriptPath, now, now)
+	gateFile := filepath.Join(repo, "gate-session-secret.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+
+	_, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate with secret transcript succeeded; want error")
+	}
+	if !strings.Contains(stderr, "redaction scan transcript") {
+		t.Fatalf("stderr = %q, want redaction scan error", stderr)
+	}
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 0 {
+		t.Fatalf("gates count = %d, want 0 after rejected capture-gate", len(m.Gates))
+	}
+}
+
 // TestCaptureGateRejectsUnknownField verifies that a gate JSON with a typo'd
 // top-level field (e.g. "verdct" instead of "verdict") is rejected with a
 // "parse gate JSON" error, and no ref is written. Under the old json.Unmarshal
