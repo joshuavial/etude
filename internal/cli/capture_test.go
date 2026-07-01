@@ -212,35 +212,6 @@ func TestCaptureValidatesGitSHA(t *testing.T) {
 	}
 }
 
-func TestInferMediaType(t *testing.T) {
-	cases := map[string]string{
-		"a.txt":      "text/plain; charset=utf-8",
-		"a.md":       "text/markdown; charset=utf-8",
-		"a.markdown": "text/markdown; charset=utf-8",
-		"a.json":     "application/json",
-		"a.yaml":     "application/yaml",
-		"a.yml":      "application/yaml",
-		"a.diff":     "text/x-diff; charset=utf-8",
-		"a.patch":    "text/x-diff; charset=utf-8",
-		"a.html":     "text/html; charset=utf-8",
-		"a.htm":      "text/html; charset=utf-8",
-		"a.png":      "image/png",
-		"a.jpg":      "image/jpeg",
-		"a.jpeg":     "image/jpeg",
-		"a.gif":      "image/gif",
-		"a.svg":      "image/svg+xml",
-		"a.bin":      "application/octet-stream",
-		"noext":      "application/octet-stream",
-		"a.MD":       "text/markdown; charset=utf-8", // extension match is case-insensitive
-		"dir/x.JSON": "application/json",
-	}
-	for path, want := range cases {
-		if got := inferMediaType(path); got != want {
-			t.Errorf("inferMediaType(%q) = %q, want %q", path, got, want)
-		}
-	}
-}
-
 func readRawManifest(t *testing.T, repo, runID string) []byte {
 	t.Helper()
 	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, "manifest.json")
@@ -896,6 +867,125 @@ func TestCaptureGateSessionTranscriptImported(t *testing.T) {
 	}
 	if seat.Session.TranscriptArtifact == nil {
 		t.Fatal("transcript artifact missing")
+	}
+}
+
+func TestCaptureGateSessionTranscriptSymlinkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on windows")
+	}
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	transcriptPath := filepath.Join(repo, "session-transcript.txt")
+	if err := os.WriteFile(transcriptPath, []byte("full transcript without secrets\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	symlinkPath := filepath.Join(repo, "session-link.txt")
+	if err := os.Symlink(transcriptPath, symlinkPath); err != nil {
+		t.Skipf("symlink creation unsupported: %v", err)
+	}
+
+	now := time.Date(2026, 5, 25, 3, 20, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id":"plan.r1",
+  "phase":"plan",
+  "round":1,
+  "tier":1,
+  "status":"pass",
+  "reviewed_stages":[{"stage":"plan"}],
+  "seats":[{
+    "seat":"codex",
+    "harness":{"name":"codex","version":"x"},
+    "provider":{"name":"openai","model":"gpt-5.5"},
+    "verdict":"go",
+    "session":{"session_id":"session-123","transcript_path":%q},
+    "timestamp":%q
+  }],
+  "decision":{},
+  "timestamp":%q
+}`, symlinkPath, now, now)
+	gateFile := filepath.Join(repo, "gate-session-symlink.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+
+	_, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate accepted a symlink session transcript; want rejection")
+	}
+	if combined := err.Error() + " " + stderr; !strings.Contains(combined, "read transcript") || !strings.Contains(combined, "symlink") {
+		t.Fatalf("error = %q, want read transcript symlink context", combined)
+	}
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 0 {
+		t.Fatalf("gates count = %d, want 0 after rejected capture-gate", len(m.Gates))
+	}
+}
+
+func TestCaptureGateSessionTranscriptIntermediateSymlinkRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on windows")
+	}
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	realDir := filepath.Join(repo, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "session.txt"), []byte("full transcript without secrets\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	linkDir := filepath.Join(repo, "linkdir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink creation unsupported: %v", err)
+	}
+
+	now := time.Date(2026, 5, 25, 3, 20, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gateContent := fmt.Sprintf(`{
+  "gate_id":"plan.r1",
+  "phase":"plan",
+  "round":1,
+  "tier":1,
+  "status":"pass",
+  "reviewed_stages":[{"stage":"plan"}],
+  "seats":[{
+    "seat":"codex",
+    "harness":{"name":"codex","version":"x"},
+    "provider":{"name":"openai","model":"gpt-5.5"},
+    "verdict":"go",
+    "session":{"session_id":"session-123","transcript_path":"linkdir/session.txt"},
+    "timestamp":%q
+  }],
+  "decision":{},
+  "timestamp":%q
+}`, now, now)
+	gateFile := filepath.Join(repo, "gate-session-intermediate-symlink.json")
+	if err := os.WriteFile(gateFile, []byte(gateContent), 0o644); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+
+	_, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile)
+	if err == nil {
+		t.Fatal("capture-gate accepted an intermediate symlink session transcript; want rejection")
+	}
+	if combined := err.Error() + " " + stderr; !strings.Contains(combined, "read transcript") || !strings.Contains(combined, "symlink") {
+		t.Fatalf("error = %q, want read transcript symlink context", combined)
+	}
+	m := readRunManifest(t, repo, "run-1")
+	if len(m.Gates) != 0 {
+		t.Fatalf("gates count = %d, want 0 after rejected capture-gate", len(m.Gates))
 	}
 }
 

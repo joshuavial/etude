@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,11 +38,15 @@ func envelopeJSON(verdict string, required []string) []byte {
 }
 
 func sessionEnvelopeJSON(verdict string) []byte {
+	return sessionEnvelopeJSONWithPath(verdict, "transcript.txt")
+}
+
+func sessionEnvelopeJSONWithPath(verdict, transcriptPath string) []byte {
 	env := seatEnvelope{
 		Verdict: verdict,
 		Session: &seatSessionEnvelope{
 			SessionID:      "session-123",
-			TranscriptPath: "transcript.txt",
+			TranscriptPath: transcriptPath,
 		},
 	}
 	b, _ := json.Marshal(env)
@@ -50,11 +55,20 @@ func sessionEnvelopeJSON(verdict string) []byte {
 
 type transcriptSeatRunner struct {
 	envelope   []byte
+	path       string
 	transcript []byte
 }
 
 func (r transcriptSeatRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
-	if err := os.WriteFile(req.ScratchDir+"/transcript.txt", r.transcript, 0o644); err != nil {
+	path := r.path
+	if path == "" {
+		path = "transcript.txt"
+	}
+	outputPath := filepath.Join(req.ScratchDir, path)
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return replay.RunResult{}, err
+	}
+	if err := os.WriteFile(outputPath, r.transcript, 0o644); err != nil {
 		return replay.RunResult{}, err
 	}
 	res := replay.RunResult{
@@ -334,7 +348,8 @@ func TestGateAgenticSeatStoresTranscriptEvidence(t *testing.T) {
 		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain; charset=utf-8"}),
 		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
 			runner := transcriptSeatRunner{
-				envelope:   sessionEnvelopeJSON("go"),
+				envelope:   sessionEnvelopeJSONWithPath("go", "transcript.md"),
+				path:       "transcript.md",
 				transcript: []byte("full transcript without secrets"),
 			}
 			meta := SeatMeta{
@@ -377,6 +392,9 @@ func TestGateAgenticSeatStoresTranscriptEvidence(t *testing.T) {
 	}
 	if seat.Session.TranscriptArtifact == nil {
 		t.Fatal("transcript artifact missing")
+	}
+	if seat.Session.TranscriptArtifact.MediaType != "text/markdown; charset=utf-8" {
+		t.Fatalf("transcript media type = %q, want text/markdown; charset=utf-8", seat.Session.TranscriptArtifact.MediaType)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactmedia"
 	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -378,7 +379,7 @@ func addFileArtifactFromPath(store *artifactstore.Store, role, absPath string) (
 	if err != nil {
 		return runmanifest.ArtifactRef{}, fmt.Errorf("read %s: %w", absPath, err)
 	}
-	artifact, err := store.AddContent(role, inferMediaType(absPath), content)
+	artifact, err := store.AddContent(role, artifactmedia.Infer(absPath), content)
 	if err != nil {
 		return runmanifest.ArtifactRef{}, err
 	}
