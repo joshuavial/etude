@@ -17,6 +17,7 @@ import (
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/sessionevidence"
 	"github.com/joshuavial/etude/internal/workflow"
 )
 
@@ -35,9 +36,10 @@ func (e *GateEscalationError) Error() string {
 // SeatMeta holds the harness and provider metadata for a named registry seat.
 // ProviderName and Model are pre-split from the registry Seat.Provider field.
 type SeatMeta struct {
-	HarnessName  string // e.g. "claude-code"
-	ProviderName string // e.g. "anthropic" (before "/" in seat.Provider)
-	Model        string // e.g. "claude-opus" (after "/" in seat.Provider)
+	HarnessName            string // e.g. "claude-code"
+	ProviderName           string // e.g. "anthropic" (before "/" in seat.Provider)
+	Model                  string // e.g. "claude-opus" (after "/" in seat.Provider)
+	RequireSessionEvidence bool
 }
 
 // CheckRunner executes a deterministic gate check. Unlike replay.Runner, the
@@ -50,9 +52,16 @@ type CheckRunner interface {
 // seatEnvelope is the JSON structure written to ETUDE_OUTPUT_FILE by a model
 // seat runner.
 type seatEnvelope struct {
-	Verdict  string   `json:"verdict"`
-	Required []string `json:"required,omitempty"`
-	Optional []string `json:"optional,omitempty"`
+	Verdict  string               `json:"verdict"`
+	Required []string             `json:"required,omitempty"`
+	Optional []string             `json:"optional,omitempty"`
+	Session  *seatSessionEnvelope `json:"session,omitempty"`
+}
+
+type seatSessionEnvelope struct {
+	SessionID      string `json:"session_id,omitempty"`
+	TranscriptURI  string `json:"transcript_uri,omitempty"`
+	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
 // execCheckRunner implements CheckRunner using an external command. It
@@ -329,6 +338,66 @@ func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artif
 	return &art
 }
 
+func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, worktreeDir string, env *seatEnvelope, required bool) (*runmanifest.SessionEvidence, string) {
+	if env == nil || env.Session == nil {
+		if required {
+			return nil, "agentic seat did not provide session evidence"
+		}
+		return nil, ""
+	}
+
+	session := env.Session
+	evidence := &runmanifest.SessionEvidence{
+		SessionID:       session.SessionID,
+		TranscriptURI:   session.TranscriptURI,
+		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+	}
+	if strings.TrimSpace(session.SessionID) == "" && strings.TrimSpace(session.TranscriptURI) == "" {
+		return nil, "seat session evidence requires session_id or transcript_uri"
+	}
+	if strings.TrimSpace(session.TranscriptPath) == "" {
+		if required {
+			return nil, "agentic seat session evidence requires transcript_path"
+		}
+		return evidence, ""
+	}
+
+	transcriptPath := resolveTranscriptPath(session.TranscriptPath, seatScratch, worktreeDir)
+	content, err := sessionevidence.ReadRegularFile(transcriptPath)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
+		return evidence, fmt.Sprintf("read transcript %s: %v", session.TranscriptPath, err)
+	}
+	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
+	if err := sessionevidence.ScanForSecrets(content); err != nil {
+		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Sprintf("transcript redaction scan failed: %v", err)
+	}
+	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
+
+	artifact, err := as.AddContent(seatName+"-transcript", "text/plain; charset=utf-8", content)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Sprintf("store transcript artifact: %v", err)
+	}
+	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+	evidence.TranscriptArtifact = &ref
+	return evidence, ""
+}
+
+func resolveTranscriptPath(pathValue, seatScratch, worktreeDir string) string {
+	if filepath.IsAbs(pathValue) {
+		return pathValue
+	}
+	scratchPath := filepath.Join(seatScratch, pathValue)
+	if _, err := os.Lstat(scratchPath); err == nil {
+		return scratchPath
+	}
+	return filepath.Join(worktreeDir, pathValue)
+}
+
 // classifySeatOutput maps a runner result + error to a seat verdict and, on
 // success, parses the JSON envelope. Implements the D3/D4 mapping:
 //
@@ -504,6 +573,13 @@ func (e *Engine) runGateSeats(
 		if env != nil {
 			sr.Required = env.Required
 			sr.Optional = env.Optional
+			session, sessionFailure := storeSeatSessionEvidence(as, seatName, seatScratch, worktreeDir, env, meta.RequireSessionEvidence)
+			sr.Session = session
+			if sessionFailure != "" {
+				sr.Verdict = runmanifest.SeatVerdictMalfunction
+				sr.FailureNote = sessionFailure
+				verdict = sr.Verdict
+			}
 		}
 		if verdict == runmanifest.SeatVerdictBlock && env != nil {
 			blockRequired[seatName] = env.Required

@@ -1590,6 +1590,7 @@ func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
 
 	stageOutput := contentArtifact("output", "text/plain", []byte("stage content"))
 	rawTranscript := contentArtifact("codex-transcript", "text/markdown", []byte("codex review"))
+	sessionTranscript := contentArtifact("codex-session-transcript", "text/plain", []byte("full codex transcript"))
 
 	m := validManifest(stageOutput)
 	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
@@ -1606,34 +1607,48 @@ func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
 			Provider:  Provider{Name: "openai", Model: "gpt-5.5"},
 			Verdict:   SeatVerdictGo,
 			RawOutput: &rawTranscript,
+			Session: &SessionEvidence{
+				SessionID:          "codex-session-123",
+				TranscriptArtifact: &sessionTranscript,
+				RetrievalStatus:    SessionEvidenceRetrievalImported,
+				RedactionStatus:    SessionEvidenceRedactionPassed,
+			},
 			Timestamp: now,
 		}},
 		Timestamp: now,
 	}}
 
-	// ArtifactPaths must include both the stage output and the raw transcript.
+	// ArtifactPaths must include stage output, raw output, and transcript evidence.
 	paths := ArtifactPaths(m)
-	wantPaths := []string{rawTranscript.Path, stageOutput.Path}
+	wantPaths := []string{rawTranscript.Path, sessionTranscript.Path, stageOutput.Path}
 	// Sort both for stable comparison.
-	if len(paths) != 2 {
-		t.Fatalf("ArtifactPaths count = %d, want 2; paths = %v", len(paths), paths)
+	if len(paths) != 3 {
+		t.Fatalf("ArtifactPaths count = %d, want 3; paths = %v", len(paths), paths)
 	}
 	foundTranscript := false
+	foundSessionTranscript := false
 	for _, p := range paths {
 		if p == rawTranscript.Path {
 			foundTranscript = true
 		}
+		if p == sessionTranscript.Path {
+			foundSessionTranscript = true
+		}
 	}
 	if !foundTranscript {
 		t.Fatalf("ArtifactPaths did not include raw_output path %q; got %v", rawTranscript.Path, paths)
+	}
+	if !foundSessionTranscript {
+		t.Fatalf("ArtifactPaths did not include session transcript path %q; got %v", sessionTranscript.Path, paths)
 	}
 	_ = wantPaths
 
 	// Write to the git ref — Writer.Write uses referencedArtifactPaths to allow
 	// files, so if it doesn't walk gates the write will fail with ErrUnreferencedArtifact.
 	files := map[string][]byte{
-		stageOutput.Path:   []byte("stage content"),
-		rawTranscript.Path: []byte("codex review"),
+		stageOutput.Path:       []byte("stage content"),
+		rawTranscript.Path:     []byte("codex review"),
+		sessionTranscript.Path: []byte("full codex transcript"),
 	}
 	if _, err := (Writer{Store: refstore.New(repo)}).Write(ctx, m, files, WriteOptions{}); err != nil {
 		t.Fatalf("Write with gate raw_output returned error: %v", err)
@@ -1655,21 +1670,29 @@ func TestArtifactPathsWalksGateRawOutput(t *testing.T) {
 	}
 	paths2 := ArtifactPaths(parsed)
 	foundTranscript2 := false
+	foundSessionTranscript2 := false
 	for _, p := range paths2 {
 		if p == rawTranscript.Path {
 			foundTranscript2 = true
+		}
+		if p == sessionTranscript.Path {
+			foundSessionTranscript2 = true
 		}
 	}
 	if !foundTranscript2 {
 		t.Fatalf("ArtifactPaths after round-trip did not include raw_output path %q; got %v", rawTranscript.Path, paths2)
 	}
+	if !foundSessionTranscript2 {
+		t.Fatalf("ArtifactPaths after round-trip did not include session transcript path %q; got %v", sessionTranscript.Path, paths2)
+	}
 
 	// An extra unreferenced blob still trips ErrUnreferencedArtifact.
 	extraBlob := contentArtifact("extra", "text/plain", []byte("extra blob"))
 	files2 := map[string][]byte{
-		stageOutput.Path:   []byte("stage content"),
-		rawTranscript.Path: []byte("codex review"),
-		extraBlob.Path:     []byte("extra blob"),
+		stageOutput.Path:       []byte("stage content"),
+		rawTranscript.Path:     []byte("codex review"),
+		sessionTranscript.Path: []byte("full codex transcript"),
+		extraBlob.Path:         []byte("extra blob"),
 	}
 	_, err = (Writer{Store: refstore.New(repo)}).Write(ctx, m, files2, WriteOptions{})
 	if !errors.Is(err, ErrUnreferencedArtifact) {

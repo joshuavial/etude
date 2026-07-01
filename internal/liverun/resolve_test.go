@@ -128,6 +128,37 @@ func TestResolveGateSeatPropagatesEnvAllowlist(t *testing.T) {
 	}
 }
 
+func TestResolveGateSeatSessionEvidenceRequirement(t *testing.T) {
+	reg := registry.Registry{
+		Seats: map[string]registry.Seat{
+			"agentic":       {Provider: "openai/gpt-5.5", Harness: "codex", Invoke: "cat"},
+			"deterministic": {Provider: "deterministic/approver", Harness: "codex", Invoke: "cat"},
+			"shell":         {Provider: "openai/gpt-5.5", Harness: "shell", Invoke: "cat"},
+			"empty":         {Provider: "empty/model", Harness: "", Invoke: "cat"},
+		},
+	}
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"agentic", true},
+		{"deterministic", false},
+		{"shell", false},
+		{"empty", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, meta, err := ResolveGateSeat(reg, tt.name, 10*time.Second, nil)
+			if err != nil {
+				t.Fatalf("ResolveGateSeat: %v", err)
+			}
+			if meta.RequireSessionEvidence != tt.want {
+				t.Fatalf("RequireSessionEvidence = %v, want %v", meta.RequireSessionEvidence, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveCheckRunnerIsHermetic verifies that ResolveCheckRunner returns an
 // execCheckRunner, which has no allowlist and never propagates parent env vars.
 func TestResolveCheckRunnerIsHermetic(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/sessionevidence"
 	"github.com/spf13/cobra"
 )
 
@@ -352,6 +353,7 @@ type seatInputJSON struct {
 	Required    []string            `json:"required"`
 	Optional    []string            `json:"optional"`
 	RawOutput   *rawOutputInputJSON `json:"raw_output"`
+	Session     *sessionInputJSON   `json:"session"`
 	FailureNote string              `json:"failure_note"`
 	Timestamp   string              `json:"timestamp"`
 }
@@ -378,6 +380,12 @@ type rawOutputInputJSON struct {
 	Role      string `json:"role"`
 	Path      string `json:"path"`
 	MediaType string `json:"media_type"`
+}
+
+type sessionInputJSON struct {
+	SessionID      string `json:"session_id"`
+	TranscriptURI  string `json:"transcript_uri"`
+	TranscriptPath string `json:"transcript_path"`
 }
 
 type gateDecisionInputJSON struct {
@@ -563,6 +571,11 @@ func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.S
 		rawOutput = &ref
 	}
 
+	session, err := buildSessionEvidence(store, s.Seat, s.Session)
+	if err != nil {
+		return runmanifest.SeatResult{}, err
+	}
+
 	return runmanifest.SeatResult{
 		Seat: s.Seat,
 		Harness: runmanifest.Harness{
@@ -578,9 +591,44 @@ func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.S
 		Required:    s.Required,
 		Optional:    s.Optional,
 		RawOutput:   rawOutput,
+		Session:     session,
 		FailureNote: s.FailureNote,
 		Timestamp:   ts,
 	}, nil
+}
+
+func buildSessionEvidence(store *artifactstore.Store, seat string, input *sessionInputJSON) (*runmanifest.SessionEvidence, error) {
+	if input == nil {
+		return nil, nil
+	}
+	evidence := &runmanifest.SessionEvidence{
+		SessionID:       input.SessionID,
+		TranscriptURI:   input.TranscriptURI,
+		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+	}
+	if strings.TrimSpace(input.TranscriptPath) == "" {
+		return evidence, nil
+	}
+	content, err := sessionevidence.ReadRegularFile(input.TranscriptPath)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("read transcript %s: %w", input.TranscriptPath, err)
+	}
+	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
+	if err := sessionevidence.ScanForSecrets(content); err != nil {
+		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("redaction scan transcript %s: %w", input.TranscriptPath, err)
+	}
+	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
+	artifact, err := store.AddContent(seat+"-transcript", inferMediaType(input.TranscriptPath), content)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence, fmt.Errorf("add transcript artifact: %w", err)
+	}
+	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+	evidence.TranscriptArtifact = &ref
+	return evidence, nil
 }
 
 // parseManifestTime parses an RFC3339Nano timestamp string used in gate input DTOs.

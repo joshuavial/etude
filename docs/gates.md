@@ -46,6 +46,11 @@ The gate file is a single JSON object. Field names mirror the stored record:
       "optional": [],          // optional improvements (meaningful on go)
       "failure_note": "",      // required for failed/empty/malfunction/disregarded; forbidden on go/block
       "raw_output": null,      // optional {role,path,media_type}; path is a local transcript file hashed in
+      "session": {             // optional durable agentic session/transcript evidence
+        "session_id": "019f...",
+        "transcript_uri": "",
+        "transcript_path": "codex-transcript.txt" // local regular file, imported and scanned
+      },
       "timestamp": "2026-05-26T02:01:00Z"
     }
   ],
@@ -67,12 +72,46 @@ rather than silently dropped, as is any trailing content after the gate object.
 Invalid input is rejected without changing the run. A run that carries
 any gates is written as `manifest_version` 3; gate-less runs are unchanged.
 
+The capture input above uses `session.transcript_path` because it points at a
+local file to import. Stored manifests replace that input-only path with:
+
+```jsonc
+"session": {
+  "session_id": "019f...",
+  "transcript_uri": "",
+  "transcript_artifact": {
+    "role": "codex-transcript",
+    "artifact": "<sha256>",
+    "path": "artifacts/sha256/ab/abcdef...",
+    "media_type": "text/plain; charset=utf-8",
+    "storage": "content",
+    "size": 123
+  },
+  "retrieval_status": "imported",
+  "redaction_status": "passed"
+}
+```
+
 A seat's `raw_output.path` must point at a **regular file**: it is opened
 without following symlinks (on Unix, atomically via `O_NOFOLLOW`), so a symlink
 or other non-regular file at that path is rejected rather than read through.
 This prevents a machine-generated gate file from causing `etude` to capture a
 file outside the intended transcript (e.g. via a symlink to a sensitive path).
 Absolute and working-directory-relative paths to regular files are unaffected.
+
+Live agentic seats may also return a `session` object in their JSON envelope.
+When a registry-resolved seat is agentic (non-`deterministic` provider and
+non-`shell` harness), live execution requires a session locator
+(`session_id` or `transcript_uri`) plus a local `transcript_path` that can be
+imported into the run. Missing evidence, an unreadable/non-regular transcript,
+or a transcript that fails Etude's redaction scan records the seat as
+`malfunction`, so the gate fails closed.
+
+Etude's redaction scan is a marker-based guardrail for common private-key,
+GitHub-token, and key/value secret shapes. It is not a complete semantic
+redactor; seat wrappers should redact known sensitive content before writing
+transcripts, and Etude's scan catches common misses before transcript bytes are
+stored as run evidence.
 
 ### Reviewer seat fields
 
@@ -85,9 +124,15 @@ Each seat records its identity on three axes plus its verdict:
   `gemini-cli`, `claude-code`.
 - **skill** — an optional reviewer skill/tool identity (omitted when the seat is
   a raw model invocation).
+- **session** — optional durable evidence for agentic seats. `session_id` or
+  `transcript_uri` names the retrievable tool session. For capture input and
+  live seat envelopes, `transcript_path` points at a local transcript file to
+  import. In the stored manifest, `transcript_artifact` points at the
+  content-addressed transcript stored with the run; retrieval and redaction
+  statuses record whether that evidence was imported and scanned.
 
 `provider` (name + model) and `harness.name` are always recorded; `skill` and
-the feedback/raw-output fields are recorded only when present.
+the feedback/raw-output/session fields are recorded only when present.
 
 Verdicts: `go` (passed) and `block` (changes required) are the normal outcomes;
 `failed` (invocation error — auth/quota/tool/timeout), `empty` (ran but produced
@@ -120,6 +165,10 @@ gate: plan.r2
     provider: openai / gpt-5.5
     harness:  codex gpt-5.5-xhigh
     verdict:  go
+    session_id: 019f...
+    retrieval: imported
+    redaction: passed
+    transcript_artifact: artifacts/sha256/ab/abcdef...
   seat: pilms
     provider: lmstudio / qwen/qwen3.6-35b-a3b
     harness:  pi x

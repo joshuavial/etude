@@ -396,5 +396,18 @@ func printGate(out io.Writer, g runmanifest.GateAttempt) {
 		if s.RawOutput != nil {
 			fmt.Fprintf(out, "    raw_output: %s\n", s.RawOutput.Path)
 		}
+		if s.Session != nil {
+			if s.Session.SessionID != "" {
+				fmt.Fprintf(out, "    session_id: %s\n", s.Session.SessionID)
+			}
+			if s.Session.TranscriptURI != "" {
+				fmt.Fprintf(out, "    transcript_uri: %s\n", s.Session.TranscriptURI)
+			}
+			fmt.Fprintf(out, "    retrieval: %s\n", s.Session.RetrievalStatus)
+			fmt.Fprintf(out, "    redaction: %s\n", s.Session.RedactionStatus)
+			if s.Session.TranscriptArtifact != nil {
+				fmt.Fprintf(out, "    transcript_artifact: %s\n", s.Session.TranscriptArtifact.Path)
+			}
+		}
 	}
 }
