@@ -9,10 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactmedia"
 	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -255,7 +255,7 @@ func addFileArtifact(store *artifactstore.Store, spec string) (runmanifest.Artif
 	if err != nil {
 		return runmanifest.ArtifactRef{}, fmt.Errorf("read %s: %w", filePath, err)
 	}
-	artifact, err := store.AddContent(role, inferMediaType(filePath), content)
+	artifact, err := store.AddContent(role, artifactmedia.Infer(filePath), content)
 	if err != nil {
 		return runmanifest.ArtifactRef{}, err
 	}
@@ -557,9 +557,9 @@ func buildSeatResult(store *artifactstore.Store, s seatInputJSON) (runmanifest.S
 		}
 		mediaType := s.RawOutput.MediaType
 		if mediaType == "" {
-			mediaType = inferMediaType(s.RawOutput.Path)
+			mediaType = artifactmedia.Infer(s.RawOutput.Path)
 		}
-		content, err := readRegularFile(s.RawOutput.Path)
+		content, err := sessionevidence.ReadRegularFile(s.RawOutput.Path)
 		if err != nil {
 			return runmanifest.SeatResult{}, fmt.Errorf("read raw_output %s: %w", s.RawOutput.Path, err)
 		}
@@ -621,7 +621,7 @@ func buildSessionEvidence(store *artifactstore.Store, seat string, input *sessio
 		return evidence, fmt.Errorf("redaction scan transcript %s: %w", input.TranscriptPath, err)
 	}
 	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
-	artifact, err := store.AddContent(seat+"-transcript", inferMediaType(input.TranscriptPath), content)
+	artifact, err := store.AddContent(seat+"-transcript", artifactmedia.Infer(input.TranscriptPath), content)
 	if err != nil {
 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
 		return evidence, fmt.Errorf("add transcript artifact: %w", err)
@@ -641,51 +641,4 @@ func parseManifestTime(field, value string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid %s %q: %w", field, value, err)
 	}
 	return t.UTC(), nil
-}
-
-func inferMediaType(filePath string) string {
-	switch strings.ToLower(filepath.Ext(filePath)) {
-	case ".txt":
-		return "text/plain; charset=utf-8"
-	case ".md", ".markdown":
-		return "text/markdown; charset=utf-8"
-	case ".json":
-		return "application/json"
-	case ".yaml", ".yml":
-		return "application/yaml"
-	case ".diff", ".patch":
-		return "text/x-diff; charset=utf-8"
-	case ".html", ".htm":
-		return "text/html; charset=utf-8"
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".svg":
-		return "image/svg+xml"
-	default:
-		return "application/octet-stream"
-	}
-}
-
-// readRegularFile opens path with O_NOFOLLOW so a final-component symlink fails
-// atomically with ELOOP rather than being silently followed. It additionally
-// rejects non-regular files (devices, FIFOs, directories). Use this wherever
-// machine-fed or CI-emitted paths are read to prevent symlink-follow exfiltration.
-func readRegularFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return io.ReadAll(f)
 }

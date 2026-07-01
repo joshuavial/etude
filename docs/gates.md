@@ -92,12 +92,18 @@ local file to import. Stored manifests replace that input-only path with:
 }
 ```
 
-A seat's `raw_output.path` must point at a **regular file**: it is opened
-without following symlinks (on Unix, atomically via `O_NOFOLLOW`), so a symlink
-or other non-regular file at that path is rejected rather than read through.
-This prevents a machine-generated gate file from causing `etude` to capture a
-file outside the intended transcript (e.g. via a symlink to a sensitive path).
-Absolute and working-directory-relative paths to regular files are unaffected.
+A seat's `raw_output.path` and `session.transcript_path` must point at a
+**regular file**. For paths relative to the current working directory, and for
+live-run transcript paths resolved under a run-owned scratch/worktree root,
+Etude rejects symlink path components before reading the file. On Unix, it also
+opens the final component with `O_NOFOLLOW` so a final-component symlink fails
+atomically. Absolute offline `capture-gate` paths outside the current working
+directory retain the final-component check but do not get full parent-component
+inspection. These checks prevent a machine-generated gate file from causing
+`etude` to capture a file outside the intended transcript in the normal
+run-owned path cases. The parent-chain checks are a hardening guard, not a
+race-free `openat`-style containment walk; callers should still treat transcript
+directories as trusted run scratch space.
 
 Live agentic seats may also return a `session` object in their JSON envelope.
 When a registry-resolved seat is agentic (non-`deterministic` provider and
@@ -106,6 +112,12 @@ non-`shell` harness), live execution requires a session locator
 imported into the run. Missing evidence, an unreadable/non-regular transcript,
 or a transcript that fails Etude's redaction scan records the seat as
 `malfunction`, so the gate fails closed.
+
+`capture-gate` validates and imports session evidence supplied in offline gate
+JSON, but it does not infer whether a seat was registry-agentic by itself; the
+offline JSON format does not carry resolved registry seat metadata. Required
+agentic-session enforcement therefore belongs to live gate execution unless a
+future gate-input schema explicitly supplies that resolved seat context.
 
 Etude's redaction scan is a marker-based guardrail for common private-key,
 GitHub-token, and key/value secret shapes. It is not a complete semantic

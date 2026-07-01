@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactmedia"
 	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
@@ -363,8 +364,8 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
 		return evidence, ""
 	}
 
-	transcriptPath := resolveTranscriptPath(session.TranscriptPath, seatScratch, worktreeDir)
-	content, err := sessionevidence.ReadRegularFile(transcriptPath)
+	transcriptPath, transcriptRoot := resolveTranscriptPath(session.TranscriptPath, seatScratch, worktreeDir)
+	content, err := sessionevidence.ReadRegularFileUnder(transcriptRoot, transcriptPath)
 	if err != nil {
 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
 		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
@@ -377,7 +378,7 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
 	}
 	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
 
-	artifact, err := as.AddContent(seatName+"-transcript", "text/plain; charset=utf-8", content)
+	artifact, err := as.AddContent(seatName+"-transcript", artifactmedia.Infer(transcriptPath), content)
 	if err != nil {
 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
 		return evidence, fmt.Sprintf("store transcript artifact: %v", err)
@@ -387,15 +388,18 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
 	return evidence, ""
 }
 
-func resolveTranscriptPath(pathValue, seatScratch, worktreeDir string) string {
+func resolveTranscriptPath(pathValue, seatScratch, worktreeDir string) (string, string) {
 	if filepath.IsAbs(pathValue) {
-		return pathValue
+		if rel, err := filepath.Rel(seatScratch, pathValue); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+			return pathValue, seatScratch
+		}
+		return pathValue, worktreeDir
 	}
 	scratchPath := filepath.Join(seatScratch, pathValue)
 	if _, err := os.Lstat(scratchPath); err == nil {
-		return scratchPath
+		return scratchPath, seatScratch
 	}
-	return filepath.Join(worktreeDir, pathValue)
+	return filepath.Join(worktreeDir, pathValue), worktreeDir
 }
 
 // classifySeatOutput maps a runner result + error to a seat verdict and, on
