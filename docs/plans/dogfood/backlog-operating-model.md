@@ -48,6 +48,18 @@ reduce risk in the next bead:
 Epics are structure and progress markers. Do not pick an epic as the next bead
 unless the task is explicitly to rescope, split, close, or revise the epic.
 
+**Premise-check before decomposing an epic — re-read HEAD, don't scope from cached
+grounding.** Before filing an epic and its child beads, ground every structural fact
+against the CURRENT tree, even facts you read earlier in the same session: run
+`git log --oneline -20` for recent landings and grep the codebase for the epic's core
+nouns (the feature name, the key type/field/command it adds). If a matching
+implementation already exists, the epic is a hypothesis to re-scope — not net-new
+work — and that must be caught at scoping time, not only at the plan/design gate.
+In a long session the repo changes under you (your own commits and externally-landed
+ones), so earlier grounding goes stale; a snapshot-based decomposition wastes a whole
+epic. (Observed: a 6-child epic filed from a pre-landing read of an already-shipped
+feature; the design gate caught it, but only after the decomposition was spent.)
+
 ## Next-Bead Selection
 
 When the user says "next", use this order:
