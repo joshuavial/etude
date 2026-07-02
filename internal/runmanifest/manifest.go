@@ -191,6 +191,9 @@ type Producer struct {
 	Harness Harness
 	Model   string
 	Skill   Skill
+	// Session, when non-nil, carries durable transcript/session evidence for
+	// agentic stage producers. Absent for deterministic and shell stages.
+	Session *SessionEvidence
 }
 
 type ArtifactRef struct {
@@ -319,6 +322,17 @@ func ParseJSON(content []byte) (Manifest, error) {
 	return manifest, nil
 }
 
+// sessionEvidencePath returns the TranscriptArtifact path from e, or "" when
+// e is nil or has no artifact. Using this helper ensures all three artifact
+// walkers (ArtifactPaths, WriteManifestTree verify loop, referencedArtifactPaths)
+// share one place to collect per-carrier evidence paths.
+func sessionEvidencePath(e *SessionEvidence) string {
+	if e != nil && e.TranscriptArtifact != nil {
+		return e.TranscriptArtifact.Path
+	}
+	return ""
+}
+
 func ArtifactPaths(manifest Manifest) []string {
 	seen := make(map[string]struct{})
 	for _, stage := range manifest.Stages {
@@ -332,9 +346,14 @@ func ArtifactPaths(manifest Manifest) []string {
 			if seat.RawOutput != nil {
 				seen[seat.RawOutput.Path] = struct{}{}
 			}
-			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
-				seen[seat.Session.TranscriptArtifact.Path] = struct{}{}
+			if p := sessionEvidencePath(seat.Session); p != "" {
+				seen[p] = struct{}{}
 			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
+			seen[p] = struct{}{}
 		}
 	}
 	paths := make([]string, 0, len(seen))
@@ -393,6 +412,13 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
 				if err := verifyArtifactFile(*seat.Session.TranscriptArtifact, files, hashes); err != nil {
 					return "", err
 				}
+			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if stage.Producer.Session != nil && stage.Producer.Session.TranscriptArtifact != nil {
+			if err := verifyArtifactFile(*stage.Producer.Session.TranscriptArtifact, files, hashes); err != nil {
+				return "", err
 			}
 		}
 	}
@@ -462,6 +488,11 @@ func validateStage(index int, stage Stage) error {
 	}
 	if err := validateArtifactRef(stage.Output); err != nil {
 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
+	}
+	if stage.Producer.Session != nil {
+		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -749,9 +780,14 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 			if seat.RawOutput != nil {
 				paths[seat.RawOutput.Path] = struct{}{}
 			}
-			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
-				paths[seat.Session.TranscriptArtifact.Path] = struct{}{}
+			if p := sessionEvidencePath(seat.Session); p != "" {
+				paths[p] = struct{}{}
 			}
+		}
+	}
+	for _, stage := range manifest.Stages {
+		if p := sessionEvidencePath(stage.Producer.Session); p != "" {
+			paths[p] = struct{}{}
 		}
 	}
 	return paths
@@ -991,6 +1027,7 @@ type producerJSON struct {
 	Harness *harnessJSON `json:"harness,omitempty"`
 	Model   string       `json:"model,omitempty"`
 	Skill   *skillJSON   `json:"skill,omitempty"`
+	Session *sessionJSON `json:"session,omitempty"`
 }
 
 type artifactJSON struct {
@@ -1040,6 +1077,9 @@ func (m Manifest) toJSON() manifestJSON {
 				Repo:    skillForProducer.Repo,
 				Version: skillForProducer.Version,
 			},
+		}
+		if stage.Producer.Session != nil {
+			producerBlock.Session = stage.Producer.Session.toJSON()
 		}
 
 		var replayOfBlock *replayOfJSON
@@ -1381,10 +1421,15 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 				Version: s.Producer.Harness.Version,
 			}
 		}
+		var producerSession *SessionEvidence
+		if s.Producer.Session != nil {
+			producerSession = s.Producer.Session.toSessionEvidence()
+		}
 		producer = Producer{
 			Harness: harness,
 			Model:   s.Producer.Model,
 			Skill:   skill,
+			Session: producerSession,
 		}
 	} else if s.Skill != nil {
 		// Legacy manifest: top-level skill block only, no producer.

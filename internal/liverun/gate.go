@@ -339,37 +339,42 @@ func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artif
 	return &art
 }
 
-func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, worktreeDir string, env *seatEnvelope, required bool) (*runmanifest.SessionEvidence, string) {
-	if env == nil || env.Session == nil {
-		if required {
-			return nil, "agentic seat did not provide session evidence"
-		}
-		return nil, ""
-	}
+// sessionInfoFields holds the minimal session identity needed by buildSessionEvidence.
+// Callers (seat envelope, runner result) fill this from their respective structs.
+type sessionInfoFields struct {
+	SessionID      string
+	TranscriptURI  string
+	TranscriptPath string
+}
 
-	session := env.Session
+// buildSessionEvidence is the shared core for building SessionEvidence from a
+// session info triple. artifactRole is used as the artifact content role
+// (e.g. "seatName-transcript" or "stageName-transcript"). scratchDir and
+// worktreeDir are used by resolveTranscriptPath when the transcript path is
+// relative. required controls whether a missing transcript path is fatal.
+func buildSessionEvidence(as *artifactstore.Store, artifactRole, scratchDir, worktreeDir string, sess sessionInfoFields, required bool) (*runmanifest.SessionEvidence, string) {
 	evidence := &runmanifest.SessionEvidence{
-		SessionID:       session.SessionID,
-		TranscriptURI:   session.TranscriptURI,
+		SessionID:       sess.SessionID,
+		TranscriptURI:   sess.TranscriptURI,
 		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
 		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
 	}
-	if strings.TrimSpace(session.SessionID) == "" && strings.TrimSpace(session.TranscriptURI) == "" {
-		return nil, "seat session evidence requires session_id or transcript_uri"
+	if strings.TrimSpace(sess.SessionID) == "" && strings.TrimSpace(sess.TranscriptURI) == "" {
+		return nil, "session evidence requires session_id or transcript_uri"
 	}
-	if strings.TrimSpace(session.TranscriptPath) == "" {
+	if strings.TrimSpace(sess.TranscriptPath) == "" {
 		if required {
-			return nil, "agentic seat session evidence requires transcript_path"
+			return nil, "session evidence requires transcript_path"
 		}
 		return evidence, ""
 	}
 
-	transcriptPath, transcriptRoot := resolveTranscriptPath(session.TranscriptPath, seatScratch, worktreeDir)
+	transcriptPath, transcriptRoot := resolveTranscriptPath(sess.TranscriptPath, scratchDir, worktreeDir)
 	content, err := sessionevidence.ReadRegularFileUnder(transcriptRoot, transcriptPath)
 	if err != nil {
 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
 		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
-		return evidence, fmt.Sprintf("read transcript %s: %v", session.TranscriptPath, err)
+		return evidence, fmt.Sprintf("read transcript %s: %v", sess.TranscriptPath, err)
 	}
 	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
 	if err := sessionevidence.ScanForSecrets(content); err != nil {
@@ -378,7 +383,7 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
 	}
 	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
 
-	artifact, err := as.AddContent(seatName+"-transcript", artifactmedia.Infer(transcriptPath), content)
+	artifact, err := as.AddContent(artifactRole, artifactmedia.Infer(transcriptPath), content)
 	if err != nil {
 		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
 		return evidence, fmt.Sprintf("store transcript artifact: %v", err)
@@ -386,6 +391,24 @@ func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, wo
 	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
 	evidence.TranscriptArtifact = &ref
 	return evidence, ""
+}
+
+func storeSeatSessionEvidence(as *artifactstore.Store, seatName, seatScratch, worktreeDir string, env *seatEnvelope, required bool) (*runmanifest.SessionEvidence, string) {
+	if env == nil || env.Session == nil {
+		if required {
+			return nil, "agentic seat did not provide session evidence"
+		}
+		return nil, ""
+	}
+	session := env.Session
+	if strings.TrimSpace(session.SessionID) == "" && strings.TrimSpace(session.TranscriptURI) == "" {
+		return nil, "seat session evidence requires session_id or transcript_uri"
+	}
+	return buildSessionEvidence(as, seatName+"-transcript", seatScratch, worktreeDir, sessionInfoFields{
+		SessionID:      session.SessionID,
+		TranscriptURI:  session.TranscriptURI,
+		TranscriptPath: session.TranscriptPath,
+	}, required)
 }
 
 func resolveTranscriptPath(pathValue, seatScratch, worktreeDir string) (string, string) {

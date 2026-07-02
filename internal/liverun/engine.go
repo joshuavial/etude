@@ -329,6 +329,14 @@ func (e *Engine) executeStages(
 	return nil
 }
 
+// isAgenticProducer reports whether a stage runner's result indicates an agentic
+// execution that should capture session evidence. Mirrors the harness-side check
+// from requiresSessionEvidence: non-empty and not "shell".
+func isAgenticProducer(harnessName string) bool {
+	h := strings.ToLower(strings.TrimSpace(harnessName))
+	return h != "" && h != "shell"
+}
+
 // runAndCaptureStage executes a single stage run: resolves the runner,
 // invokes it, stores the output artifact, appends the Stage record to
 // completedStages, and writes an incremental CAS manifest commit.
@@ -378,6 +386,24 @@ func (e *Engine) runAndCaptureStage(
 	})
 	if err != nil {
 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+	}
+
+	// Build producer session evidence when the runner returned session info
+	// and the stage is agentic (not deterministic/shell).
+	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
+		sess := sessionInfoFields{
+			SessionID:      res.Session.SessionID,
+			TranscriptURI:  res.Session.TranscriptURI,
+			TranscriptPath: res.Session.TranscriptPath,
+		}
+		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, worktreeDir, sess, false)
+		if evidence != nil {
+			producer.Session = evidence
+		}
+		if note != "" {
+			// Non-fatal: log the note but do not fail the stage.
+			fmt.Fprintf(os.Stderr, "stage %s: session evidence note: %s\n", stageName, note)
+		}
 	}
 
 	outputMediaType := res.MediaType

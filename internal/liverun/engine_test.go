@@ -446,3 +446,142 @@ func TestEngineAlreadyCompleteResumeErrors(t *testing.T) {
 		t.Errorf("expected 'already complete' error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Producer Session Evidence tests (etude-7ri.2)
+// ---------------------------------------------------------------------------
+
+// sessionStubRunner is a runner that writes a transcript file and returns a
+// RunResult with a Session field populated.
+type sessionStubRunner struct {
+	output          []byte
+	transcriptName  string
+	transcriptBytes []byte
+	sessionID       string
+	harnessName     string
+}
+
+func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	path := filepath.Join(req.ScratchDir, r.transcriptName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return replay.RunResult{}, err
+	}
+	if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
+		return replay.RunResult{}, err
+	}
+	return replay.RunResult{
+		Output:    r.output,
+		MediaType: "text/plain; charset=utf-8",
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: r.harnessName},
+			Skill:   req.Producer.Skill,
+		},
+		Session: &replay.SessionInfo{
+			SessionID:      r.sessionID,
+			TranscriptPath: r.transcriptName,
+		},
+	}, nil
+}
+
+func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+		},
+	}
+
+	stub := &sessionStubRunner{
+		output:          []byte("plan output"),
+		transcriptName:  "transcript.txt",
+		transcriptBytes: []byte("this is the transcript"),
+		sessionID:       "session-abc",
+		harnessName:     "claude-code",
+	}
+
+	runID := "mywf-20260101T000000Z-sesstest1"
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+		Root:          repo,
+		Now:           fixedClock(),
+	}
+
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    sha,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	m := readLiveManifest(t, repo, runID)
+	if len(m.Stages) != 1 {
+		t.Fatalf("stages = %d, want 1", len(m.Stages))
+	}
+	sess := m.Stages[0].Producer.Session
+	if sess == nil {
+		t.Fatal("expected non-nil producer.session for agentic stage")
+	}
+	if sess.SessionID != "session-abc" {
+		t.Errorf("session_id = %q, want session-abc", sess.SessionID)
+	}
+	if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+		t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
+	}
+	if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+		t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
+	}
+	if sess.TranscriptArtifact == nil {
+		t.Error("expected non-nil transcript_artifact")
+	}
+}
+
+func TestProducerSession_DeterministicStageNilSession(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+		},
+	}
+
+	// Stub with harnessName="shell" — should skip session evidence.
+	stub := &sessionStubRunner{
+		output:          []byte("plan output"),
+		transcriptName:  "transcript.txt",
+		transcriptBytes: []byte("transcript"),
+		sessionID:       "should-be-ignored",
+		harnessName:     "shell",
+	}
+
+	runID := "mywf-20260101T000000Z-sesstest2"
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+		Root:          repo,
+		Now:           fixedClock(),
+	}
+
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    sha,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	m := readLiveManifest(t, repo, runID)
+	if m.Stages[0].Producer.Session != nil {
+		t.Error("expected nil producer.session for shell/deterministic stage")
+	}
+}

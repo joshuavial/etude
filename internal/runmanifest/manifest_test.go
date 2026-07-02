@@ -1999,3 +1999,237 @@ func TestOccurredAtExistingManifestNoKey(t *testing.T) {
 		t.Fatalf("OccurredAt should be zero for legacy manifest, got %v", parsed.OccurredAt)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Producer Session Evidence tests (etude-7ri.2)
+// ---------------------------------------------------------------------------
+
+// makeBaseManifest returns a minimal valid manifest with one stage.
+func makeBaseManifest(t *testing.T) (Manifest, *artifactstore.Store) {
+	t.Helper()
+	as := artifactstore.New()
+	input, err := as.AddContent("task", "text/plain", []byte("task content"))
+	if err != nil {
+		t.Fatalf("AddContent task: %v", err)
+	}
+	output, err := as.AddContent("plan", "text/plain", []byte("plan content"))
+	if err != nil {
+		t.Fatalf("AddContent plan: %v", err)
+	}
+	m := Manifest{
+		RunID:           "mywf-20260101T000000Z-abcd1234",
+		Workflow:        "mywf",
+		WorkflowVersion: "mywf-v1",
+		Created:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Refs:            map[string]string{},
+		Stages: []Stage{{
+			Name:       "plan",
+			ProducedBy: "original",
+			GitSHA:     "abc123",
+			Skill:      Skill{ID: "dev-workflow", Repo: "r", Version: "v1"},
+			Producer:   Producer{Skill: Skill{ID: "dev-workflow", Repo: "r", Version: "v1"}},
+			Inputs:     []ArtifactRef{ArtifactFromManifestArtifact(input)},
+			Output:     ArtifactFromManifestArtifact(output),
+			Timestamp:  time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC),
+		}},
+	}
+	return m, as
+}
+
+func TestProducerSession_Absent(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	m2, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if m2.Stages[0].Producer.Session != nil {
+		t.Error("expected nil producer.session after round-trip")
+	}
+	_ = as
+}
+
+func TestProducerSession_PresentIDOnly(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-123",
+		RetrievalStatus: SessionEvidenceNotApplicable,
+		RedactionStatus: SessionEvidenceNotApplicable,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	m2, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	sess := m2.Stages[0].Producer.Session
+	if sess == nil {
+		t.Fatal("expected non-nil producer.session after round-trip")
+	}
+	if sess.SessionID != "sid-123" {
+		t.Errorf("session_id = %q, want sid-123", sess.SessionID)
+	}
+	if sess.TranscriptArtifact != nil {
+		t.Error("expected nil transcript_artifact")
+	}
+	_ = as
+}
+
+func TestProducerSession_WithTranscriptArtifact(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	transcript, err := as.AddContent("plan-transcript", "text/plain", []byte("transcript content"))
+	if err != nil {
+		t.Fatalf("AddContent transcript: %v", err)
+	}
+	ref := ArtifactFromManifestArtifact(transcript)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:          "sid-abc",
+		TranscriptArtifact: &ref,
+		RetrievalStatus:    SessionEvidenceRetrievalImported,
+		RedactionStatus:    SessionEvidenceRedactionPassed,
+	}
+
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	m2, err := ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	sess := m2.Stages[0].Producer.Session
+	if sess == nil {
+		t.Fatal("expected non-nil producer.session")
+	}
+	if sess.TranscriptArtifact == nil {
+		t.Fatal("expected non-nil transcript_artifact")
+	}
+	if sess.TranscriptArtifact.Path != ref.Path {
+		t.Errorf("path = %q, want %q", sess.TranscriptArtifact.Path, ref.Path)
+	}
+	if sess.RetrievalStatus != SessionEvidenceRetrievalImported {
+		t.Errorf("retrieval = %q, want imported", sess.RetrievalStatus)
+	}
+
+	// ArtifactPaths must include the transcript path (resume reseed).
+	paths := ArtifactPaths(m)
+	found := false
+	for _, p := range paths {
+		if p == ref.Path {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ArtifactPaths does not include producer transcript path %q; got %v", ref.Path, paths)
+	}
+
+	// WriteManifestTree must pass (not ErrUnreferencedArtifact).
+	repo := initGitRepo(t)
+	store := refstore.New(repo)
+	files := as.Files()
+	_, err = WriteManifestTree(context.Background(), store, "refs/etude/runs/", m, files, refstore.WriteOptions{Message: "test"})
+	if err != nil {
+		t.Fatalf("WriteManifestTree: %v", err)
+	}
+}
+
+func TestProducerSession_FailedRetrieval(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-xyz",
+		RetrievalStatus: SessionEvidenceFailed,
+		RedactionStatus: SessionEvidenceNotApplicable,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_ = as
+}
+
+func TestProducerSession_RedactionFail(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-xyz",
+		RetrievalStatus: SessionEvidenceRetrievalImported,
+		RedactionStatus: SessionEvidenceFailed,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	_ = as
+}
+
+func TestProducerSession_InvalidRetrievalRejected(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-xyz",
+		RetrievalStatus: "bad-status",
+		RedactionStatus: SessionEvidenceNotApplicable,
+	}
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for bad retrieval_status")
+	}
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Errorf("expected ErrInvalidManifest, got %v", err)
+	}
+	_ = as
+}
+
+func TestProducerSession_InvalidRedactionRejected(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-xyz",
+		RetrievalStatus: SessionEvidenceNotApplicable,
+		RedactionStatus: "bad-redaction",
+	}
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for bad redaction_status")
+	}
+	if !errors.Is(err, ErrInvalidManifest) {
+		t.Errorf("expected ErrInvalidManifest, got %v", err)
+	}
+	_ = as
+}
+
+func TestProducerSession_DisallowUnknownFields(t *testing.T) {
+	m, as := makeBaseManifest(t)
+	m.Stages[0].Producer.Session = &SessionEvidence{
+		SessionID:       "sid-123",
+		RetrievalStatus: SessionEvidenceNotApplicable,
+		RedactionStatus: SessionEvidenceNotApplicable,
+	}
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	// Inject unknown field into session object.
+	injected := strings.Replace(string(raw),
+		`"session_id": "sid-123"`,
+		`"session_id": "sid-123", "unknown_field": "bad"`,
+		1)
+	if injected == string(raw) {
+		t.Fatal("injection did not modify JSON (check field name)")
+	}
+	_, err = ParseJSON([]byte(injected))
+	if err == nil {
+		t.Fatal("expected error for unknown field in producer.session, got nil")
+	}
+	_ = as
+}

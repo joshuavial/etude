@@ -46,16 +46,30 @@ type RunRequest struct {
 	Producer        runmanifest.Producer
 }
 
+// SessionInfo carries the session identity produced by an agentic runner.
+// Deterministic and shell runners leave RunResult.Session nil.
+// When a runner (e.g. a dev runner) has a session sidecar or envelope, it
+// populates this field; engine.go wires it into Producer.Session evidence.
+type SessionInfo struct {
+	SessionID      string
+	TranscriptURI  string
+	TranscriptPath string
+}
+
 // RunResult is the outcome of a stage execution.
 //
 // MediaType: if empty, Run() defaults it to req.OutputMediaType.
 //
 // Producer is the producer identity actually used; MAY differ from req.Producer
 // (e.g. when the replay uses a newer skill version/model).
+//
+// Session, when non-nil, carries the session identity for agentic runners.
+// Deterministic and shell runners leave this nil.
 type RunResult struct {
 	Output    []byte
 	MediaType string               // if empty, Run defaults it to req.OutputMediaType
 	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
+	Session   *SessionInfo         // non-nil when the runner has a session (agentic only)
 }
 
 // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.

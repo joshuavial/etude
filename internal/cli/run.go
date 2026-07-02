@@ -331,12 +331,32 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 		o := stage.Output
 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
+		printSessionEvidence(out, "  ", stage.Producer.Session)
 	}
 
 	for _, gate := range m.Gates {
 		printGate(out, gate)
 	}
 	return nil
+}
+
+// printSessionEvidence renders a *SessionEvidence block with the given indent prefix.
+// It is a no-op when evidence is nil.
+func printSessionEvidence(out io.Writer, indent string, evidence *runmanifest.SessionEvidence) {
+	if evidence == nil {
+		return
+	}
+	if evidence.SessionID != "" {
+		fmt.Fprintf(out, "%ssession_id: %s\n", indent, evidence.SessionID)
+	}
+	if evidence.TranscriptURI != "" {
+		fmt.Fprintf(out, "%stranscript_uri: %s\n", indent, evidence.TranscriptURI)
+	}
+	fmt.Fprintf(out, "%sretrieval: %s\n", indent, evidence.RetrievalStatus)
+	fmt.Fprintf(out, "%sredaction: %s\n", indent, evidence.RedactionStatus)
+	if evidence.TranscriptArtifact != nil {
+		fmt.Fprintf(out, "%stranscript_artifact: %s\n", indent, evidence.TranscriptArtifact.Path)
+	}
 }
 
 // printGate renders one review-gate attempt in the same flat, indented style as
@@ -396,18 +416,6 @@ func printGate(out io.Writer, g runmanifest.GateAttempt) {
 		if s.RawOutput != nil {
 			fmt.Fprintf(out, "    raw_output: %s\n", s.RawOutput.Path)
 		}
-		if s.Session != nil {
-			if s.Session.SessionID != "" {
-				fmt.Fprintf(out, "    session_id: %s\n", s.Session.SessionID)
-			}
-			if s.Session.TranscriptURI != "" {
-				fmt.Fprintf(out, "    transcript_uri: %s\n", s.Session.TranscriptURI)
-			}
-			fmt.Fprintf(out, "    retrieval: %s\n", s.Session.RetrievalStatus)
-			fmt.Fprintf(out, "    redaction: %s\n", s.Session.RedactionStatus)
-			if s.Session.TranscriptArtifact != nil {
-				fmt.Fprintf(out, "    transcript_artifact: %s\n", s.Session.TranscriptArtifact.Path)
-			}
-		}
+		printSessionEvidence(out, "    ", s.Session)
 	}
 }
