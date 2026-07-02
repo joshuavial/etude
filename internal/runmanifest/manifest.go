@@ -509,8 +509,8 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
 	if gate.Round < 1 {
 		return fmt.Errorf("%w: %s round must be >= 1", ErrInvalidManifest, prefix)
 	}
-	if gate.Tier < 0 || gate.Tier > 3 {
-		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3}", ErrInvalidManifest, prefix)
+	if gate.Tier < 0 || gate.Tier > 4 {
+		return fmt.Errorf("%w: %s tier must be in {0, 1, 2, 3, 4}", ErrInvalidManifest, prefix)
 	}
 	if !isGateStatus(gate.Status) {
 		return fmt.Errorf("%w: %s status %q is not one of {pass, rerun, escalated}", ErrInvalidManifest, prefix, gate.Status)

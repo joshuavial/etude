@@ -1110,8 +1110,8 @@ func TestTierToInt(t *testing.T) {
 		name string
 		want int
 	}{
-		{"L1", 1}, {"L2", 2}, {"L3", 3},
-		{"L4", 0}, {"", 0}, {"inline", 0}, {"L", 0}, {"L10", 0},
+		{"L1", 1}, {"L2", 2}, {"L3", 3}, {"L4", 4},
+		{"", 0}, {"inline", 0}, {"L", 0}, {"L10", 0},
 	}
 	for _, tc := range tests {
 		if got := tierToInt(tc.name); got != tc.want {

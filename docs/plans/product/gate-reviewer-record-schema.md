@@ -104,7 +104,7 @@ type GateAttempt struct {
     GateID         string        // identifier, e.g. "review.r2"; [A-Za-z0-9_.-]
     Phase          string        // plan | implement | verify | docs | review (stage-name charset)
     Round          int           // 1-based; round 1 is the first attempt
-    Tier           int           // 0 (unknown/backfilled) | 1 | 2 | 3 (review-gate-runbook "Gate Weight")
+    Tier           int           // 0 (unknown/backfilled) | 1 | 2 | 3 | 4 (mirrors registry L1..L4)
     Status         GateStatus    // aggregate: pass | rerun | escalated
     ReviewedStages []ReviewedRef // stage names + artifact refs this gate evaluated
     Seats          []SeatResult  // one entry per reviewer seat that ran or was meant to run
@@ -303,9 +303,9 @@ stage loop. `gates` is OPTIONAL (zero gates is valid — backward compat). Per g
   same phase/round could coexist and break queryability. Enforced in
   `Manifest.Validate()` with a seen-tuple set, rejecting duplicates with
   `ErrInvalidManifest` (mirrors the existing duplicate-`produces`-role check).
-- `tier`: required, integer in `{0, 1, 2, 3}`. `0` means UNKNOWN (e.g. a gate
+- `tier`: required, integer in `{0, 1, 2, 3, 4}` (mirrors registry L1..L4). `0` means UNKNOWN (e.g. a gate
   backfilled by `.5` from prose notes that did not record a tier); live gates
-  SHOULD use `1`-`3`.
+  SHOULD use `1`-`4` (matching the registry tier L1..L4).
 - `status` (GateAttempt.Status): must be one of `pass | rerun | escalated`.
   (There is no `decision.status`; the aggregate status lives only on the gate.)
 - `reviewed_stages`: at least one entry; each `stage` must be a `validateIdentifier`

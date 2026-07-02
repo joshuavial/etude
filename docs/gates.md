@@ -30,7 +30,7 @@ The gate file is a single JSON object. Field names mirror the stored record:
   "gate_id": "plan.r2",        // unique per run; convention <phase>.r<round>
   "phase": "plan",             // the phase this gate guards
   "round": 2,                  // 1-based; each rerun is a new attempt, round+1
-  "tier": 2,                   // 0 (unknown) | 1 | 2 | 3
+  "tier": 2,                   // 0 (unknown) | 1 | 2 | 3 | 4  (mirrors registry L1..L4)
   "status": "pass",            // pass | rerun | escalated
   "reviewed_stages": [         // >=1; each stage must exist on the run
     {"stage": "plan", "role": "plan", "artifact": ""}  // artifact optional (sha); "" = name-only

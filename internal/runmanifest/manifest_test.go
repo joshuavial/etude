@@ -1292,9 +1292,9 @@ func TestValidateGateRejects(t *testing.T) {
 			g.Tier = -1
 			m.Gates = []GateAttempt{g}
 		}},
-		{"tier 4", func(m *Manifest) {
+		{"tier 5", func(m *Manifest) {
 			g := validGate()
-			g.Tier = 4
+			g.Tier = 5
 			m.Gates = []GateAttempt{g}
 		}},
 		// status
@@ -1529,6 +1529,29 @@ func TestValidateGateRejects(t *testing.T) {
 		m.Gates = []GateAttempt{g}
 		if err := m.Validate(); err != nil {
 			t.Fatalf("Validate returned error for pilms provider: %v", err)
+		}
+	})
+
+	// Acceptance: tier 4 is valid — the manifest int mirrors registry L1..L4.
+	t.Run("tier 4 is valid", func(t *testing.T) {
+		m := baseManifest()
+		g := validGate()
+		g.Tier = 4
+		m.Gates = []GateAttempt{g}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate returned error for tier 4 gate: %v", err)
+		}
+		// round-trips
+		b, err := m.JSON()
+		if err != nil {
+			t.Fatalf("JSON: %v", err)
+		}
+		back, err := ParseJSON(b)
+		if err != nil {
+			t.Fatalf("ParseJSON: %v", err)
+		}
+		if back.Gates[0].Tier != 4 {
+			t.Fatalf("tier round-trip = %d, want 4", back.Gates[0].Tier)
 		}
 	})
 }

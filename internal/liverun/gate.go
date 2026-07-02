@@ -185,9 +185,9 @@ func resolveGateDir(path string) (string, error) {
 }
 
 // tierToInt maps a registry tier name to the manifest integer.
-// L1→1, L2→2, L3→3; all others (L4, inline, unknown) → 0.
-// The manifest requires Tier ∈ {0,1,2,3}; L4 and inline share 0 (lossy but
-// valid; escalation uses tier NAMES not this integer).
+// L1→1, L2→2, L3→3, L4→4; inline/unknown → 0.
+// The manifest requires Tier ∈ {0,1,2,3,4}, so the integer mirrors the registry
+// L-number faithfully (0 is reserved for inline/unknown/backfilled gates).
 func tierToInt(name string) int {
 	if len(name) == 2 && name[0] == 'L' {
 		switch name[1] {
@@ -197,6 +197,8 @@ func tierToInt(name string) int {
 			return 2
 		case '3':
 			return 3
+		case '4':
+			return 4
 		}
 	}
 	return 0

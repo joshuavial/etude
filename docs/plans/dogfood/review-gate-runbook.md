@@ -1029,7 +1029,7 @@ Gate-file shape (snake_case; see `docs/plans/product/gate-reviewer-record-schema
   "gate_id": "<phase>.r<round>",         // unique per run, e.g. "plan.r2"
   "phase": "plan|implement|verify|review|...",
   "round": 1,                            // 1-based; rerun => round+1, new attempt
-  "tier": 1,                             // 0 unknown | 1 | 2 | 3
+  "tier": 1,                             // 0 unknown | 1 | 2 | 3 | 4 (mirrors registry L1..L4; L1 heaviest, so a higher int is NOT higher risk)
   "status": "pass|rerun|escalated",
   "reviewed_stages": [                   // >=1; stage must exist on the run
     { "stage": "implement", "role": "diff", "artifact": "<sha or omit>" }
