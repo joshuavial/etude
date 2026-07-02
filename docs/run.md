@@ -96,10 +96,43 @@ Per stage, the detail view shows:
 - `skill` — always printed as `id@version (repo)`
 - Each input as `role=… path=… size=… storage=… media-type=…`
 - The output in the same format
+- `session` evidence — printed only when the stage's producer was an agentic
+  runner that reported a session (see [Producer session evidence](#producer-session-evidence))
 
 `path` is the content-addressed `artifacts/sha256/…` path of the stored
 artifact, `size` is its size in bytes, and `storage` is `content` for inline
 artifact bytes or `pointer` for an external pointer record.
+
+### Producer session evidence
+
+When a stage is produced by an agentic runner (i.e. not a `deterministic`
+provider or `shell` harness) that reports its session, the stage records
+**session evidence** so the underlying agent transcript can be interrogated
+later. It uses the same shape as gate-reviewer seat session evidence (see
+[Gate reviewer records](gates.md)) and renders under the stage:
+
+```
+stage: plan
+  produced_by: agent-run
+  harness:     claude-code 2.1.195
+  model:       claude-opus-4-8
+  skill:       plan@1.0.0 (github.com/example/skills)
+  output: role=plan path=artifacts/sha256/def456... size=2048 storage=content media-type=text/markdown; charset=utf-8
+    session_id: 019f1723-d148-7703-8118-ce9438fce210
+    retrieval: imported
+    redaction: passed
+    transcript_artifact: artifacts/sha256/ab/ab12...
+```
+
+- `session_id` / `transcript_uri` — the harness session identity (at least one is present).
+- `retrieval` — `imported` (transcript read and stored), `failed` (could not read), or `not_applicable`.
+- `redaction` — `passed` (secret scan clean), `failed` (secrets detected), or `not_applicable`.
+- `transcript_artifact` — the stored transcript (content-addressed), present only when the transcript was imported.
+
+Capture is **best-effort**: a stage runner that reports no session, or whose
+transcript cannot be read, never fails the stage — the evidence is simply
+omitted or marked `failed`. Transcripts are secret-scanned before storage; a
+failed scan is recorded as `redaction: failed` rather than storing the bytes.
 
 When a run carries review-gate attempts, they are printed after the stages —
 see [Gate reviewer records](gates.md) for the gate output format and how to
