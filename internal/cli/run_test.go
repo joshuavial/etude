@@ -1277,6 +1277,146 @@ func TestRunWorkflowResearch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// --workflow: named workflows under .etude/workflows/
+// ---------------------------------------------------------------------------
+
+// writeNamedWorkflow writes a single-stage workflow to
+// dir/.etude/workflows/<file>.yaml declaring name: <wfName>.
+func writeNamedWorkflow(t *testing.T, dir, file, wfName string) {
+	t.Helper()
+	content := "name: " + wfName + `
+stages:
+  - name: stage-a
+    skill: echo-skill
+    produces: plan
+    inputs: [task]
+`
+	wfDir := filepath.Join(dir, ".etude", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatalf("mkdir .etude/workflows: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, file+".yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s.yaml: %v", file, err)
+	}
+}
+
+// --workflow selects .etude/workflows/<name>.yaml, with no .etude/workflow.yaml
+// present at all — proving the flag resolves independently of the default file.
+func TestRunWorkflowFlagSelectsNamedWorkflow(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeNamedWorkflow(t, repo, "gate", "gate")
+	writeFile(t, repo, "task.txt", "hello task")
+	chdir(t, repo)
+
+	runID := "gate-20260101T000000Z-aabbccdd"
+	stdout, stderr, err := execute("run", "gate",
+		"--workflow", "gate",
+		"--task", "task.txt",
+		"--run-id", runID,
+		"--runner", echoRunnerPath(t),
+	)
+	if err != nil {
+		t.Fatalf("run --workflow gate returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "refs/etude/runs/"+runID) {
+		t.Fatalf("stdout missing ref line: %q", stdout)
+	}
+	m := readRunManifest(t, repo, runID)
+	if m.Workflow != "gate" {
+		t.Errorf("manifest workflow = %q, want gate", m.Workflow)
+	}
+}
+
+// A missing named workflow must NOT fall back to .etude/workflow.yaml, and must
+// not report the default path the caller never selected.
+func TestRunWorkflowFlagMissingDoesNotFallBack(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeWorkflowYAML(t, repo) // default exists and is named mywf
+	writeFile(t, repo, "task.txt", "hello task")
+	chdir(t, repo)
+
+	_, stderr, err := execute("run", "gate",
+		"--workflow", "gate",
+		"--task", "task.txt",
+		"--runner", echoRunnerPath(t),
+	)
+	if err == nil {
+		t.Fatal("expected error for missing named workflow")
+	}
+	msg := err.Error() + stderr
+	if !strings.Contains(msg, filepath.Join("workflows", "gate.yaml")) {
+		t.Errorf("error should name the resolved path, got: %q", msg)
+	}
+	if strings.Contains(msg, "workflow.yaml name") {
+		t.Errorf("error must not fall back to the default workflow, got: %q", msg)
+	}
+}
+
+// The name-mismatch error names the file actually loaded, not the default.
+func TestRunWorkflowFlagMismatchNamesResolvedPath(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeNamedWorkflow(t, repo, "gate", "dev") // file gate.yaml declares name: dev
+	chdir(t, repo)
+
+	_, stderr, err := execute("run", "gate", "--workflow", "gate")
+	if err == nil {
+		t.Fatal("expected name mismatch error")
+	}
+	msg := err.Error() + stderr
+	want := filepath.Join(".etude", "workflows", "gate.yaml") + ` name "dev"`
+	if !strings.Contains(msg, want) {
+		t.Errorf("error = %q, want it to contain %q", msg, want)
+	}
+}
+
+// --workflow takes a name, not a path: a separator is rejected before any read
+// so a run can never record a workflow name that is not re-resolvable.
+func TestRunWorkflowFlagRejectsPath(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeWorkflowYAML(t, repo)
+	chdir(t, repo)
+
+	for _, bad := range []string{"../gate", "sub/gate", `sub\gate`} {
+		_, stderr, err := execute("run", "mywf", "--workflow", bad)
+		if err == nil {
+			t.Fatalf("--workflow %q: expected rejection", bad)
+		}
+		if !strings.Contains(err.Error()+stderr, "takes a name, not a path") {
+			t.Errorf("--workflow %q: unexpected error: %v", bad, err)
+		}
+	}
+}
+
+// The resume hint on stage failure must echo --workflow, or the resumed run
+// would read the default workflow file.
+func TestRunWorkflowFlagResumeHintCarriesFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip in short mode: uses real shell runner")
+	}
+	repo := initCaptureRepo(t)
+	writeNamedWorkflow(t, repo, "gate", "gate")
+	failScript := filepath.Join(repo, "fail.sh")
+	if err := os.WriteFile(failScript, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "task.txt", "task data")
+	chdir(t, repo)
+
+	_, stderr, err := execute("run", "gate",
+		"--workflow", "gate",
+		"--task", "task.txt",
+		"--run-id", "gate-20260101T000000Z-failonce",
+		"--runner", failScript,
+	)
+	if err == nil {
+		t.Fatal("expected stage failure error")
+	}
+	if !strings.Contains(stderr, "resume with: etude run gate --workflow gate --resume ") {
+		t.Errorf("resume hint missing --workflow: %q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

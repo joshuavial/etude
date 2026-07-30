@@ -18,6 +18,7 @@ etude run [workflow] [flags]
       --runner string      runner command override for all stages
       --task string        path to task input file
       --timeout duration   per-stage runner timeout (default 10m0s)
+      --workflow string    named workflow in .etude/workflows/ (default: .etude/workflow.yaml)
 ```
 
 ### SEE ALSO

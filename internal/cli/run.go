@@ -27,7 +27,7 @@ const runsPrefix = "refs/etude/runs/"
 var reservedWorkflowNames = map[string]bool{"show": true, "list": true}
 
 func newRunCommand(out, errOut io.Writer) *cobra.Command {
-	var taskFile, runID, gitSHA, resumeID, runnerSpec string
+	var taskFile, runID, gitSHA, resumeID, runnerSpec, workflowFile string
 	var timeout time.Duration
 
 	cmd := &cobra.Command{
@@ -44,13 +44,14 @@ func newRunCommand(out, errOut io.Writer) *cobra.Command {
 			if reservedWorkflowNames[workflowName] {
 				return fmt.Errorf("workflow name %q is reserved (conflicts with run subcommands show/list)", workflowName)
 			}
-			return runWorkflow(cmd.Context(), out, errOut, workflowName, taskFile, runID, gitSHA, resumeID, runnerSpec, timeout)
+			return runWorkflow(cmd.Context(), out, errOut, workflowName, workflowFile, taskFile, runID, gitSHA, resumeID, runnerSpec, timeout)
 		},
 	}
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 
 	flags := cmd.Flags()
+	flags.StringVar(&workflowFile, "workflow", "", "named workflow in .etude/workflows/ (default: .etude/workflow.yaml)")
 	flags.StringVar(&taskFile, "task", "", "path to task input file")
 	flags.StringVar(&runID, "run-id", "", "explicit run id (auto-generated if not set)")
 	flags.StringVar(&gitSHA, "git-sha", "", "git commit SHA for the run (defaults to HEAD)")
@@ -65,13 +66,26 @@ func newRunCommand(out, errOut io.Writer) *cobra.Command {
 }
 
 // runWorkflow loads the workflow and registry, then delegates to the Engine.
-func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskFile, runID, gitSHA, resumeID, runnerSpec string, timeout time.Duration) error {
+// workflowFile selects a named workflow under .etude/workflows/; empty means
+// the repo default .etude/workflow.yaml. There is deliberately no fallback
+// between the two, so a missing named workflow never reports the default path.
+func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workflowFile, taskFile, runID, gitSHA, resumeID, runnerSpec string, timeout time.Duration) error {
 	root, err := repoRoot(ctx)
 	if err != nil {
 		return err
 	}
 
-	wfBytes, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
+	// A name, not a path: the manifest records the workflow name, so the file
+	// must be re-resolvable from that name alone on any machine.
+	if strings.ContainsAny(workflowFile, `/\`) {
+		return fmt.Errorf("--workflow takes a name, not a path: %q", workflowFile)
+	}
+	wfRel := filepath.Join(".etude", "workflow.yaml")
+	if workflowFile != "" {
+		wfRel = filepath.Join(".etude", "workflows", workflowFile+".yaml")
+	}
+
+	wfBytes, err := os.ReadFile(filepath.Join(root, wfRel))
 	if err != nil {
 		return fmt.Errorf("load workflow: %w", err)
 	}
@@ -80,7 +94,7 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 		return fmt.Errorf("parse workflow: %w", err)
 	}
 	if wf.Name != workflowName {
-		return fmt.Errorf("workflow name %q does not match .etude/workflow.yaml name %q", workflowName, wf.Name)
+		return fmt.Errorf("workflow name %q does not match %s name %q", workflowName, wfRel, wf.Name)
 	}
 
 	// Registry is optional (workflows may use inline command runners).
@@ -129,15 +143,20 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, taskF
 	}
 
 	if err := engine.Run(ctx, out, wf, opts); err != nil {
+		// The hint must carry --workflow, or resuming would read the default file.
+		resumeCmd := "etude run " + workflowName
+		if workflowFile != "" {
+			resumeCmd += " --workflow " + workflowFile
+		}
 		var stageErr *liverun.StageError
 		if errors.As(err, &stageErr) {
 			// Print only the resume hint here; the error itself is printed once
 			// by the root command from the returned err (avoid a double print).
-			fmt.Fprintf(errOut, "resume with: etude run %s --resume %s\n", workflowName, stageErr.RunID)
+			fmt.Fprintf(errOut, "resume with: %s --resume %s\n", resumeCmd, stageErr.RunID)
 		}
 		var gateEscErr *liverun.GateEscalationError
 		if errors.As(err, &gateEscErr) {
-			fmt.Fprintf(errOut, "gate escalation: resume with: etude run %s --resume %s\n", workflowName, gateEscErr.RunID)
+			fmt.Fprintf(errOut, "gate escalation: resume with: %s --resume %s\n", resumeCmd, gateEscErr.RunID)
 		}
 		return err
 	}

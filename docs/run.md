@@ -216,6 +216,7 @@ stage completes, before the run finishes.
 
 | Flag | Description |
 |------|-------------|
+| `--workflow <name>` | Select the named workflow `.etude/workflows/<name>.yaml`. Omitted, the repo default `.etude/workflow.yaml` is used. See [Named workflows](#named-workflows). |
 | `--task <file>` | Path to the task input file. Seeds the special `task` role. Required for a fresh run. |
 | `--run-id <id>` | Explicit run id (auto-generated as `<workflow>-<timestamp>-<rand>` if omitted). Must be unique; errors on collision. |
 | `--git-sha <sha>` | Git commit SHA for the worktree (defaults to `HEAD`). |
@@ -232,6 +233,38 @@ characters other than letters, digits, `-`, `_`, and `.`.
 
 Reserved workflow names `show` and `list` are rejected with a clear error
 because they are shadowed by the `run` subcommands.
+
+### Named workflows
+
+A repo can host more than one workflow. `--workflow <name>` selects
+`.etude/workflows/<name>.yaml`; without the flag the engine reads the repo
+default `.etude/workflow.yaml`.
+
+```bash
+etude run dev --task bead.md                        # .etude/workflow.yaml
+etude run gate --workflow gate --task packet.md     # .etude/workflows/gate.yaml
+```
+
+This lets a full development pipeline and a narrow gate-only workflow live side
+by side in the repo they act on, sharing one run store — `etude run list` and
+`etude run show` cover both, since they key off the run manifest.
+
+The positional argument keeps its existing meaning: it asserts that the loaded
+workflow's `name:` is the one you meant, and a mismatch is an error naming the
+file that was actually read. There is deliberately **no fallback** between the
+two locations — a missing `.etude/workflows/<name>.yaml` errors on that path
+rather than silently reading the default.
+
+`--workflow` takes a name, not a path; values containing a path separator are
+rejected. The run manifest records the workflow name, so a name re-resolves to
+the same file on any machine while a path would not.
+
+`etude init` scaffolds `.etude/workflow.yaml` only. Create `.etude/workflows/`
+yourself when you want a second workflow.
+
+Two commands do not yet take `--workflow` and always read
+`.etude/workflow.yaml`: `etude replay` (which is given a run id, not a workflow
+name) and `etude retro nudge` (which is repo-scoped).
 
 ### Gate execution
 
