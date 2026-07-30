@@ -20,10 +20,7 @@ mechanics.
 
 ---
 
-## [v1.0.0] — Unreleased
-
-> v1.0.0 has not been tagged. Cutting the tag is a human release action
-> covered by the v1 release checklist (etude-kb0.4).
+## [v1.0.0] — 2026-07-30
 
 ### Added
 
@@ -40,6 +37,13 @@ mechanics.
   roles, execute per-stage gates, and capture each stage incrementally so the
   run is a byproduct of execution. `--resume <id>` continues a partial run from
   its frontier; `--task`/`--run-id`/`--git-sha`/`--runner`/`--timeout` flags.
+- `etude run --workflow <name>` — select a named workflow
+  `.etude/workflows/<name>.yaml` so one repo can host several workflows (for
+  example a full dev pipeline plus a narrow gate-only workflow) sharing one run
+  store. Omitting the flag reads the repo default `.etude/workflow.yaml`
+  unchanged; there is no fallback between the two locations. The positional
+  argument keeps asserting the loaded workflow's name. `etude replay` and
+  `etude retro nudge` still read `.etude/workflow.yaml` only.
 - `etude run list` / `etude run show` — list all stored runs; inspect the
   detail (including gate records) of one run; `run show` works mid-run.
 - `etude sync` — push and fetch `refs/etude/*` with a git remote.
