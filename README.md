@@ -62,12 +62,14 @@ v1 ships the CLI surface listed above. The following are confirmed deferred to p
 
 ```bash
 make build
+make install
 make test
 make lint
 make clean
 ```
 
-`make build` writes `bin/etude`.
+`make build` writes `bin/etude`. `make install` installs to `$GOBIN` (or
+`$GOPATH/bin`) with the same version stamp — see [Releasing](#releasing).
 
 ## Releasing
 
@@ -77,8 +79,9 @@ read from the package-level variable `var version = "dev"` in
 `Version` field (line 24) and printed via the template
 `"{{.Name}} {{.Version}}\n"` (line 35).
 
-The `Makefile` sets `VERSION ?= dev` (line 3) and stamps the binary at build
-time using ldflags (lines 8–10):
+The `Makefile` sets `VERSION ?= dev` (line 3), builds the ldflags into
+`LDFLAGS` (line 5), and stamps the binary with it in both `build` (line 11) and
+`install` (line 16):
 
 ```
 go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=$(VERSION)" \
@@ -91,6 +94,15 @@ A plain `make build` (or `go build`) therefore produces a binary that reports
 ```bash
 make build VERSION=v1.0.0
 ./bin/etude --version   # prints: etude v1.0.0
+```
+
+`make install` takes the same `VERSION` and puts the stamped binary on your
+`PATH`. Use it instead of a plain `go install ./cmd/etude`, which bypasses the
+ldflags and silently installs a binary reporting `etude dev`:
+
+```bash
+make install VERSION=v1.0.0
+etude --version         # prints: etude v1.0.0
 ```
 
 Cutting the actual release (tagging the commit and setting `VERSION`) is a

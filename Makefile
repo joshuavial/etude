@@ -2,12 +2,18 @@ BINARY := etude
 BIN_DIR := bin
 VERSION ?= dev
 DOCS_DIR := docs/cli
+LDFLAGS := -X github.com/joshuavial/etude/internal/cli.version=$(VERSION)
 
-.PHONY: build test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test
+.PHONY: build install test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test
 
 build:
 	mkdir -p $(BIN_DIR)
-	go build -ldflags "-X github.com/joshuavial/etude/internal/cli.version=$(VERSION)" -o $(BIN_DIR)/$(BINARY) ./cmd/etude
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) ./cmd/etude
+
+# Install to $GOBIN (or $GOPATH/bin) with the same version stamp as build. Use
+# this instead of a plain `go install ./cmd/etude`, which stamps `dev`.
+install:
+	go install -ldflags "$(LDFLAGS)" ./cmd/etude
 
 test:
 	go test ./...
