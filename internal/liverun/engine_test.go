@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -268,6 +269,79 @@ func TestEngineResumeAfterFailure(t *testing.T) {
 		t.Errorf("partial manifest stage[0].name = %q, want stage-a", m.Stages[0].Name)
 	}
 
+	// A gate attempt can add artifacts after the last completed stage. Resume
+	// must preserve those artifacts even though they are not stage inputs or
+	// outputs.
+	ctx := context.Background()
+	partialCommit, err := store.Resolve(ctx, runsPrefix+runID)
+	if err != nil {
+		t.Fatalf("resolve partial run: %v", err)
+	}
+	files := make(map[string][]byte)
+	for _, path := range runmanifest.ArtifactPaths(m) {
+		files[path], err = store.ReadCommitFile(ctx, partialCommit, path)
+		if err != nil {
+			t.Fatalf("read partial artifact %q: %v", path, err)
+		}
+	}
+	gateStore := artifactstore.New()
+	rawArtifact, err := gateStore.AddContent("check-0", "application/octet-stream", []byte("check output"))
+	if err != nil {
+		t.Fatalf("store gate raw output: %v", err)
+	}
+	gateTranscript, err := gateStore.AddContent("seat-transcript", "application/json", []byte(`{"seat":"check.0"}`))
+	if err != nil {
+		t.Fatalf("store gate transcript: %v", err)
+	}
+	stageTranscript, err := gateStore.AddContent("stage-transcript", "application/json", []byte(`{"stage":"stage-a"}`))
+	if err != nil {
+		t.Fatalf("store stage transcript: %v", err)
+	}
+	for path, content := range gateStore.Files() {
+		files[path] = content
+	}
+	rawRef := runmanifest.ArtifactFromManifestArtifact(rawArtifact)
+	gateTranscriptRef := runmanifest.ArtifactFromManifestArtifact(gateTranscript)
+	stageTranscriptRef := runmanifest.ArtifactFromManifestArtifact(stageTranscript)
+	m.Stages[0].Producer.Session = &runmanifest.SessionEvidence{
+		SessionID:          "stage-session",
+		TranscriptArtifact: &stageTranscriptRef,
+		RetrievalStatus:    runmanifest.SessionEvidenceRetrievalImported,
+		RedactionStatus:    runmanifest.SessionEvidenceRedactionPassed,
+	}
+	m.Gates = append(m.Gates, runmanifest.GateAttempt{
+		GateID: "stage-a.r1",
+		Phase:  "stage-a",
+		Round:  1,
+		Tier:   1,
+		Status: runmanifest.GateStatusEscalated,
+		ReviewedStages: []runmanifest.ReviewedRef{{
+			Stage: "stage-a", Artifact: m.Stages[0].Output.Artifact, Role: m.Stages[0].Output.Role,
+		}},
+		Seats: []runmanifest.SeatResult{{
+			Seat:      "check.0",
+			Harness:   runmanifest.Harness{Name: "exec"},
+			Provider:  runmanifest.Provider{Name: "deterministic", Model: "check"},
+			Verdict:   runmanifest.SeatVerdictGo,
+			RawOutput: &rawRef,
+			Session: &runmanifest.SessionEvidence{
+				SessionID:          "seat-session",
+				TranscriptArtifact: &gateTranscriptRef,
+				RetrievalStatus:    runmanifest.SessionEvidenceRetrievalImported,
+				RedactionStatus:    runmanifest.SessionEvidenceRedactionPassed,
+			},
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 3, 0, time.UTC),
+		}},
+		Decision:  runmanifest.GateDecision{EscalationReason: "insufficient usable seats"},
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 4, 0, time.UTC),
+	})
+	if _, err := runmanifest.WriteManifestTree(ctx, store, runsPrefix, m, files, refstore.WriteOptions{
+		ExpectedOld: partialCommit,
+		Message:     "capture gate output",
+	}); err != nil {
+		t.Fatalf("write partial run with gate output: %v", err)
+	}
+
 	// Now resume: stage-b and stage-c succeed.
 	successRunner := func(stage workflow.Stage) (replay.Runner, error) {
 		return &replay.StubRunner{CannedOutput: []byte("resumed"), CannedMediaType: "application/octet-stream"}, nil
@@ -302,7 +376,13 @@ func TestEngineResumeAfterFailure(t *testing.T) {
 	if taskPath == "" {
 		t.Fatal("stage-a has no task input role in final manifest")
 	}
-	for _, p := range []string{taskPath, m.Stages[0].Output.Path} {
+	for _, p := range []string{
+		taskPath,
+		m.Stages[0].Output.Path,
+		rawRef.Path,
+		gateTranscriptRef.Path,
+		stageTranscriptRef.Path,
+	} {
 		b, err := rs.ReadFile(context.Background(), "refs/etude/runs/"+runID, p)
 		if err != nil {
 			t.Fatalf("reseeded blob %q not present in resumed run commit: %v", p, err)
