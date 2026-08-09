@@ -310,7 +310,9 @@ On **escalated**: the engine advances the tier ladder toward L1 (strongest)
 and re-runs the gate against the latest stage output at the stronger tier. If
 no stronger tier exists (already at L1, or the gate used inline seats with no
 tier ladder), the run halts with a `GateEscalationError` — the partial run is
-valid, inspectable via `etude run show`, and resumable.
+valid and inspectable via `etude run show`. A terminal escalation caused only
+by unusable model seats is resumable; substantive reviewer decisions remain
+terminal.
 
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
 manifest (`manifest_version` 3); gate attempts appear after stages in
@@ -386,13 +388,28 @@ To continue from where the run stopped:
 etude run <workflow> --resume <id>
 ```
 
-`--resume` loads the partial run manifest, derives the frontier (the first
-stage whose output role has not been produced yet), reseeds all previously-
-captured artifact blobs (including the task input) from the run commit, and
-continues CAS-appending from the current run ref head. The worktree is
-re-opened at the git SHA recorded in the partial run manifest (not the
-current `HEAD`), so a moved `HEAD` between the failure and the resume cannot
-silently change the worktree base.
+`--resume` loads the partial run manifest, reseeds all previously captured
+artifact blobs (including the task input) from the run commit, and continues
+CAS-appending from the current run ref head. It normally resumes at the first
+stage whose output role has not been produced yet.
+
+A run whose stages are all captured can also resume a gate that stopped only
+because every model seat was unusable (`failed`, `empty`, `malfunction`, or
+`disregarded`). The latest attempt must carry Etude's insufficient-usable-seat
+classification, and the phase's complete gate history must contain no model
+`go` or `block`. Mixed decisions, substantive prior verdicts, passed gates,
+missing gate records, and gate-less legacy runs remain complete and are not
+retried.
+
+Gate recovery reviews the latest recorded output artifact for the workflow
+role without rerunning its producer. Artifact bytes come from the stored run;
+checks and model seats come from the current workflow and registry. A missing
+or mismatched stored artifact fails closed. The worktree used by checks is a
+fresh checkout at the git SHA recorded in the run manifest, not current
+`HEAD`, so repository drift cannot change what the recovered gate checks.
+Infrastructure-only attempts advance the append-only gate round history but do
+not consume substantive round or tier budget. A tier gate restarts at its
+current configured tier, and an inline gate uses its current inline seats.
 
 `--task` and `--run-id` are ignored when `--resume` is set (both come from
 the existing partial run). The resumed run is the same run ref: it gains

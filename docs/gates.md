@@ -273,6 +273,29 @@ live-specific characteristics:
 - `decision.escalation_reason` is required when `status="escalated"`.
 - A run that carries any gate attempts is stored as `manifest_version` 3.
 
+### Resuming an unusable-seat outage
+
+`etude run <workflow> --resume <run-id>` can retry a live gate after an
+infrastructure-only reviewer outage, even when every workflow stage already
+has a captured output. Recovery is deliberately narrow: the latest attempt
+must be an `escalated` insufficient-usable-seat result, all of its model seats
+must be non-usable, and no model seat in the phase's history may have returned
+`go` or `block`. Deterministic check entries do not count as model seats.
+
+Etude reuses the latest content-addressed output for the stage's role and runs
+the current checks and seats in a fresh checkout at the run's recorded git SHA.
+It does not rerun the producer on the passing recovery path. Missing or
+inconsistent artifacts fail closed. Outage-only attempts retain their unique,
+monotonic round numbers but do not spend substantive round or tier budget; the
+retry begins from the current configured tier or current inline seat list.
+
+A mixed attempt (for example, one `block` plus failed seats), any earlier
+substantive verdict, a passed gate, or a prose-only outage reason without the
+structural zero-seat evidence is terminal and is not retried. If a recovered
+gate returns a real `block`, ordinary rerun/escalation behavior resumes and new
+producer and gate records use fresh `<phase>.r<n>` identities, preserving old
+reviewed-artifact references.
+
 For the dogfood operational checklist (manual reviewer seats, runbook format,
 degraded-gate policy), see
 [Review Gate Runbook](plans/dogfood/review-gate-runbook.md).

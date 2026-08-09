@@ -22,6 +22,8 @@ import (
 	"github.com/joshuavial/etude/internal/workflow"
 )
 
+const insufficientUsableSeatsPrefix = "insufficient usable seats:"
+
 // GateEscalationError is returned when a gate exhausts all tiers with no
 // stronger tier to escalate to. The partial run is still valid and inspectable.
 type GateEscalationError struct {
@@ -276,7 +278,7 @@ func synthesizeVerdict(
 	if usable < minUsable {
 		return synthesisResult{
 			status:           runmanifest.GateStatusEscalated,
-			escalationReason: fmt.Sprintf("insufficient usable seats: got %d need %d", usable, minUsable),
+			escalationReason: fmt.Sprintf("%s got %d need %d", insufficientUsableSeatsPrefix, usable, minUsable),
 			degradedReason:   degraded,
 		}
 	}
@@ -646,6 +648,7 @@ func (e *Engine) runGate(
 	prevCommit string,
 	initialOutputRef runmanifest.ArtifactRef,
 	initialOutputContent []byte,
+	initialOutputStage string,
 	worktreeDir, scratch string,
 ) (allGateAttempts []runmanifest.GateAttempt, updatedStages []runmanifest.Stage, newCommit string, finalOutputRef runmanifest.ArtifactRef, finalOutputContent []byte, returnErr error) {
 	gate := stage.Gate
@@ -666,9 +669,9 @@ func (e *Engine) runGate(
 
 	// Mutable loop state.
 	currentTierName := gate.Tier
-	globalRound := 1
+	globalRound := nextPhaseRound(stage.Name, completedStages, existingGateAttempts)
 	tierRound := 1
-	reviewedStageName := stage.Name
+	reviewedStageName := initialOutputStage
 	reviewedOutputRef := initialOutputRef
 	reviewedOutputContent := initialOutputContent
 	// inputRefs/runInputs grow each RERUN as gate-feedback is appended.
