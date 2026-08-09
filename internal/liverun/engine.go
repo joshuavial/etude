@@ -158,7 +158,7 @@ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Work
 		chain["task"] = roleArtifact{ref: taskRef, content: opts.TaskBytes}
 	}
 
-	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, wt.Dir, scratch)
+	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, nil, wt.Dir, scratch)
 }
 
 func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow, resumeID string) error {
@@ -211,6 +211,22 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 			refByPath[inp.Path] = inp
 		}
 		refByPath[ms.Output.Path] = ms.Output
+		if ms.Producer.Session != nil && ms.Producer.Session.TranscriptArtifact != nil {
+			ref := *ms.Producer.Session.TranscriptArtifact
+			refByPath[ref.Path] = ref
+		}
+	}
+	for _, gate := range manifest.Gates {
+		for _, seat := range gate.Seats {
+			if seat.RawOutput != nil {
+				ref := *seat.RawOutput
+				refByPath[ref.Path] = ref
+			}
+			if seat.Session != nil && seat.Session.TranscriptArtifact != nil {
+				ref := *seat.Session.TranscriptArtifact
+				refByPath[ref.Path] = ref
+			}
+		}
 	}
 
 	rawBytes := make(map[string][]byte)
@@ -238,11 +254,12 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 		}
 	}
 
-	return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain, commit, frontier, manifest.Stages, wt.Dir, scratch)
+	return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain, commit, frontier, manifest.Stages, manifest.Gates, wt.Dir, scratch)
 }
 
 // executeStages runs wf.Stages[frontier:], accumulating CAS commits.
-// preCompleted holds the already-committed stages from a resume (nil for fresh runs).
+// preCompleted and preGates hold the already-committed history from a resume
+// (nil for fresh runs).
 func (e *Engine) executeStages(
 	ctx context.Context,
 	out io.Writer,
@@ -254,6 +271,7 @@ func (e *Engine) executeStages(
 	prevCommit string,
 	frontier int,
 	preCompleted []runmanifest.Stage,
+	preGates []runmanifest.GateAttempt,
 	worktreeDir, scratch string,
 ) error {
 	completedStages := make([]runmanifest.Stage, len(preCompleted), len(wf.Stages))
@@ -261,7 +279,7 @@ func (e *Engine) executeStages(
 
 	// gateAttempts accumulates across all gates in this run so each
 	// subsequent manifest write carries the full history.
-	var gateAttempts []runmanifest.GateAttempt
+	gateAttempts := append([]runmanifest.GateAttempt(nil), preGates...)
 
 	for i, stage := range wf.Stages[frontier:] {
 		stageIdx := frontier + i
