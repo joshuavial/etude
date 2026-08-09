@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,106 @@ func (e *StageError) Unwrap() error { return e.Err }
 type roleArtifact struct {
 	ref     runmanifest.ArtifactRef
 	content []byte
+}
+
+func phaseRound(name, phase string) (int, bool) {
+	prefix := phase + ".r"
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	round, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+	return round, err == nil && round > 0
+}
+
+func nextPhaseRound(phase string, stages []runmanifest.Stage, gates []runmanifest.GateAttempt) int {
+	maxRound := 0
+	for _, stage := range stages {
+		if round, ok := phaseRound(stage.Name, phase); ok && round > maxRound {
+			maxRound = round
+		}
+	}
+	for _, gate := range gates {
+		if gate.Phase == phase && gate.Round > maxRound {
+			maxRound = gate.Round
+		}
+	}
+	return maxRound + 1
+}
+
+func latestStageForRole(stages []runmanifest.Stage, role string) (runmanifest.Stage, bool) {
+	for i := len(stages) - 1; i >= 0; i-- {
+		if stages[i].Output.Role == role {
+			return stages[i], true
+		}
+	}
+	return runmanifest.Stage{}, false
+}
+
+func isModelSeat(seat runmanifest.SeatResult) bool {
+	return !(strings.HasPrefix(seat.Seat, "check.") && seat.Provider.Name == "deterministic")
+}
+
+func isNonUsableSeat(verdict runmanifest.SeatVerdict) bool {
+	switch verdict {
+	case runmanifest.SeatVerdictFailed, runmanifest.SeatVerdictEmpty,
+		runmanifest.SeatVerdictMalfunction, runmanifest.SeatVerdictDisregarded:
+		return true
+	default:
+		return false
+	}
+}
+
+func recoverableGateStageIndexes(wf workflow.Workflow, manifest runmanifest.Manifest) []int {
+	latestByPhase := make(map[string]runmanifest.GateAttempt)
+	for _, attempt := range manifest.Gates {
+		latestByPhase[attempt.Phase] = attempt
+	}
+
+	var indexes []int
+	for i, stage := range wf.Stages {
+		if stage.Gate == nil {
+			continue
+		}
+		captured, ok := latestStageForRole(manifest.Stages, stage.Produces)
+		if !ok || captured.Output.Role != stage.Produces {
+			continue
+		}
+		latest, ok := latestByPhase[stage.Name]
+		if !ok || latest.Status != runmanifest.GateStatusEscalated ||
+			!strings.HasPrefix(latest.Decision.EscalationReason, insufficientUsableSeatsPrefix) {
+			continue
+		}
+
+		modelSeats := 0
+		allLatestNonUsable := true
+		phaseHasSubstantiveVerdict := false
+		for _, attempt := range manifest.Gates {
+			if attempt.Phase != stage.Name {
+				continue
+			}
+			for _, seat := range attempt.Seats {
+				if !isModelSeat(seat) {
+					continue
+				}
+				if seat.Verdict == runmanifest.SeatVerdictGo || seat.Verdict == runmanifest.SeatVerdictBlock {
+					phaseHasSubstantiveVerdict = true
+				}
+			}
+		}
+		for _, seat := range latest.Seats {
+			if !isModelSeat(seat) {
+				continue
+			}
+			modelSeats++
+			if !isNonUsableSeat(seat.Verdict) {
+				allLatestNonUsable = false
+			}
+		}
+		if modelSeats > 0 && allLatestNonUsable && !phaseHasSubstantiveVerdict {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
 }
 
 // RunOptions configures a call to Engine.Run.
@@ -158,7 +259,7 @@ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Work
 		chain["task"] = roleArtifact{ref: taskRef, content: opts.TaskBytes}
 	}
 
-	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, nil, wt.Dir, scratch)
+	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, nil, false, wt.Dir, scratch)
 }
 
 func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow, resumeID string) error {
@@ -181,8 +282,30 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 	}
 
 	frontier := DeriveFrontier(wf, manifest)
-	if frontier >= len(wf.Stages) {
+	recoverable := recoverableGateStageIndexes(wf, manifest)
+	if frontier >= len(wf.Stages) && len(recoverable) == 0 {
 		return fmt.Errorf("run %q is already complete (%d stages done)", resumeID, len(wf.Stages))
+	}
+	recoverableSet := make(map[int]bool, len(recoverable))
+	for _, index := range recoverable {
+		recoverableSet[index] = true
+	}
+	latestByPhase := make(map[string]runmanifest.GateAttempt)
+	for _, attempt := range manifest.Gates {
+		latestByPhase[attempt.Phase] = attempt
+	}
+	for i := 0; i < frontier; i++ {
+		stage := wf.Stages[i]
+		if stage.Gate == nil || recoverableSet[i] {
+			continue
+		}
+		attempt, ok := latestByPhase[stage.Name]
+		if !ok {
+			return fmt.Errorf("run %q has captured stage %q without a completed gate attempt", resumeID, stage.Name)
+		}
+		if attempt.Status != runmanifest.GateStatusPass {
+			return fmt.Errorf("run %q has terminal gate escalation/status %q at stage %q", resumeID, attempt.Status, stage.Name)
+		}
 	}
 	if len(manifest.Stages) == 0 {
 		return fmt.Errorf("run %q has no completed stages to resume from", resumeID)
@@ -237,8 +360,13 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 		}
 		rawBytes[path] = data
 		ref := refByPath[path]
-		if _, err := as.AddContent(ref.Role, ref.MediaType, data); err != nil {
+		stored, err := as.AddContent(ref.Role, ref.MediaType, data)
+		if err != nil {
 			return fmt.Errorf("reseed store path %q: %w", path, err)
+		}
+		storedRef := runmanifest.ArtifactFromManifestArtifact(stored)
+		if storedRef.Artifact != ref.Artifact || storedRef.Path != ref.Path {
+			return fmt.Errorf("reseed artifact %q: content does not match recorded artifact", path)
 		}
 	}
 
@@ -254,7 +382,58 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 		}
 	}
 
-	return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain, commit, frontier, manifest.Stages, manifest.Gates, wt.Dir, scratch)
+	completedStages := append([]runmanifest.Stage(nil), manifest.Stages...)
+	gateAttempts := append([]runmanifest.GateAttempt(nil), manifest.Gates...)
+	for _, stageIdx := range recoverable {
+		stage := wf.Stages[stageIdx]
+		captured, ok := latestStageForRole(completedStages, stage.Produces)
+		if !ok {
+			return fmt.Errorf("recover gate %q: captured output role %q not found", stage.Name, stage.Produces)
+		}
+		inputRefs := append([]runmanifest.ArtifactRef(nil), captured.Inputs...)
+		runInputs := make([]replay.RunInput, 0, len(inputRefs))
+		for _, input := range inputRefs {
+			content, ok := rawBytes[input.Path]
+			if !ok {
+				return fmt.Errorf("recover gate %q: input artifact %q not rehydrated", stage.Name, input.Path)
+			}
+			runInputs = append(runInputs, replay.RunInput{Role: input.Role, MediaType: input.MediaType, Content: content})
+		}
+		outputContent, ok := rawBytes[captured.Output.Path]
+		if !ok {
+			return fmt.Errorf("recover gate %q: output artifact %q not rehydrated", stage.Name, captured.Output.Path)
+		}
+
+		oldArtifact := captured.Output.Artifact
+		allAttempts, updatedStages, newCommit, finalRef, finalContent, gateErr := e.runGate(
+			ctx, out, manifest.RunID, gitSHA, manifest.Created, wf,
+			stage, stageIdx, inputRefs, runInputs, as, completedStages, gateAttempts, commit,
+			captured.Output, outputContent, captured.Name, wt.Dir, scratch,
+		)
+		if gateErr != nil {
+			return gateErr
+		}
+		gateAttempts = allAttempts
+		completedStages = updatedStages
+		commit = newCommit
+		chain[stage.Produces] = roleArtifact{ref: finalRef, content: finalContent}
+
+		if finalRef.Artifact != oldArtifact {
+			if stageIdx+1 >= len(wf.Stages) {
+				fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
+				return nil
+			}
+			return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
+				commit, stageIdx+1, completedStages, gateAttempts, true, wt.Dir, scratch)
+		}
+	}
+
+	if frontier < len(wf.Stages) {
+		return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
+			commit, frontier, completedStages, gateAttempts, false, wt.Dir, scratch)
+	}
+	fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
+	return nil
 }
 
 // executeStages runs wf.Stages[frontier:], accumulating CAS commits.
@@ -272,10 +451,10 @@ func (e *Engine) executeStages(
 	frontier int,
 	preCompleted []runmanifest.Stage,
 	preGates []runmanifest.GateAttempt,
+	forceUniqueNames bool,
 	worktreeDir, scratch string,
 ) error {
-	completedStages := make([]runmanifest.Stage, len(preCompleted), len(wf.Stages))
-	copy(completedStages, preCompleted)
+	completedStages := append([]runmanifest.Stage(nil), preCompleted...)
 
 	// gateAttempts accumulates across all gates in this run so each
 	// subsequent manifest write carries the full history.
@@ -313,9 +492,13 @@ func (e *Engine) executeStages(
 			return &StageError{StageName: stage.Name, RunID: runID, Err: fmt.Errorf("mkdir stage scratch: %w", err)}
 		}
 
+		executionName := stage.Name
+		if forceUniqueNames {
+			executionName = fmt.Sprintf("%s.r%d", stage.Name, nextPhaseRound(stage.Name, completedStages, gateAttempts))
+		}
 		outputRef, outputContent, newStages, newCommit, err := e.runAndCaptureStage(
 			ctx, out, runID, gitSHA, created, wf,
-			stage, stage.Name, inputRefs, runInputs,
+			stage, executionName, inputRefs, runInputs,
 			stageScratch, as, completedStages, gateAttempts, prevCommit, worktreeDir,
 		)
 		if err != nil {
@@ -331,7 +514,7 @@ func (e *Engine) executeStages(
 				ctx, out, runID, gitSHA, created, wf,
 				stage, stageIdx, inputRefs, runInputs,
 				as, completedStages, gateAttempts, prevCommit,
-				outputRef, outputContent, worktreeDir, scratch,
+				outputRef, outputContent, executionName, worktreeDir, scratch,
 			)
 			if gateErr != nil {
 				return gateErr // GateEscalationError or infra error
