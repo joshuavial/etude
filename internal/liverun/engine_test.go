@@ -527,6 +527,330 @@ func TestEngineAlreadyCompleteResumeErrors(t *testing.T) {
 	}
 }
 
+func TestEngineResumeRetriesZeroSeatEscalationWithoutRerunningProducer(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-zero-seat"
+	one := 1
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
+
+	producerCalls := 0
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+			producerCalls++
+			return &replay.StubRunner{
+				CannedOutput:    []byte("captured plan"),
+				CannedMediaType: "text/plain; charset=utf-8",
+			}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+				HarnessName: "stub", ProviderName: "stub", Model: "stub",
+			}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"reviewer"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	})
+	var gateErr *GateEscalationError
+	if !errors.As(err, &gateErr) {
+		t.Fatalf("first run: expected GateEscalationError, got %v", err)
+	}
+
+	e.ResolveSeat = func(string) (replay.Runner, SeatMeta, error) {
+		return &replay.StubRunner{
+			CannedOutput: envelopeJSON("go", nil), CannedMediaType: "application/json",
+		}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+	}
+
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID}); err != nil {
+		t.Fatalf("resume zero-seat escalation: %v", err)
+	}
+
+	m := readLiveManifest(t, repo, runID)
+	if producerCalls != 1 {
+		t.Fatalf("producer calls = %d, want 1", producerCalls)
+	}
+	if len(m.Stages) != 1 {
+		t.Fatalf("stages = %d, want 1", len(m.Stages))
+	}
+	if len(m.Gates) != 2 {
+		t.Fatalf("gates = %d, want 2", len(m.Gates))
+	}
+	if m.Gates[1].GateID != "plan.r2" || m.Gates[1].Status != runmanifest.GateStatusPass {
+		t.Fatalf("resumed gate = %s status=%s, want plan.r2 pass", m.Gates[1].GateID, m.Gates[1].Status)
+	}
+}
+
+func TestEngineResumeAppendsRepeatedZeroSeatEscalations(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-repeat-outage"
+	one := 1
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
+	producerCalls := 0
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+			producerCalls++
+			return &replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain"}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+				HarnessName: "stub", ProviderName: "stub", Model: "stub",
+			}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L1": {[]string{"reviewer"}, ""}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		opts := RunOptions{ResumeID: runID}
+		if attempt == 1 {
+			opts = RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha}
+		}
+		var gateErr *GateEscalationError
+		if err := e.Run(context.Background(), noopWriter(), wf, opts); !errors.As(err, &gateErr) {
+			t.Fatalf("attempt %d: expected GateEscalationError, got %v", attempt, err)
+		}
+	}
+
+	m := readLiveManifest(t, repo, runID)
+	if producerCalls != 1 {
+		t.Fatalf("producer calls = %d, want 1", producerCalls)
+	}
+	if len(m.Gates) != 2 || m.Gates[1].GateID != "plan.r2" {
+		t.Fatalf("gate history = %#v, want appended plan.r2", m.Gates)
+	}
+}
+
+func TestEngineResumeDoesNotRetryPhaseWithSubstantiveVerdict(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-substantive"
+	two := 2
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &two})
+	seatCalls := 0
+	producerCalls := 0
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+			producerCalls++
+			return &replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain"}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			seatCalls++
+			if seatCalls == 1 {
+				return &replay.StubRunner{
+					CannedOutput: envelopeJSON("block", []string{"change it"}), CannedMediaType: "application/json",
+				}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+			}
+			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+				HarnessName: "stub", ProviderName: "stub", Model: "stub",
+			}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L1": {[]string{"reviewer"}, ""}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	var gateErr *GateEscalationError
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); !errors.As(err, &gateErr) {
+		t.Fatalf("first run: expected GateEscalationError, got %v", err)
+	}
+
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID})
+	if err == nil || !strings.Contains(err.Error(), "already complete") {
+		t.Fatalf("resume after substantive verdict: expected already complete, got %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	if producerCalls != 2 {
+		t.Fatalf("producer calls = %d, want 2", producerCalls)
+	}
+	if len(m.Gates) != 2 {
+		t.Fatalf("gates = %d, want unchanged history of 2", len(m.Gates))
+	}
+}
+
+func TestEngineResumeRetriesInlineZeroSeatEscalation(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-inline-outage"
+	wf := gatedWorkflow(&workflow.GateConfig{Seats: []string{"reviewer"}})
+	e := Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain"}),
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
+				HarnessName: "stub", ProviderName: "stub", Model: "stub",
+			}, nil
+		},
+		Root: repo,
+		Now:  fixedClock(),
+	}
+
+	var gateErr *GateEscalationError
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); !errors.As(err, &gateErr) {
+		t.Fatalf("first run: expected GateEscalationError, got %v", err)
+	}
+	e.ResolveSeat = func(string) (replay.Runner, SeatMeta, error) {
+		return &replay.StubRunner{CannedOutput: envelopeJSON("go", nil), CannedMediaType: "application/json"},
+			SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+	}
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID}); err != nil {
+		t.Fatalf("resume inline outage: %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	if len(m.Gates) != 2 || m.Gates[1].Tier != 0 || m.Gates[1].Status != runmanifest.GateStatusPass {
+		t.Fatalf("resumed inline gate = %#v, want tier-0 pass", m.Gates)
+	}
+}
+
+func TestEngineResumeDoesNotRetryMixedBlockAndFailedSeats(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-mixed-outage"
+	one := 1
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", MaxRounds: &one})
+	seatCalls := 0
+	e := Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("plan"), CannedMediaType: "text/plain"}),
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			seatCalls++
+			meta := SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}
+			if seatCalls == 1 {
+				return &replay.StubRunner{CannedOutput: envelopeJSON("block", []string{"change it"}), CannedMediaType: "application/json"}, meta, nil
+			}
+			return &replay.StubRunner{CannedMediaType: "application/json"}, meta, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L1": {[]string{"reviewer-a", "reviewer-b"}, ""}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	var gateErr *GateEscalationError
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); !errors.As(err, &gateErr) {
+		t.Fatalf("first run: expected GateEscalationError, got %v", err)
+	}
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID})
+	if err == nil || !strings.Contains(err.Error(), "already complete") {
+		t.Fatalf("resume mixed decision: expected already complete, got %v", err)
+	}
+	if got := len(readLiveManifest(t, repo, runID).Gates); got != 1 {
+		t.Fatalf("gates = %d, want unchanged history of 1", got)
+	}
+}
+
+func TestEngineResumeDoesNotAdvancePastSubstantiveEscalation(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-blocked-frontier"
+	one := 1
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}, Gate: &workflow.GateConfig{Tier: "L1", MaxRounds: &one}},
+			{Name: "build", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+		},
+	}
+	producerCalls := 0
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+			producerCalls++
+			return &replay.StubRunner{CannedOutput: []byte("output"), CannedMediaType: "text/plain"}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return &replay.StubRunner{
+				CannedOutput: envelopeJSON("block", []string{"change it"}), CannedMediaType: "application/json",
+			}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L1": {[]string{"reviewer"}, ""}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	var gateErr *GateEscalationError
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); !errors.As(err, &gateErr) {
+		t.Fatalf("first run: expected GateEscalationError, got %v", err)
+	}
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID})
+	if err == nil || !strings.Contains(err.Error(), "terminal gate escalation") {
+		t.Fatalf("resume substantive escalation: expected terminal error, got %v", err)
+	}
+	if producerCalls != 1 {
+		t.Fatalf("producer calls = %d, want 1", producerCalls)
+	}
+}
+
+func TestEngineResumeDoesNotAdvancePastInterruptedGateRerun(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runID := "mywf-20260101T000000Z-rerun-frontier"
+	two := 2
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}, Gate: &workflow.GateConfig{Tier: "L1", MaxRounds: &two}},
+			{Name: "build", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+		},
+	}
+	producerCalls := 0
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+			producerCalls++
+			if producerCalls == 2 {
+				return &replay.StubRunner{Err: errors.New("rerun interrupted")}, nil
+			}
+			return &replay.StubRunner{CannedOutput: []byte("output"), CannedMediaType: "text/plain"}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return &replay.StubRunner{
+				CannedOutput: envelopeJSON("block", []string{"change it"}), CannedMediaType: "application/json",
+			}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L1": {[]string{"reviewer"}, ""}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); err == nil || !strings.Contains(err.Error(), "rerun interrupted") {
+		t.Fatalf("first run: expected interrupted rerun, got %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	if len(m.Stages) != 1 || len(m.Gates) != 1 || m.Gates[0].Status != runmanifest.GateStatusRerun {
+		t.Fatalf("interrupted history = stages:%d gates:%#v", len(m.Stages), m.Gates)
+	}
+
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID})
+	if err == nil || !strings.Contains(err.Error(), "terminal gate") {
+		t.Fatalf("resume interrupted rerun: expected terminal gate error, got %v", err)
+	}
+	if producerCalls != 2 {
+		t.Fatalf("producer calls = %d, want 2", producerCalls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Producer Session Evidence tests (etude-7ri.2)
 // ---------------------------------------------------------------------------
