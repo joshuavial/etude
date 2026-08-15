@@ -47,6 +47,7 @@ Useful flags:
 --harness <name>
 --harness-version <version>
 --model <model-id>
+--expect create|append
 ```
 
 If `--git-sha` is omitted, `etude` records the current `HEAD`. When provided, it
@@ -72,6 +73,35 @@ the run refs; if a key already exists, the new value replaces it.
 `--workflow` and `--workflow-version` are run-level metadata. If either is
 explicitly provided during append and conflicts with the existing run, capture
 fails.
+
+## Create versus append
+
+Capture creates the run when `refs/etude/runs/<run-id>` does not exist and
+appends when it does. Every successful capture reports which one it did:
+
+```
+captured <commit>
+ref refs/etude/runs/run-1
+action create
+```
+
+`--expect` makes that choice a requirement rather than an observation:
+
+| flag | requires | on violation |
+|---|---|---|
+| `--expect create` | the run must NOT already exist | fails, naming the existing ref and its tip; the ref is not modified |
+| `--expect append` | the run MUST already exist | fails, naming the missing ref; no run is created |
+| omitted | either | creates or appends, and says which |
+
+Pass `--expect append` from anything that believes it is extending a run — a
+multi-stage workflow, a script capturing successive phases. A missing run ref at
+that point is a **data-loss signal, not a fresh start**: without the flag the
+capture would silently begin a new manifest and the run's recorded stages and
+gate attempts would be gone while capture still printed `captured <commit>`.
+Investigate why the ref disappeared before re-capturing.
+
+`etude capture-run` (create-only) and `etude capture-gate` (append-only) already
+fail rather than choose.
 
 ## Capturing review gates
 

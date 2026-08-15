@@ -11,6 +11,7 @@ etude capture <stage> [flags]
 ### Options
 
 ```
+      --expect string             require this capture to create a new run or append to an existing one: create|append (default: either)
       --git-sha string            repo git sha for this stage
       --harness string            agent runtime that executed the stage (e.g. claude-code)
       --harness-version string    version of the agent runtime

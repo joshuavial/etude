@@ -26,6 +26,14 @@ const (
 	defaultProducedBy      = "original"
 	defaultSkillRepo       = "manual"
 	defaultSkillVersion    = "manual"
+
+	// expectCreate / expectAppend are the accepted --expect values. --expect
+	// declares which of the two things capture is allowed to do, so a caller
+	// that BELIEVES a run exists can say so and fail loudly when it does not,
+	// rather than silently starting a fresh manifest over the top of a run
+	// whose history has gone missing (etude-nad).
+	expectCreate = "create"
+	expectAppend = "append"
 )
 
 type captureConfig struct {
@@ -44,6 +52,7 @@ type captureConfig struct {
 	harness         string
 	harnessVersion  string
 	model           string
+	expect          string
 }
 
 func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
@@ -90,6 +99,7 @@ func newCaptureCommand(out, errOut io.Writer) *cobra.Command {
 	flags.StringVar(&cfg.harness, "harness", "", "agent runtime that executed the stage (e.g. claude-code)")
 	flags.StringVar(&cfg.harnessVersion, "harness-version", "", "version of the agent runtime")
 	flags.StringVar(&cfg.model, "model", "", "LLM model used by this stage (e.g. claude-opus-4-7)")
+	flags.StringVar(&cfg.expect, "expect", "", "require this capture to create a new run or append to an existing one: create|append (default: either)")
 	return cmd
 }
 
@@ -113,6 +123,10 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
 	}
 	if len(cfg.output) != 1 {
 		return fmt.Errorf("exactly one --output is required")
+	}
+	expect := strings.TrimSpace(cfg.expect)
+	if expect != "" && expect != expectCreate && expect != expectAppend {
+		return fmt.Errorf("invalid --expect %q: want %q or %q", cfg.expect, expectCreate, expectAppend)
 	}
 	refs, err := parseRefs(cfg.refs)
 	if err != nil {
@@ -148,6 +162,15 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
 
 	ref := "refs/etude/runs/" + cfg.runID
 	commit, resolveErr := r.store.Resolve(ctx, ref)
+	// A missing ref means CREATE, so an unqualified capture cannot tell a fresh
+	// run from a run whose history has vanished underneath it. --expect lets the
+	// caller state which one it meant; enforce it before writing anything.
+	switch {
+	case expect == expectAppend && errors.Is(resolveErr, refstore.ErrNotFound):
+		return fmt.Errorf("run %q not found (%s); --expect append refuses to create a new run — the run's recorded history may have been lost, so investigate before re-capturing", cfg.runID, ref)
+	case expect == expectCreate && resolveErr == nil:
+		return fmt.Errorf("run %q already exists (%s at %s); --expect create refuses to append to it", cfg.runID, ref, commit)
+	}
 	now := r.now().UTC()
 	manifest := runmanifest.Manifest{
 		RunID:           cfg.runID,
@@ -211,18 +234,20 @@ func (r captureRunner) run(ctx context.Context, stageName string, cfg captureCon
 		Output:    output,
 		Timestamp: now,
 	})
+	action := expectCreate
+	if appending {
+		action = expectAppend
+	}
 	if opts.Message == "" {
-		action := "create"
-		if appending {
-			action = "append"
-		}
 		opts.Message = fmt.Sprintf("capture: %s run %s stage %s", action, cfg.runID, stageName)
 	}
 	written, err := (runmanifest.Writer{Store: r.store}).Write(ctx, manifest, files, opts)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\n", written, ref)
+	// Report which of the two happened: a caller that passed no --expect can
+	// still SEE a create where it expected an append.
+	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\naction %s\n", written, ref, action)
 	return err
 }
 

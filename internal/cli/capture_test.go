@@ -111,6 +111,136 @@ func TestCaptureAppendPreservesPriorArtifactsAndMergesRefs(t *testing.T) {
 	}
 }
 
+// The etude-nad guard: capture treats a missing run ref as CREATE, so a run ref
+// that vanishes mid-session (a stray `git fetch --prune` over the etude
+// namespace) made the next capture silently start a fresh manifest and discard
+// the recorded gate attempts. --expect lets the caller state which of the two it
+// meant, and every capture now reports which one it did.
+
+func TestCaptureExpectAppendFailsWhenRunMissing(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "plan")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "append")
+	if err == nil {
+		t.Fatal("capture --expect append on a missing run returned nil error")
+	}
+	for _, want := range []string{"run-1", "not found", "refs/etude/runs/run-1"} {
+		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
+			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
+		}
+	}
+	// The whole point of the guard: nothing was written.
+	if refs := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude")); refs != "" {
+		t.Fatalf("refused capture created refs:\n%s", refs)
+	}
+}
+
+func TestCaptureExpectCreateFailsWhenRunExists(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "plan")
+	writeFile(t, repo, "review.txt", "review")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("first capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	before := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "refs/etude/runs/run-1"))
+
+	_, stderr, err := execute("capture", "review", "--run", "run-1", "--output", "review=review.txt", "--expect", "create")
+	if err == nil {
+		t.Fatal("capture --expect create on an existing run returned nil error")
+	}
+	for _, want := range []string{"run-1", "already exists", before} {
+		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
+			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
+		}
+	}
+	if after := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "refs/etude/runs/run-1")); after != before {
+		t.Fatalf("refused capture moved the ref to %q, want %q", after, before)
+	}
+}
+
+func TestCaptureExpectAppendPreservesPriorStages(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "plan")
+	writeFile(t, repo, "review.txt", "review")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "create"); err != nil {
+		t.Fatalf("create capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err := execute("capture", "review", "--run", "run-1", "--output", "review=review.txt", "--expect", "append"); err != nil {
+		t.Fatalf("append capture returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	manifest := readRunManifest(t, repo, "run-1")
+	if len(manifest.Stages) != 2 {
+		t.Fatalf("stages = %#v", manifest.Stages)
+	}
+	if manifest.Stages[0].Name != "plan" || manifest.Stages[1].Name != "review" {
+		t.Fatalf("stage names = %q, %q", manifest.Stages[0].Name, manifest.Stages[1].Name)
+	}
+	for _, stage := range manifest.Stages {
+		if _, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/run-1", stage.Output.Path); err != nil {
+			t.Fatalf("missing artifact %s: %v", stage.Output.Path, err)
+		}
+	}
+}
+
+func TestCaptureReportsCreateAndAppendAction(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "plan")
+	writeFile(t, repo, "review.txt", "review")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md")
+	if err != nil {
+		t.Fatalf("first capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "\naction create\n") {
+		t.Fatalf("create stdout = %q, want an 'action create' line", stdout)
+	}
+	// Pin the first two lines on the CREATE path too, not just on append: a
+	// consumer parsing positionally sees this shape first.
+	createLines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(createLines) != 3 || !strings.HasPrefix(createLines[0], "captured ") || createLines[1] != "ref refs/etude/runs/run-1" {
+		t.Fatalf("create stdout lines = %#v", createLines)
+	}
+	stdout, stderr, err = execute("capture", "review", "--run", "run-1", "--output", "review=review.txt")
+	if err != nil {
+		t.Fatalf("second capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "\naction append\n") {
+		t.Fatalf("append stdout = %q, want an 'action append' line", stdout)
+	}
+	// The first two lines keep their existing format and position.
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "captured ") || lines[1] != "ref refs/etude/runs/run-1" {
+		t.Fatalf("stdout lines = %#v", lines)
+	}
+}
+
+func TestCaptureRejectsUnknownExpectValue(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "plan")
+	chdir(t, repo)
+
+	_, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md", "--expect", "maybe")
+	if err == nil {
+		t.Fatal("capture --expect maybe returned nil error")
+	}
+	for _, want := range []string{"invalid --expect", "create", "append"} {
+		if !strings.Contains(err.Error(), want) && !strings.Contains(stderr, want) {
+			t.Fatalf("error %q stderr %q do not contain %q", err, stderr, want)
+		}
+	}
+	if refs := strings.TrimSpace(gitCapture(t, repo, "for-each-ref", "--format=%(refname)", "refs/etude")); refs != "" {
+		t.Fatalf("rejected capture created refs:\n%s", refs)
+	}
+}
+
 func TestCaptureRejectsInvalidInputs(t *testing.T) {
 	repo := initCaptureRepo(t)
 	writeFile(t, repo, "out.md", "out")
