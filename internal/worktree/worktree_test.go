@@ -335,6 +335,25 @@ func TestCleanupNoStaleMetadata(t *testing.T) {
 	}
 }
 
+// isolateTempDir points os.TempDir() at a per-test directory for the rest of the
+// test. The leak assertions below scan os.TempDir() for "etude-worktree-*" by
+// name, and worktree.Checkout is also called from the liverun, bench and cli
+// test packages — which "go test ./..." runs as separate concurrent binaries
+// against the SAME shared TMPDIR. Without this, another package's in-flight temp
+// dir is attributed to the Checkout under test and the assertion fails for a
+// leak that never happened. Isolating the dir keeps the assertion honest: a real
+// leak from THIS Checkout still lands here and is still caught.
+// TMPDIR is what os.TempDir() reads on unix; TMP/TEMP are what it reads on
+// Windows. Setting all three keeps the isolation from silently evaporating if
+// this suite is ever run on a platform other than the one it was written on.
+func isolateTempDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, dir)
+	}
+}
+
 // snapshotWorktreeTempDirs returns the set of "etude-worktree-*" entry names
 // currently in the system temp dir. Comparing a before/after snapshot lets a
 // test assert on dirs that NEWLY appeared during the call under test, which is
@@ -369,6 +388,7 @@ func newlyLeakedWorktreeTempDirs(before map[string]bool, after map[string]bool) 
 }
 
 func TestNoTempDirLeakOnSHANotFound(t *testing.T) {
+	isolateTempDir(t)
 	ctx := context.Background()
 	root := initRepo(t)
 	seedTwoCommits(t, root)
@@ -401,6 +421,7 @@ func TestNoTempDirLeakOnSHANotFound(t *testing.T) {
 // IS allocated in this path, so Checkout must os.RemoveAll it; the test asserts
 // no etude-worktree-* dir is left behind.
 func TestNoTempDirLeakOnWorktreeAddFailure(t *testing.T) {
+	isolateTempDir(t)
 	ctx := context.Background()
 	root := initRepo(t)
 	_, sha2 := seedTwoCommits(t, root)
