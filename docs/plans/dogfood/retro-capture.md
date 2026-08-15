@@ -11,9 +11,12 @@ Retros are optional, triggered artifacts. They explain what happened in a run,
 phase, gate sequence, or workflow, but they do not replace the gate result,
 test result, or bead status that established what passed or failed.
 
-**Cadence retros require a `--meta-file` sidecar** (etude-8hq.3): from
-2026-05-27 onward every `--trigger cadence-retro` capture must include
-`--meta-file` with the 7-key convention. See
+**Cadence retros should carry a `--meta-file` sidecar** (etude-8hq.3): from
+2026-05-27 onward every `--trigger cadence-retro` capture is expected to include
+`--meta-file` with the 7-key convention. This was enforced by the completeness
+audit until bead `etude-9uf.4` removed that check; it is now a convention that
+nothing verifies, while `scripts/retro-meta-index.sh` still consumes the
+sidecars (bead `etude-k47`). See
 `docs/plans/dogfood/retro-ledger.md` §"Cadence retro-meta sidecar (required,
 etude-8hq.3)" and `scripts/retro-meta-cadence.example.json`.
 
@@ -29,9 +32,12 @@ Using `--subject-run <id>` requires a valid run ref to exist
 captured yet. The `--bead` flag records the bead identity without requiring a
 run ref.
 
-The consistency guard (check (g)) treats both `subject_run.*` and `bead.*`
-refs equally as "subject present in refs", so using `--bead` for these cases
-produces a clean audit result. The canonical example is `etude-nm6`
+The retro-subject consistency guard treated both `subject_run.*` and `bead.*`
+refs equally as "subject present in refs", so `--bead` was the way to record
+these cases. That guard was removed in `etude-9uf.4`, so nothing checks the correspondence
+today — though the audit's retro-cadence warning survives, and its refs-pushed
+check still covers `refs/etude/retros/*`; recording
+it remains good practice. The canonical example is `etude-nm6`
 (gate-record backfill, allowlisted), which has no run ref and must be recorded
 via `--bead etude-nm6` when it appears as a cohort subject.
 

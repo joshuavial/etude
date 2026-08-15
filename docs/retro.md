@@ -78,7 +78,8 @@ for downstream analysis. The two fields are independent:
   `retro show`, `etude log` EVENT column, and effective-time sort. This is the
   machine-readable source of truth for etude-native tooling.
 - `original_event_date` (sidecar): calendar date string, used by downstream
-  cross-retro analysis tools and checked by the dogfood completeness audit.
+  cross-retro analysis tools. (It was also checked by the dogfood completeness
+  audit until bead `etude-9uf.4` removed that check.)
   Etude core never parses the sidecar — it stores it verbatim.
 
 When both are set they SHOULD agree on the date (i.e. `occurred_at`'s date
@@ -113,14 +114,18 @@ durable-changes timeline across all current (non-superseded) cadence-retro refs.
 The schema of the JSON is not interpreted by etude — it is stored verbatim for
 downstream tooling (e.g. failure-mode indexing). However, this project's
 **cadence retros** follow a specific 7-key convention that is documented here
-and enforced by `scripts/dogfood-completeness-audit.sh` check (f). This is a
+and, until bead `etude-9uf.4`, enforced by
+`scripts/dogfood-completeness-audit.sh`. **Nothing enforces it now** — see
+Enforcement below. This is a
 **dogfood process convention**, not an etude-core schema constraint: `etude
 retro capture` validates only that the sidecar is well-formed JSON (`json.Valid`)
-and stores the bytes verbatim. The 7-key requirement is checked by the dogfood
-audit script reading the retro manifest from git.
+and stores the bytes verbatim. The 7-key requirement was checked by the dogfood
+audit script reading the retro manifest from git, until `etude-9uf.4` removed
+that check; nothing checks it now.
 
-A cadence retro-meta sidecar is a JSON object with these required keys
-(presence + type checked; values are never constrained; arrays may be empty):
+A cadence retro-meta sidecar is a JSON object with these keys (all seven
+expected; values are never constrained; arrays may be empty). "Required" here is
+a convention, not a check — see Enforcement above:
 
 | Key | Type | Meaning |
 |-----|------|---------|
@@ -132,7 +137,8 @@ A cadence retro-meta sidecar is a JSON object with these required keys
 | `decisions` | array of strings | decisions or rule-changes the retro landed (may be `[]`) |
 | `durable_changes` | array of strings | concrete skill/formula/doc/script edits that landed as a result (may be `[]`); captures what actually changed, distinct from decisions (intent) and follow-up beads (future work) |
 
-All seven keys must be present and of the correct type. Additional keys are
+All seven keys are expected to be present and of the correct type (by
+convention — nothing checks it). Additional keys are
 allowed and ignored. A canonical example is committed at
 `scripts/retro-meta-cadence.example.json`. See
 `docs/plans/dogfood/retro-ledger.md` for the cadence capture rule.
@@ -149,26 +155,37 @@ allowed and ignored. A canonical example is committed at
 }
 ```
 
-**Enforcement:** `scripts/dogfood-completeness-audit.sh` check (f) (`cadence-sidecar`)
-runs in batch mode (`--last`/`--since`/default). For each `trigger==cadence-retro`
-retro ref:
+**Enforcement: none, as of bead `etude-9uf.4`.** The `cadence-sidecar` check was
+removed when the completeness audit was shrunk to the checks that guard evidence
+about work rather than bookkeeping about retros. `scripts/retro-meta-index.sh`
+still CONSUMES these sidecars, so a cadence retro without one silently reduces
+that index's coverage — bead `etude-k47` covers making the consumer validate its
+own input. Write the sidecar; nothing will tell you if you forget.
+
+The rules below describe how enforcement worked while it existed, and remain the
+convention worth following:
 - **Superseded PRE-cutoff refs are skipped:** if a newer retro names a
   *pre-cutoff* ref in its `refs.supersedes` field, that old ref is excluded from
-  check (f). This is the canonical way to clear a ref from the backfill worklist —
+  that check. This is the canonical way to clear a ref from the backfill worklist —
   re-capture the retro with `etude retro capture --supersedes <old-id>
   --meta-file <sidecar.json>`, which creates a new ref (post-convention, with a
-  valid sidecar) and marks the old ref superseded. The new ref passes check (f);
-  the old ref is skipped. **POST-cutoff cadence refs are NEVER skipped by
-  supersession** — they are always validated, so a missing-sidecar hard gap can
-  never be hidden by superseding a post-cutoff retro with a non-validating ref.
+  valid sidecar) and marks the old ref superseded. The new ref passed that
+  check; the old ref was skipped. **POST-cutoff cadence refs were NEVER skipped
+  by supersession** — they were always validated, so a missing-sidecar hard gap
+  could not be hidden by superseding a post-cutoff retro with a non-validating
+  ref.
 - **POST-convention** (captured on or after `2026-05-27T00:00:00Z`): missing or
-  malformed sidecar is a **hard gap** (exit 1).
+  malformed sidecar was a **hard gap** (exit 1).
 - **PRE-convention** (captured before the cutoff): missing or malformed sidecar
-  is a **WARN** (exit 0) — these are the backfill worklist for etude-8hq.5.
+  was a **WARN** (exit 0) — these were the backfill worklist for etude-8hq.5.
 
-Checks (c) and (g) also skip superseded refs by the same mechanism.
+The cadence check — which SURVIVES — also skips superseded refs, using the same
+`refs.supersedes` mechanism but a different rule: it skips UNCONDITIONALLY,
+where the removed sidecar check skipped only PRE-cutoff refs.
 
-Check (f) is not run in `--bead` mode (which is per-bead, not per-retro).
+The sidecar check was not run in the audit's `--bead` mode, which was per-bead
+rather than per-retro. That mode's only caller was deleted in `etude-9uf.3`, and
+the mode itself went in `etude-9uf.4`.
 
 ## Generate a retro
 

@@ -101,8 +101,8 @@ if ! $_has_code_ref; then
   exit 0
 fi
 
-# Run the batch audit. Use DOGFOOD_AUDIT_ETUDE_BIN if set (faster; avoids
-# rebuilding on every push). The audit script already handles the env var.
+# Run the batch audit. Since etude-9uf.4 the audit is pure git + bd and builds
+# nothing, so there is no binary to reuse and no build to skip.
 echo "dogfood pre-push: checking completeness audit (--last 9)..."
 _dogfood_audit_exit=0
 bash "$_dogfood_script" --last 9 || _dogfood_audit_exit=$?

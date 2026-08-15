@@ -964,8 +964,9 @@ the gate the bead adds, and not by fixture tests or plan review alone.** *(lens:
 - **Why:** etude-8hq.8 planned to repair a retro by SUPERSEDE. The plan and all
   three plan-gate seats approved it. But superseding a pre-cutoff retro mints a NEW
   ref with a post-cutoff `created` timestamp, which a DIFFERENT shipped check
-  (etude-8hq.3's check (f)) hard-requires carry a sidecar — so the supersede produced
-  a hard GAP and `make dogfood-audit` exited 1. Fixture tests passed (they seed only
+  (etude-8hq.3's cadence-sidecar check, since removed in `etude-9uf.4`) hard-required
+  carry a sidecar — so the supersede produced a hard GAP and `make dogfood-audit`
+  exited 1. Fixture tests passed (they seed only
   the new check's inputs); plan review passed (it reasoned about the new guard in
   isolation). ONLY running the real, composed audit on the actual re-captured ref
   surfaced the cross-feature interaction.
@@ -1038,11 +1039,16 @@ for when that is legitimate and what it obliges you to write down.
 
 > **Mechanical completeness check:** `scripts/dogfood-completeness-audit.sh`
 > checks whether closed beads have their run refs, gate records, and pushed
-> refs. Run `make dogfood-audit` for a batch sweep, or `--bead <id>` per close.
-> Its "run ref present" and "gates non-empty" checks become structurally true
-> once a phase can only advance through `etude gate`; the check that keeps
-> earning its place is refs-pushed, because an unpushed ref is invisible until
-> the worktree is gone.
+> refs. Run `make dogfood-audit`; `--last <N>` sets the window.
+>
+> An earlier version of this note said the "run ref present" and "gates
+> non-empty" checks "become structurally true once a phase can only advance
+> through `etude gate`". **That is false, and bead `etude-9uf.4` corrected it.**
+> Nothing forces `etude gate` to be used — no hook, CLI path or `bd close` guard
+> requires a run ref or a gate before a bead closes. So those two checks are the
+> only detectors of, respectively, a bead closed with no run at all and a run
+> captured but never gated, and both survive. Refs-pushed survives for its own
+> reason: an unpushed ref is invisible until the worktree is gone.
 
 Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
 COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose

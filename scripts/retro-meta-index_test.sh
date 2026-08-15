@@ -94,7 +94,7 @@ INITIAL_SHA="$(git rev-parse HEAD)"
 
 # ---------------------------------------------------------------------------
 # Seed helper: cadence retro WITH retro-meta sidecar.
-# Mirrors seed_cadence_retro_with_meta from dogfood-completeness-audit_test.sh.
+# Seeds a cadence retro carrying a retro-meta sidecar.
 #
 # Usage: seed_cadence_retro_with_meta <retro-id> <created> <sidecar-json> [subject-run ...]
 # ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ print(r0.stdout.strip())
 
 # ---------------------------------------------------------------------------
 # Seed helper: superseding retro WITH sidecar.
-# Mirrors seed_superseding_retro from dogfood-completeness-audit_test.sh.
+# Seeds a retro that supersedes an earlier one.
 #
 # Usage: seed_superseding_retro <new-id> <supersedes-id> <created> <trigger> <sidecar-json> [subject-run ...]
 # ---------------------------------------------------------------------------

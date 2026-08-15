@@ -1,1579 +1,497 @@
 #!/usr/bin/env bash
 #
-# dogfood-completeness-audit_test.sh — fixture-based tests for
-# scripts/dogfood-completeness-audit.sh.
+# dogfood-completeness-audit_test.sh — fixture tests for the completeness audit.
 #
-# Creates a throwaway git repo with a bare-repo origin (so the pushed-ref
-# check is real), a PATH `bd` shim emitting canned closed-bead JSON, and
-# seeded etude refs. Runs the audit script in several configurations and
-# asserts exit codes + output patterns.
+# Each case builds a throwaway repo with a bare origin and a `bd` PATH shim, so
+# nothing here touches real repo data. Replaced a 1579-line predecessor in bead
+# etude-9uf.4 alongside the script it tests.
 #
-# Run directly:
-#   bash scripts/dogfood-completeness-audit_test.sh
+# What matters most here is the EXIT CODE CONTRACT: .beads/hooks/pre-push
+# branches on 0/1/2 and fails closed on anything unexpected, so a change that
+# turns a gap into a warning (or a usage error into a gap) silently changes what
+# the push gate enforces for every lane.
 #
-# Or via make:
-#   make dogfood-audit-test
-#
-# Requires: bash 4+ (associative arrays), git, go, python3.
-# Does NOT mutate any real repo data.
+# Run: bash scripts/dogfood-completeness-audit_test.sh   (or: make dogfood-audit-test)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 AUDIT="$SCRIPT_DIR/dogfood-completeness-audit.sh"
 
-# ---------------------------------------------------------------------------
-# Pre-build etude once from the real repo root; inject via DOGFOOD_AUDIT_ETUDE_BIN
-# so the audit script does not try to run 'go build' inside the throwaway repo.
-# ---------------------------------------------------------------------------
-PREBUILT_ETUDE_DIR="$(mktemp -d)"
-trap 'rm -rf "$PREBUILT_ETUDE_DIR"' EXIT
-PREBUILT_ETUDE="$PREBUILT_ETUDE_DIR/etude"
-echo "building etude for tests..."
-(cd "$REPO_ROOT" && go build -o "$PREBUILT_ETUDE" ./cmd/etude)
-export DOGFOOD_AUDIT_ETUDE_BIN="$PREBUILT_ETUDE"
-echo "etude built: $PREBUILT_ETUDE"
-echo ""
-
-# ---------------------------------------------------------------------------
-# Test harness helpers
-# ---------------------------------------------------------------------------
 pass_count=0
 fail_count=0
 current_test=""
+t_start() { current_test="$1"; echo "--- TEST: $current_test"; }
+t_pass()  { (( pass_count++ )) || true; echo "    PASS: $current_test"; }
+t_fail()  { (( fail_count++ )) || true; echo "    FAIL: $current_test — $1" >&2; }
 
-t_start() {  # <test-name>
-  current_test="$1"
-  echo "--- TEST: $current_test"
-}
-t_pass() {
-  (( pass_count++ )) || true
-  echo "    PASS: $current_test"
-}
-t_fail() {  # <reason>
-  (( fail_count++ )) || true
-  echo "    FAIL: $current_test — $1" >&2
-}
-
-assert_exit() {  # <expected-exit> <actual-exit> [<extra-context>]
+assert_exit() {
   local expected="$1" actual="$2" ctx="${3:-}"
-  if [[ "$actual" -eq "$expected" ]]; then
-    t_pass
-  else
-    t_fail "expected exit $expected, got $actual${ctx:+ ($ctx)}"
-  fi
+  [[ "$actual" -eq "$expected" ]] && t_pass \
+    || t_fail "expected exit $expected, got $actual${ctx:+ ($ctx)}"
+}
+assert_contains() {
+  grep -qE "$1" <<< "$2" && t_pass || t_fail "expected pattern '$1' in output"
+}
+assert_not_contains() {
+  grep -qE "$1" <<< "$2" && t_fail "pattern '$1' present but should not be" || t_pass
 }
 
-assert_output_contains() {  # <pattern> <output>
-  if grep -qE "$1" <<< "$2"; then
-    t_pass
-  else
-    t_fail "expected pattern '$1' not found in output"
-  fi
-}
-
-assert_output_not_contains() {  # <pattern> <output>
-  if ! grep -qE "$1" <<< "$2"; then
-    t_pass
-  else
-    t_fail "pattern '$1' found but should be absent"
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# Fixture setup
-# ---------------------------------------------------------------------------
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir" "$PREBUILT_ETUDE_DIR"' EXIT
+trap 'rm -rf "$tmpdir"' EXIT
 
-bare_origin="$tmpdir/origin.git"
-work_repo="$tmpdir/work"
+# new_repo <bead-json> — fresh repo + bare origin + bd shim emitting <bead-json>.
+# Echoes the repo path. Every case gets its own, so none can affect another.
+new_repo() {
+  local beads="$1" n="repo$RANDOM$RANDOM" repo bare
+  repo="$tmpdir/$n"; bare="$tmpdir/$n.git"
+  git init -q --bare "$bare"
+  git init -q "$repo"
+  (
+    cd "$repo"
+    git config user.email t@t; git config user.name T
+    touch f; git add f; git commit -qm init
+    git remote add origin "$bare"; git push -q origin HEAD:refs/heads/main
+    mkdir -p scripts
+    cp "$AUDIT" scripts/dogfood-completeness-audit.sh
+    printf '#!/usr/bin/env bash\ncat <<'\''J'\''\n%s\nJ\n' "$beads" > bd
+    chmod +x bd
+  )
+  echo "$repo"
+}
 
-# Create bare origin + working clone
-git init --bare "$bare_origin" --quiet
-git clone "$bare_origin" "$work_repo" --quiet 2>/dev/null
+# add_run <repo> <bead> <n-gates> — mint refs/etude/runs/<bead> whose manifest
+# carries <n-gates> gate attempts.
+add_run() {
+  local repo="$1" bead="$2" n="$3" gates="[]"
+  [[ "$n" -gt 0 ]] && gates="[$(for ((i=0;i<n;i++)); do printf '{"gate_id":"g%d"},' "$i"; done | sed 's/,$//')]"
+  (
+    cd "$repo"
+    local blob tree commit
+    blob=$(printf '{"manifest_version":3,"run_id":"%s","stages":[],"gates":%s}' "$bead" "$gates" | git hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+    commit=$(git commit-tree "$tree" -m "run $bead")
+    git update-ref "refs/etude/runs/$bead" "$commit"
+  )
+}
+push_etude() { ( cd "$1" && git push -q origin 'refs/etude/*:refs/etude/*' ); }
 
-cd "$work_repo"
+# add_run_without_manifest <repo> <bead> — a run ref whose tree carries no
+# manifest.json at all. Reachable from a hand-made ref or a partial clone whose
+# promisor object cannot be fetched.
+add_run_without_manifest() {
+  local repo="$1" bead="$2"
+  (
+    cd "$repo"
+    local blob tree commit
+    blob=$(echo placeholder | git hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tnot-a-manifest.txt\n' "$blob" | git mktree)
+    commit=$(git commit-tree "$tree" -m "run $bead")
+    git update-ref "refs/etude/runs/$bead" "$commit"
+  )
+}
 
-# Seed an initial commit so the repo is valid
-git config user.email "test@test.com"
-git config user.name "Test"
-touch README.md
-git add README.md
-git commit -m "init" --quiet
+# add_run_bad_json <repo> <bead> — manifest.json present but not valid JSON.
+add_run_bad_json() {
+  local repo="$1" bead="$2"
+  (
+    cd "$repo"
+    local blob tree commit
+    blob=$(printf 'this is not json' | git hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+    commit=$(git commit-tree "$tree" -m "run $bead")
+    git update-ref "refs/etude/runs/$bead" "$commit"
+  )
+}
 
-# Make a docs/ directory for docs-drift test
-mkdir -p docs
-echo "# docs" > docs/README.md
-git add docs/
-git commit -m "add docs" --quiet
-DOCS_COMMIT="$(git rev-parse HEAD)"
+run_audit() { # run_audit <repo> [args...] -> OUT, RC
+  local repo="$1"; shift
+  RC=0
+  OUT="$( cd "$repo" && PATH="$repo:$PATH" bash scripts/dogfood-completeness-audit.sh "$@" 2>&1 )" || RC=$?
+}
 
-# A commit that touches ONLY a non-docs file (not README.md, not docs/) — used to
-# assert the docs-drift check does NOT false-positive on code-only changes.
-echo "package x" > code.go
-git add code.go
-git commit -m "add non-docs file" --quiet
-NODOCS_COMMIT="$(git rev-parse HEAD)"
-
-git push origin main --quiet
+ONE='[{"id":"b1","closed_at":"2026-08-15T10:00:00Z"}]'
+THREE='[{"id":"b1","closed_at":"2026-08-15T10:00:00Z"},{"id":"b2","closed_at":"2026-08-15T09:00:00Z"},{"id":"b3","closed_at":"2026-08-15T08:00:00Z"}]'
 
 # ---------------------------------------------------------------------------
-# Manifest builder helper
+# Exit-code contract — the part the pre-push hook depends on
 # ---------------------------------------------------------------------------
-# Creates a minimal manifest.json in the git object store and writes it to
-# refs/etude/runs/<id>. Accepts a list of gate IDs (empty for gateless).
-seed_run_ref() {  # <bead-id> <git-sha> <gate-id1> [<gate-id2> ...]
-  local bead="$1"; shift
-  local git_sha="$1"; shift
-  local gates_json="[]"
-  if [[ $# -gt 0 ]]; then
-    local gate_entries=""
-    for gid in "$@"; do
-      gate_entries="${gate_entries},{\"gate_id\":\"$gid\",\"phase\":\"implement\",\"round\":1,\"tier\":1,\"status\":\"pass\",\"reviewed_stages\":[],\"seats\":[],\"decision\":{},\"timestamp\":\"2026-05-25T00:00:00Z\"}"
-    done
-    gates_json="[${gate_entries#,}]"
-  fi
+echo "=== exit-code contract ==="
 
-  local manifest
-  manifest="$(python3 -c "
-import json
-m = {
-    'manifest_version': 3,
-    'run_id': '$bead',
-    'workflow': 'default',
-    'workflow_version': 'v1',
-    'created': '2026-05-25T00:00:00Z',
-    'refs': {'bead': '$bead'},
-    'stages': [{'stage': 'plan', 'produced_by': 'original', 'git_sha': '$git_sha', 'inputs': [], 'output': {}}],
-    'gates': $gates_json
-}
-print(json.dumps(m))
-")"
+t_start "clean run exits 0"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 0 "$RC" "$OUT"
 
-  # Write tree with manifest.json blob
-  local blob_sha
-  blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
-  local tree_sha
-  tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
-  local commit_sha
-  commit_sha="$(git commit-tree "$tree_sha" -m "run: $bead" <<< "")"
-  git update-ref "refs/etude/runs/$bead" "$commit_sha"
-}
+t_start "clean run says so"
+assert_contains "dogfood-audit: clean" "$OUT"
 
-# Seed a minimal cadence-retro ref covering the given subject runs
-seed_cadence_retro() {  # <retro-id> <subject-run1> [<subject-run2> ...]
-  local retro_id="$1"; shift
-  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
-  local i=1
-  for run in "$@"; do
-    refs_json="${refs_json},\"subject_run.$i\":\"$run\""
-    (( i++ )) || true
-  done
-  refs_json="${refs_json}}"
+t_start "unknown flag is a usage error (exit 2, NOT a gap)"
+run_audit "$r" --bogus
+assert_exit 2 "$RC" "$OUT"
 
-  local manifest
-  manifest="$(python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': '$retro_id',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '2026-05-26T00:00:00Z',
-    'refs': json.loads('$refs_json'),
-    'stages': []
-}
-print(json.dumps(m))
-")"
+t_start "--last 0 is rejected (exit 2), not treated as an empty window"
+run_audit "$r" --last 0
+assert_exit 2 "$RC" "$OUT"
 
-  local blob_sha tree_sha commit_sha
-  blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
-  tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
-  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
-  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
-}
+t_start "--last with a non-numeric value exits 2"
+run_audit "$r" --last abc
+assert_exit 2 "$RC" "$OUT"
 
-# Seed a cadence-retro ref WITH a retro-meta sidecar blob.
-# The sidecar JSON is written as a content-addressed blob at
-# artifacts/sha256/<2>/<hash> and referenced from the manifest stages[].
-#
-# Usage: seed_cadence_retro_with_meta <retro-id> <created> <sidecar-json> <subject-run1> [...]
-#   <created>     full ISO-8601 timestamp for manifest.created
-#   <sidecar-json> the JSON string to store as the retro-meta blob
-seed_cadence_retro_with_meta() {
-  local retro_id="$1"; shift
-  local created="$1"; shift
-  local sidecar_json="$1"; shift
+t_start "the no-args default audits a window rather than erroring"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+run_audit "$r"
+assert_exit 0 "$RC" "$OUT"
 
-  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
-  local i=1
-  for run in "$@"; do
-    refs_json="${refs_json},\"subject_run.$i\":\"$run\""
-    (( i++ )) || true
-  done
-  refs_json="${refs_json}}"
+t_start "--help exits 0 and prints the exit-code contract"
+run_audit "$r" --help
+assert_contains "1  one or more hard gaps" "$OUT"
 
-  # Write sidecar blob and compute content-addressed path
-  local sidecar_blob_sha
-  sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
-  local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
+# The shipped allowlist is comment-heavy and blank-line separated. The BLANK-line
+# guard is the load-bearing half: without it an empty line yields an empty array
+# key, which aborts the script under `set -e` before any check runs. (The comment
+# guard is cosmetic by comparison — a "#" id simply matches no bead — so this case
+# pins the half that can actually break, rather than asserting something that
+# cannot fire.)
+t_start "an allowlist with comments and blank lines still runs to a verdict"
+r=$(new_repo "$ONE")
+printf '# a comment\n\n  \nb1  # test exemption\n' > "$r/scripts/dogfood-completeness-allow.txt"
+run_audit "$r" --last 1
+assert_exit 0 "$RC" "$OUT"
 
-  # Build manifest with a retro stage and a retro-meta stage
-  local manifest
-  manifest="$(python3 -c "
-import json
-sidecar_path = '$sidecar_path'
-sidecar_sha  = '$sidecar_blob_sha'
-m = {
-    'manifest_version': 2,
-    'run_id': '$retro_id',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$created',
-    'refs': json.loads('''$refs_json'''),
-    'stages': [
-        {
-            'stage': 'retro',
-            'produced_by': 'retro',
-            'git_sha': '',
-            'inputs': [],
-            'output': {
-                'role': 'retro',
-                'artifact': sidecar_sha,
-                'path': 'artifacts/sha256/' + sidecar_sha[:2] + '/placeholder',
-                'media_type': 'text/markdown; charset=utf-8',
-                'storage': 'content',
-                'size': 0
-            }
-        },
-        {
-            'stage': 'retro-meta',
-            'produced_by': 'retro',
-            'git_sha': '',
-            'inputs': [],
-            'output': {
-                'role': 'retro-meta',
-                'artifact': sidecar_sha,
-                'path': sidecar_path,
-                'media_type': 'application/json',
-                'storage': 'content',
-                'size': len('$sidecar_json'.encode())
-            }
-        }
-    ]
-}
-print(json.dumps(m))
-")"
+t_start "and the real allowlist entry still applies"
+assert_contains "bypass: b1" "$OUT"
 
-  # Write the manifest blob and tree with both the manifest and the sidecar artifact path
-  local manifest_blob_sha
-  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
+t_start "no closed beads exits 2, not 0"
+r_empty=$(new_repo '[]')
+run_audit "$r_empty" --last 5
+assert_exit 2 "$RC" "$OUT"
 
-  # Build tree: manifest.json + the sidecar at its content-addressed path
-  local tree_sha
-  tree_sha="$(python3 -c "
-import subprocess, sys
+# ---------------------------------------------------------------------------
+# (a) run ref present — the only detector of a bead closed with no run at all
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== (a) run ref present ==="
 
-manifest_blob = '$manifest_blob_sha'
-sidecar_blob  = '$sidecar_blob_sha'
-sidecar_path  = '$sidecar_path'
+t_start "missing run ref is a hard gap (exit 1)"
+r=$(new_repo "$ONE")
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Build a tree with nested directories for the artifact path
-# e.g. artifacts/sha256/ab/<hash>
-# We need to create sub-trees; use git mktree hierarchically.
-# Simpler: use fast-import-style git mktree with the full path entries.
-# git mktree only accepts flat entries; we need to build sub-trees bottom-up.
+t_start "missing run ref names the bead"
+assert_contains "GAP  \[missing-run\] b1" "$OUT"
 
-parts = sidecar_path.split('/')
-# parts = ['artifacts','sha256','<2-char>','<hash>']
+# ---------------------------------------------------------------------------
+# (b) run has gates — the only detector of captured-but-never-gated
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== (b) run has gates ==="
 
-# Level 3 tree: just the blob
-level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
-r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
-tree3 = r3.stdout.strip()
+t_start "run ref with zero gates is a hard gap"
+r=$(new_repo "$ONE"); add_run "$r" b1 0; push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Level 2 tree: the 2-char dir
-level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
-r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
-tree2 = r2.stdout.strip()
+t_start "zero-gate gap is reported as gateless-run, not missing-run"
+assert_contains "GAP  \[gateless-run\] b1" "$OUT"
 
-# Level 1 tree: sha256 dir
-level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
-r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
-tree1 = r1.stdout.strip()
+# REGRESSION (implement gate, both seats): the first version of this check read
+# the manifest through a pipeline with an `|| echo -1` fallback. Under
+# `set -o pipefail` a failing `git cat-file` made the substitution non-zero even
+# though python had already printed the sentinel, so the fallback appended a
+# SECOND line and the value matched no case arm — a run ref with no manifest
+# passed CLEAN, exit 0, on a hard check that gates every lane's push.
+t_start "a run ref with NO manifest.json is a hard gap, not a clean pass"
+r=$(new_repo "$ONE"); add_run_without_manifest "$r" b1; push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Level 0 tree: artifacts dir + manifest.json
-level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
-level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
-r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
-print(r0.stdout.strip())
-")"
+t_start "missing manifest is reported as bad-manifest"
+assert_contains "GAP  \[bad-manifest\] b1" "$OUT"
 
-  local commit_sha
-  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
-  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
-}
+t_start "a manifest that is not valid JSON is also a hard gap"
+r=$(new_repo "$ONE"); add_run_bad_json "$r" b1; push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# bd shim: returns canned closed-bead JSON; accepts being replaced with a
-# custom $BD_SHIM_JSON env var.
-BD_SHIM="$tmpdir/bd"
-cat > "$BD_SHIM" <<'BDSHIM'
+# REGRESSION (implement gate r2): a non-list `gates` satisfies len() and would
+# pass a naive count clean.
+t_start "a manifest whose 'gates' is not a list is a hard gap"
+r=$(new_repo "$ONE")
+( cd "$r"
+  blob=$(printf '{"manifest_version":3,"run_id":"b1","stages":[],"gates":"nope"}' | git hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+  git update-ref refs/etude/runs/b1 "$(git commit-tree "$tree" -m r)" )
+push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
+
+# REGRESSION (implement gate r2): a truncated bd window must not read as clean.
+t_start "malformed bd output is an environment error (exit 2), not a short clean window"
+r=$(new_repo '[{"id":"b1","closed_at":"2026-08-15T10:00:00Z"},{"closed_at":"2026-08-15T09:00:00Z"}]')
+run_audit "$r" --last 2
+assert_exit 2 "$RC" "$OUT"
+
+t_start "a gated run does not trip (b)"
+r=$(new_repo "$ONE"); add_run "$r" b1 2; push_etude "$r"
+run_audit "$r" --last 1
+assert_not_contains "gateless-run" "$OUT"
+
+# An assert_not_contains alone would also pass on the empty output of a crashed
+# script, so pin the exit code beside it.
+t_start "and that run is clean overall"
+assert_exit 0 "$RC" "$OUT"
+
+# REGRESSION (verify gate r2 mutation sweep): the subprocess-error branches are
+# the last unpinned members of the fail-open family. `git ls-remote` failure is
+# already pinned by the unreachable-origin case; its siblings were not, so a
+# `|| true` there would let a hard check pass vacuously with the suite green.
+# A `git` shim on PATH reaches them the same way the `bd` shim does.
+t_start "a for-each-ref failure is an environment error, not a vacuous pass"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+REAL_GIT="$(command -v git)"
+cat > "$r/git" <<SHIM
 #!/usr/bin/env bash
-# Minimal bd shim for audit tests.
-# Outputs $BD_JSON_FILE content for "bd list --status closed --json".
-if [[ "$*" == *"list"* && "$*" == *"closed"* && "$*" == *"--json"* ]]; then
-  cat "${BD_JSON_FILE:-/dev/null}"
-elif [[ "$*" == *"show"* ]]; then
-  echo "✓ ${BD_SHOW_ID:-test-bead} · Test bead title [● P1 · CLOSED]"
-else
-  echo "[]"
-fi
-BDSHIM
-chmod +x "$BD_SHIM"
+# Fail ONLY the local-ref enumeration; everything else is the real git, reached
+# by absolute path so this shim cannot recurse into itself.
+if [[ "\$1" == "for-each-ref" && "\$*" == *"refs/etude/runs"* ]]; then exit 3; fi
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod +x "$r/git"
+run_audit "$r" --last 1
+assert_exit 2 "$RC" "$OUT"
 
-# Prepend shim dir to PATH for the duration
-export PATH="$tmpdir:$PATH"
+t_start "the for-each-ref failure does not report refs as clean"
+assert_not_contains "dogfood-audit: clean" "$OUT"
+rm -f "$r/git"
 
-# ---------------------------------------------------------------------------
-# Helper: write the bd JSON file for given beads
-# closed_beads_json <id1> [<id2> ...]
-write_bd_json() {  # <bead-id> ...
-  local entries=""
-  local now="2026-05-25T10:00:00Z"
-  for bid in "$@"; do
-    entries="${entries},{\"id\":\"$bid\",\"status\":\"closed\",\"closed_at\":\"$now\",\"title\":\"Test bead $bid\"}"
-  done
-  echo "[${entries#,}]" > "$tmpdir/bd_beads.json"
-  export BD_JSON_FILE="$tmpdir/bd_beads.json"
-}
+# The sibling branch: if python3 itself fails, the gate count is unknown. It must
+# fall to the fail-CLOSED sentinel, not to a value that reads as "one gate".
+t_start "a python3 failure makes the gate count a gap, not an assumed pass"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+REAL_PY2="$(command -v python3)"
+cat > "$r/python3" <<SHIM
+#!/usr/bin/env bash
+# Fail ONLY the gate-count query; everything else is the real interpreter.
+if [[ "\$*" == *"isinstance"* ]]; then exit 4; fi
+exec "$REAL_PY2" "\$@"
+SHIM
+chmod +x "$r/python3"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Helper: run audit and capture exit code without set -e killing the test
-run_audit() {  # [args...]
-  local rc=0
-  # Build etude is expensive; reuse a pre-built binary if available
-  output="$(bash "$AUDIT" "$@" 2>&1)" || rc=$?
-  echo "$output"
-  return "$rc"
-}
-
-# Helper: run audit capturing exit + output separately
-run_audit_split() {  # [args...] -> sets $AUDIT_OUT and $AUDIT_RC
-  AUDIT_RC=0
-  AUDIT_OUT="$(bash "$AUDIT" "$@" 2>&1)" || AUDIT_RC=$?
-}
+t_start "the python3 failure is reported as bad-manifest"
+assert_contains "bad-manifest" "$OUT"
+rm -f "$r/python3"
 
 # ---------------------------------------------------------------------------
-# Seed the initial commit SHA (used for manifest git_sha)
+# (d) refs pushed
 # ---------------------------------------------------------------------------
-INITIAL_SHA="$(git rev-parse HEAD)"
+echo ""
+echo "=== (d) refs pushed ==="
 
-# ===========================================================================
-# TEST 1: Complete fixture — 2 beads, runs with gates, cadence retro with valid
-# 7-key sidecar, all pushed.  Uses a pre-cutoff created date; sidecar present
-# → PASS for check (f) (no WARN, no gap).
-# ===========================================================================
-t_start "complete fixture exits 0"
+t_start "a local ref absent from origin is a hard gap"
+r=$(new_repo "$ONE"); add_run "$r" b1 1   # deliberately not pushed
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Valid 7-key sidecar for TEST 1
-VALID_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-26","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
+t_start "unpushed gap names the ref"
+assert_contains "GAP  \[unpushed-ref\] refs/etude/runs/b1" "$OUT"
 
-write_bd_json "test-aaa" "test-bbb"
-seed_run_ref "test-aaa" "$INITIAL_SHA" "plan.r1"
-seed_run_ref "test-bbb" "$INITIAL_SHA" "plan.r1"
-seed_cadence_retro_with_meta "retro-cohort-test-bbb" "2026-05-26T00:00:00Z" \
-  "$VALID_SIDECAR" "test-aaa" "test-bbb"
+t_start "a ref that diverged from origin is a hard gap"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+add_run "$r" b1 3   # rewrite the ref locally, do not re-push
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# Push all refs to bare origin
-git push origin 'refs/etude/*:refs/etude/*' --quiet 2>/dev/null
+t_start "divergence is reported with both shas and the right remedy"
+assert_contains "local .* is AHEAD of origin .* — push it" "$OUT"
 
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "complete fixture"
+# REGRESSION (implement gate, codex): `git ls-remote` failure was swallowed by
+# `|| true`, so an unreachable origin turned every local ref into an
+# "absent from origin" gap and exited 1. To the operator the hook is addressing,
+# exit 1 says "push your refs" and exit 2 says "your environment is broken" —
+# reporting the second as the first sends them to do work that cannot help.
+t_start "an unreachable origin is an environment error (exit 2), not a pile of gaps"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+( cd "$r" && git remote set-url origin "$tmpdir/definitely-not-a-repo.git" )
+run_audit "$r" --last 1
+assert_exit 2 "$RC" "$OUT"
 
-t_start "complete fixture output says OK"
-assert_output_contains "audit: OK" "$AUDIT_OUT"
+t_start "the origin failure is not reported as unpushed refs"
+assert_not_contains "unpushed-ref" "$OUT"
 
-# ===========================================================================
-# TEST 2: Missing run ref — bead with no run -> exit 1
-# ===========================================================================
-t_start "missing run ref causes exit 1"
+# REGRESSION (implement gate r2): a ref BEHIND origin needs a fetch, not a push,
+# and telling the operator to push sends them to do work that cannot help.
+t_start "a ref behind origin is reported as stale-ref, not unpushed-ref"
+r=$(new_repo "$ONE"); add_run "$r" b1 2; push_etude "$r"
+( cd "$r"
+  # rewind the local ref to an earlier single-gate version of the same run
+  blob=$(printf '{"manifest_version":3,"run_id":"b1","stages":[],"gates":[{"gate_id":"g0"}]}' | git hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+  base=$(git commit-tree "$tree" -m base)
+  git update-ref refs/etude/runs/b1 "$base"
+  git push -q -f origin "refs/etude/runs/b1:refs/etude/runs/b1"
+  # now advance origin past local
+  tip=$(git commit-tree "$tree" -p "$base" -m tip)
+  git push -q origin "$tip:refs/etude/runs/b1" )
+run_audit "$r" --last 1
+assert_contains "stale-ref" "$OUT"
 
-write_bd_json "test-aaa" "test-bbb" "test-ccc"
-# test-ccc has no run ref
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "missing run"
+t_start "a behind-origin ref is still a hard gap"
+assert_exit 1 "$RC" "$OUT"
 
-t_start "missing run output has missing-run finding"
-assert_output_contains "missing-run.*test-ccc" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST 3: Gateless run — run with empty gates -> exit 1
-# ===========================================================================
-t_start "gateless run causes exit 1"
-
-write_bd_json "test-aaa" "test-bbb" "test-ddd"
-seed_run_ref "test-ddd" "$INITIAL_SHA"   # no gate IDs -> gates=[]
-git push origin "refs/etude/runs/test-ddd" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "gateless run"
-
-t_start "gateless run output has gateless-run finding"
-assert_output_contains "gateless-run.*test-ddd" "$AUDIT_OUT"
-
-# Clean up test-ddd ref
-git update-ref -d "refs/etude/runs/test-ddd"
-
-# ===========================================================================
-# TEST 4: Unpushed ref — local ref not on origin -> exit 1
-# ===========================================================================
-t_start "unpushed ref causes exit 1"
-
-write_bd_json "test-aaa" "test-bbb"
-# Create a local ref not pushed to origin
-seed_run_ref "test-local-only" "$INITIAL_SHA" "plan.r1"
-# Do NOT push it
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "unpushed ref"
-
-t_start "unpushed ref output has unpushed-ref finding"
-assert_output_contains "unpushed-ref.*test-local-only" "$AUDIT_OUT"
-
-# Clean up
-git update-ref -d "refs/etude/runs/test-local-only"
-
-# ===========================================================================
-# TEST 5: Bypassed bead — allowlisted bead with no run -> exit 0 + bypass reported
-# ===========================================================================
-t_start "bypassed bead exits 0"
-
-# Use a bead that IS in the repo allowlist (it won't have a run ref since we
-# haven't seeded it). We'll create our own tmp allowlist for isolation.
-ORIG_ALLOW="$REPO_ROOT/scripts/dogfood-completeness-allow.txt"
-
-# Write a temp allowlist into the work repo's scripts/ dir
-mkdir -p "$work_repo/scripts"
-cat > "$work_repo/scripts/dogfood-completeness-allow.txt" <<'ALLOWEOF'
-test-exempt  # test exemption reason
-ALLOWEOF
-
-write_bd_json "test-aaa" "test-bbb" "test-exempt"
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "bypassed bead"
-
-t_start "bypassed bead output shows bypass line"
-assert_output_contains "bypass:.*test-exempt" "$AUDIT_OUT"
-
-t_start "bypassed bead output does NOT show missing-run for exempt bead"
-assert_output_not_contains "missing-run.*test-exempt" "$AUDIT_OUT"
-
-# Remove the temp allowlist (reset to empty so subsequent tests use real allowlist)
-rm "$work_repo/scripts/dogfood-completeness-allow.txt"
-
-# ===========================================================================
-# TEST 6: Cadence overdue — 3+ beads not covered by any cadence retro -> WARN + exit 0
-# ===========================================================================
-t_start "cadence overdue is WARN only (exit 0)"
-
-# Delete existing cadence retro so none exist
-git update-ref -d "refs/etude/retros/retro-cohort-test-bbb" 2>/dev/null || true
-git push origin --delete "refs/etude/retros/retro-cohort-test-bbb" --quiet 2>/dev/null || true
-
-write_bd_json "test-aaa" "test-bbb" "test-eee"
-seed_run_ref "test-eee" "$INITIAL_SHA" "plan.r1"
-git push origin "refs/etude/runs/test-eee" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "cadence overdue is warn only"
-
-t_start "cadence overdue output shows WARN"
-assert_output_contains "cadence-overdue" "$AUDIT_OUT"
-
-# Restore cadence retro for subsequent tests
-seed_cadence_retro "retro-cohort-test-bbb" "test-aaa" "test-bbb" "test-eee"
-git push origin "refs/etude/retros/retro-cohort-test-bbb" --quiet 2>/dev/null
-
-# Clean up test-eee
-git update-ref -d "refs/etude/runs/test-eee"
-git push origin --delete "refs/etude/runs/test-eee" --quiet 2>/dev/null || true
-
-# ===========================================================================
-# TEST 7: --bead mode, complete bead -> exit 0
-# ===========================================================================
-t_start "--bead mode on complete bead exits 0"
-
-write_bd_json "test-aaa" "test-bbb"
-run_audit_split --bead "test-aaa"
-assert_exit 0 "$AUDIT_RC" "--bead mode complete"
-
-t_start "--bead mode on complete bead output says OK"
-assert_output_contains "audit: OK" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST 8: --bead mode, missing run -> exit 1
-# ===========================================================================
-t_start "--bead mode on missing run exits 1"
-
-# test-zzz is not in bd json AND has no run ref
-write_bd_json "test-zzz"
-run_audit_split --bead "test-zzz"
-assert_exit 1 "$AUDIT_RC" "--bead mode missing run"
-
-t_start "--bead mode missing run output has missing-run finding"
-assert_output_contains "missing-run.*test-zzz" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST 9: --bead mode does NOT run cadence check (c)
-# ===========================================================================
-t_start "--bead mode does not run cadence check"
-
-# Delete all cadence retros
-git for-each-ref refs/etude/retros --format='%(refname)' | while IFS= read -r r; do
-  git update-ref -d "$r" 2>/dev/null || true
-done
-
-write_bd_json "test-aaa"
-run_audit_split --bead "test-aaa"
-assert_exit 0 "$AUDIT_RC" "--bead mode no cadence check"
-
-t_start "--bead mode output has no cadence-overdue warning"
-assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST 10: --json flag emits parseable JSON
-# ===========================================================================
-t_start "--json flag produces valid JSON"
-
-write_bd_json "test-aaa" "test-bbb"
-seed_cadence_retro "retro-cohort-test-bbb2" "test-aaa" "test-bbb"
-git push origin "refs/etude/retros/retro-cohort-test-bbb2" --quiet 2>/dev/null
-
-run_audit_split --last 9 --json
-# The output is text+JSON; look for '"exit": 0' in the output (from the JSON block)
-if grep -q '"exit": 0' <<< "$AUDIT_OUT"; then
-  t_pass
-else
-  t_fail "expected '\"exit\": 0' in JSON output, not found. output: $AUDIT_OUT"
-fi
-
-# ===========================================================================
-# TEST 11: --since mode filters beads by date
-# ===========================================================================
-t_start "--since mode includes only beads closed on or after date"
-
-# Write beads with different close dates
-python3 -c "
-import json
-beads = [
-    {'id': 'test-new', 'status': 'closed', 'closed_at': '2026-05-25T10:00:00Z', 'title': 'new bead'},
-    {'id': 'test-old', 'status': 'closed', 'closed_at': '2026-05-10T10:00:00Z', 'title': 'old bead'},
-]
-print(json.dumps(beads))
-" > "$tmpdir/bd_beads.json"
-export BD_JSON_FILE="$tmpdir/bd_beads.json"
-
-# Ensure test-new has a run ref with gates, pushed to origin
-# (test-old is before the since cutoff so it won't be checked even if it's missing a run)
-seed_run_ref "test-new" "$INITIAL_SHA" "plan.r1"
-git push origin "refs/etude/runs/test-new" --quiet 2>/dev/null
-seed_cadence_retro "retro-cohort-test-new" "test-new"
-git push origin "refs/etude/retros/retro-cohort-test-new" --quiet 2>/dev/null
-
-run_audit_split --since "2026-05-20"
-
-# test-old is outside the window, so only test-new is checked; it has run+gates+pushed
-assert_exit 0 "$AUDIT_RC" "--since date filtering"
-
-t_start "--since mode output shows only 1 in-scope bead"
-assert_output_contains "in-scope=1" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST: docs-drift WARN — --bead whose manifest git_sha touched docs/ warns,
-# but exit stays 0 (docs is WARN-only). Guards the grep -c '0\n0' regression.
-# ===========================================================================
-t_start "docs-drift WARN on --bead does not fail (exit 0)"
-write_bd_json "test-docs"
-# git_sha = DOCS_COMMIT (the commit that added docs/README.md), with a gate, pushed.
-seed_run_ref "test-docs" "$DOCS_COMMIT" "plan.r1"
-git push origin "refs/etude/runs/test-docs" --quiet 2>/dev/null
-run_audit_split --bead test-docs
-assert_exit 0 "$AUDIT_RC" "docs-drift bead is WARN, not a hard gap"
-
-t_start "docs-drift WARN finding is reported"
-assert_output_contains "docs-drift.*test-docs" "$AUDIT_OUT"
-
-t_start "no docs-drift WARN when git_sha did not touch docs/"
-write_bd_json "test-nodocs"
-seed_run_ref "test-nodocs" "$NODOCS_COMMIT" "plan.r1"   # NODOCS_COMMIT = code-only, no README/docs
-git push origin "refs/etude/runs/test-nodocs" --quiet 2>/dev/null
-run_audit_split --bead test-nodocs
-assert_exit 0 "$AUDIT_RC" "non-docs bead clean"
-
-t_start "non-docs bead does NOT report docs-drift"
-assert_output_not_contains "docs-drift.*test-nodocs" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST: mutually-exclusive mode flags -> exit 2 (usage error)
-# ===========================================================================
-t_start "combining --last and --since exits 2"
-run_audit_split --last 9 --since 2026-05-20
-assert_exit 2 "$AUDIT_RC" "mutually exclusive mode flags"
-
-t_start "combining --bead and --last exits 2"
-run_audit_split --bead test-docs --last 9
-assert_exit 2 "$AUDIT_RC" "bead + last mutually exclusive"
-
-# ===========================================================================
-# TEST GROUP: check (f) cadence-sidecar
-# All these tests need a clean ref state; delete all cadence retros first,
-# then seed specifically for each sub-test.
-# ===========================================================================
-
-# Shared sidecar constants
-VALID_SIDECAR_JSON='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
-POST_CUTOFF_TS="2026-05-27T01:00:00Z"
-PRE_CUTOFF_TS="2026-05-26T12:00:00Z"
-FRAC_CUTOFF_TS="2026-05-27T00:00:00.000001Z"
-
-# Helper: delete all retro refs
-delete_all_retros() {
-  git for-each-ref refs/etude/retros --format='%(refname)' | while IFS= read -r r; do
-    git update-ref -d "$r" 2>/dev/null || true
-    git push origin --delete "$r" --quiet 2>/dev/null || true
-  done
+# add_retro_ref <repo> <id> — mint a refs/etude/retros/<id>. Check (d) sweeps
+# runs AND retros; without a case here, half of it can be deleted silently.
+add_retro_ref() {
+  local repo="$1" id="$2"
+  (
+    cd "$repo"
+    local blob tree commit
+    blob=$(printf '{"manifest_version":3,"refs":{"trigger":"cadence-retro"}}' | git hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+    commit=$(git commit-tree "$tree" -m "retro $id")
+    git update-ref "refs/etude/retros/$id" "$commit"
+  )
 }
 
-# Helper: ensure at least one run ref exists and is pushed so the audit runs
-ensure_run_refs() {
-  write_bd_json "test-aaa" "test-bbb"
-  # test-aaa and test-bbb were seeded + pushed in TEST 1; just make sure bd sees them
-}
-
-# ===========================================================================
-# TEST (f.1): post-cutoff cadence retro WITH a valid 7-key sidecar → PASS (exit 0, no gap)
-# ===========================================================================
-t_start "(f.1) post-cutoff cadence retro with valid sidecar exits 0"
-
-delete_all_retros
-ensure_run_refs
-seed_cadence_retro_with_meta "retro-f1-post-valid" "$POST_CUTOFF_TS" \
-  "$VALID_SIDECAR_JSON" "test-aaa" "test-bbb"
-git push origin "refs/etude/retros/retro-f1-post-valid" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(f.1) post-cutoff valid sidecar"
-
-t_start "(f.1) output shows no cadence-sidecar gap"
-assert_output_not_contains "cadence-sidecar.*GAP\|GAP.*cadence-sidecar" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.2): post-cutoff cadence retro MISSING retro-meta stage → BLOCK (exit 1)
-# ===========================================================================
-t_start "(f.2) post-cutoff cadence retro missing sidecar stage exits 1"
-
-delete_all_retros
-ensure_run_refs
-# seed_cadence_retro creates a retro with NO retro-meta stage, post-cutoff date
-python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': 'retro-f2-post-nosidecar',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$POST_CUTOFF_TS',
-    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
-    'stages': []
-}
-print(json.dumps(m))
-" | {
-  manifest_data=$(cat)
-  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
-  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
-  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f2-post-nosidecar" <<< "")
-  git update-ref "refs/etude/retros/retro-f2-post-nosidecar" "$commit_sha"
-  git push origin "refs/etude/retros/retro-f2-post-nosidecar" --quiet 2>/dev/null
-}
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f.2) post-cutoff missing sidecar → hard gap"
-
-t_start "(f.2) output contains cadence-sidecar gap"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.3): post-cutoff sidecar MISSING one required key → BLOCK (exit 1)
-# ===========================================================================
-t_start "(f.3) post-cutoff sidecar missing required key exits 1"
-
-delete_all_retros
-ensure_run_refs
-# Drop 'durable_changes' from the sidecar
-MISSING_KEY_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":[],"root_causes":[],"follow_up_beads":[],"decisions":[]}'
-seed_cadence_retro_with_meta "retro-f3-missing-key" "$POST_CUTOFF_TS" \
-  "$MISSING_KEY_SIDECAR" "test-aaa"
-git push origin "refs/etude/retros/retro-f3-missing-key" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f.3) post-cutoff missing key → hard gap"
-
-t_start "(f.3) output contains cadence-sidecar gap"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.4): post-cutoff sidecar with WRONG TYPE (failure_modes is string not array) → BLOCK
-# ===========================================================================
-t_start "(f.4) post-cutoff sidecar wrong type exits 1"
-
-delete_all_retros
-ensure_run_refs
-WRONG_TYPE_SIDECAR='{"retro_type":"cadence","original_event_date":"2026-05-27","failure_modes":"not-an-array","root_causes":[],"follow_up_beads":[],"decisions":[],"durable_changes":[]}'
-seed_cadence_retro_with_meta "retro-f4-wrong-type" "$POST_CUTOFF_TS" \
-  "$WRONG_TYPE_SIDECAR" "test-aaa"
-git push origin "refs/etude/retros/retro-f4-wrong-type" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f.4) post-cutoff wrong type → hard gap"
-
-t_start "(f.4) output contains cadence-sidecar gap"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.5): fractional-seconds boundary — created="2026-05-27T00:00:00.000001Z",
-# no sidecar → BLOCK (exit 1).
-# This locks in the r3 datetime-parse fix: a lexical compare would wrongly WARN
-# because '.' (0x2E) < 'Z' (0x5A).
-# ===========================================================================
-t_start "(f.5) fractional-seconds post-cutoff missing sidecar exits 1 (datetime-parse fix)"
-
-delete_all_retros
-ensure_run_refs
-python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': 'retro-f5-frac-nosidecar',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$FRAC_CUTOFF_TS',
-    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
-    'stages': []
-}
-print(json.dumps(m))
-" | {
-  manifest_data=$(cat)
-  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
-  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
-  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f5-frac-nosidecar" <<< "")
-  git update-ref "refs/etude/retros/retro-f5-frac-nosidecar" "$commit_sha"
-  git push origin "refs/etude/retros/retro-f5-frac-nosidecar" --quiet 2>/dev/null
-}
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f.5) fractional-seconds boundary is post-cutoff → hard gap"
-
-t_start "(f.5) output contains cadence-sidecar gap (not WARN)"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-assert_output_not_contains "pre-convention.*$FRAC_CUTOFF_TS\|$FRAC_CUTOFF_TS.*pre-convention" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.6): pre-cutoff cadence retro MISSING sidecar → WARN only (exit 0),
-# appears in the single summarizing WARN line.
-# ===========================================================================
-t_start "(f.6) pre-cutoff cadence retro missing sidecar is WARN only (exit 0)"
-
-delete_all_retros
-ensure_run_refs
-python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': 'retro-f6-pre-nosidecar',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$PRE_CUTOFF_TS',
-    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'test-aaa'},
-    'stages': []
-}
-print(json.dumps(m))
-" | {
-  manifest_data=$(cat)
-  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
-  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
-  commit_sha=$(git commit-tree "$tree_sha" -m "retro: retro-f6-pre-nosidecar" <<< "")
-  git update-ref "refs/etude/retros/retro-f6-pre-nosidecar" "$commit_sha"
-  git push origin "refs/etude/retros/retro-f6-pre-nosidecar" --quiet 2>/dev/null
-}
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(f.6) pre-cutoff missing sidecar is WARN, not hard gap"
-
-t_start "(f.6) output contains cadence-sidecar WARN"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-
-t_start "(f.6) WARN summary line mentions retro-f6-pre-nosidecar"
-assert_output_contains "retro-f6-pre-nosidecar" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (f.7): post-cutoff retro with UNREADABLE/GARBLED sidecar blob → BLOCK not crash
-# (The manifest references a blob path that git cat-file returns non-JSON for.)
-# ===========================================================================
-t_start "(f.7) post-cutoff garbled sidecar blob → BLOCK (exit 1), not crash"
-
-delete_all_retros
-ensure_run_refs
-# Write a non-JSON blob and use it as the sidecar
-GARBLED_SIDECAR="this is not JSON {{{"
-seed_cadence_retro_with_meta "retro-f7-garbled" "$POST_CUTOFF_TS" \
-  "$GARBLED_SIDECAR" "test-aaa"
-git push origin "refs/etude/retros/retro-f7-garbled" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f.7) garbled sidecar blob → hard gap, not crash"
-
-t_start "(f.7) output contains cadence-sidecar gap"
-assert_output_contains "cadence-sidecar" "$AUDIT_OUT"
-
-# Clean up all check-f retro refs so subsequent tests don't see them
-delete_all_retros
-
-# ===========================================================================
-# Helper: seed_cadence_retro_with_body
-#
-# Creates a cadence-retro ref whose manifest has a retro-role stage pointing
-# at a content-addressed body blob. The body contains a chosen title line as
-# its first line (so check (g) can parse the subject id-list from it).
-#
-# Also accepts bead refs in addition to subject_run refs.
-#
-# Usage:
-#   seed_cadence_retro_with_body \
-#     <retro-id> \
-#     <title-line> \
-#     "subject_run:etude-aaa" "subject_run:etude-bbb" "bead:etude-ccc" ...
-#
-# The subject/bead args must be prefixed with "subject_run:" or "bead:" to
-# distinguish them.
-# ===========================================================================
-seed_cadence_retro_with_body() {
-  local retro_id="$1"; shift
-  local title_line="$1"; shift
-
-  # Build refs_json from remaining args (subject_run: or bead: prefixed)
-  local refs_json='{"scope":"cohort","trigger":"cadence-retro"'
-  local sr_i=1
-  local bead_i=1
-  for arg in "$@"; do
-    local typ="${arg%%:*}"
-    local val="${arg#*:}"
-    if [[ "$typ" == "subject_run" ]]; then
-      refs_json="${refs_json},\"subject_run.$sr_i\":\"$val\""
-      (( sr_i++ )) || true
-    elif [[ "$typ" == "bead" ]]; then
-      refs_json="${refs_json},\"bead.$bead_i\":\"$val\""
-      (( bead_i++ )) || true
-    fi
-  done
-  refs_json="${refs_json}}"
-
-  # Write the body blob (first line = title_line)
-  local body_content
-  body_content="$(printf '%s\n\nBody text.\n' "$title_line")"
-  local body_blob_sha
-  body_blob_sha="$(git hash-object -w --stdin <<< "$body_content")"
-  local body_path="artifacts/sha256/${body_blob_sha:0:2}/$body_blob_sha"
-
-  # Build manifest with a retro-role stage pointing at the body blob
-  local manifest
-  manifest="$(python3 -c "
-import json
-body_path = '$body_path'
-body_sha  = '$body_blob_sha'
-m = {
-    'manifest_version': 2,
-    'run_id': '$retro_id',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '2026-05-26T00:00:00Z',
-    'refs': json.loads('''$refs_json'''),
-    'stages': [
-        {
-            'stage': 'retro',
-            'produced_by': 'retro',
-            'git_sha': '',
-            'inputs': [],
-            'output': {
-                'role': 'retro',
-                'artifact': body_sha,
-                'path': body_path,
-                'media_type': 'text/markdown; charset=utf-8',
-                'storage': 'content',
-                'size': 0
-            }
-        }
-    ]
-}
-print(json.dumps(m))
-")"
-
-  # Write the manifest blob and tree with both manifest.json and the body blob
-  local manifest_blob_sha
-  manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
-
-  # Build tree: manifest.json + body at its content-addressed path
-  local tree_sha
-  tree_sha="$(python3 -c "
-import subprocess, sys
-
-manifest_blob = '$manifest_blob_sha'
-body_blob     = '$body_blob_sha'
-body_path     = '$body_path'
-
-parts = body_path.split('/')
-# parts = ['artifacts','sha256','<2-char>','<hash>']
-
-# Level 3 tree: just the blob
-level3_in = '100644 blob {}\t{}\n'.format(body_blob, parts[3])
-r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
-tree3 = r3.stdout.strip()
-
-# Level 2 tree: the 2-char dir
-level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
-r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
-tree2 = r2.stdout.strip()
-
-# Level 1 tree: sha256 dir
-level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
-r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
-tree1 = r1.stdout.strip()
-
-# Level 0 tree: artifacts dir + manifest.json
-level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
-level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
-r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
-print(r0.stdout.strip())
-")"
-
-  local commit_sha
-  commit_sha="$(git commit-tree "$tree_sha" -m "retro: $retro_id" <<< "")"
-  git update-ref "refs/etude/retros/$retro_id" "$commit_sha"
-}
-
-# ===========================================================================
-# seed_superseding_retro — create a NEW retro ref carrying refs.supersedes=<old-id>
-#
-# Usage:
-#   seed_superseding_retro \
-#     <new-retro-id>   \   # bare id for the new ref (refs/etude/retros/<id>)
-#     <supersedes-id>  \   # bare id of the ref being superseded (stored verbatim)
-#     <created>        \   # ISO-8601 timestamp for manifest.created
-#     <trigger>        \   # e.g. "cadence-retro" or "process-retro"
-#     <sidecar-json>   \   # valid 7-key JSON, or "" for no sidecar
-#     <subject-run1>   ...  # subject_run.* values (optional; none OK for workflow)
-#
-# The supersedes value is stored as a bare retro id exactly as etude retro.go:659 does.
-# ===========================================================================
-seed_superseding_retro() {
-  local new_id="$1"; shift
-  local supersedes_id="$1"; shift
-  local created="$1"; shift
-  local trigger="$1"; shift
-  local sidecar_json="$1"; shift
-
-  # Build refs_json with scope + trigger + supersedes + optional subject_runs
-  local refs_json
-  refs_json="$(python3 -c "
-import json, sys
-refs = {'scope': 'cohort', 'trigger': '$trigger', 'supersedes': '$supersedes_id'}
-i = 1
-for run in sys.argv[1:]:
-    refs['subject_run.' + str(i)] = run
-    i += 1
-print(json.dumps(refs))
-" "$@")"
-
-  if [[ -n "$sidecar_json" ]]; then
-    # Write sidecar blob and build manifest with retro-meta stage
-    local sidecar_blob_sha
-    sidecar_blob_sha="$(git hash-object -w --stdin <<< "$sidecar_json")"
-    local sidecar_path="artifacts/sha256/${sidecar_blob_sha:0:2}/$sidecar_blob_sha"
-
-    local manifest
-    manifest="$(python3 -c "
-import json
-sidecar_path = '$sidecar_path'
-sidecar_sha  = '$sidecar_blob_sha'
-m = {
-    'manifest_version': 2,
-    'run_id': '$new_id',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$created',
-    'refs': json.loads('''$refs_json'''),
-    'stages': [
-        {
-            'stage': 'retro-meta',
-            'produced_by': 'retro',
-            'git_sha': '',
-            'inputs': [],
-            'output': {
-                'role': 'retro-meta',
-                'artifact': sidecar_sha,
-                'path': sidecar_path,
-                'media_type': 'application/json',
-                'storage': 'content',
-                'size': len('$sidecar_json'.encode())
-            }
-        }
-    ]
-}
-print(json.dumps(m))
-")"
-
-    local manifest_blob_sha
-    manifest_blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
-
-    # Build tree: manifest.json + sidecar at content-addressed path
-    local tree_sha
-    tree_sha="$(python3 -c "
-import subprocess
-manifest_blob = '$manifest_blob_sha'
-sidecar_blob  = '$sidecar_blob_sha'
-sidecar_path  = '$sidecar_path'
-parts = sidecar_path.split('/')
-level3_in = '100644 blob {}\t{}\n'.format(sidecar_blob, parts[3])
-r3 = subprocess.run(['git','mktree'], input=level3_in, capture_output=True, text=True)
-tree3 = r3.stdout.strip()
-level2_in = '040000 tree {}\t{}\n'.format(tree3, parts[2])
-r2 = subprocess.run(['git','mktree'], input=level2_in, capture_output=True, text=True)
-tree2 = r2.stdout.strip()
-level1_in = '040000 tree {}\t{}\n'.format(tree2, parts[1])
-r1 = subprocess.run(['git','mktree'], input=level1_in, capture_output=True, text=True)
-tree1 = r1.stdout.strip()
-level0_in  = '040000 tree {}\t{}\n'.format(tree1, parts[0])
-level0_in += '100644 blob {}\tmanifest.json\n'.format(manifest_blob)
-r0 = subprocess.run(['git','mktree'], input=level0_in, capture_output=True, text=True)
-print(r0.stdout.strip())
-")"
-
-    local commit_sha
-    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
-    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
-  else
-    # No sidecar — simple manifest with no stages
-    local manifest
-    manifest="$(python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': '$new_id',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$created',
-    'refs': json.loads('''$refs_json'''),
-    'stages': []
-}
-print(json.dumps(m))
-")"
-    local blob_sha tree_sha commit_sha
-    blob_sha="$(git hash-object -w --stdin <<< "$manifest")"
-    tree_sha="$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)"
-    commit_sha="$(git commit-tree "$tree_sha" -m "retro: $new_id" <<< "")"
-    git update-ref "refs/etude/retros/$new_id" "$commit_sha"
-  fi
-}
-
-# ===========================================================================
-# TEST GROUP: check (g) retro subject consistency
-#
-# NOTE: The id-pattern used by check (g) is ^[a-z0-9]+(\.[a-z0-9]+)*$ which
-# does NOT allow hyphens. The real corpus uses short alphanumeric ids like
-# "6j8", "kig", "nm6". We seed dedicated short-id run refs for these tests
-# rather than reusing the hyphenated test-aaa/test-bbb fixture ids.
-# ===========================================================================
-
-# Seed short-id run refs for g-tests and push them
-seed_run_ref "ga1" "$INITIAL_SHA" "plan.r1"
-seed_run_ref "ga2" "$INITIAL_SHA" "plan.r1"
-seed_run_ref "ga3" "$INITIAL_SHA" "plan.r1"
-git push origin "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null
-
-write_bd_json "ga1" "ga2"
-
-# ===========================================================================
-# TEST (g.1): title "(a/b)" with both a,b present as subject_run → PASS (no WARN)
-# ===========================================================================
-t_start "(g.1) title subjects all present as subject_run → no WARN (exit 0)"
-
-delete_all_retros
-seed_cadence_retro_with_body "retro-g1-pass" \
-  "# Cadence Retro (ga1/ga2)" \
-  "subject_run:ga1" "subject_run:ga2"
-git push origin "refs/etude/retros/retro-g1-pass" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.1) all subjects present"
-
-t_start "(g.1) no subject-consistency WARN in output"
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (g.2): title "(a/b/c)" with a,b as subject_run but c MISSING → WARN + exit 0
-# gc1 is in the title but absent from all manifest refs → WARN naming gc1.
-# ===========================================================================
-t_start "(g.2) title claims missing subject → WARN (exit 0)"
-
-delete_all_retros
-seed_cadence_retro_with_body "retro-g2-warn" \
-  "# Cadence Retro (ga1/ga2/gc1)" \
-  "subject_run:ga1" "subject_run:ga2"
-git push origin "refs/etude/retros/retro-g2-warn" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.2) missing subject is WARN not hard gap"
-
-t_start "(g.2) output contains subject-consistency WARN"
-assert_output_contains "subject-consistency" "$AUDIT_OUT"
-
-t_start "(g.2) WARN names the missing id"
-assert_output_contains "gc1" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (g.3): bead.* ref counts as a present subject (B16/B17 shape)
-# title "(a/b/c)" with a,b as subject_run and c ONLY as bead.N → PASS (no WARN)
-# This directly guards the B16-repair shape (Opus NIT g.5 from design).
-# ===========================================================================
-t_start "(g.3) bead.* ref counts as present subject → no WARN (exit 0)"
-
-delete_all_retros
-seed_cadence_retro_with_body "retro-g3-bead" \
-  "# Cadence Retro (ga1/ga2/ga3)" \
-  "subject_run:ga1" "subject_run:ga2" "bead:ga3"
-git push origin "refs/etude/retros/retro-g3-bead" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.3) bead.* ref accepted as present"
-
-t_start "(g.3) no subject-consistency WARN in output"
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (g.4): title with date parenthetical "(2026-05-25/26)" → SKIP (no WARN)
-# This guards the B5 footgun: "2026-05-25" contains '-' → fails id pattern →
-# entire parenthetical rejected → SKIP (no WARN).
-# ===========================================================================
-t_start "(g.4) date parenthetical in title → SKIP (no WARN, exit 0)"
-
-delete_all_retros
-seed_cadence_retro_with_body "retro-g4-date" \
-  "# Cadence Retro (2026-05-25/26)" \
-  "subject_run:ga1"
-git push origin "refs/etude/retros/retro-g4-date" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.4) date parenthetical → skip, no WARN"
-
-t_start "(g.4) no subject-consistency WARN for date parenthetical"
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (g.5): workflow-style title with no parseable id-list → SKIP (no WARN)
-# Guards the 7 retro-workflow-* refs in the live corpus: titles like
-# "Retro — commit abc1234 (workflow retro)" have a single-token parenthetical
-# that is not a slash/comma-separated id-list → SKIP.
-# ===========================================================================
-t_start "(g.5) workflow retro title with no parseable id-list → SKIP (no WARN, exit 0)"
-
-delete_all_retros
-seed_cadence_retro_with_body "retro-g5-noparse" \
-  "# Retro workflow run abc1234" \
-  "subject_run:ga1"
-git push origin "refs/etude/retros/retro-g5-noparse" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.5) workflow title → skip, no WARN"
-
-t_start "(g.5) no subject-consistency WARN for workflow title"
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-# ===========================================================================
-# TEST (g.6): etude- prefix normalization
-# The manifest subject_run values carry the "etude-" prefix (e.g. "etude-ga1")
-# while the title tokens are bare (e.g. "ga1"). The check must strip the
-# "etude-" prefix from manifest values before comparing so bare title tokens match.
-# ===========================================================================
-t_start "(g.6) etude- prefix normalization: bare title tokens match etude-prefixed manifest values → PASS"
-
-delete_all_retros
-# Pass etude-prefixed values so the manifest has subject_run.1=etude-ga1,
-# subject_run.2=etude-ga2. The title uses bare tokens: (ga1/ga2).
-# Normalization must strip "etude-" from manifest values → ga1 == ga1 → PASS.
-seed_cadence_retro_with_body "retro-g6-prefix" \
-  "# Cadence Retro (ga1/ga2)" \
-  "subject_run:etude-ga1" "subject_run:etude-ga2"
-git push origin "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null
-
-write_bd_json "ga1" "ga2"
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g.6) etude- prefix normalization: no WARN"
-
-t_start "(g.6) no subject-consistency WARN with etude- prefixed manifest values"
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-# Cleanup g6 retro
-git update-ref -d "refs/etude/retros/retro-g6-prefix" 2>/dev/null || true
-git push origin --delete "refs/etude/retros/retro-g6-prefix" --quiet 2>/dev/null || true
-
-# Cleanup short-id g-test run refs
-git update-ref -d "refs/etude/runs/ga1" 2>/dev/null || true
-git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
-git update-ref -d "refs/etude/runs/ga3" 2>/dev/null || true
-git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" "refs/etude/runs/ga3" --quiet 2>/dev/null || true
-
-# TEST (g.7): a superseded ref with a title/refs mismatch → SKIPPED via superseded-set
-# (the B16 repair shape: old ref claims nm6 in title but not in manifest refs;
-# new ref supersedes it AND carries bead.1=etude-nm6 → old skipped, new passes).
-# B16 is no longer in SUBJECT_CONSISTENCY_ALLOW; supersession is the mechanism.
-t_start "(g.7) superseded ref with title/refs mismatch → SKIPPED via superseded-set (no subject-consistency WARN)"
-
-delete_all_retros
-# Old B16 ref: title claims nm6 but manifest only has 6j8+kig → would WARN
-seed_cadence_retro_with_body "retro-cohort-etude-6j8-20260526T215942Z" \
-  "### B16. Cadence retro — closure (6j8/kig/nm6)" \
-  "subject_run:etude-6j8" "subject_run:etude-kig"
-# New superseding ref: carries bead.1=etude-nm6 AND supersedes the old one
-# (pre-cutoff created so check (f) does not hard-fail on missing sidecar here)
-seed_superseding_retro \
-  "retro-cohort-etude-6j8-NEW" \
-  "retro-cohort-etude-6j8-20260526T215942Z" \
-  "$PRE_CUTOFF_TS" \
-  "cadence-retro" \
-  "" \
-  "etude-6j8" "etude-kig"
-git push origin \
-  "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" \
-  "refs/etude/retros/retro-cohort-etude-6j8-NEW" \
-  --quiet 2>/dev/null
-
-run_audit_split --last 9
-# The old B16 ref is in the superseded-set (new ref names it in refs.supersedes)
-# → it is SKIPPED; no subject-consistency WARN should appear.
-assert_output_not_contains "subject-consistency" "$AUDIT_OUT"
-
-git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" 2>/dev/null || true
-git update-ref -d "refs/etude/retros/retro-cohort-etude-6j8-NEW" 2>/dev/null || true
-git push origin \
-  --delete "refs/etude/retros/retro-cohort-etude-6j8-20260526T215942Z" \
-  --delete "refs/etude/retros/retro-cohort-etude-6j8-NEW" \
-  --quiet 2>/dev/null || true
-
-# ===========================================================================
-# Cleanup check-g retro refs
-# ===========================================================================
-delete_all_retros
-
-# ===========================================================================
-# TEST GROUP: supersession-awareness
-#
-# These tests verify that the superseded-set mechanism correctly skips refs
-# named by refs.supersedes in any newer retro ref, across checks (c), (f), (g).
-# Shared run refs for supersession tests: use ga1/ga2 shape short ids.
-# ===========================================================================
-
-# Re-seed short-id run refs (they may have been cleaned up above)
-seed_run_ref "ga1" "$INITIAL_SHA" "plan.r1"
-seed_run_ref "ga2" "$INITIAL_SHA" "plan.r1"
-git push origin "refs/etude/runs/ga1" "refs/etude/runs/ga2" --quiet 2>/dev/null
-write_bd_json "ga1" "ga2"
-
-# ===========================================================================
-# SUPERSESSION TEST (bare-id-assertion): the stored refs.supersedes value is
-# exactly the bare retro id (no refs/etude/retros/ prefix, no trailing slash).
-# This catches a future regression where etude stores the full ref path.
-# ===========================================================================
-t_start "(supersede-bare-id) refs.supersedes is stored as bare id, not full ref path"
-
-delete_all_retros
-OLD_RETRO_ID="retro-sup-bare-old"
-NEW_RETRO_ID="retro-sup-bare-new"
-seed_cadence_retro "$OLD_RETRO_ID" "ga1"
-seed_superseding_retro "$NEW_RETRO_ID" "$OLD_RETRO_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" "ga1"
-git push origin \
-  "refs/etude/retros/$OLD_RETRO_ID" \
-  "refs/etude/retros/$NEW_RETRO_ID" \
-  --quiet 2>/dev/null
-
-# Read back the stored supersedes value from the new ref's manifest
-stored_supersedes="$(git cat-file -p "refs/etude/retros/$NEW_RETRO_ID:manifest.json" | python3 -c "
-import json,sys
-m=json.load(sys.stdin)
-print(m.get('refs',{}).get('supersedes',''))
-")"
-if [[ "$stored_supersedes" == "$OLD_RETRO_ID" ]]; then
-  t_pass
-else
-  t_fail "expected bare id '$OLD_RETRO_ID', got '$stored_supersedes'"
-fi
-
-t_start "(supersede-bare-id) stored value has no refs/etude/retros/ prefix"
-if [[ "$stored_supersedes" != refs/etude/retros/* ]]; then
-  t_pass
-else
-  t_fail "stored supersedes value '$stored_supersedes' has full ref prefix — bare id required"
-fi
-
-delete_all_retros
-
-# ===========================================================================
-# SUPERSESSION TEST (f-supersede-clears-warn): an OLD pre-cutoff cadence retro
-# with NO sidecar is superseded by a NEW post-cutoff retro WITH a valid sidecar.
-# The OLD ref must be SKIPPED (no WARN), the NEW ref must PASS.
-# ===========================================================================
-t_start "(f-supersede-clears-warn) old pre-cutoff no-sidecar retro is SKIPPED when superseded"
-
-delete_all_retros
-OLD_F_ID="retro-f-sup-old"
-NEW_F_ID="retro-f-sup-new"
-
-# OLD: pre-cutoff, no sidecar (would be pre-cutoff WARN without supersession)
-python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': '$OLD_F_ID',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$PRE_CUTOFF_TS',
-    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'ga1'},
-    'stages': []
-}
-print(json.dumps(m))
-" | {
-  manifest_data=$(cat)
-  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
-  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
-  commit_sha=$(git commit-tree "$tree_sha" -m "retro: $OLD_F_ID" <<< "")
-  git update-ref "refs/etude/retros/$OLD_F_ID" "$commit_sha"
-  git push origin "refs/etude/retros/$OLD_F_ID" --quiet 2>/dev/null
-}
-
-# NEW: post-cutoff, valid sidecar, supersedes=OLD
-seed_superseding_retro "$NEW_F_ID" "$OLD_F_ID" "$POST_CUTOFF_TS" "cadence-retro" \
-  "$VALID_SIDECAR_JSON" "ga1"
-git push origin "refs/etude/retros/$NEW_F_ID" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(f-supersede) superseded old pre-cutoff ref → no WARN, new ref passes"
-
-t_start "(f-supersede-clears-warn) old ref id does NOT appear in any cadence-sidecar WARN"
-assert_output_not_contains "cadence-sidecar.*$OLD_F_ID|$OLD_F_ID.*cadence-sidecar" "$AUDIT_OUT"
-
-t_start "(f-supersede-clears-warn) no pre-convention WARN in output"
-assert_output_not_contains "pre-convention" "$AUDIT_OUT"
-
-delete_all_retros
+# REGRESSION (verify gate): every case minted only RUN refs, so deleting
+# 'refs/etude/retros' from check (d)'s for-each-ref left the suite fully green —
+# half of a hard check, silently removable. Unpushed retro refs are precisely the
+# "invisible until the worktree is gone" case (d) exists for.
+t_start "an unpushed RETRO ref is a hard gap, not just an unpushed run ref"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+add_retro_ref "$r" cohort-test-1     # deliberately not pushed
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
+
+t_start "the unpushed retro ref is named"
+assert_contains "GAP  \[unpushed-ref\] refs/etude/retros/cohort-test-1" "$OUT"
+
+t_start "a pushed retro ref does not gap"
+push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 0 "$RC" "$OUT"
+
+# REGRESSION (verify gate): pin the CLASS, not just the instance. The case
+# statement's fail-closed catch-all is what stops an unexpected gate count from
+# passing; deleting that arm previously left the suite green. A python3 shim
+# emitting a two-line value reproduces the round-1 shape directly.
+t_start "an unexpected gate-count value is a hard gap, not a silent pass"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+REAL_PY="$(command -v python3)"
+cat > "$r/python3" <<SHIM
+#!/usr/bin/env bash
+# Emit the two-line value the round-1 pipefail bug produced, but only for the
+# gate-count query; every other call goes to the real interpreter by ABSOLUTE
+# path — resolving it through PATH would find this shim again and recurse.
+if [[ "\$*" == *"isinstance"* ]]; then printf -- '-1\\n-1\\n'; exit 0; fi
+exec "$REAL_PY" "\$@"
+SHIM
+chmod +x "$r/python3"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
+rm -f "$r/python3"
+
+# REGRESSION (verify gate): the script must query the repo it lives in, not the
+# ambient cwd, or it audits another checkout's refs against this one's allowlist.
+# Running from a SUBDIRECTORY is not a real probe: git walks up and finds the
+# same repo either way. The mutation that matters is running from inside a
+# DIFFERENT git repo, where an ambient-cwd query audits the wrong refs entirely.
+t_start "running from another git repo still audits the script's own repo"
+r=$(new_repo "$ONE")
+add_run "$r" b1 1; push_etude "$r"          # this repo is CLEAN
+elsewhere="$tmpdir/elsewhere$RANDOM"
+git init -q "$elsewhere"
+( cd "$elsewhere" && git config user.email t@t && git config user.name T \
+    && touch g && git add g && git commit -qm other )
+# Mint an unpushed etude ref in the OTHER repo. If the audit queried the ambient
+# cwd it would see this ref and gap; querying its own repo, it must stay clean.
+( cd "$elsewhere"
+  blob=$(printf '{}' | git hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+  git update-ref refs/etude/runs/not-ours "$(git commit-tree "$tree" -m x)" )
+RC=0
+OUT="$( cd "$elsewhere" && PATH="$r:$PATH" bash "$r/scripts/dogfood-completeness-audit.sh" --last 1 2>&1 )" || RC=$?
+assert_exit 0 "$RC" "$OUT"
+
+t_start "the other repo's refs are not audited"
+assert_not_contains "not-ours" "$OUT"
+
+# REGRESSION (implement gate r3, codex): when origin's tip object is NOT present
+# locally — the normal state of a repo that is behind — the audit cannot decide
+# ahead from behind, and must say so rather than assert "push it".
+t_start "an undecidable divergence is reported as diverged-ref, not a push instruction"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+# advance origin from a SEPARATE clone, so the new tip never enters r's object store
+clone="$tmpdir/clone$RANDOM"
+git clone -q "$(cd "$r" && git remote get-url origin)" "$clone"
+( cd "$clone"
+  git config user.email t@t; git config user.name T
+  blob=$(printf '{"manifest_version":3,"run_id":"b1","stages":[],"gates":[{"gate_id":"g0"},{"gate_id":"g1"}]}' | git hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tmanifest.json\n' "$blob" | git mktree)
+  tip=$(git commit-tree "$tree" -m advanced)
+  git push -q -f origin "$tip:refs/etude/runs/b1" )
+run_audit "$r" --last 1
+assert_contains "diverged-ref" "$OUT"
+
+t_start "an undecidable divergence does not tell the operator to push"
+assert_not_contains "diverged-ref.*push it" "$OUT"
 
 # ---------------------------------------------------------------------------
-# (f-mask-guard) A POST-cutoff cadence retro with NO sidecar (a HARD gap) must
-# NOT be masked by superseding it with a NON-validating ref. This is the
-# implement-gate codex BLOCK: post-cutoff refs are NEVER skipped via supersession.
+# (c) retro cadence — WARNS, never fails. This is the case most likely to be
+# broken by accident, because making a warning hard looks like an improvement.
 # ---------------------------------------------------------------------------
-t_start "(f-mask-guard) post-cutoff no-sidecar retro superseded by a non-cadence ref still HARD-GAPs"
+echo ""
+echo "=== (c) retro cadence is WARN only ==="
 
-delete_all_retros
-MASK_OLD_ID="retro-f-mask-old"
-MASK_SUP_ID="retro-f-mask-sup"
+t_start "3 uncovered beads with clean hard checks still exits 0"
+r=$(new_repo "$THREE")
+for b in b1 b2 b3; do add_run "$r" "$b" 1; done
+push_etude "$r"
+run_audit "$r" --last 3
+assert_exit 0 "$RC" "$OUT"
 
-# OLD: POST-cutoff, cadence-retro, NO sidecar → a genuine hard gap.
-python3 -c "
-import json
-m = {
-    'manifest_version': 2,
-    'run_id': '$MASK_OLD_ID',
-    'workflow': 'retro',
-    'workflow_version': 'retro-v1',
-    'created': '$POST_CUTOFF_TS',
-    'refs': {'scope':'cohort','trigger':'cadence-retro','subject_run.1':'ga1'},
-    'stages': []
-}
-print(json.dumps(m))
-" | {
-  manifest_data=$(cat)
-  blob_sha=$(git hash-object -w --stdin <<< "$manifest_data")
-  tree_sha=$(printf '100644 blob %s\tmanifest.json\n' "$blob_sha" | git mktree)
-  commit_sha=$(git commit-tree "$tree_sha" -m "retro: $MASK_OLD_ID" <<< "")
-  git update-ref "refs/etude/retros/$MASK_OLD_ID" "$commit_sha"
-  git push origin "refs/etude/retros/$MASK_OLD_ID" --quiet 2>/dev/null
-}
+t_start "cadence overdue is reported as WARN"
+assert_contains "WARN \[cadence-overdue\] 3 active" "$OUT"
 
-# SUPERSEDER: a NON-cadence (manual) ref, no sidecar, that names OLD in supersedes.
-# Under the buggy (pre-fix) logic this would mask OLD's hard gap; the fix keeps OLD
-# validated because it is POST-cutoff.
-seed_superseding_retro "$MASK_SUP_ID" "$MASK_OLD_ID" "$POST_CUTOFF_TS" "manual" \
-  "" "ga1"
-git push origin "refs/etude/retros/$MASK_SUP_ID" --quiet 2>/dev/null
+t_start "cadence overdue is NOT counted as a hard gap"
+assert_not_contains "GAP  \[cadence" "$OUT"
 
-run_audit_split --last 9
-assert_exit 1 "$AUDIT_RC" "(f-mask-guard) post-cutoff hard gap not masked by non-validating superseder"
+t_start "under the threshold, cadence reports ok"
+r=$(new_repo "$ONE"); add_run "$r" b1 1; push_etude "$r"
+run_audit "$r" --last 1
+assert_contains "ok   cadence: 1 uncovered" "$OUT"
 
-t_start "(f-mask-guard) the masked old ref surfaces as a cadence-sidecar GAP"
-assert_output_contains "$MASK_OLD_ID" "$AUDIT_OUT"
+# ---------------------------------------------------------------------------
+# Allowlist — exempts (a)/(b) AND is (c)'s denominator, and stays visible
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== allowlist ==="
 
-delete_all_retros
+t_start "an allowlisted bead with no run ref does not gap"
+r=$(new_repo "$ONE")
+printf 'b1  # test exemption\n' > "$r/scripts/dogfood-completeness-allow.txt"
+run_audit "$r" --last 1
+assert_exit 0 "$RC" "$OUT"
 
-# ===========================================================================
-# SUPERSESSION TEST (g-supersede-clears-mismatch): old retro claims a subject
-# absent from its manifest → would WARN; new retro supersedes it with that
-# subject present → old SKIPPED, no check-(g) WARN.
-# ===========================================================================
-t_start "(g-supersede-clears-mismatch) old retro with missing subject is SKIPPED when superseded"
+t_start "the exemption is REPORTED, not silent"
+assert_contains "bypass: b1 — test exemption" "$OUT"
 
-delete_all_retros
-OLD_G_ID="retro-g-sup-old"
-NEW_G_ID="retro-g-sup-new"
+t_start "allowlisted beads leave the active count lower"
+assert_contains "1 closed bead\(s\) in window, 0 active" "$OUT"
 
-# OLD: title claims ga1/ga2/ga3 but manifest only has ga1+ga2 → would WARN gc3
-# (using ga3 as the "missing" subject)
-seed_cadence_retro_with_body "$OLD_G_ID" \
-  "# Cadence Retro (ga1/ga2/ga3)" \
-  "subject_run:ga1" "subject_run:ga2"
+t_start "allowlisting does NOT exempt a ref from the pushed check"
+# b1 is allowlisted, but its ref exists locally and is unpushed: (d) is repo-wide
+r=$(new_repo "$ONE")
+printf 'b1  # test exemption\n' > "$r/scripts/dogfood-completeness-allow.txt"
+add_run "$r" b1 1
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
 
-# NEW: supersedes OLD; body title and manifest both include ga1+ga2 consistently
-# Use seed_superseding_retro (no body stage, but check (g) needs a retro-role stage
-# to parse the title — since it's absent the ref is silently skipped by check (g))
-seed_superseding_retro "$NEW_G_ID" "$OLD_G_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" \
-  "ga1" "ga2"
-
-git push origin \
-  "refs/etude/retros/$OLD_G_ID" \
-  "refs/etude/retros/$NEW_G_ID" \
-  --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(g-supersede) old ref with missing subject skipped"
-
-t_start "(g-supersede-clears-mismatch) no subject-consistency WARN for old ref"
-assert_output_not_contains "subject-consistency.*$OLD_G_ID|$OLD_G_ID.*subject-consistency" "$AUDIT_OUT"
-
-delete_all_retros
-
-# ===========================================================================
-# SUPERSESSION TEST (c-coverage-preserved): OLD + NEW both cover the same
-# subject_run. After supersession the bead is still counted as covered and
-# uncovered_count does NOT increase (no double-count, no vanish).
-# ===========================================================================
-t_start "(c-coverage-preserved) subject covered by OLD still covered after supersession"
-
-delete_all_retros
-write_bd_json "ga1" "ga2"
-OLD_C_ID="retro-c-sup-old"
-NEW_C_ID="retro-c-sup-new"
-
-# OLD covers ga1; NEW supersedes OLD and ALSO covers ga1
-seed_cadence_retro "$OLD_C_ID" "ga1" "ga2"
-seed_superseding_retro "$NEW_C_ID" "$OLD_C_ID" "$PRE_CUTOFF_TS" "cadence-retro" "" \
-  "ga1" "ga2"
-git push origin \
-  "refs/etude/retros/$OLD_C_ID" \
-  "refs/etude/retros/$NEW_C_ID" \
-  --quiet 2>/dev/null
-
-run_audit_split --last 9
-# Both ga1 and ga2 are in-scope active beads; the NEW ref covers both.
-# The OLD ref is superseded → skipped. Coverage must still be full → no cadence-overdue.
-assert_exit 0 "$AUDIT_RC" "(c-coverage) subjects still covered after supersession"
-
-t_start "(c-coverage-preserved) no cadence-overdue WARN (coverage intact)"
-assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
-
-delete_all_retros
-
-# ===========================================================================
-# SUPERSESSION TEST (empty-supersedes): a retro with NO refs.supersedes does NOT
-# add an empty entry to the superseded-set, so no other ref is wrongly skipped.
-# ===========================================================================
-t_start "(empty-supersedes) retro with no refs.supersedes does not wrongly skip any ref"
-
-delete_all_retros
-write_bd_json "ga1" "ga2"
-
-# A normal cadence retro with NO supersedes field — should be checked normally
-NORMAL_ID="retro-c-no-sup"
-seed_cadence_retro "$NORMAL_ID" "ga1" "ga2"
-git push origin "refs/etude/retros/$NORMAL_ID" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(empty-supersedes) normal retro is not wrongly skipped"
-
-# The normal retro covers ga1+ga2; no cadence-overdue expected
-t_start "(empty-supersedes) normal retro coverage is intact (no cadence-overdue)"
-assert_output_not_contains "cadence-overdue" "$AUDIT_OUT"
-
-delete_all_retros
-
-# ===========================================================================
-# SUPERSESSION TEST (dangling-supersedes): a retro whose refs.supersedes points
-# at a non-existent retro id must not crash; nothing should be wrongly skipped.
-# ===========================================================================
-t_start "(dangling-supersedes) retro superseding non-existent id does not crash"
-
-delete_all_retros
-write_bd_json "ga1" "ga2"
-
-# Seed a retro that supersedes a NON-EXISTENT id ("retro-does-not-exist")
-DANGLING_ID="retro-dangling-sup"
-seed_superseding_retro "$DANGLING_ID" "retro-does-not-exist" \
-  "$PRE_CUTOFF_TS" "cadence-retro" "" "ga1" "ga2"
-git push origin "refs/etude/retros/$DANGLING_ID" --quiet 2>/dev/null
-
-run_audit_split --last 9
-# Must not crash (exit code ≠ 2); the dangling supersedes value is collected
-# but points at a non-existent ref → no real ref is wrongly skipped.
-# Exit 0 because the dangling retro itself covers ga1+ga2 (not skipped itself).
-assert_exit 0 "$AUDIT_RC" "(dangling-supersedes) no crash on dangling supersedes"
-
-t_start "(dangling-supersedes) audit completes normally (output has summary line)"
-assert_output_contains "audit:" "$AUDIT_OUT"
-
-delete_all_retros
-
-# ===========================================================================
-# SUPERSESSION TEST (regression-no-supersedes): when no retro has refs.supersedes,
-# the superseded-set is empty and existing behaviour is completely unchanged.
-# Re-runs the original complete fixture (TEST 1 shape) without any supersedes.
-# ===========================================================================
-t_start "(regression-no-supersedes) no supersedes present → superseded-set empty → no behaviour change"
-
-delete_all_retros
-write_bd_json "test-aaa" "test-bbb"
-seed_cadence_retro_with_meta "retro-reg-no-sup" "$PRE_CUTOFF_TS" \
-  "$VALID_SIDECAR_JSON" "test-aaa" "test-bbb"
-git push origin "refs/etude/retros/retro-reg-no-sup" --quiet 2>/dev/null
-
-run_audit_split --last 9
-assert_exit 0 "$AUDIT_RC" "(regression-no-supersedes) complete fixture still exits 0"
-
-t_start "(regression-no-supersedes) output says OK"
-assert_output_contains "audit: OK" "$AUDIT_OUT"
-
-delete_all_retros
-
-# Clean up short-id g-test run refs
-git update-ref -d "refs/etude/runs/ga1" 2>/dev/null || true
-git update-ref -d "refs/etude/runs/ga2" 2>/dev/null || true
-git push origin --delete "refs/etude/runs/ga1" "refs/etude/runs/ga2" --quiet 2>/dev/null || true
-
-# ===========================================================================
-# Summary
-# ===========================================================================
+# ---------------------------------------------------------------------------
 echo ""
 echo "==========================================="
 echo "Test results: $pass_count passed, $fail_count failed"
 echo "==========================================="
-
-if [[ $fail_count -gt 0 ]]; then
-  exit 1
-fi
+[[ "$fail_count" -eq 0 ]] || exit 1
 exit 0

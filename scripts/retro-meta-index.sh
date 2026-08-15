@@ -62,7 +62,8 @@ py_script_file="$(mktemp)"
 trap 'rm -f "$retro_jsonl_file" "$py_script_file"' EXIT
 
 # ---------------------------------------------------------------------------
-# Build superseded-set — identical pattern to dogfood-completeness-audit.sh:380-395.
+# Build superseded-set — the same pattern the completeness audit's cadence check
+# still uses. Keep the two in parity.
 # One pass over refs/etude/retros: collect every non-empty refs.supersedes value.
 # ---------------------------------------------------------------------------
 declare -A superseded_set   # bare-retro-id -> 1
@@ -83,23 +84,27 @@ done < <(git for-each-ref refs/etude/retros --format='%(refname)' 2>/dev/null ||
 # ---------------------------------------------------------------------------
 # Collect all current cadence-retro sidecars.
 # For each ref:
-#   1. SKIP unconditionally if its bare id is in superseded_set (mirror audit :413-414).
+#   1. SKIP unconditionally if its bare id is in superseded_set — the same
+#      unconditional skip the audit's cadence check uses.
 #      Applied BEFORE the trigger filter.
-#   2. Read manifest; keep only trigger==cadence-retro (mirror audit :491).
-#   3. Find output.role==retro-meta stage; read the blob (mirror audit :524-554).
+#   2. Read manifest; keep only trigger==cadence-retro, as the audit's cadence
+#      check does.
+#   3. Find output.role==retro-meta stage; read the blob. The audit's removed
+#      cadence-sidecar check read it the same way; this tool is now the only
+#      consumer (bead etude-k47).
 # ---------------------------------------------------------------------------
 # Accumulate sidecar data as JSONL; aggregate in one python3 pass below.
 
 while IFS= read -r retro_ref; do
   retro_short="${retro_ref#refs/etude/retros/}"
 
-  # Skip unconditionally if superseded — mirror check (c) at audit:413-414,
-  # NOT the pre-cutoff-conditional skip from check (f) at audit:519.
+  # Skip unconditionally if superseded. Note this is NOT the conditional,
+  # cutoff-aware skip the audit's removed cadence-sidecar check used.
   [[ -v "superseded_set[$retro_short]" ]] && continue
 
   manifest_data="$(git cat-file -p "$retro_ref:manifest.json" 2>/dev/null)" || continue
 
-  # Keep only cadence-retro trigger (mirror audit :491)
+  # Keep only cadence-retro trigger, as the audit's cadence check does
   trigger="$(python3 -c "
 import json,sys
 m=json.load(sys.stdin)
@@ -107,7 +112,7 @@ print(m.get('refs',{}).get('trigger',''))
 " <<< "$manifest_data" 2>/dev/null || echo "")"
   [[ "$trigger" == "cadence-retro" ]] || continue
 
-  # Find retro-meta stage and read sidecar blob (mirror audit :524-554)
+  # Find retro-meta stage and read the sidecar blob
   sidecar_line="$(python3 -c "
 import json,sys,subprocess
 ref='$retro_ref'

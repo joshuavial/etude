@@ -14,7 +14,11 @@ that gap.
 The replacement has two moving parts. A **worker lane** does the producing work.
 A **supervisor** advances each phase boundary with one command that runs the
 gate for real. The supervisor cannot record a gate it did not run, so the audit
-shrinks to the two checks that caught real misses.
+shrinks to the checks that caught real misses. (As shipped in `etude-9uf.4` that
+is three hard checks — run-ref present, run has gates, refs pushed — plus retro
+cadence as a warning. The planning note said "two"; nothing forces `etude gate`
+to be used, so the two checks that detect a supervisor skipping the model both
+survived.)
 
 This is deliberately not live `etude run`: the producing step stays outside
 etude until caller-cwd runner mode lands (GH #15). What changes is that gating

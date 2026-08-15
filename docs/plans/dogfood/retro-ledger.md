@@ -8,10 +8,11 @@ new retro and not re-analysis — of every retrospective performed during the
 > that landed as scripts the supervised worker-lane model has since removed. The
 > retroactive run-capture and bead-close scripts were retired in `etude-9uf`, and
 > those entries now name the mechanism rather than the file; the finding each
-> retro produced is unchanged. References to `dogfood-completeness-audit.sh` and
-> its allowlist are still accurate as written and are deliberately left alone —
-> bead `etude-9uf.4` replaces that audit and owns its own sweep, so their
-> presence here is a deferral, not an oversight.
+> retro produced is unchanged. `etude-9uf.4` then shrank
+> `scripts/dogfood-completeness-audit.sh` to three hard checks plus a warning and swept this file:
+> the prescriptive statements about what the audit ENFORCES were corrected, and
+> the historical entries recording what it enforced AT THE TIME were deliberately
+> left alone. A ledger entry describing a past state is not a stale pointer.
 
 ## How to read this
 
@@ -422,16 +423,21 @@ retro to its runs), pushed to origin. Retro outputs go ONLY to skills, formulas,
 repo docs, or `etude` retro artifacts — **never to memory.**
 
 **Cadence retro-meta sidecar (required, etude-8hq.3).** From 2026-05-27 onward,
-every `etude retro capture cohort ... --trigger cadence-retro` MUST include
-`--meta-file <json>` carrying the 7-key convention (see
+every `etude retro capture cohort ... --trigger cadence-retro` is expected to
+include `--meta-file <json>` carrying the 7-key convention (see
 `scripts/retro-meta-cadence.example.json` and `docs/retro.md` §"Cadence
 retro-meta convention (dogfood)"). The sidecar keys are: `retro_type` (string),
 `original_event_date` (string), `failure_modes` (array), `root_causes` (array),
 `follow_up_beads` (array), `decisions` (array), `durable_changes` (array). All
-seven must be present with the correct type; arrays may be empty. A post-cutoff
-cadence retro missing or with a malformed sidecar is a **hard gap** (exit 1) in
-`scripts/dogfood-completeness-audit.sh` check (f). Use the example file as a
-starting template:
+seven are expected, with the correct type; arrays may be empty.
+
+**No longer enforced, as of `etude-9uf.4`.** A missing or malformed sidecar was a
+hard gap (exit 1) in `scripts/dogfood-completeness-audit.sh` until that bead
+shrank the audit to the checks that guard evidence about work. The convention
+still stands and is still worth following — `scripts/retro-meta-index.sh` reads
+these sidecars, so one that is skipped silently reduces that index's coverage
+(bead `etude-k47`) — but nothing will tell you if you omit it. Use the example
+file as a starting template:
 
 ```bash
 etude retro capture cohort \
@@ -484,13 +490,15 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
   correct form is `--bead etude-nm6` (writes a `bead.N` ref, does not require a run
   ref). **Resolution (etude-8hq.8): ANNOTATED, not superseded.** A supersede now
   would mint a NEW ref with a post-cutoff `created` timestamp, which check (f)
-  (etude-8hq.3) hard-requires carry a 7-key retro-meta sidecar — pulling sidecar
+  (etude-8hq.3, since removed in `etude-9uf.4`) hard-required carry a 7-key
+  retro-meta sidecar — pulling sidecar
   authorship (etude-8hq.5's job) into this subjects-only bead, and leaving the old
   pre-cutoff ref still WARNing on check (g) unless the checks become
   supersession-aware. So B16 is instead annotated: its ref id is recorded in
   `SUBJECT_CONSISTENCY_ALLOW` in `scripts/dogfood-completeness-audit.sh` with the
   reason above (an explicit, auditable record of WHY the divergence is legitimate),
-  and check (g) skips it. etude-8hq.5 will re-capture B16 (and the other migrated
+  and the subject-consistency check skipped it. (Both that array and that check
+  were removed in `etude-9uf.4`; this records the resolution as it stood.) etude-8hq.5 will re-capture B16 (and the other migrated
   retros) with `--bead etude-nm6` + a sidecar in one convention-compliant,
   supersession-aware pass — at which point the allowlist entry can be removed.
 
@@ -569,8 +577,8 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
 - **Durable lesson (the through-line of 8hq.8 + 8hq.5):** a skip/exemption inside a
   HARD gate must be applied AFTER the gate's own classification, never before — else it
   bypasses the check it sits in front of. The cutoff×supersede interaction bit twice
-  (8hq.8 pre→post-cutoff mint; 8hq.5 skip-before-classify); locked by the `f-mask-guard`
-  regression test. Also: **a phase epic, when it auto-closes, is a runless bead that
+  (8hq.8 pre→post-cutoff mint; 8hq.5 skip-before-classify); locked at the time by
+  the `f-mask-guard` regression test, which went with check (f) in `etude-9uf.4`. Also: **a phase epic, when it auto-closes, is a runless bead that
   must be added to `dogfood-completeness-allow.txt`** (rollup; children carry the runs) —
   this recurs every phase and briefly blocked the final push until allowlisted.
 - **Landed:** `[IMPLEMENTED]` 8hq.6/8hq.7/8hq.5 + the etude-8hq epic allowlist entry +
