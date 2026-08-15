@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -29,6 +30,25 @@ func repoRootForMigration(t *testing.T) string {
 	}
 	// thisFile: .../internal/cli/migration_test.go — two levels up is repo root.
 	return filepath.Join(filepath.Dir(thisFile), "../..")
+}
+
+// TestMigrationRegistryMatchesDefault makes etude init --force regeneration
+// semantically safe for this repository's canonical registry. Comments are not
+// modeled, but every executable seat and tier setting must remain identical.
+func TestMigrationRegistryMatchesDefault(t *testing.T) {
+	root := repoRootForMigration(t)
+	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+	if err != nil {
+		t.Fatalf("read .etude/registry.yaml: %v", err)
+	}
+	got, err := registry.ParseYAML(content)
+	if err != nil {
+		t.Fatalf("registry.ParseYAML: %v", err)
+	}
+	want := registry.Default()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checked-in registry differs from registry.Default()\n got: %#v\nwant: %#v", got, want)
+	}
 }
 
 // TestMigrationRegistryParsesAndValidates asserts that .etude/registry.yaml
@@ -99,6 +119,21 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 	}
 	if len(codex.ModelFallbacks) == 0 {
 		t.Error("codex model_fallbacks must be non-empty")
+	}
+
+	opus, ok := reg.Seats["opus"]
+	if !ok {
+		t.Fatal("opus seat missing")
+	}
+	invocations := opus.Invocations()
+	if len(invocations) != 2 {
+		t.Fatalf("opus invocations = %v, want primary + agy fallback", invocations)
+	}
+	if invocations[0].Harness != "claude-code" || invocations[0].Invoke != "claude -p --model opus" {
+		t.Errorf("opus primary invocation = %+v", invocations[0])
+	}
+	if invocations[1].Harness != "agy" || invocations[1].Invoke != "agy --model opus --print" || invocations[1].Mode != "inline" {
+		t.Errorf("opus fallback invocation = %+v", invocations[1])
 	}
 }
 

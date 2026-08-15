@@ -13,23 +13,34 @@ seats:
   codex:
     provider: openai/gpt-5.5
     harness: codex
-    invoke: codex exec --ephemeral -m gpt-5.5 -s read-only -
+    invoke: codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -
     mode: diff-only
     model_fallbacks:
       - gpt-5.4
       - gpt-5.3
+      - gpt-5.2
+  dev:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
   gemini:
     provider: google/gemini-3.1-pro-preview
     harness: gemini-cli
-    invoke: gemini -m gemini-3.1-pro-preview -p
+    invoke: env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p
     mode: inline-no-tools
     model_fallbacks:
       - gemini-3-pro-preview
+      - gemini-3-flash-preview
+      - gemini-2.5-pro
   opus:
     provider: anthropic/claude-opus
     harness: claude-code
     invoke: claude -p --model opus
     mode: inline
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+        mode: inline
 tiers:
   L1:
     name: Full three-seat gate
@@ -37,20 +48,24 @@ tiers:
       - gemini
       - opus
       - codex
+    use: 'Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage format / ref-namespace / git-plumbing changes that could lose or corrupt data, or break backward compatibility.'
   L2:
     name: Strong two-seat gate
     seats:
       - opus
       - codex
+    use: The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any change touching product/CLI behavior, schema/format, refs/etude/*, or docs claiming NEW shipped behavior.
   L3:
     name: Medium two-seat gate
     seats:
       - opus
       - codex
+    use: The IMPLEMENT-phase gate, and low-risk localized refactors / validation tightening / test strengthening on an already-gated component.
   L4:
     name: Light single-seat gate
     seats:
       - opus
+    use: DOCS and FINAL REVIEW phase gates, and changes with no shipping-code change (test-only additions or docs/planning-only changes).
 `
 
 // TestDefaultYAMLIsDeterministicAndExact asserts exact byte output from
@@ -69,6 +84,41 @@ func TestDefaultYAMLIsDeterministicAndExact(t *testing.T) {
 	}
 	if string(second) != string(first) {
 		t.Fatalf("YAML bytes changed between calls\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// TestParseYAMLInvocationFallbacks verifies the focused machine-readable
+// fallback surface and primary-then-fallback ordering.
+func TestParseYAMLInvocationFallbacks(t *testing.T) {
+	input := `seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
+    mode: inline
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+tiers:
+  L4:
+    seats: [opus]
+`
+	r, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	got := r.Seats["opus"].Invocations()
+	want := []SeatInvocation{
+		{Harness: "claude-code", Invoke: "claude -p --model opus", Mode: "inline"},
+		{Harness: "agy", Invoke: "agy --model opus --print", Mode: "inline"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Invocations() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Invocations()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -136,6 +186,10 @@ seats:
     harness: claude-code
     invoke: claude -p --model opus
     mode: inline
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+        mode: inline
 tiers:
   L1:
     name: Full gate
@@ -163,6 +217,34 @@ tiers:
 	}
 	if opus.Mode != "inline" {
 		t.Fatalf("opus mode = %q, want %q", opus.Mode, "inline")
+	}
+	if len(opus.InvocationFallbacks) != 1 {
+		t.Fatalf("opus invocation_fallbacks = %v", opus.InvocationFallbacks)
+	}
+	fallback := opus.InvocationFallbacks[0]
+	if fallback.Harness != "agy" || fallback.Invoke != "agy --model opus --print" || fallback.Mode != "inline" {
+		t.Fatalf("opus invocation fallback = %+v", fallback)
+	}
+	invocations := opus.Invocations()
+	if len(invocations) != 2 {
+		t.Fatalf("opus Invocations() = %v", invocations)
+	}
+	if invocations[0].Harness != "claude-code" || invocations[0].Invoke != "claude -p --model opus" {
+		t.Fatalf("primary invocation = %+v", invocations[0])
+	}
+	if invocations[1] != fallback {
+		t.Fatalf("fallback invocation = %+v, want %+v", invocations[1], fallback)
+	}
+}
+
+// TestSeatInvocationsReturnsIndependentSlice ensures callers can consume and
+// modify the ordered candidates without mutating registry configuration.
+func TestSeatInvocationsReturnsIndependentSlice(t *testing.T) {
+	seat := Default().Seats["opus"]
+	got := seat.Invocations()
+	got[1].Harness = "changed"
+	if seat.InvocationFallbacks[0].Harness != "agy" {
+		t.Fatalf("Invocations mutated backing fallback: %+v", seat.InvocationFallbacks[0])
 	}
 }
 
@@ -339,6 +421,36 @@ func TestValidateRejectsSeatMissingInvoke(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsInvalidInvocationFallback asserts every alternate
+// invocation supplies the harness and command a consumer needs to execute it.
+func TestValidateRejectsInvalidInvocationFallback(t *testing.T) {
+	tests := []struct {
+		name     string
+		fallback SeatInvocation
+		want     string
+	}{
+		{name: "missing harness", fallback: SeatInvocation{Invoke: "agy --model opus --print"}, want: ".harness required"},
+		{name: "blank harness", fallback: SeatInvocation{Harness: "  ", Invoke: "agy --model opus --print"}, want: ".harness required"},
+		{name: "missing invoke", fallback: SeatInvocation{Harness: "agy"}, want: ".invoke required"},
+		{name: "blank invoke", fallback: SeatInvocation{Harness: "agy", Invoke: "  "}, want: ".invoke required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Default()
+			s := r.Seats["opus"]
+			s.InvocationFallbacks = []SeatInvocation{tc.fallback}
+			r.Seats["opus"] = s
+			err := r.Validate()
+			if err == nil {
+				t.Fatal("Validate should reject invalid invocation fallback")
+			}
+			if !errors.Is(err, ErrInvalidRegistry) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate error = %v, want ErrInvalidRegistry containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestKnownFieldsRejectsUnknownTopLevel asserts KnownFields(true) at the top
 // level of the registry document.
 func TestKnownFieldsRejectsUnknownTopLevel(t *testing.T) {
@@ -378,6 +490,31 @@ tiers:
 	_, err := ParseYAML([]byte(input))
 	if err == nil {
 		t.Fatal("ParseYAML should reject unknown key inside seat")
+	}
+	if !errors.Is(err, ErrInvalidRegistry) {
+		t.Fatalf("error does not wrap ErrInvalidRegistry: %v", err)
+	}
+}
+
+// TestKnownFieldsRejectsUnknownInInvocationFallback asserts strict decoding is
+// re-applied inside nested invocation fallback entries.
+func TestKnownFieldsRejectsUnknownInInvocationFallback(t *testing.T) {
+	input := `seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+        surprise: oops
+tiers:
+  L4:
+    seats: [opus]
+`
+	_, err := ParseYAML([]byte(input))
+	if err == nil {
+		t.Fatal("ParseYAML should reject unknown invocation fallback key")
 	}
 	if !errors.Is(err, ErrInvalidRegistry) {
 		t.Fatalf("error does not wrap ErrInvalidRegistry: %v", err)
@@ -470,15 +607,19 @@ func TestEmptyQuorumDefaultsUnanimous(t *testing.T) {
 	}
 }
 
-// TestRegistryRoundTripByteStable asserts a minimal hand-crafted registry
-// round-trips with exactly stable bytes.
-func TestRegistryRoundTripByteStable(t *testing.T) {
+// TestRegistryInvocationFallbackRoundTrip asserts a hand-crafted registry with
+// an invocation fallback round-trips with exactly stable bytes.
+func TestRegistryInvocationFallbackRoundTrip(t *testing.T) {
 	input := `seats:
   opus:
     provider: anthropic/claude-opus
     harness: claude-code
     invoke: claude -p --model opus
     mode: inline
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+        mode: inline
 tiers:
   L4:
     name: Light single-seat gate
@@ -506,6 +647,37 @@ tiers:
 	}
 	if string(b2) != string(b1) {
 		t.Fatalf("second round-trip bytes differ:\nfirst:\n%s\nsecond:\n%s", b1, b2)
+	}
+}
+
+// TestLegacyRegistryOmitsInvocationFallbacks proves the new optional field does
+// not appear when parsing and re-encoding a legacy registry.
+func TestLegacyRegistryOmitsInvocationFallbacks(t *testing.T) {
+	input := `seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
+    mode: inline
+tiers:
+  L4:
+    name: Light single-seat gate
+    seats:
+      - opus
+`
+	r, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	got, err := r.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	if string(got) != input {
+		t.Fatalf("legacy round-trip changed\ngot:\n%s\nwant:\n%s", got, input)
+	}
+	if strings.Contains(string(got), "invocation_fallbacks") {
+		t.Fatalf("legacy output unexpectedly contains invocation_fallbacks:\n%s", got)
 	}
 }
 
@@ -575,7 +747,7 @@ func TestDefaultYAMLSelfChecks(t *testing.T) {
 		t.Fatalf("Validate after self-check error: %v", err)
 	}
 	// Verify the output contains all expected seat keys.
-	for _, key := range []string{"codex", "gemini", "opus"} {
+	for _, key := range []string{"codex", "dev", "gemini", "opus"} {
 		if !strings.Contains(string(b), key+":") {
 			t.Fatalf("YAML output missing seat %q:\n%s", key, b)
 		}

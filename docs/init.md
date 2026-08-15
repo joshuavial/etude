@@ -169,6 +169,10 @@ seats:
     mode: inline            # optional; execution constraint for the seat
     model_fallbacks:        # optional; ordered list of fallback model ids
       - claude-opus-old
+    invocation_fallbacks:   # optional; ordered alternate harness commands
+      - harness: agy
+        invoke: "agy --model opus --print"
+        mode: inline
   codex:
     provider: openai/gpt-5.5
     harness: codex
@@ -189,14 +193,28 @@ Validation rules:
 - **`quorum`** — if set, must be `"unanimous"` or `"majority"`.  Omitting it
   is equivalent to `"unanimous"`.
 - **`seats`** — `provider`, `harness`, and `invoke` are required per seat.
-  `mode` and `model_fallbacks` are optional.  Seat and tier map keys must match
-  `[A-Za-z0-9_.-]`.
+  `mode`, `model_fallbacks`, and `invocation_fallbacks` are optional. Each
+  invocation fallback requires its own `harness` and `invoke`; `mode` is
+  optional. Seat and tier map keys must match `[A-Za-z0-9_.-]`.
 - **`tiers`** — `seats` is required and must be non-empty.  Every seat key in
   a tier must reference a seat defined in the same file (intra-file check; no
   cross-file resolution at schema time).  `name` and `use` are optional prose.
   The scaffold ships four tier presets, `L1`–`L4`.
 - **Unknown fields** are rejected at parse time (strict mode).
 - **Trailing documents** after the first are rejected.
+
+`model_fallbacks` lists alternate model identifiers for the primary harness.
+It cannot change harnesses. `invocation_fallbacks` lists complete alternate
+harness commands; consumers must decide when to retry and try them in order
+after the primary invocation. A fallback that omits `mode` inherits the primary
+seat's mode. The live-run engine does not infer the surrounding orchestrator
+from environment variables or automatically select a fallback.
+
+The generated registry comes from canonical defaults that are tested for
+semantic equality with this repository's checked-in `.etude/registry.yaml`.
+When that scaffold is regenerated, `etude init --force` may remove its comments
+but preserves its canonical machine-readable invocation and fallback behavior.
+Custom registry settings are still overwritten by `--force`.
 
 ## workflow.yaml — optional stage runner, gate, and default_runner fields
 
