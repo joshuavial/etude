@@ -27,18 +27,23 @@ behavior.
 
 - [Dogfood plan index](dogfood/README.md) - dogfood process notes used while
   building `etude`.
+- [Supervisor runbook](dogfood/supervisor-runbook.md) - the worker-lane +
+  supervisor model: where a phase artifact lands, the two commands that
+  advance a phase, and the `etude gate` contract.
 - [Dev workflow audit](dogfood/dev-workflow-audit.md) - audit of the current
   Claude dev workflow and recommended dogfood workflow shape for building
   `etude`.
-- [Review gate process](dogfood/review-gate-process.md) - four-reviewer gate
-  process for advancing dogfood workflow phases without human approval gates.
-- [Review gate runbook](dogfood/review-gate-runbook.md) - operational checklist
-  for running the four-reviewer gate.
+- [Review gate process](dogfood/review-gate-process.md) - the gate policy:
+  the stage's tier votes, humans do not approve, a seat that cannot complete is
+  never a pass.
+- [Review gate runbook](dogfood/review-gate-runbook.md) - how to judge an
+  artifact at a gate: review lenses, gate weight, prompt template, result
+  classification, and the recurring defect classes.
 - [Verify phase design](dogfood/verify-phase-design.md) - decision and public
   contract for consolidating test writing, manual testing, and QA under one
   Verify gate.
-- [Dogfood capture protocol](dogfood/capture-protocol.md) - temporary manual
-  capture rules for treating one bead as one future `etude` run.
+- [Dogfood retro capture](dogfood/retro-capture.md) - retro triggers, artifact
+  shape, and links required when capturing a retro with `etude retro`.
 - [Docs freshness checklist](dogfood/docs-checklist.md) - shipped-docs checks
   for Docs and Final Review phases.
 - [Backlog operating model](dogfood/backlog-operating-model.md) - working rules

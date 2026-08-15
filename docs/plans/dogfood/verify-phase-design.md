@@ -10,7 +10,7 @@ Use one externally visible **Verify** phase.
 Keep `dev-test-writer`, `dev-qa`, and manual testing as separate internal
 specialists for now. Do not expose them as separate top-level gates. The user
 sees one Verify artifact with a single status recommendation for the bead.
-Advancement is controlled by the three-reviewer gate defined in
+Advancement is controlled by the phase gate defined in
 [Review Gate Process](review-gate-process.md).
 
 This keeps the workflow simple enough to dogfood while preserving useful
@@ -24,7 +24,7 @@ The Verify phase answers one question:
 > Is the implementation ready for documentation and final review?
 
 Its output is a single approval artifact. Every Verify outcome is reviewed by
-the three-reviewer panel defined in [Review Gate Process](review-gate-process.md).
+the seat panel defined in [Review Gate Process](review-gate-process.md).
 The workflow moves phase only after Gemini Pro, Claude Opus, and a fresh GPT-5.5
 xhigh agent all return `GO`.
 
@@ -137,7 +137,7 @@ fixed in the current bead.
 AI-driven browser testing, such as Playwright execution, is still a Verify
 lane. If the test genuinely requires human execution, Verify returns `blocked`
 with a request for the human manual-test input. After that input is supplied,
-the Verify artifact is updated and the three-reviewer gate reruns.
+the Verify artifact is updated and the phase gate reruns.
 
 ### QA Lane
 
@@ -164,7 +164,7 @@ captured as an Implement artifact.
 If Verify reveals that the approved plan was wrong or incomplete, use `blocked`
 with a recommendation for human input and re-planning rather than routing the
 problem to Implement. After the missing decision is supplied, rerun the
-three-reviewer gate.
+phase gate.
 
 ## Artifact Shape
 
@@ -223,14 +223,14 @@ edited into the original Verify artifact body.
 
 ## Failure Handling
 
-Every Verify result goes through the three-reviewer gate:
+Every Verify result goes through the phase gate:
 
-- if all three reviewers give `GO` on `pass`, move to `phase:docs`
-- if all three reviewers give `GO` on `fail`, move back to `phase:implement`
-- if all three reviewers give `GO` on `blocked`, remain in `phase:verify` with
+- if all of the tier's seats give `GO` on `pass`, move to `phase:docs`
+- if all of the tier's seats give `GO` on `fail`, move back to `phase:implement`
+- if all of the tier's seats give `GO` on `blocked`, remain in `phase:verify` with
   the missing input or decision recorded
 - if any reviewer gives `BLOCK`, incorporate required feedback and rerun the
-  full three-reviewer gate
+  full phase gate
 - if any reviewer cannot complete because of auth, quota, model access,
   allowance, timeout, or tooling failure, stop and escalate to the user
 - if the same gate receives `BLOCK` results through attempt 4 (the initial run
@@ -251,7 +251,7 @@ When Verify is blocked:
 - do not proceed to Docs
 - leave the bead in `phase:verify` until unblocked
 - after the missing input is supplied, update the Verify artifact and rerun the
-  three-reviewer gate
+  phase gate
 
 ## Workflow Implications
 

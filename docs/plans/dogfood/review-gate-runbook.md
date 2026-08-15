@@ -1,16 +1,20 @@
 # Review Gate Runbook
 
-Status: planning note. This is the operational checklist for running the
-three-reviewer dogfood gate defined in [Review Gate Process](review-gate-process.md).
+Status: planning note. This is the judgement reference for the phase gate whose
+policy is defined in [Review Gate Process](review-gate-process.md).
 
 ## Purpose
 
-The review gate process defines the policy. This runbook defines how to execute
-it consistently.
+The review gate process defines the policy. The
+[Supervisor runbook](supervisor-runbook.md) defines the mechanics — the two
+commands that advance a phase, the seat envelope contract, and what lands in the
+run ref. THIS runbook defines how to JUDGE: what a seat should look at, how to
+weight a gate, how to write the prompt, how to classify a result, and the
+recurring defect classes each phase gate should hunt for.
 
-Use this runbook for every phase gate while dogfooding `etude`.
-
-Compact gate checklist: [Dogfood Checklists](checklists.md#gate-execution). This runbook is the rationale/reference.
+That split matters. The mechanics are becoming a command (`etude gate`), so they
+belong in one place that the command is written against. The judgement is
+model-independent and hard-won, and it stays here.
 
 ## Reviewer Roles (review lenses)
 
@@ -53,7 +57,7 @@ observed guard/behavior; for round-trip, before/after bytes.
 (anthropic/claude-opus-4-7). Each runs the
 SAME full lens checklist. Execution constraints (codex large-input hang, gemini
 GrepTool cross-file bleed) affect HOW a seat applies
-lenses — see Per-seat execution constraints under Invocation. They are NOT a
+lenses — see Per-seat execution constraints below. They are NOT a
 reason to specialize seats to different lenses.
 
 **Scope-fence.** The 1-bead-1-commit / scope discipline is a cross-lens
@@ -65,14 +69,20 @@ Runtime Verifier ← #7, P1; Docs/Reality ← #6, Epic-Close; Security/Data-Inte
 
 ## Gate Weight
 
-Match the gate weight to the bead's risk. Pick the tier from the highest-risk
-surface the bead touches; when unsure, go heavier. Every tier still requires a
-UNANIMOUS pass of its seats — no tier advances on partial approval — and every
-seat failure (auth/quota/tool/empty) still escalates per Waiting And Status.
+**The tier and its seats come from config, not from this document.** Each stage's
+`gate.tier` in `.etude/workflow.yaml` names a tier; `tiers.<L>.seats` in
+`.etude/registry.yaml` names that tier's seats. Tier numbers are inverted by
+weight: L1 is the heaviest, L4 the lightest. Do not restate the seat lists here —
+a second copy drifts from the config, and the config is what actually runs.
 
-**Tier 1 — Full three-seat gate** (Gemini Pro + in-harness Claude Opus + fresh
-GPT-5.5 xhigh). The default and required tier for anything that can
-affect users, data, or future compatibility:
+Every tier requires a UNANIMOUS pass of its seats (registry `quorum`) — none
+advances on partial approval — and every seat failure (auth/quota/tool/empty) is
+never a pass.
+
+What this section owns is the RISK MAPPING: which surface deserves which weight.
+
+**Heaviest (L1)** — anything that can affect users, data, or future
+compatibility:
 
 - product code and public CLI behavior;
 - manifest, artifact, ref, workflow, or eval schema/format/storage changes;
@@ -80,32 +90,31 @@ affect users, data, or future compatibility:
 - any change that could lose or corrupt data, or break backward compatibility;
 - docs that claim NEW shipped behavior (reviewers must verify docs against code).
 
-Examples this tier caught real bugs on: `etude sync`, refstore hardening.
+Examples this weight caught real bugs on: `etude sync`, refstore hardening.
 
-**Tier 2 — Lightened two-seat gate** (in-harness Claude Opus + fresh GPT-5.5
-xhigh — the two highest-signal seats; drop the slower Gemini seat).
-Use for LOW-RISK code changes that touch none of the Tier-1 surfaces: small
-polish, localized refactors, validation tightening, or test strengthening on an
-existing, already-gated component. Example: tightening `capture --git-sha`
-validation + adding a table test.
+**Strong (L2)** — the heavy-QA panel. The PLAN and VERIFY phase gates, and any
+change touching product/CLI behavior, schema/format, `refs/etude/*`, or docs
+claiming new shipped behavior.
 
-**Tier 3 — Single-seat gate** (in-harness Claude Opus). Use only for changes with
-NO shipping-code change: test-only additions (e.g. godoc `Example` functions) or
-docs/planning-notes-only changes. Examples: internal API examples, a deferred-
-decisions planning note.
+**Medium (L3)** — the IMPLEMENT phase gate, and low-risk localized refactors,
+validation tightening, or test strengthening on an already-gated component.
+Example: tightening `capture --git-sha` validation plus a table test.
 
-Escalation is mandatory and overrides the tier: if a bead picked for Tier 2/3
-turns out to touch a Tier-1 surface, or ANY reviewer (or the orchestrator) finds
-it changes shipped behavior/schema/storage or could lose data, STOP and rerun at
-Tier 1. Tier choice is recorded in the gate attempt note (e.g. "gate: Tier 2
-(Opus + Codex) — low-risk capture polish, no Tier-1 surface").
+**Light (L4)** — the DOCS and FINAL REVIEW phase gates, and changes with no
+shipping-code change: test-only additions or docs/planning-only changes.
+
+**The stage's `gate.tier` is a FLOOR, never a ceiling.** If a bead whose stage
+declares a lighter tier turns out to touch a heavier surface — or any seat or the
+supervisor finds it changes shipped behavior, schema, or storage, or could lose
+data — STOP and re-gate at the heavier tier. Going down is never available: there
+is no flag to ask `etude gate` for a lighter panel than the stage declares, and
+hand-lowering one in a bootstrap gate record is the thing this whole model exists
+to make impossible.
 
 **Lightweight artifact (composes with any tier):** for docs/planning-only work,
 narrow the gate prompt and evidence to the actual changed files/diffs and have
 the phase owner state why product/manual tests are not relevant. This is about
 the prompt scope, independent of how many seats the tier uses.
-
-All tiers record reviewer results with the normal gate attempt note format.
 
 ## Gate Inputs
 
@@ -135,17 +144,20 @@ to — resolved only after re-reading the runbook and rerunning with the full ru
 If unsure a paraphrase is complete, tell the seat to verify it against the named
 source rather than treating the paraphrase as authoritative.
 
-## Invocation
+## Per-seat execution constraints
 
-Run the three reviewers in parallel:
+WHO dispatches the seats, and how a verdict reaches the run ref, is the
+[Supervisor runbook](supervisor-runbook.md)'s subject — a gate resolves its tier
+from `.etude/workflow.yaml`, its seats from `.etude/registry.yaml`, and hands
+every seat the identical shared prompt.
 
-- Gemini Pro
-- Claude Opus
-- a fresh GPT-5.5 xhigh agent (codex)
+What follows is how each seat BEHAVES once invoked. It is the accumulated list
+of ways a seat produces a wrong or missing verdict, and it is the design brief
+for a seat adapter: an adapter that ignores these reproduces the same failures
+with a JSON envelope wrapped around them.
 
-Each reviewer should run as a non-interactive prompt invocation that receives
-only the gate prompt and repository files. They must not rely on hidden
-implementation context.
+Each seat runs as a non-interactive invocation receiving only the shared gate
+prompt. Seats must not rely on hidden implementation context.
 
 **Reviewer seats MUST NOT mutate the working tree.** A pre-commit gate reviews
 UNCOMMITTED work, so any `git checkout`/`git restore`/`git stash`/`git reset` a
@@ -257,6 +269,11 @@ orchestrator is Claude Code.
 
 ### Example launch pattern
 
+These are the invocations a seat ADAPTER wraps. The adapter's added job is the
+envelope: read the shared prompt from `$ETUDE_INPUTS_DIR`, run the command
+below, and write `{"verdict": ...}` to `$ETUDE_OUTPUT_FILE` (see
+[Supervisor runbook — The seat contract](supervisor-runbook.md#the-seat-contract)).
+
 ```text
 Gemini Pro:     GEMINI_CLI_TRUST_WORKSPACE=true gemini --skip-trust \
                 -m gemini-3.1-pro-preview -p "<gate prompt>"
@@ -275,15 +292,21 @@ directory" without `--skip-trust` (+ `GEMINI_CLI_TRUST_WORKSPACE=true`), and
 `--skip-git-repo-check`. Omitting them costs a guaranteed failed reroll on the
 first gate of every fresh environment. (etude-8ub)
 
-Do not advance until all three reviewers return.
+Do not advance until every one of the tier's seats returns.
 
-## Gate Orchestration (Claude Code)
+## Supervisor discipline
 
-When Claude Code drives the loop, the orchestrator's own discipline is as
-load-bearing as the panel. These rules were distilled from the etude-2pc
-live-execution epic, where the panel never shipped a defect but several
-sub-agent handoffs silently failed and were caught ONLY by independent
-orchestrator verification. Treat them as mandatory, not optional.
+`etude gate` takes over the mechanical half of running a gate: resolving the
+tier and its seats, building the shared prompt, dispatching, synthesizing, and
+writing the record. What it does NOT take over is everything below — verifying
+that the artifact under review is the real one, keeping scratch out of the repo,
+and keeping a bead's commit to that bead. Those stay the supervisor's job, and
+they are as load-bearing as the panel.
+
+These rules were distilled from the etude-2pc live-execution epic, where the
+panel never shipped a defect but several sub-agent handoffs silently failed and
+were caught ONLY by independent orchestrator verification. Treat them as
+mandatory, not optional.
 
 ### Pre-gate verification (do this BEFORE dispatching any gate)
 
@@ -353,13 +376,11 @@ only your reviewer-seat verdict.
 
 Process:
 - no human approval gates
-- gate passes only if Gemini Pro, Claude Opus, and fresh GPT-5.5 xhigh
-  all return clear GO
+- gate passes only if EVERY seat in the stage's tier returns a clear GO
 - any BLOCK requires incorporating required feedback and rerunning the full
   gate
-- reviewer auth/quota/model/tool failure escalates to the user and cannot be
-  skipped
-- optional improvements from GO reviewers must be implemented before advancing
+- seat auth/quota/model/tool failure escalates and cannot be skipped
+- optional improvements from GO seats must be implemented before advancing
   or explicitly deferred to a named follow-up bead
 
 Review artifacts:
@@ -402,19 +423,26 @@ described in the In-harness Claude rule above, not the external `claude -p` CLI.
 
 ## Waiting And Status
 
-While reviewers are running:
+`etude gate` waits on its own seats and classifies a seat that produces no usable
+envelope (`empty`, `malfunction`, `failed`) without the supervisor watching a
+process. What still needs judgement is what to do about a seat that keeps
+failing.
 
-- report which reviewers have returned
-- report which reviewers are still pending
+A failed invocation is never a `GO`. A gate with too few usable verdicts
+escalates, and escalation exits non-zero.
+
+When a seat is run out-of-band (the bootstrap path — see the
+[Supervisor runbook](supervisor-runbook.md#the-bootstrap-path)), the supervisor
+watches it directly:
+
+- report which seats have returned and which are still pending
 - do not infer failure from silence while a process is still running
-- if a reviewer exits with auth, quota, model access, allowance, timeout, or
-  tooling failure, stop and escalate to the user
+- if a seat exits with auth, quota, model access, allowance, timeout, or tooling
+  failure, stop and escalate rather than proceeding without it
 
-A failed invocation is not a `GO`. Any seat's failure to run still escalates.
-
-Default wait heuristic: poll quietly for at least 10 minutes before treating a
-silent reviewer as suspect. If the process is still alive after that, inspect
-the process state and escalate to the user rather than killing or skipping it.
+Default wait heuristic: wait at least 10 minutes before treating a silent seat as
+suspect. If the process is still alive after that, inspect its state and escalate
+rather than killing or skipping it.
 
 Debug a recurring seat flake on its SECOND occurrence, not its fifth. If a seat
 hangs, empties, or errors twice in a session, stop blind rerun/kill cycles and
@@ -428,12 +456,12 @@ around it.
 
 ## Result Classification
 
-After all three reviewers return:
+After every seat in the tier returns:
 
-- all three `GO`: gate passes after optional improvements are handled
+- all `GO`: gate passes after optional improvements are handled
 - any `BLOCK`: gate fails; incorporate all required changes and rerun the full
   gate
-- any reviewer failure: gate is incomplete; escalate to the user
+- any seat failure: gate is incomplete; escalate
 
 **Reviewer failure / tooling outage.** A reviewer failure (auth/quota/empty/hang/
 tool error) makes the gate INCOMPLETE — escalate, never treat as `GO`. The single
@@ -528,14 +556,18 @@ docs/plans/product/gate-reviewer-record-schema.md).
 
 ## Reruns
 
-Every rerun is a full re-examination by all three reviewers. Prior `GO` results
-do not carry over.
+Every rerun is a full re-examination by ALL of the tier's seats. Prior `GO`
+results do not carry over.
 
 Prior reviewer results are context only on rerun. They explain why the artifact
 changed, but they never count toward the new gate.
 
 For rerun counting, the same gate means one phase attempt for one bead. The
-counter resets when the phase gate passes.
+counter resets when the phase gate passes. `etude gate` derives the round from
+the attempts already on the run, so the count is a property of the record rather
+than of anyone's memory — which also means a rerun is visible in
+`etude run show` as a `rerun` attempt followed by a later one, not as a silently
+overwritten verdict.
 
 **Incorporating a PLAN-gate BLOCK: distinguish a missing detail from a
 conceptual contradiction.** A missing-detail BLOCK ("add validation X",
@@ -582,8 +614,15 @@ plus three reruns), escalate to the user with:
 - remaining disagreement or blocker
 - proposed resolution
 
-The user can provide direction, but the gate still needs a clean
-three-reviewer `GO` before advancing.
+The user can provide direction, but the gate still needs a clean unanimous `GO`
+from the tier's seats before advancing.
+
+**Watch the AGGREGATE, not just the round.** Each round being individually
+justified — a real issue, a cheap fix — is not licence to keep going. By the
+third consecutive BLOCK on DISTINCT issues, stop re-gating and ask whether the
+sub-feature the seats keep blocking needs to exist at all: repeated blocks are
+evidence about the premise, not only about the artifact. Splitting is the wrong
+default there, because the child inherits the premise that is failing.
 
 ## Scope Discipline (implement → gate)
 
@@ -888,7 +927,7 @@ weaker design.** *(lens: Spec Adversary)*
   re-deriving the premise from the actual scripts: the hook needs NO bead id (it
   runs the BATCH `--last 9` audit), and it does NOT recurse because it can EXEMPT
   pushes whose refs are all `refs/etude/*` (verified: `core.hooksPath=.beads/hooks`,
-  and `dogfood-capture.sh`/`dogfood-gate-capture.sh` push only `refs/etude/runs/*`).
+  and the capture scripts push only `refs/etude/runs/*`).
   Both stated reasons were false. The plan was amended to the hybrid (wrapper +
   pre-push hook) the bead actually needed.
 - **How to apply:** when a plan says "rejected (b) because X," do not accept X — go
@@ -953,67 +992,41 @@ passes on `make reconcile` exit 0 + the holistic README/index read.
 
 ## Recording Results
 
-Record gate results in bead notes:
+**The structured `GateAttempt` on the run ref is the record.** `etude gate`
+writes it as part of running the gate — the supervisor does not author it, and
+cannot record a gate that did not run. That is the point of the whole model: the
+old protocol asked an agent to remember to write down what it had just done, and
+across 14 consecutive beads (`etude-2ku` through `etude-kig`) it quietly stopped
+doing so while still capturing the runs. The gap was only found by a QA sweep
+weeks later and backfilled under `etude-nm6`. A rule that depends on remembering
+is a rule that is already broken.
 
-```text
-<Phase> gate attempt <n>:
-- Gemini Pro: GO | BLOCK | failed (<reason>)
-- Claude Opus: GO | BLOCK | failed (<reason>)
-- fresh GPT-5.5 xhigh: GO | BLOCK | failed (<reason>)
-- required changes incorporated: <summary or none>
-- optional improvements handled: <summary or deferred bead>
-- result: pass | rerun required | escalated
-```
-
-Example safe append:
+Prose gate notes on the bead are an optional human-readable mirror, never the
+source of truth. If you write one, keep it short and point at the run:
 
 ```bash
-bd update <id> --append-notes "$(cat <<'EOF'
-Implement gate attempt 2:
-- Gemini Pro: GO
-- Claude Opus: GO
-- fresh GPT-5.5 xhigh: GO
-- required changes incorporated: none
-- optional improvements handled: clarified runbook examples
-- result: pass
-EOF
-)"
+bd update <id> --append-notes "verify gate r2: pass (opus GO, codex GO); see etude run show <id>"
 ```
 
 If the phase artifact has its own review-gate section, append reviewer results
 after review completes. Do not edit the original artifact body just to insert
 post-review data.
 
-### Structured capture (`etude capture-gate`)
+### The record shape
 
-The prose block above is the human-readable mirror; the **structured record is
-the durable source of truth**. After each gate ATTEMPT concludes (one panel
-re-examination of one phase at one round), also record it as a `GateAttempt` on
-the bead's etude run:
+The shape below is what `etude gate` writes and what `etude capture-gate`
+accepts, so a record is identical whichever path produced it. Authoring one by
+hand is the bootstrap path only — see
+[Supervisor runbook — The bootstrap path](supervisor-runbook.md#the-bootstrap-path)
+for when that is legitimate and what it obliges you to write down.
 
-1. Author a gate-attempt JSON (the orchestrator already holds every seat's
-   verdict, feedback, provider, and model at gate time).
-2. Run `scripts/dogfood-gate-capture.sh <bead-id> <gate.json>`. It builds etude
-   fresh, fetches the run ref, appends via `etude capture-gate`, VERIFIES the
-   local manifest (`manifest_version` 3 + the gate present) BEFORE pushing, then
-   pushes `refs/etude/runs/<bead-id>`.
-
-> **Do NOT skip this — it has been silently dropped before.** A 2026-05-27
-> dogfooding QA pass found that `etude-2ku` through `etude-kig` (14 review-/
-> Phase-C beads) have ZERO gate records, even though the earlier beads (and
-> `etude-egg`/`f6h`/`quk`) do — the orchestrator captured the *runs* but quietly
-> stopped capturing the *gates* mid-stream. Treat gate capture as mandatory per
-> attempt, and sanity-check after closing a bead with
-> `etude run show <bead> | grep -c gate`. The 14-bead historical gap was
-> backfilled 2026-05-27 (35 GateAttempt records, etude-nm6) from the recorded
-> gate histories; the going-forward rule is: every gate attempt gets a record.
->
 > **Mechanical completeness check:** `scripts/dogfood-completeness-audit.sh`
-> automates the B16 completeness check (run ref present, gates non-empty,
-> refs pushed). Run `scripts/dogfood-completeness-audit.sh --last 9` for a
-> batch sweep, or `--bead <id>` per close. See
-> [Dogfood Completeness Audit](capture-protocol.md#dogfood-completeness-audit)
-> in the capture protocol for full usage and the allowlist mechanism.
+> checks whether closed beads have their run refs, gate records, and pushed
+> refs. Run `make dogfood-audit` for a batch sweep, or `--bead <id>` per close.
+> Its "run ref present" and "gates non-empty" checks become structurally true
+> once a phase can only advance through `etude gate`; the check that keeps
+> earning its place is refs-pushed, because an unpushed ref is invisible until
+> the worktree is gone.
 
 Each rerun is a NEW `GateAttempt` with `round` incremented (see "Reruns"). A
 COMBINED gate (e.g. "Implement+Final") is modeled as a single `GateAttempt` whose

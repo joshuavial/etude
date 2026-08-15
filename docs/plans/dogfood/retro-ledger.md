@@ -4,6 +4,15 @@ Status: dogfood planning material (not shipped user docs). An INVENTORY — not 
 new retro and not re-analysis — of every retrospective performed during the
 `etude` dogfood effort and the concrete improvements each produced.
 
+> **Retired tooling in these entries.** Some entries below record improvements
+> that landed as scripts the supervised worker-lane model has since removed. The
+> retroactive run-capture and bead-close scripts were retired in `etude-9uf`, and
+> those entries now name the mechanism rather than the file; the finding each
+> retro produced is unchanged. References to `dogfood-completeness-audit.sh` and
+> its allowlist are still accurate as written and are deliberately left alone —
+> bead `etude-9uf.4` replaces that audit and owns its own sweep, so their
+> presence here is a deferral, not an oversight.
+
 ## How to read this
 
 Retro lessons on this project take **three forms**, because most retros did NOT
@@ -101,7 +110,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
   doc-gate "reason only from the inlined note" rule (25565d9).
 - **Evidence lesson:** the etude-bench-command cohort-recursion bug (bench
   re-benchmarking its own replays) surfaced ONLY from running the built binary
-  twice. Artifacts: scripts/dogfood-capture.sh, capture-protocol.md, runbook.
+  twice. Artifacts: the retroactive run-capture script, the capture protocol,
+  and the runbook (the first two retired in etude-9uf).
 
 ### B4. Phase 4 retro (2026-05-25) — commit a74ded5
 - **Findings/changes:** /tmp snapshots must preserve directory structure
@@ -199,7 +209,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
 - **Landed:** `[IMPLEMENTED]` in `review-gate-runbook.md` ("Recurring Defect Classes"
   item 4). Counter reset.
 - **Follow-up beads:** etude-jb7 noted a symlink-path-traversal residual (operator
-  authors the spec) + the dogfood-capture.sh rewire onto capture-run — both deferred.
+  authors the spec) + the retroactive run-capture script's rewire onto capture-run
+  (that script was retired in etude-9uf) — both deferred.
 
 ### B11. Cadence retro (2026-05-26) — post sweep-tail + Phase-C-extra-1 (quk/f6h/egg)
 - **Trigger/scope:** 3-ticket cadence after the 2 sweep loose-ends (etude-quk dead
@@ -257,7 +268,8 @@ All Form-B changes are `[IMPLEMENTED]` (they ARE the committed runbook rules).
 ### B13. Cadence retro (2026-05-26) — Phase-C follow-up backlog (094/21z/sb4 + 9ey defer)
 - **Trigger/scope:** 3-ticket cadence closing out the Phase-C follow-up backlog —
   etude-094 (capture-run symlink-traversal hardening), etude-21z (rewire
-  dogfood-capture.sh from 4 `capture` calls onto one `capture-run` spec), etude-sb4
+  the retroactive run-capture script from 4 `capture` calls onto one `capture-run`
+  spec; that script was retired in etude-9uf), etude-sb4
   (document the recommended retro-meta sidecar convention) — plus the etude-9ey DEFER.
 - **Findings/changes:** added a new **"Plan-Phase Discipline"** section to
   `review-gate-runbook.md` with two items:
@@ -493,7 +505,8 @@ against the silent "built-the-feature-but-stopped-using-it" drift that left
   rule). This cohort tested whether prose fixes the omission — and the answer is no:
   the durable fix is mechanical. 8hq.4 built a read-only audit (run+gate+pushed+cadence+
   docs checks, with a per-bead strict mode); 8hq.1 put it on the critical path two ways
-  — a `dogfood-close.sh` wrapper (ergonomics) AND a `.beads/hooks/pre-push` hook that
+  — a bead-close wrapper script (ergonomics; retired in etude-9uf) AND a
+  `.beads/hooks/pre-push` hook that
   EXEMPTS `refs/etude/*` pushes and BLOCKS `refs/heads/*` code pushes when the batch
   audit fails. The proof it works: this very retro was triggered by the audit's own WARN,
   and the 8hq.1 code push was gated live by the hook before it was allowed.

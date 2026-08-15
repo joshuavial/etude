@@ -3,7 +3,7 @@
 Status: planning note. This describes **planned** `etude retro` behavior. None of
 the commands or storage layouts below are implemented yet. The companion
 manual-capture contract that *is* in force today lives in
-[Dogfood capture protocol — Retro Capture](../dogfood/capture-protocol.md#retro-capture);
+[Dogfood retro capture](../dogfood/retro-capture.md);
 the product thesis is [Retrospectives](retrospectives.md). This note makes that
 thesis concrete and reconciles it with the now-shipped `capture`, `run`,
 `replay`, `eval`, and `bench` surfaces. It is the concrete plan that
@@ -91,7 +91,7 @@ but persists via `refstore.WriteCommit` directly to its own namespace
   `media_type:"text/markdown; charset=utf-8"`) — content-addressed in the
   artifact store exactly like a captured plan/verify artifact. **The body
   carries the FULL manual retro schema** defined in
-  [capture-protocol.md — Retro Capture](../dogfood/capture-protocol.md#retro-capture),
+  [retro-capture.md](../dogfood/retro-capture.md),
   which is the authoritative schema: `scope`, `trigger`, `attempt`, `bead`,
   `related stage`, `related gate attempts`, `related commits/diffs`, `inputs`,
   `summary`, `timeline/key events`, `failure modes`, `root causes`,
