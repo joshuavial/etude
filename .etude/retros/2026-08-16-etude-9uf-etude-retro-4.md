@@ -33,11 +33,19 @@ without one.
 
 `etude gate` runs its deterministic checks **in the caller's working directory**.
 
-Supervisor and worker are in different worktrees. The supervisor's worktree does
-not contain the worker's change at all. Running `etude gate --stage verify` from
-the supervisor's own cwd — the obvious thing, since that is where the supervisor
-is — runs `make test` and `make lint` against a tree without the change, passes
-both, and certifies nothing.
+Supervisor and worker are in different worktrees. When the verify gate ran
+(`verify.r1`, supervisor at `1b837a1`) the supervisor's worktree did not contain
+the worker's change at all — `grep -c retro_file internal/cli/retro.go` returned
+0 there. Running `etude gate --stage verify` from the supervisor's own cwd — the
+obvious thing, since that is where the supervisor is — would have run `make test`
+and `make lint` against a tree without the change, passed both, and certified
+nothing.
+
+(That evidence is pinned to a commit deliberately. The supervisor has since
+rebased past `752be1a`, so the grep returns 6 today and the un-pinned version of
+this sentence reads as false. A seat blocked the implement artifact for exactly
+that, which is a small illustration of the epic's own thesis: a claim about a
+moment, written in the present tense, becomes a lie the moment the tree moves.)
 
 **Every other gate defect this epic found announced itself with a BLOCK. This one
 announces itself with a pass.** Filed `etude-4qi` (P1). The durable half is not a
