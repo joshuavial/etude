@@ -451,6 +451,140 @@ func TestValidateRejectsInvalidInvocationFallback(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsSupportedSeatModes(t *testing.T) {
+	for _, mode := range []string{"", "inline", "diff-only", "inline-no-tools"} {
+		t.Run("primary_"+mode, func(t *testing.T) {
+			r := Default()
+			s := r.Seats["opus"]
+			s.Mode = mode
+			r.Seats["opus"] = s
+			if err := r.Validate(); err != nil {
+				t.Fatalf("Validate rejected primary mode %q: %v", mode, err)
+			}
+		})
+		t.Run("fallback_"+mode, func(t *testing.T) {
+			r := Default()
+			s := r.Seats["opus"]
+			s.InvocationFallbacks = append([]SeatInvocation(nil), s.InvocationFallbacks...)
+			s.InvocationFallbacks[0].Mode = mode
+			r.Seats["opus"] = s
+			if err := r.Validate(); err != nil {
+				t.Fatalf("Validate rejected fallback mode %q: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidSeatModes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mode   string
+		mutate func(*Seat, string)
+		want   string
+	}{
+		{
+			name: "primary case variant",
+			mode: "Inline",
+			mutate: func(seat *Seat, mode string) {
+				seat.Mode = mode
+			},
+			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "Inline"`,
+		},
+		{
+			name: "primary whitespace",
+			mode: "inline ",
+			mutate: func(seat *Seat, mode string) {
+				seat.Mode = mode
+			},
+			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "inline "`,
+		},
+		{
+			name: "fallback case variant",
+			mode: "Diff-Only",
+			mutate: func(seat *Seat, mode string) {
+				seat.InvocationFallbacks[0].Mode = mode
+			},
+			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "Diff-Only"`,
+		},
+		{
+			name: "fallback whitespace",
+			mode: "diff-only ",
+			mutate: func(seat *Seat, mode string) {
+				seat.InvocationFallbacks[0].Mode = mode
+			},
+			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "diff-only "`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Default()
+			s := r.Seats["opus"]
+			s.InvocationFallbacks = append([]SeatInvocation(nil), s.InvocationFallbacks...)
+			tc.mutate(&s, tc.mode)
+			r.Seats["opus"] = s
+			err := r.Validate()
+			if err == nil {
+				t.Fatal("Validate should reject an unsupported seat mode")
+			}
+			if !errors.Is(err, ErrInvalidRegistry) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate error = %v, want ErrInvalidRegistry containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseYAMLRejectsInvalidSeatModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "primary quoted whitespace",
+			input: `seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
+    mode: "inline "
+tiers:
+  L4:
+    seats: [opus]
+`,
+			want: `seat["opus"].mode must be one of inline, diff-only, inline-no-tools, got "inline "`,
+		},
+		{
+			name: "fallback case variant",
+			input: `seats:
+  opus:
+    provider: anthropic/claude-opus
+    harness: claude-code
+    invoke: claude -p --model opus
+    mode: inline
+    invocation_fallbacks:
+      - harness: agy
+        invoke: agy --model opus --print
+        mode: Inline
+tiers:
+  L4:
+    seats: [opus]
+`,
+			want: `seat["opus"].invocation_fallbacks[0].mode must be one of inline, diff-only, inline-no-tools, got "Inline"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseYAML([]byte(tc.input))
+			if err == nil {
+				t.Fatal("ParseYAML should reject an unsupported seat mode")
+			}
+			if !errors.Is(err, ErrInvalidRegistry) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseYAML error = %v, want ErrInvalidRegistry containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestKnownFieldsRejectsUnknownTopLevel asserts KnownFields(true) at the top
 // level of the registry document.
 func TestKnownFieldsRejectsUnknownTopLevel(t *testing.T) {
