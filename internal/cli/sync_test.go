@@ -645,3 +645,58 @@ func seedRunRefInBare(t *testing.T, bare, runID string) {
 		t.Fatalf("seedRunRefInBare sync error: %v\nstderr: %s", err, stderr)
 	}
 }
+
+// TestSyncWorksWithNoConfiguredEtudeFetchRefspec pins the assumption etude-i19
+// rests on. init no longer registers a `refs/etude/*` FETCH refspec, because one
+// makes every local run ref prunable by a bare `git fetch --prune`. Removing it
+// is only safe because sync passes the refspec EXPLICITLY on its own fetch and
+// push command lines and never relies on config.
+//
+// Nothing asserted that before: it was verified by hand. Without this test a
+// future sync refactor that leaned on `remote.<name>.fetch` would silently
+// re-couple the two, and the failure would show up as run refs that stop
+// arriving rather than as a test failure.
+func TestSyncWorksWithNoConfiguredEtudeFetchRefspec(t *testing.T) {
+	repoA := initCaptureRepo(t)
+	bare := setupBareRemote(t, repoA)
+
+	assertNoEtudeFetchRefspec := func(t *testing.T, repo string) {
+		t.Helper()
+		out := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+		for _, line := range strings.Split(out, "\n") {
+			if _, dst, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "+"), ":"); ok {
+				if strings.HasPrefix(dst, "refs/etude/") {
+					t.Fatalf("test precondition broken: %s has an etude fetch refspec %q", repo, line)
+				}
+			}
+		}
+	}
+
+	// PUSH leg: no etude fetch refspec configured anywhere.
+	assertNoEtudeFetchRefspec(t, repoA)
+	capture1Stage(t, repoA, "run-1", "plan", "plan.md", "# plan A")
+	chdir(t, repoA)
+	if _, stderr, err := execute("sync"); err != nil {
+		t.Fatalf("sync push with no configured fetch refspec: %v\nstderr: %s", err, stderr)
+	}
+	if !refExists(t, bare, "refs/etude/runs/run-1") {
+		t.Fatal("push leg did not carry run-1 to the remote without a config fetch refspec")
+	}
+
+	// FETCH leg: a fresh clone, with any etude fetch refspec explicitly removed,
+	// must still pull the namespace down via sync's own explicit refspec.
+	// A fresh clone carries only the branch refspec — git clone does not bring
+	// refs/etude/* with it — so this is exactly the post-i19 configuration.
+	repoB := cloneFrom(t, bare)
+	assertNoEtudeFetchRefspec(t, repoB)
+	if refExists(t, repoB, "refs/etude/runs/run-1") {
+		t.Fatal("precondition: run-1 already present in B, so the fetch leg would prove nothing")
+	}
+	chdir(t, repoB)
+	if _, stderr, err := execute("sync"); err != nil {
+		t.Fatalf("sync fetch with no configured fetch refspec: %v\nstderr: %s", err, stderr)
+	}
+	if !refExists(t, repoB, "refs/etude/runs/run-1") {
+		t.Fatal("fetch leg did not retrieve run-1 without a config fetch refspec")
+	}
+}

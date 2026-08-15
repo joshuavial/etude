@@ -28,6 +28,15 @@ Sync runs in order:
 Both the fetch and push pass an explicit refspec on the command line, so sync
 works even if `etude init` was never run.
 
+This is why `etude init` configures **only** a push refspec and never a fetch
+refspec into `refs/etude/*`: sync does not need one, and a configured fetch
+refspec into that namespace makes every local run ref prunable by a bare
+`git fetch --prune`. See
+[Why there is no fetch refspec](init.md#why-there-is-no-fetch-refspec).
+
+`etude sync` is therefore the supported way to pull the namespace down. A plain
+`git fetch` does not bring `refs/etude/*` with it, by design.
+
 ## Reconciliation behavior
 
 Sync is safe by design: it never moves a local ref backward and never
