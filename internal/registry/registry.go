@@ -43,6 +43,21 @@ type Seat struct {
 	// ModelFallbacks is an ordered list of fallback model identifiers to try
 	// if the primary model is unavailable.
 	ModelFallbacks []string
+	// InvocationFallbacks is an ordered list of alternate harness commands to
+	// try when the primary invocation cannot run. Retry policy belongs to the
+	// consumer; this field only supplies the canonical candidates.
+	InvocationFallbacks []SeatInvocation
+}
+
+// SeatInvocation is one concrete harness command for a seat. The provider and
+// model identity remain those of the owning Seat.
+type SeatInvocation struct {
+	// Harness is the CLI harness name used by this candidate (required).
+	Harness string
+	// Invoke is the canonical non-interactive invocation string (required).
+	Invoke string
+	// Mode overrides the seat execution constraint for this candidate when set.
+	Mode string
 }
 
 // Tier is a named preset grouping one or more seats into a review panel.
@@ -65,6 +80,25 @@ func (r Registry) EffectiveQuorum() string {
 	return r.Quorum
 }
 
+// Invocations returns the primary seat invocation followed by configured
+// fallback invocations in retry order. The returned slice is independent of
+// the Seat's backing slice and is safe for the caller to modify.
+func (s Seat) Invocations() []SeatInvocation {
+	invocations := make([]SeatInvocation, 0, 1+len(s.InvocationFallbacks))
+	invocations = append(invocations, SeatInvocation{
+		Harness: s.Harness,
+		Invoke:  s.Invoke,
+		Mode:    s.Mode,
+	})
+	for _, fallback := range s.InvocationFallbacks {
+		if fallback.Mode == "" {
+			fallback.Mode = s.Mode
+		}
+		invocations = append(invocations, fallback)
+	}
+	return invocations
+}
+
 // Validate checks all well-formedness rules and returns a wrapped
 // ErrInvalidRegistry on the first violation.
 func (r Registry) Validate() error {
@@ -83,6 +117,14 @@ func (r Registry) Validate() error {
 		}
 		if strings.TrimSpace(seat.Invoke) == "" {
 			return fmt.Errorf("%w: seat[%q].invoke required", ErrInvalidRegistry, key)
+		}
+		for i, fallback := range seat.InvocationFallbacks {
+			if strings.TrimSpace(fallback.Harness) == "" {
+				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].harness required", ErrInvalidRegistry, key, i)
+			}
+			if strings.TrimSpace(fallback.Invoke) == "" {
+				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].invoke required", ErrInvalidRegistry, key, i)
+			}
 		}
 	}
 	for key, tier := range r.Tiers {
@@ -179,29 +221,55 @@ func Default() Registry {
 			"codex": {
 				Provider:       "openai/gpt-5.5",
 				Harness:        "codex",
-				Invoke:         "codex exec --ephemeral -m gpt-5.5 -s read-only -",
+				Invoke:         `codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -`,
 				Mode:           "diff-only",
-				ModelFallbacks: []string{"gpt-5.4", "gpt-5.3"},
+				ModelFallbacks: []string{"gpt-5.4", "gpt-5.3", "gpt-5.2"},
+			},
+			"dev": {
+				Provider: "anthropic/claude-opus",
+				Harness:  "claude-code",
+				Invoke:   "claude -p --model opus",
 			},
 			"gemini": {
 				Provider:       "google/gemini-3.1-pro-preview",
 				Harness:        "gemini-cli",
-				Invoke:         "gemini -m gemini-3.1-pro-preview -p",
+				Invoke:         "env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p",
 				Mode:           "inline-no-tools",
-				ModelFallbacks: []string{"gemini-3-pro-preview"},
+				ModelFallbacks: []string{"gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"},
 			},
 			"opus": {
 				Provider: "anthropic/claude-opus",
 				Harness:  "claude-code",
 				Invoke:   "claude -p --model opus",
 				Mode:     "inline",
+				InvocationFallbacks: []SeatInvocation{{
+					Harness: "agy",
+					Invoke:  "agy --model opus --print",
+					Mode:    "inline",
+				}},
 			},
 		},
 		Tiers: map[string]Tier{
-			"L1": {Name: "Full three-seat gate", Seats: []string{"gemini", "opus", "codex"}},
-			"L2": {Name: "Strong two-seat gate", Seats: []string{"opus", "codex"}},
-			"L3": {Name: "Medium two-seat gate", Seats: []string{"opus", "codex"}},
-			"L4": {Name: "Light single-seat gate", Seats: []string{"opus"}},
+			"L1": {
+				Name:  "Full three-seat gate",
+				Seats: []string{"gemini", "opus", "codex"},
+				Use:   "Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage format / ref-namespace / git-plumbing changes that could lose or corrupt data, or break backward compatibility.",
+			},
+			"L2": {
+				Name:  "Strong two-seat gate",
+				Seats: []string{"opus", "codex"},
+				Use:   "The heavy-QA panel. Default for the PLAN and VERIFY phase gates and for any change touching product/CLI behavior, schema/format, refs/etude/*, or docs claiming NEW shipped behavior.",
+			},
+			"L3": {
+				Name:  "Medium two-seat gate",
+				Seats: []string{"opus", "codex"},
+				Use:   "The IMPLEMENT-phase gate, and low-risk localized refactors / validation tightening / test strengthening on an already-gated component.",
+			},
+			"L4": {
+				Name:  "Light single-seat gate",
+				Seats: []string{"opus"},
+				Use:   "DOCS and FINAL REVIEW phase gates, and changes with no shipping-code change (test-only additions or docs/planning-only changes).",
+			},
 		},
 	}
 }
@@ -215,11 +283,18 @@ type registryYAML struct {
 }
 
 type seatYAML struct {
-	Provider       string   `yaml:"provider"`
-	Harness        string   `yaml:"harness"`
-	Invoke         string   `yaml:"invoke"`
-	Mode           string   `yaml:"mode,omitempty"`
-	ModelFallbacks []string `yaml:"model_fallbacks,omitempty"`
+	Provider            string               `yaml:"provider"`
+	Harness             string               `yaml:"harness"`
+	Invoke              string               `yaml:"invoke"`
+	Mode                string               `yaml:"mode,omitempty"`
+	ModelFallbacks      []string             `yaml:"model_fallbacks,omitempty"`
+	InvocationFallbacks []seatInvocationYAML `yaml:"invocation_fallbacks,omitempty"`
+}
+
+type seatInvocationYAML struct {
+	Harness string `yaml:"harness"`
+	Invoke  string `yaml:"invoke"`
+	Mode    string `yaml:"mode,omitempty"`
 }
 
 type tierYAML struct {
@@ -233,13 +308,24 @@ func (r Registry) toYAML() registryYAML {
 	if len(r.Seats) > 0 {
 		out.Seats = make(map[string]seatYAML, len(r.Seats))
 		for k, s := range r.Seats {
-			out.Seats[k] = seatYAML{
+			seat := seatYAML{
 				Provider:       s.Provider,
 				Harness:        s.Harness,
 				Invoke:         s.Invoke,
 				Mode:           s.Mode,
 				ModelFallbacks: s.ModelFallbacks,
 			}
+			if len(s.InvocationFallbacks) > 0 {
+				seat.InvocationFallbacks = make([]seatInvocationYAML, len(s.InvocationFallbacks))
+				for i, fallback := range s.InvocationFallbacks {
+					seat.InvocationFallbacks[i] = seatInvocationYAML{
+						Harness: fallback.Harness,
+						Invoke:  fallback.Invoke,
+						Mode:    fallback.Mode,
+					}
+				}
+			}
+			out.Seats[k] = seat
 		}
 	}
 	if len(r.Tiers) > 0 {
@@ -260,13 +346,24 @@ func (d registryYAML) toRegistry() Registry {
 	if len(d.Seats) > 0 {
 		r.Seats = make(map[string]Seat, len(d.Seats))
 		for k, s := range d.Seats {
-			r.Seats[k] = Seat{
+			seat := Seat{
 				Provider:       s.Provider,
 				Harness:        s.Harness,
 				Invoke:         s.Invoke,
 				Mode:           s.Mode,
 				ModelFallbacks: s.ModelFallbacks,
 			}
+			if len(s.InvocationFallbacks) > 0 {
+				seat.InvocationFallbacks = make([]SeatInvocation, len(s.InvocationFallbacks))
+				for i, fallback := range s.InvocationFallbacks {
+					seat.InvocationFallbacks[i] = SeatInvocation{
+						Harness: fallback.Harness,
+						Invoke:  fallback.Invoke,
+						Mode:    fallback.Mode,
+					}
+				}
+			}
+			r.Seats[k] = seat
 		}
 	}
 	if len(d.Tiers) > 0 {

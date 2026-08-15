@@ -42,6 +42,6 @@ func ExampleDefault() {
 	fmt.Println(len(reg.Tiers))
 	// Output:
 	// unanimous
-	// 3
+	// 4
 	// 4
 }

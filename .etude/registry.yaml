@@ -30,6 +30,13 @@ seats:
     # when a non-Claude harness (codex/gemini) orchestrates the gate.
     invoke: "claude -p --model opus"
     mode: inline
+    # CLI consumers cannot spawn an in-harness Task. If the primary invocation
+    # fails, they must try these full harness invocations in order and record
+    # the candidate that actually ran in session/provider evidence.
+    invocation_fallbacks:
+      - harness: agy
+        invoke: "agy --model opus --print"
+        mode: inline
   codex:
     provider: openai/gpt-5.5
     harness: codex
