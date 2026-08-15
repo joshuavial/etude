@@ -48,8 +48,8 @@ content-addressed artifacts under `refs/etude/runs/doc-alpha`,
 `refs/etude/runs/doc-beta`, and `refs/etude/runs/doc-gamma`.
 
 Run ids are **plain strings** (`doc-alpha`, `doc-beta`, `doc-gamma`).  There is
-no issue-tracker ID here.  Compare `scripts/dogfood-capture.sh` in the repo
-root, which uses `bd show <bead-id>` and is tightly coupled to the bead tracker.
+no issue-tracker ID here.  Compare the repo's retired retroactive stage capture,
+which used `bd show <bead-id>` and was tightly coupled to the bead tracker.
 
 Each capture call looks like:
 ```bash
@@ -134,8 +134,9 @@ bench summarize: replay (new skill) wins 100.0% vs original
 
 ## Contrast with the dogfood (beads) usage
 
-`scripts/dogfood-capture.sh` (in the repo root) is the tracker-coupled
-counterpart.  It requires:
+The repo's retired retroactive stage capture (`scripts/dogfood-capture.sh`,
+removed in bead `etude-9uf.3`) was the tracker-coupled counterpart.  It
+required:
 
 - `bd` (bead tracker CLI) to read design fields and task descriptions.
 - A live bead ID and a specific commit SHA.

@@ -12,9 +12,10 @@ import (
 //
 // It delivers ONE plan-TEXT fixture per qualifying run — the final captured
 // plan artifact — annotated with the multi-round gate progression as LabelHint
-// values. It does NOT reconstruct per-round plan text: dogfood capture
-// overwrites the plan stage with the final artifact, so only one plan text
-// exists per run ref. Per-round plan texts require the separate beads/Dolt
+// values. It does NOT reconstruct per-round plan text: the retroactive dogfood
+// capture (removed in etude-9uf.3) overwrote the plan stage with the final
+// artifact, so only one plan text exists per run ref captured that way.
+// Per-round plan texts require the separate beads/Dolt
 // adapter (a future bead), which core must not import.
 //
 // This is the built-in default; adapter selection (mirror of resolveRunner)

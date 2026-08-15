@@ -3,7 +3,8 @@
 #
 # This script demonstrates that etude is a reusable git-native primitive that
 # works WITHOUT beads, xenota, any issue tracker, LLM, or network access.
-# Compare scripts/dogfood-capture.sh which is tightly coupled to the bd tracker.
+# Compare the repo's retired retroactive stage capture, which was tightly
+# coupled to the bd tracker (removed in bead etude-9uf.3).
 #
 # Usage:
 #   bash examples/summarize/walkthrough.sh

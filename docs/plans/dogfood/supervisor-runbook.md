@@ -413,7 +413,11 @@ A BLOCK is information. The response is to fix the work.
 3. One bead, one commit, one short sentence. Stage paths explicitly.
 4. `bd close <id> --reason "<what landed> <sha>"` — the reason is the durable
    record once the session is gone.
-5. Push the branch and push `refs/etude/runs/<bead>`. An unpushed run ref is
+5. Push the branch, then push the run refs with `etude sync` (or
+   `git push <remote> 'refs/etude/*:refs/etude/*'`, which is what sync runs).
+   Neither `etude capture` nor `etude gate` pushes anything — both write only to
+   the local refstore — so this is always a separate step. An unpushed run ref is
    lost when the worktree is removed, which is one of the two conditions the
-   completeness check still enforces.
+   completeness check still enforces, and the pre-push hook blocks code pushes on
+   exactly that gap.
 6. A retro every three closed beads, committed under `.etude/retros/`.

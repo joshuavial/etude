@@ -50,7 +50,7 @@
 #   Format: <bead-id>  # reason
 #   Bypassed beads are reported but do NOT cause exit 1.
 #
-# Style follows scripts/docs-reality-check.sh and scripts/dogfood-capture.sh.
+# Style follows scripts/docs-reality-check.sh.
 set -euo pipefail
 
 # Convention-adoption instant (UTC): cadence retros captured on/after this

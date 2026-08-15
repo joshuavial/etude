@@ -84,7 +84,9 @@ refs) it evaluated.
 
 **Justification:** A gate EVALUATES stage artifacts; it is not produced by a
 stage and may reference more than one stage (e.g. the `review` gate reviews both
-the `diff` and the `verify` artifact — see dogfood-capture.sh line 69). Nesting
+the `diff` and the `verify` artifact — as the retroactive stage capture did at
+`scripts/dogfood-capture.sh:69`, removed in bead `etude-9uf.3`; read it at the
+commit before that bead if you need the original). Nesting
 under `Stage` would (a) imply the stage produced the gate and (b) make
 multi-stage / multi-round gates awkward. A flat array keyed by `(phase, round)`
 matches the runbook's "phase gate / attempt n" mental model and the prose
@@ -362,10 +364,10 @@ Two scoping notes (NOT defects; recorded so they are deliberate):
   `len(Gates)==0` is valid. They parse exactly as today; `run show` shows no
   gate section. No migration, no rewrite.
 - **Emission stays v2 for gate-less runs.** `toJSON` emits `manifest_version: 2`
-  and NO `gates` key when `len(m.Gates)==0`, so every existing capture path
-  (dogfood-capture.sh, replay) produces byte-identical output and OLD etude
-  binaries keep reading new gate-less runs. Only runs that actually carry gates
-  become v3.
+  and NO `gates` key when `len(m.Gates)==0`, so every capture path existing at
+  the time — including the retroactive stage capture later removed in
+  `etude-9uf.3` — produced byte-identical output, and OLD etude binaries keep
+  reading new gate-less runs. Only runs that actually carry gates become v3.
 - **Forward break is bounded and explicit.** An OLD binary reading a v3 manifest
   fails on `DisallowUnknownFields` ("unknown field gates"). This is the inherent
   cost of that strict decoder and is acceptable: only gate-carrying runs trip it,

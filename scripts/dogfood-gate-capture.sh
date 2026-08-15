@@ -11,9 +11,9 @@
 #                     docs/plans/dogfood/review-gate-runbook.md "Structured
 #                     capture") consumed by `etude capture-gate --gate-file`
 #
-# Unlike a stage capture (dogfood-capture.sh, run once post-close), a gate attempt
-# is recorded per attempt at gate time. This wrapper ALWAYS builds etude fresh
-# (never an ambient binary), fetches the run ref so capture-gate's optimistic-
+# Unlike a stage capture (`etude capture`, run as each phase completes), a gate
+# attempt is recorded per attempt at gate time. This wrapper ALWAYS builds etude
+# fresh (never an ambient binary), fetches the run ref so capture-gate's optimistic-
 # concurrency CAS guards a stale tip, appends the gate LOCALLY, VERIFIES the local
 # manifest (manifest_version 3 + the appended gate_id present) BEFORE pushing, and
 # only then pushes refs/etude/runs/<bead> to origin.

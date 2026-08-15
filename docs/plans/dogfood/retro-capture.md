@@ -35,7 +35,7 @@ produces a clean audit result. The canonical example is `etude-nm6`
 (gate-record backfill, allowlisted), which has no run ref and must be recorded
 via `--bead etude-nm6` when it appears as a cohort subject.
 
-Manual dogfood capture supports these retro triggers now:
+The supervised worker-lane model supports these retro triggers:
 
 - **End-of-run retro**: after a bead closes, summarize what changed, what gates
   found, and which process improvements should be considered.
@@ -49,7 +49,7 @@ Manual dogfood capture supports these retro triggers now:
 - **Manual retro**: when the user or workflow operator explicitly requests one
   for a bead, phase, gate sequence, or workflow issue.
 
-For manual dogfood capture, "repeated" is operator judgment unless a later
+For a manually supervised lane, "repeated" is operator judgment unless a later
 workflow config defines a threshold. The trigger names below intentionally use
 manual event names: `end-of-run` maps to the product note's `close` trigger,
 and `repeated-gate-block` maps to the product note's `repeated-block` trigger.

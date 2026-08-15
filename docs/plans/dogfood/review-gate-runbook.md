@@ -341,12 +341,28 @@ verify the artifacts — do not rely on the agent's prose summary:
 
 ### Gate-JSON `reviewed_stages` must name an EXISTING run stage
 
-A captured run has stages `plan/implement/verify/review` (NOT `docs` — docs is
-not a captured stage). A `GateAttempt.reviewed_stages[].stage` that names a
-non-existent stage makes `dogfood-close` / `capture-gate` abort with
-`stage "<x>" not found in manifest`. Map the **docs-phase** and **final-review**
-gates onto the `implement` diff stage (role `diff`), and the verify gate onto
-`verify`. (Observed: a `docs` reviewed-stage aborted a close mid-capture.)
+The constraint is unchanged — capture the phase before you gate it — but the two
+paths enforce it differently, and they fail with different errors:
+
+- **`etude capture-gate`** (hand-assembled Gate-JSON) takes
+  `reviewed_stages[].stage` from you. Name a stage absent from the run manifest
+  and it aborts with `stage "<x>" not found in manifest`.
+- **`etude gate`** never takes that field. It resolves the reviewed stage itself
+  from the gated stage's produced role, so it cannot emit that error at all;
+  when no stage produces the role, it refuses with the sentinel
+  `no reviewable stage on run`, emitted in full as `run <id> has no stage
+  producing role <role>; capture it before gating stage <stage>`, and writes
+  nothing.
+
+**What changed:** `docs` IS a captured stage. Bead `etude-1od` established that
+`etude capture docs --output docs-diff=<file>` creates a real docs stage, and
+`etude gate` resolves the reviewed stage by the stage's produced ROLE rather
+than by its name. Earlier guidance here told you to map the docs-phase gate onto
+the `implement` diff stage; that transport-only alias is exactly what `etude-1od`
+removed, and it is no longer correct. Capture each phase under its own stage and
+gate it directly — see the
+[Supervisor runbook](supervisor-runbook.md) for the per-phase loop and the
+stage/role table (two of the five roles do not match their stage name).
 
 ### Commit scope vs the baseline-dirty set
 

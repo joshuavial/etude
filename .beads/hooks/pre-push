@@ -35,8 +35,11 @@ fi
 # blocks code pushes (refs/heads/*) when the dogfood audit window has gaps.
 #
 # Exempt:  pushes whose every non-deletion ref matches refs/etude/* or
-#          refs/tags/*. This lets dogfood-capture.sh and dogfood-gate-capture.sh
-#          push their refs/etude/runs/<bead> refs unhindered (no recursion/deadlock).
+#          refs/tags/*. This lets `etude sync` (which pushes the whole
+#          refs/etude/*:refs/etude/* refspec) and dogfood-gate-capture.sh push
+#          run refs unhindered (no recursion/deadlock).
+#          Note `etude capture` and `etude gate` only write refs locally; they
+#          never push, so the push is always a separate step.
 # Block:   pushes containing any refs/heads/* ref when
 #          scripts/dogfood-completeness-audit.sh --last 9 exits non-zero.
 # Escape:  git push --no-verify bypasses all hooks (git's built-in human
@@ -109,7 +112,7 @@ if [ "$_dogfood_audit_exit" -eq 0 ]; then
   exit 0
 elif [ "$_dogfood_audit_exit" -eq 1 ]; then
   echo >&2 "dogfood pre-push: BLOCKED — completeness audit found gaps (see GAP lines above)."
-  echo >&2 "Close the listed bead(s) with scripts/dogfood-close.sh, or use git push --no-verify to bypass."
+  echo >&2 "Capture and gate the listed bead(s)' phases with 'etude capture' and 'etude gate', then push the run refs with 'etude sync' (see docs/plans/dogfood/supervisor-runbook.md), or use git push --no-verify to bypass."
   exit 1
 else
   # exit 2 = environment/usage error — fail closed

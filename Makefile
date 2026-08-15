@@ -4,7 +4,7 @@ VERSION ?= dev
 DOCS_DIR := docs/cli
 LDFLAGS := -X github.com/joshuavial/etude/internal/cli.version=$(VERSION)
 
-.PHONY: build install test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test seat-adapter-test
+.PHONY: build install test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test pre-push-test retro-index retro-index-test seat-adapter-test shell-test
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -57,9 +57,12 @@ dogfood-audit:
 dogfood-audit-test:
 	@bash scripts/dogfood-completeness-audit_test.sh
 
-# Fixture-based tests for dogfood-close.sh and the pre-push enforcement block.
-dogfood-close-test:
-	@bash scripts/dogfood-close_test.sh
+# Fixture-based tests for the .beads/hooks/pre-push enforcement block. These run
+# against THIS checkout's tracked hook. Note core.hooksPath points at the main
+# checkout's .beads/hooks, so from a worktree the hook under test is not yet the
+# one executing on pushes — see bead etude-6d9 for making that drift detectable.
+pre-push-test:
+	@bash scripts/pre-push_test.sh
 
 # Fixture tests for the gate seat adapter. Its fail-closed paths are the only
 # thing standing between a truncated model reply and a recorded GO.
@@ -73,3 +76,8 @@ retro-index:
 # Fixture-based tests for retro-meta-index.sh.
 retro-index-test:
 	@bash scripts/retro-meta-index_test.sh
+
+# Every shell suite in one command. `make test` is `go test ./...` and reaches
+# none of these, and there is no CI, so this is discoverability rather than
+# enforcement — it still takes a person to run it.
+shell-test: dogfood-audit-test pre-push-test seat-adapter-test retro-index-test
