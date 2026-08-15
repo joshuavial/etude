@@ -92,6 +92,69 @@ func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.D
 // the seat runner; nil/empty means hermetic (default, unchanged behavior).
 // Note: checks use ResolveCheckRunner (not this function), which takes the same
 // allowlist.
+
+// InHarnessPrefix marks a seat candidate that etude MUST NOT exec: it names work
+// only the calling host can perform, such as spawning an in-harness reviewer
+// sub-agent. A consumer that exec'd one would get ENOENT and record a spurious
+// outage, so the prefix is checked before any attempt to run it.
+const InHarnessPrefix = "in-harness:"
+
+// SeatCandidate is one rung of a seat's invocation ladder: the runner to try (nil
+// for an in-harness candidate, which etude cannot run) plus the identity to
+// record if this rung is the one that produces the verdict.
+//
+// Meta is per-CANDIDATE, not per-seat: RequireSessionEvidence is derived from the
+// harness, and the harness changes down the ladder, so resolving it once would
+// apply the primary's evidence requirement to a fallback with a different one.
+type SeatCandidate struct {
+	Harness   string
+	Invoke    string
+	InHarness bool
+	Runner    replay.Runner
+	Meta      SeatMeta
+}
+
+// ResolveGateSeatCandidates returns a seat's full invocation ladder in retry
+// order: the primary followed by its configured fallbacks. Callers walk it,
+// skipping in-harness rungs, until one yields a usable verdict.
+//
+// The seat's provider and model identity are constant down the ladder — only the
+// harness and command change — so a fallback verdict is still that seat's
+// verdict, recorded against the harness that actually produced it.
+func ResolveGateSeatCandidates(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) ([]SeatCandidate, error) {
+	seat, ok := reg.Seats[seatName]
+	if !ok {
+		return nil, fmt.Errorf("seat %q not found in registry", seatName)
+	}
+	providerName, model := splitProvider(seat.Provider)
+
+	invocations := seat.Invocations()
+	candidates := make([]SeatCandidate, 0, len(invocations))
+	for _, inv := range invocations {
+		c := SeatCandidate{
+			Harness:   inv.Harness,
+			Invoke:    inv.Invoke,
+			InHarness: strings.HasPrefix(inv.Invoke, InHarnessPrefix),
+			Meta: SeatMeta{
+				HarnessName:            inv.Harness,
+				ProviderName:           providerName,
+				Model:                  model,
+				RequireSessionEvidence: requiresSessionEvidence(providerName, inv.Harness),
+			},
+		}
+		if !c.InHarness {
+			c.Runner = &replay.ExecRunner{
+				Command:        strings.Fields(inv.Invoke),
+				Timeout:        timeout,
+				MaxOutputBytes: 64 << 20,
+				EnvAllowlist:   envAllowlist,
+			}
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates, nil
+}
+
 func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) (replay.Runner, SeatMeta, error) {
 	seat, ok := reg.Seats[seatName]
 	if !ok {

@@ -140,7 +140,7 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 
 	as := artifactstore.New()
 	checkSeats, checksPassed, _ := e.runGateChecks(ctx, req.WorktreeDir, req.ScratchDir, gate.Checks, gateInputs, as, round)
-	modelSeats, verdicts, _ := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round)
+	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round)
 
 	syn := synthesizeVerdict(
 		checksPassed, verdicts,
@@ -163,7 +163,11 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 		Seats: append(checkSeats, modelSeats...),
 		Decision: runmanifest.GateDecision{
 			EscalationReason: syn.escalationReason,
-			DegradedReason:   syn.degradedReason,
+			// A seat that fell through to a fallback still produced a real
+			// verdict, so it is not a failure — but the gate DID run degraded and
+			// that must be visible. failure_note cannot carry it (the manifest
+			// forbids one on go/block), so it belongs here.
+			DegradedReason: joinDegraded(syn.degradedReason, ladderNotes),
 		},
 		Timestamp: e.clock(),
 	}
@@ -276,4 +280,16 @@ func printGateOutcome(out io.Writer, gateID string, status runmanifest.GateStatu
 			fmt.Fprintf(out, "    required: %s\n", r)
 		}
 	}
+}
+
+// joinDegraded merges the synthesis's own degraded reason with any seat-ladder
+// fallthrough notes, so a reader sees both why the gate was degraded and which
+// seats did not answer on their primary invocation.
+func joinDegraded(synthesized string, ladderNotes []string) string {
+	parts := make([]string, 0, 1+len(ladderNotes))
+	if strings.TrimSpace(synthesized) != "" {
+		parts = append(parts, synthesized)
+	}
+	parts = append(parts, ladderNotes...)
+	return strings.Join(parts, "; ")
 }

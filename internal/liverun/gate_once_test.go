@@ -501,3 +501,282 @@ func TestGateCheckReceivesAllowlistedEnv(t *testing.T) {
 		t.Errorf("a NON-allowlisted variable leaked into the check: %q", out)
 	}
 }
+
+// ladderRunner records that it ran and returns a canned outcome.
+type ladderRunner struct {
+	envelope []byte
+	err      error
+	ran      *int
+}
+
+func (r ladderRunner) Run(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+	if r.ran != nil {
+		*r.ran++
+	}
+	if r.err != nil {
+		return replay.RunResult{}, r.err
+	}
+	return replay.RunResult{Output: r.envelope, MediaType: "application/json"}, nil
+}
+
+// ladderEngine wires an Engine whose seat resolves to the given candidates.
+func ladderEngine(t *testing.T, repo string, candidates []SeatCandidate) *Engine {
+	t.Helper()
+	return &Engine{
+		Store: refstore.New(repo),
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			if len(candidates) == 0 {
+				return nil, SeatMeta{}, errors.New("no candidates")
+			}
+			return candidates[0].Runner, candidates[0].Meta, nil
+		},
+		ResolveSeatCandidates: func(string) ([]SeatCandidate, error) { return candidates, nil },
+		Tiers:                 fixedTiers(map[string][2]interface{}{"L2": {[]string{"opus"}, "L1"}}),
+		Root:                  repo,
+		Now:                   fixedClock(),
+	}
+}
+
+func ladderCandidate(harness, invoke string, runner replay.Runner) SeatCandidate {
+	return SeatCandidate{
+		Harness:   harness,
+		Invoke:    invoke,
+		InHarness: strings.HasPrefix(invoke, InHarnessPrefix),
+		Runner:    runner,
+		Meta:      SeatMeta{HarnessName: harness, ProviderName: "anthropic", Model: "claude-opus"},
+	}
+}
+
+// TestSeatLadderResolvesCandidatesOncePerSeat: a resolver is a caller-supplied
+// closure and may be stateful, so resolving twice per seat is both wasteful and
+// surprising. The first cut called it in resolveSeatRunner AND runSeatLadder.
+func TestSeatLadderResolvesCandidatesOncePerSeat(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	resolves := 0
+	cands := []SeatCandidate{ladderCandidate("claude-code", "primary", ladderRunner{envelope: goEnvelope()})}
+	e := &Engine{
+		Store:       refstore.New(repo),
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) { return cands[0].Runner, cands[0].Meta, nil },
+		ResolveSeatCandidates: func(string) ([]SeatCandidate, error) {
+			resolves++
+			return cands, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"opus"}, "L1"}}),
+		Root:  repo,
+		Now:   fixedClock(),
+	}
+
+	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	}); err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if resolves != 1 {
+		t.Errorf("candidate resolver called %d times for one seat, want 1", resolves)
+	}
+}
+
+// TestSeatLadderPrimarySucceedsFallbackUntouched: the common case must not
+// change — a working primary means no fallback is ever invoked.
+func TestSeatLadderPrimarySucceedsFallbackUntouched(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	primaryRuns, fallbackRuns := 0, 0
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code", "primary", ladderRunner{envelope: goEnvelope(), ran: &primaryRuns}),
+		ladderCandidate("agy", "fallback", ladderRunner{envelope: goEnvelope(), ran: &fallbackRuns}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if !outcome.Passed() {
+		t.Fatalf("expected pass, got %s", outcome.Status)
+	}
+	if primaryRuns != 1 || fallbackRuns != 0 {
+		t.Errorf("primary ran %d times, fallback %d; want 1 and 0", primaryRuns, fallbackRuns)
+	}
+	if h := outcome.Attempt.Seats[0].Harness.Name; h != "claude-code" {
+		t.Errorf("recorded harness = %q, want the primary's", h)
+	}
+}
+
+// TestSeatLadderFallsThroughAndRecordsTheHarnessThatRan is the bead's point: a
+// failed primary must not be a flat outage when a working fallback exists, and
+// the record must name the harness that actually produced the verdict.
+func TestSeatLadderFallsThroughAndRecordsTheHarnessThatRan(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code", "primary", ladderRunner{err: errors.New("not logged in")}),
+		ladderCandidate("agy", "fallback", ladderRunner{envelope: goEnvelope()}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	seat := outcome.Attempt.Seats[0]
+	if seat.Verdict != runmanifest.SeatVerdictGo {
+		t.Fatalf("verdict = %s, want go from the fallback", seat.Verdict)
+	}
+	if seat.Harness.Name != "agy" {
+		t.Errorf("recorded harness = %q, want the FALLBACK's (agy)", seat.Harness.Name)
+	}
+	// On a USABLE verdict the manifest forbids a failure_note, so the fallthrough
+	// is recorded at gate level instead — the gate did run degraded.
+	if seat.FailureNote != "" {
+		t.Errorf("a go verdict must carry no failure_note (the manifest rejects it): %q", seat.FailureNote)
+	}
+	if !strings.Contains(outcome.Attempt.Decision.DegradedReason, "CANDIDATE_FAILED harness=claude-code") {
+		t.Errorf("the failed rung was not recorded in degraded_reason: %q", outcome.Attempt.Decision.DegradedReason)
+	}
+}
+
+// TestSeatLadderBlockFromPrimaryIsNeverReplacedByAFallbackGo is the
+// safety-critical half of the stopping rule, and the one invariant whose
+// violation would silently loosen EVERY gate: a BLOCK is a real verdict, not an
+// outage, so it must terminate the ladder. If a blocking primary fell through,
+// any seat with a configured fallback could have its objection overwritten by a
+// more agreeable rung — the gate would pass on work a reviewer rejected.
+func TestSeatLadderBlockFromPrimaryIsNeverReplacedByAFallbackGo(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	fallbackRuns := 0
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code", "primary", ladderRunner{envelope: blockEnvelope()}),
+		ladderCandidate("agy", "fallback", ladderRunner{envelope: goEnvelope(), ran: &fallbackRuns}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if fallbackRuns != 0 {
+		t.Fatalf("a BLOCKING primary fell through to a fallback (%d runs); a block is a verdict, not an outage", fallbackRuns)
+	}
+	seat := outcome.Attempt.Seats[0]
+	if seat.Verdict != runmanifest.SeatVerdictBlock {
+		t.Fatalf("verdict = %s, want the primary's block to survive", seat.Verdict)
+	}
+	if seat.Harness.Name != "claude-code" {
+		t.Errorf("recorded harness = %q, want the primary's", seat.Harness.Name)
+	}
+	if outcome.Passed() {
+		t.Fatal("the gate passed despite a seat blocking")
+	}
+}
+
+// TestSeatLadderSkipsInHarnessAndKeepsGoing: an in-harness rung is never exec'd
+// and must NOT terminate the walk — the repo's own opus ladder has an exec-able
+// candidate after it.
+func TestSeatLadderSkipsInHarnessAndKeepsGoing(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	inHarnessRuns := 0
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code", "primary", ladderRunner{err: errors.New("not logged in")}),
+		ladderCandidate("claude-code-subagent", InHarnessPrefix+"task subagent_type=general-purpose model=opus",
+			ladderRunner{envelope: goEnvelope(), ran: &inHarnessRuns}),
+		ladderCandidate("agy", "fallback", ladderRunner{envelope: goEnvelope()}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if inHarnessRuns != 0 {
+		t.Errorf("an in-harness candidate was EXECUTED %d times; it must never be run", inHarnessRuns)
+	}
+	seat := outcome.Attempt.Seats[0]
+	if seat.Harness.Name != "agy" {
+		t.Errorf("the walk stopped at the in-harness rung; harness = %q, want agy", seat.Harness.Name)
+	}
+	if !strings.Contains(outcome.Attempt.Decision.DegradedReason, "IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent") {
+		t.Errorf("the skipped in-harness candidate was not reported: %q", outcome.Attempt.Decision.DegradedReason)
+	}
+}
+
+// TestSeatLadderExhaustedRecordsEveryRungAndAHarness: when nothing works, the
+// note names each rung AND harness.name must be non-empty — runmanifest rejects
+// a blank one, which would turn a recorded outage into no record at all.
+func TestSeatLadderExhaustedRecordsEveryRungAndAHarness(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code", "primary", ladderRunner{err: errors.New("not logged in")}),
+		ladderCandidate("agy", "fallback", ladderRunner{err: errors.New("quota reached")}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if outcome.Passed() {
+		t.Fatal("an exhausted ladder must not pass")
+	}
+	seat := outcome.Attempt.Seats[0]
+	if seat.Harness.Name == "" {
+		t.Error("harness.name is empty; runmanifest rejects that, so the attempt would not record")
+	}
+	for _, want := range []string{"harness=claude-code", "harness=agy"} {
+		if !strings.Contains(seat.FailureNote, want) {
+			t.Errorf("note does not name rung %s: %q", want, seat.FailureNote)
+		}
+	}
+	// The attempt must actually be on the run, not just in memory.
+	if m := readLiveManifest(t, repo, "r1"); len(m.Gates) != 1 {
+		t.Fatalf("expected the failed attempt to be recorded, got %d gates", len(m.Gates))
+	}
+}
+
+// TestSeatLadderAllInHarnessRunsNothing: a ladder etude cannot run at all is a
+// failure, not an empty result — "produced no output" would imply an attempt.
+func TestSeatLadderAllInHarnessRunsNothing(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	runs := 0
+	e := ladderEngine(t, repo, []SeatCandidate{
+		ladderCandidate("claude-code-subagent", InHarnessPrefix+"task model=opus",
+			ladderRunner{envelope: goEnvelope(), ran: &runs}),
+	})
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if runs != 0 {
+		t.Errorf("etude executed an in-harness candidate %d times", runs)
+	}
+	if outcome.Passed() {
+		t.Fatal("a seat etude could not run must not pass the gate")
+	}
+	seat := outcome.Attempt.Seats[0]
+	if seat.Harness.Name == "" {
+		t.Error("harness.name is empty; the attempt would not record")
+	}
+	if !strings.Contains(seat.FailureNote, "IN_HARNESS_CANDIDATE_SKIPPED") {
+		t.Errorf("note should name the candidate the host must run: %q", seat.FailureNote)
+	}
+}

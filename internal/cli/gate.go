@@ -156,6 +156,13 @@ func runGateCommand(ctx context.Context, out, errOut io.Writer, cfg gateConfig) 
 		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
 			return liverun.ResolveGateSeat(reg, seatName, cfg.timeout, envAllowlist)
 		},
+		// Walk the seat's full invocation ladder, so a failed primary falls through
+		// to a configured fallback instead of being recorded as a flat outage.
+		// Both commands share this: two paths resolving seats differently is the
+		// second-seat-path problem this machinery exists to avoid.
+		ResolveSeatCandidates: func(seatName string) ([]liverun.SeatCandidate, error) {
+			return liverun.ResolveGateSeatCandidates(reg, seatName, cfg.timeout, envAllowlist)
+		},
 		Tiers:        liverun.ResolveTiers(reg),
 		Root:         root,
 		EnvAllowlist: envAllowlist,

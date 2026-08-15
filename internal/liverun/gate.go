@@ -568,14 +568,14 @@ func (e *Engine) runGateSeats(
 	gateInputs []replay.RunInput,
 	as *artifactstore.Store,
 	globalRound int,
-) (seatResults []runmanifest.SeatResult, verdicts []runmanifest.SeatVerdict, blockRequired map[string][]string) {
+) (seatResults []runmanifest.SeatResult, verdicts []runmanifest.SeatVerdict, blockRequired map[string][]string, ladderNotes []string) {
 	blockRequired = make(map[string][]string)
 
 	for i, seatName := range seatNames {
 		seatScratch := filepath.Join(scratch, fmt.Sprintf("gate-r%d-seat%d", globalRound, i))
 		_ = os.MkdirAll(seatScratch, 0o755)
 
-		runner, meta, resolveErr := e.ResolveSeat(seatName)
+		runner, meta, candidates, resolveErr := e.resolveSeatRunner(seatName)
 		if resolveErr != nil {
 			note := fmt.Sprintf("resolve seat %q: %v", seatName, resolveErr)
 			// Use seatName as both provider.name and provider.model (fallback).
@@ -600,8 +600,27 @@ func (e *Engine) runGateSeats(
 			OutputMediaType: "application/json",
 		}
 
-		res, runErr := runner.Run(ctx, req)
+		res, runErr, ladderNote, ranMeta := e.runSeatLadder(ctx, candidates, runner, meta, req)
+		meta = ranMeta
 		verdict, failureNote, env := classifySeatOutput(res, runErr)
+		// The ladder note can only ride on failure_note, which the manifest
+		// FORBIDS on go/block (validated at write time — attaching it to a
+		// successful fallback makes the whole attempt fail to record). So on a
+		// usable verdict the rung that produced it is carried by Harness.Name,
+		// which is the durable signal, and the note is surfaced at gate level
+		// instead via the returned ladderNotes.
+		if ladderNote != "" {
+			switch verdict {
+			case runmanifest.SeatVerdictGo, runmanifest.SeatVerdictBlock:
+				ladderNotes = append(ladderNotes, fmt.Sprintf("seat %s: %s", seatName, ladderNote))
+			default:
+				if failureNote == "" {
+					failureNote = ladderNote
+				} else {
+					failureNote = ladderNote + "; " + failureNote
+				}
+			}
+		}
 
 		rawArt := storeRawOutput(as, seatName, res.Output)
 		var rawRef *runmanifest.ArtifactRef
@@ -626,7 +645,14 @@ func (e *Engine) runGateSeats(
 			sr.Session = session
 			if sessionFailure != "" {
 				sr.Verdict = runmanifest.SeatVerdictMalfunction
-				sr.FailureNote = sessionFailure
+				// Keep the ladder note: overwriting it here would discard which
+				// rungs were tried, and a downgrade is exactly where that history
+				// is most useful to whoever reads the record.
+				if ladderNote != "" {
+					sr.FailureNote = ladderNote + "; " + sessionFailure
+				} else {
+					sr.FailureNote = sessionFailure
+				}
 				verdict = sr.Verdict
 			}
 		}
@@ -637,7 +663,7 @@ func (e *Engine) runGateSeats(
 		seatResults = append(seatResults, sr)
 		verdicts = append(verdicts, verdict)
 	}
-	return seatResults, verdicts, blockRequired
+	return seatResults, verdicts, blockRequired, ladderNotes
 }
 
 // runGate executes the full gate drive loop for a guarded stage output:
@@ -729,7 +755,7 @@ func (e *Engine) runGate(
 		checkSeatResults, checksPassed, checkBlocks := e.runGateChecks(
 			ctx, worktreeDir, scratch, gate.Checks, gateInputs, as, globalRound,
 		)
-		modelSeatResults, seatVerdicts, seatBlockRequired := e.runGateSeats(
+		modelSeatResults, seatVerdicts, seatBlockRequired, gateLadderNotes := e.runGateSeats(
 			ctx, worktreeDir, scratch, seatNames, gateInputs, as, globalRound,
 		)
 
@@ -759,7 +785,7 @@ func (e *Engine) runGate(
 			Seats: allSeats,
 			Decision: runmanifest.GateDecision{
 				EscalationReason: syn.escalationReason,
-				DegradedReason:   syn.degradedReason,
+				DegradedReason:   joinDegraded(syn.degradedReason, gateLadderNotes),
 			},
 			Timestamp: e.clock(),
 		}
@@ -846,4 +872,96 @@ func (e *Engine) runGate(
 			tierRound = 1
 		}
 	}
+}
+
+// resolveSeatRunner returns the runner for a seat's PRIMARY invocation, used
+// when no candidate ladder is configured. Kept separate so the ladder path and
+// the legacy path share one call site in runGateSeats.
+// It also returns the resolved ladder so runSeatLadder does not resolve a second
+// time: a resolver is a caller-supplied closure and may well be stateful (test
+// doubles here are), so calling it twice per seat is both wasteful and surprising.
+func (e *Engine) resolveSeatRunner(seatName string) (replay.Runner, SeatMeta, []SeatCandidate, error) {
+	if e.ResolveSeatCandidates == nil {
+		runner, meta, err := e.ResolveSeat(seatName)
+		return runner, meta, nil, err
+	}
+	candidates, err := e.ResolveSeatCandidates(seatName)
+	if err != nil {
+		return nil, SeatMeta{}, nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, SeatMeta{}, nil, fmt.Errorf("seat %q resolved to no invocation candidates", seatName)
+	}
+	// The primary's identity is the seat's declared one, and is what an exhausted
+	// ladder records — runmanifest rejects a seat result with an empty
+	// harness.name, so this must never come back blank.
+	return candidates[0].Runner, candidates[0].Meta, candidates, nil
+}
+
+// runSeatLadder walks a seat's invocation candidates in order and returns the
+// first USABLE outcome, together with a machine-readable note describing every
+// rung that did not produce one.
+//
+// A `go` or `block` is a real verdict and stops the ladder — only an OUTAGE
+// (failed/empty/malfunction) moves to the next rung. An in-harness candidate is
+// SKIPPED, never exec'd, and never terminates the walk: etude cannot know whether
+// its caller is able to run one, so it must not decide on the caller's behalf by
+// stopping short of a rung it could have run itself.
+//
+// With no ladder configured this is exactly one Run call on the primary, which is
+// the pre-existing behaviour.
+func (e *Engine) runSeatLadder(
+	ctx context.Context,
+	candidates []SeatCandidate,
+	primary replay.Runner,
+	primaryMeta SeatMeta,
+	req replay.RunRequest,
+) (replay.RunResult, error, string, SeatMeta) {
+	// No ladder configured: exactly one Run on the primary, the pre-existing path.
+	if len(candidates) == 0 {
+		res, err := primary.Run(ctx, req)
+		return res, err, "", primaryMeta
+	}
+
+	var (
+		notes    []string
+		lastRes  replay.RunResult
+		lastErr  error
+		lastMeta = primaryMeta
+		ran      bool
+	)
+	for _, c := range candidates {
+		if c.InHarness {
+			// Stable marker + the candidate verbatim, so a supervisor can detect
+			// this programmatically instead of string-matching English.
+			notes = append(notes, fmt.Sprintf("IN_HARNESS_CANDIDATE_SKIPPED harness=%s invoke=%s", c.Harness, c.Invoke))
+			continue
+		}
+		if c.Runner == nil {
+			continue
+		}
+		res, err := c.Runner.Run(ctx, req)
+		ran = true
+		lastRes, lastErr, lastMeta = res, err, c.Meta
+		verdict, _, _ := classifySeatOutput(res, err)
+		if verdict == runmanifest.SeatVerdictGo || verdict == runmanifest.SeatVerdictBlock {
+			// A real verdict from this rung; record it against THIS harness.
+			return res, err, strings.Join(notes, "; "), c.Meta
+		}
+		notes = append(notes, fmt.Sprintf("CANDIDATE_FAILED harness=%s invoke=%s verdict=%s", c.Harness, c.Invoke, verdict))
+	}
+
+	if !ran {
+		// Every candidate was in-harness, so etude ran nothing. Report it as a
+		// runner failure rather than an empty result: "produced no output" would
+		// imply something was attempted. The seat's declared identity is used, so
+		// harness.name is never blank (runmanifest rejects that outright).
+		return replay.RunResult{}, fmt.Errorf("%w: no candidate for this seat could be run by etude",
+			replay.ErrRunnerNotConfigured), strings.Join(notes, "; "), primaryMeta
+	}
+
+	// Every exec-able rung was tried and none produced a usable verdict. Return
+	// the LAST one's outcome — already executed, not re-run — so the caller has a
+	// concrete result to classify.
+	return lastRes, lastErr, strings.Join(notes, "; "), lastMeta
 }

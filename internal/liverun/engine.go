@@ -171,6 +171,12 @@ type Engine struct {
 	// Required when any stage has a gate with seats or a tier configured.
 	// Tests inject a stub returning canned envelope JSON.
 	ResolveSeat func(seatName string) (replay.Runner, SeatMeta, error)
+	// ResolveSeatCandidates, when set, returns the seat's full invocation ladder
+	// in retry order and takes precedence over ResolveSeat. When nil the engine
+	// falls back to the single-runner path, so every existing caller and test is
+	// unchanged — which matters because a seat with no configured fallbacks (all
+	// of them except `opus` today) behaves identically either way.
+	ResolveSeatCandidates func(seatName string) ([]SeatCandidate, error)
 	// Tiers returns the seat names and next-stronger tier name for a given
 	// registry tier name. Returns ok=false when the tier is not found.
 	// Required when any stage has a gate with a Tier configured.
