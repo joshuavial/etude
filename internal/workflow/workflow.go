@@ -326,10 +326,7 @@ func (w Workflow) Validate() error {
 	for i, s := range w.Stages {
 		prefix := fmt.Sprintf("stage[%d]", i)
 
-		if strings.TrimSpace(s.Name) == "" {
-			return fmt.Errorf("%w: %s name required", ErrInvalidWorkflow, prefix)
-		}
-		if err := validateStageName(prefix+".name", s.Name); err != nil {
+		if err := validateRequiredStageName(prefix, s.Name); err != nil {
 			return err
 		}
 		if seenStageNames[s.Name] {
@@ -542,14 +539,17 @@ func isValidEnvNameWorkflow(name string) bool {
 	return true
 }
 
-// validateStageName applies the manifest identifier charset to stage names:
+// validateRequiredStageName requires a stage name and applies the manifest
+// identifier charset:
 // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
-// rule is shared with registry and runmanifest through internal/ident. Callers
-// must reject blank values first so they can preserve their field-specific
-// required-value error.
-func validateStageName(field, value string) error {
+// character rule is shared with registry and runmanifest through internal/ident;
+// the workflow-specific required and invalid diagnostics stay here.
+func validateRequiredStageName(prefix, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s name required", ErrInvalidWorkflow, prefix)
+	}
 	if !ident.IsValid(value) {
-		return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
+		return fmt.Errorf("%w: invalid %s.name %q", ErrInvalidWorkflow, prefix, value)
 	}
 	return nil
 }

@@ -266,6 +266,40 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 	}
 }
 
+func TestValidateRequiredStageName(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "valid", value: "final-review"},
+		{name: "empty", value: "", wantErr: "invalid workflow: stage[0] name required"},
+		{name: "whitespace", value: " \t", wantErr: "invalid workflow: stage[0] name required"},
+		{name: "invalid", value: "final/review", wantErr: `invalid workflow: invalid stage[0].name "final/review"`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateRequiredStageName("stage[0]", tc.value)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateRequiredStageName returned error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateRequiredStageName returned nil error")
+			}
+			if !errors.Is(err, ErrInvalidWorkflow) {
+				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+			}
+			if got := err.Error(); got != tc.wantErr {
+				t.Fatalf("validateRequiredStageName error = %q, want %q", got, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateEmptyStageNameKeepsRequiredError(t *testing.T) {
 	w := minimalWorkflow()
 	w.Stages[0].Name = ""
