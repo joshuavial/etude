@@ -137,7 +137,7 @@ habits are worth copying:
 - it **measured** that its regressions fail without the change, by scripted
   neutering edits, twice — where I have repeatedly asserted equivalents;
 - it **inverted the bead's suggested fix** and argued for the inversion, rather
-  than implementing what it was told. Both plan seats preferred the inversion.
+  than implementing what it was told. Both plan seats returned GO on the inverted plan.
 
 The supervisor's job turned out to be almost entirely mechanical: capture, gate,
 append, relay findings verbatim. The one judgement call that mattered — running
