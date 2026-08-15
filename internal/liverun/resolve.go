@@ -61,7 +61,12 @@ func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workf
 // ResolveCheckRunner returns a CheckRunner for the given gate check runner config.
 // Inline Command runners are wrapped in execCheckRunner; Name runners are looked
 // up in the registry seats map to get the Invoke command.
-func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.Duration) (CheckRunner, error) {
+//
+// envAllowlist is the list of env var NAMES (never values) to pass through, the
+// same list the seats get. Checks are real build/test commands — `make test`
+// needs HOME to locate the Go module cache — so a strictly hermetic env fails
+// them for reasons unrelated to the code under review.
+func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.Duration, envAllowlist []string) (CheckRunner, error) {
 	var cmd string
 	if r.Command != "" {
 		cmd = r.Command
@@ -73,8 +78,9 @@ func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.D
 		cmd = seat.Invoke
 	}
 	return &execCheckRunner{
-		command: strings.Fields(cmd),
-		timeout: timeout,
+		command:      strings.Fields(cmd),
+		timeout:      timeout,
+		envAllowlist: envAllowlist,
 	}, nil
 }
 
@@ -84,7 +90,8 @@ func ResolveCheckRunner(reg registry.Registry, r workflow.Runner, timeout time.D
 // SeatMeta carries the split provider name and model from Seat.Provider.
 // envAllowlist is the list of env var NAMES (never values) to pass through to
 // the seat runner; nil/empty means hermetic (default, unchanged behavior).
-// Note: checks use ResolveCheckRunner (not this function) and remain hermetic.
+// Note: checks use ResolveCheckRunner (not this function), which takes the same
+// allowlist.
 func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Duration, envAllowlist []string) (replay.Runner, SeatMeta, error) {
 	seat, ok := reg.Seats[seatName]
 	if !ok {

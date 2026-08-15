@@ -163,7 +163,7 @@ func TestResolveGateSeatSessionEvidenceRequirement(t *testing.T) {
 // execCheckRunner, which has no allowlist and never propagates parent env vars.
 func TestResolveCheckRunnerIsHermetic(t *testing.T) {
 	r := workflow.Runner{Command: "echo test"}
-	cr, err := ResolveCheckRunner(registry.Registry{}, r, 10*time.Second)
+	cr, err := ResolveCheckRunner(registry.Registry{}, r, 10*time.Second, nil)
 	if err != nil {
 		t.Fatalf("ResolveCheckRunner: %v", err)
 	}

@@ -13,7 +13,7 @@ seats:
   codex:
     provider: openai/gpt-5.5
     harness: codex
-    invoke: codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -
+    invoke: scripts/seat-adapter.sh codex codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort=xhigh -s read-only -
     mode: diff-only
     model_fallbacks:
       - gpt-5.4
@@ -26,7 +26,7 @@ seats:
   gemini:
     provider: google/gemini-3.1-pro-preview
     harness: gemini-cli
-    invoke: env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p
+    invoke: scripts/seat-adapter.sh gemini env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview
     mode: inline-no-tools
     model_fallbacks:
       - gemini-3-pro-preview
@@ -35,11 +35,14 @@ seats:
   opus:
     provider: anthropic/claude-opus
     harness: claude-code
-    invoke: claude -p --model opus
+    invoke: scripts/seat-adapter.sh opus claude -p --model opus
     mode: inline
     invocation_fallbacks:
+      - harness: claude-code-subagent
+        invoke: in-harness:task subagent_type=general-purpose model=opus
+        mode: inline
       - harness: agy
-        invoke: agy --model opus --print
+        invoke: scripts/seat-adapter.sh opus agy --model opus --print
         mode: inline
 tiers:
   L1:
@@ -241,9 +244,13 @@ tiers:
 // modify the ordered candidates without mutating registry configuration.
 func TestSeatInvocationsReturnsIndependentSlice(t *testing.T) {
 	seat := Default().Seats["opus"]
+	// Capture the real first fallback rather than hardcoding a name: this test
+	// is about ALIASING, not about which candidate happens to be first, and a
+	// hardcoded name turns a fallback-order change into a spurious failure.
+	original := seat.InvocationFallbacks[0].Harness
 	got := seat.Invocations()
 	got[1].Harness = "changed"
-	if seat.InvocationFallbacks[0].Harness != "agy" {
+	if seat.InvocationFallbacks[0].Harness != original {
 		t.Fatalf("Invocations mutated backing fallback: %+v", seat.InvocationFallbacks[0])
 	}
 }

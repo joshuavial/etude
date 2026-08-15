@@ -97,26 +97,33 @@ at close.
 
 ## `etude gate`
 
-> This section is the contract bead `etude-9uf.1` implements. Until that bead
-> lands, use the bootstrap path below. When it lands, this section is amended in
-> the same bead to describe what shipped, and any wording here that reads as
-> "future" is corrected then — `scripts/docs-reality-check.sh` flags a
-> `docs/plans/**` line that calls a shipped command unimplemented, which is what
-> keeps this document and the command from drifting apart.
+> `etude gate` is shipped (bead `etude-9uf.1`). This section was written first,
+> as its specification, and was amended in that bead to describe what actually
+> shipped. Where implementation taught us something the spec had wrong, the
+> correction is recorded inline rather than quietly applied.
 
 ```
 etude gate --run <id> --stage <name> --artifact <file>
 ```
 
-### Contract (prescriptive — this is what bead .1 must build)
+### Contract (shipped in bead etude-9uf.1)
 
-Nothing in this section describes shipped behavior yet. Each numbered item is a
-requirement, and bead .1's VERIFY phase must exercise the built binary against
-every one of them and say so item by item — the `docs-reality` tripwire above
-catches stale *wording*, not a command that ships doing something different from
-what is written here.
+This section was written before the command existed, as its specification. It now
+describes shipped behavior: bead `etude-9uf.1` implemented `etude gate` against
+this list and its VERIFY phase reported against each item individually.
 
-The command must, in order:
+**A correction, recorded because the mechanism was overstated.** The version of
+this section written in bead .2 claimed the `docs-reality` tripwire would force
+this amendment once `gate` shipped. It would not have. Check 3 of
+`scripts/docs-reality-check.sh` only fires when a stale-claim phrase and an
+`etude <cmd>` mention appear on the **same line**, and this section's phrasing
+never paired them — so the check stayed green with the text still calling a
+shipped command unbuilt. What actually keeps this document honest is the
+obligation on the implementing bead's verify phase to walk the list item by item
+against the built binary. That is a discipline, not a tripwire, and it is worth
+naming as such rather than trusting a check that would not have fired.
+
+What the command does, in order:
 
 1. **Resolve the stage.** Look up `<name>` in `.etude/workflow.yaml`. An unknown
    stage is a clear error and a non-zero exit, with nothing recorded.
@@ -182,12 +189,24 @@ Nothing else is read. A seat that writes prose to stdout and leaves
 `$ETUDE_OUTPUT_FILE` untouched is recorded `empty`; a seat that writes non-JSON
 is recorded `malfunction`. Neither is a pass.
 
+`scripts/seat-adapter.sh` is the shipped bridge: `invoke` names it, it feeds the
+prompt to the model CLI on stdin, parses the four-line RETURN block off stdout,
+and writes the envelope. It fails closed — a non-zero CLI, a truncated reply with
+no `VERDICT:` line, or an unrecognized verdict all leave `$ETUDE_OUTPUT_FILE`
+ABSENT and exit non-zero, so the engine's own `empty`/`failed` classification is
+what decides, never the adapter. The only path that writes `{"verdict":"go"}` is
+a reply that literally said `VERDICT: GO`. `make seat-adapter-test` pins every
+one of those paths.
+
 **So a seat's registry `invoke` must name an adapter, not a bare model CLI.** A
 bare `claude -p` or `codex exec` writes prose to stdout and satisfies none of
-this. The adapter's job is small: read the prompt from `$ETUDE_INPUTS_DIR`, run
-the model CLI, turn the reply into the envelope, write it to
-`$ETUDE_OUTPUT_FILE`. `examples/research/approve-seat.sh` is the minimal shipped
-example of a conformant seat.
+this. `examples/research/approve-seat.sh` is the minimal example of a conformant
+seat; `scripts/seat-adapter.sh` is the real one.
+
+A repo-relative adapter path is anchored to the repo root before the seats run,
+because exec resolves a relative program path against the CALLER's cwd rather
+than the child's directory — without that, a gate run from a subdirectory fails
+every seat with a "file not found" that reads as an outage.
 
 Changing an `invoke` to point at an adapter does not change the panel: the seat
 identities, the tiers they belong to, and the quorum are the same. Only the
@@ -275,6 +294,25 @@ It survives this epic because it is the only path available in two cases:
 Using it obliges the supervisor to write down, in the gate record, which seat
 could not be invoked and why. A hand-assembled record with no such note is a
 record of a gate nobody can check.
+
+### When a seat blocks twice on one invariant, audit every site
+
+Two findings on this epic's own `etude gate` bead were the same shape: something
+other than a stated GO could produce a `go`. The first was an agentic seat CLI
+inheriting `$ETUDE_OUTPUT_FILE` and writing its own envelope. The second was
+"last VERDICT line wins" turning a stated BLOCK into a pass. Fixing the second
+at the site the seat named — `VERDICT` — left the identical bug one label over in
+`BLOCKING`, which the next round caught.
+
+The tell is a seat naming a NEW SITE for a finding you already fixed. When that
+happens, stop patching the named site and enumerate every place the invariant
+must hold, then fix them in one pass and re-gate once. For a guard, that means
+listing every input the guard reads and every way it picks among several
+candidates — a "last wins" or "first match" rule is unsafe wherever the earlier
+candidates carry real content.
+
+It is cheaper than it sounds: the exhaustive pass over the adapter's selection
+primitives took one audit and closed a filed follow-up as a side effect.
 
 ### If a run ref is lost
 

@@ -22,6 +22,9 @@ Implemented:
   and configure `refs/etude/*` fetch/push refspecs on a git remote.
 - Manual `etude capture` command for local file artifacts.
 - `etude capture-gate` to append structured review-gate reviewer records to a run.
+- `etude gate` to RUN one stage's review gate — resolving the tier and abstraction
+  from `.etude/workflow.yaml`, invoking that tier's seats from `.etude/registry.yaml`
+  against one shared prompt, recording the attempt, and exiting non-zero unless it passes.
 - `etude capture-run` to capture a complete multi-stage run from a single YAML spec in one operation.
 - `etude run list` to list all stored runs.
 - `etude run show <run-id>` to inspect the detail of one run (including gates).
@@ -46,7 +49,7 @@ Implemented:
 
 The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
-`etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`,
+`etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`, `etude gate`,
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
 `etude gc`, `etude import`, `etude reindex`, `etude retro capture`, `etude retro generate`,
 `etude retro list`, `etude retro show`, `etude prime`, `etude log`,
@@ -127,6 +130,7 @@ version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
 ./bin/etude replay run-1 plan --runner ./run.sh
 ./bin/etude replay run-1 plan --runner ./run.sh --output result.md
 ./bin/etude capture-gate --run run-1 --gate-file gate.json
+./bin/etude gate --run run-1 --stage verify --artifact verify.md
 ./bin/etude bench plan --last 10 --runner ./run.sh --judge ./judge.sh
 ./bin/etude gc
 ./bin/etude reindex
@@ -143,7 +147,7 @@ version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
 See [Init](docs/init.md) for the init command.
 See [Manual Capture](docs/capture.md) for the capture command.
 See [Batch Capture](docs/capture-run.md) for `etude capture-run`.
-See [Gate reviewer records](docs/gates.md) for `etude capture-gate` and gate inspection.
+See [Gate reviewer records](docs/gates.md) for `etude gate`, `etude capture-gate`, and gate inspection.
 See [Runs](docs/run.md) for the run list and run show commands.
 See [Sync](docs/sync.md) for the sync command.
 See [Replay](docs/replay.md) for the replay command.

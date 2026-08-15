@@ -24,6 +24,7 @@ etude [flags]
 * [etude capture](etude_capture.md)	 - Capture a stage artifact into an etude run
 * [etude capture-gate](etude_capture-gate.md)	 - Append a gate reviewer record to an existing etude run
 * [etude capture-run](etude_capture-run.md)	 - Capture a multi-stage run from a YAML spec in one operation
+* [etude gate](etude_gate.md)	 - Run one stage's review gate and record the attempt on a run
 * [etude gc](etude_gc.md)	 - Report artifact storage or prune named run refs
 * [etude import](etude_import.md)	 - Import historical runs from an external source (e.g. GitHub PRs)
 * [etude init](etude_init.md)	 - Scaffold .etude/ config and register refs/etude/* refspecs

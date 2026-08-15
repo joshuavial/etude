@@ -74,6 +74,12 @@ type seatSessionEnvelope struct {
 type execCheckRunner struct {
 	command []string
 	timeout time.Duration
+	// envAllowlist is the list of env var NAMES (never values) passed through to
+	// the check, mirroring replay.ExecRunner. A check is a real build/test
+	// command — `make test` needs HOME to find the Go module cache — so a
+	// strictly hermetic env makes every such check fail for a reason that has
+	// nothing to do with the code under review.
+	envAllowlist []string
 }
 
 // compile-time interface satisfaction.
@@ -126,6 +132,18 @@ func (r *execCheckRunner) RunCheck(ctx context.Context, req replay.RunRequest) (
 		"PATH=" + os.Getenv("PATH"),
 		"ETUDE_INPUTS_DIR=" + inputsDir,
 		"ETUDE_OUTPUT_FILE=" + outputPath,
+	}
+	// Append allowlisted NAMES only; values are read here and never stored on the
+	// runner or written to a manifest. The three names above are reserved and are
+	// skipped defensively even though workflow validation already rejects them.
+	for _, name := range r.envAllowlist {
+		switch name {
+		case "PATH", "ETUDE_INPUTS_DIR", "ETUDE_OUTPUT_FILE":
+			continue
+		}
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer

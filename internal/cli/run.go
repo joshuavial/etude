@@ -124,7 +124,7 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workf
 		Store:         refstore.New(root),
 		ResolveRunner: resolveRunner,
 		ResolveCheck: func(r workflow.Runner) (liverun.CheckRunner, error) {
-			return liverun.ResolveCheckRunner(reg, r, timeout)
+			return liverun.ResolveCheckRunner(reg, r, timeout, envAllowlist)
 		},
 		ResolveSeat: func(seatName string) (replay.Runner, liverun.SeatMeta, error) {
 			return liverun.ResolveGateSeat(reg, seatName, timeout, envAllowlist)

@@ -229,9 +229,13 @@ func Default() Registry {
 		Quorum: "unanimous",
 		Seats: map[string]Seat{
 			"codex": {
-				Provider:       "openai/gpt-5.5",
-				Harness:        "codex",
-				Invoke:         `codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -`,
+				Provider: "openai/gpt-5.5",
+				Harness:  "codex",
+				// Through the adapter: a bare CLI writes prose to stdout and
+				// nothing to $ETUDE_OUTPUT_FILE, so etude would score it `empty`.
+				// The reasoning-effort value is UNQUOTED on purpose — an invoke is
+				// split with strings.Fields, so quotes would reach codex literally.
+				Invoke:         `scripts/seat-adapter.sh codex codex exec --ephemeral -m gpt-5.5 -c model_reasoning_effort=xhigh -s read-only -`,
 				Mode:           "diff-only",
 				ModelFallbacks: []string{"gpt-5.4", "gpt-5.3", "gpt-5.2"},
 			},
@@ -241,20 +245,33 @@ func Default() Registry {
 				Invoke:   "claude -p --model opus",
 			},
 			"gemini": {
-				Provider:       "google/gemini-3.1-pro-preview",
-				Harness:        "gemini-cli",
-				Invoke:         "env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview -p",
+				Provider: "google/gemini-3.1-pro-preview",
+				Harness:  "gemini-cli",
+				// No -p: the adapter pipes the prompt on stdin and gemini runs
+				// headless whenever stdin is not a TTY. -p is unusable here anyway,
+				// since strings.Fields would shred a multi-word prompt value.
+				Invoke:         "scripts/seat-adapter.sh gemini env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview",
 				Mode:           "inline-no-tools",
 				ModelFallbacks: []string{"gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"},
 			},
 			"opus": {
 				Provider: "anthropic/claude-opus",
 				Harness:  "claude-code",
-				Invoke:   "claude -p --model opus",
+				Invoke:   "scripts/seat-adapter.sh opus claude -p --model opus",
 				Mode:     "inline",
 				InvocationFallbacks: []SeatInvocation{{
+					// A Claude Code orchestrator cannot authenticate a `claude`
+					// subprocess, but it CAN spawn an in-harness Task sub-agent:
+					// a fresh, separately authenticated opus identity given only
+					// the shared gate prompt and the inlined artifact. That is a
+					// real seat producing a real verdict. The `in-harness:` prefix
+					// marks a candidate the HOST runs itself rather than exec'ing.
+					Harness: "claude-code-subagent",
+					Invoke:  "in-harness:task subagent_type=general-purpose model=opus",
+					Mode:    "inline",
+				}, {
 					Harness: "agy",
-					Invoke:  "agy --model opus --print",
+					Invoke:  "scripts/seat-adapter.sh opus agy --model opus --print",
 					Mode:    "inline",
 				}},
 			},

@@ -4,7 +4,7 @@ VERSION ?= dev
 DOCS_DIR := docs/cli
 LDFLAGS := -X github.com/joshuavial/etude/internal/cli.version=$(VERSION)
 
-.PHONY: build install test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test
+.PHONY: build install test lint clean docs docs-check docs-reality reconcile example dogfood-audit dogfood-audit-test dogfood-close-test retro-index retro-index-test seat-adapter-test
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -60,6 +60,11 @@ dogfood-audit-test:
 # Fixture-based tests for dogfood-close.sh and the pre-push enforcement block.
 dogfood-close-test:
 	@bash scripts/dogfood-close_test.sh
+
+# Fixture tests for the gate seat adapter. Its fail-closed paths are the only
+# thing standing between a truncated model reply and a recorded GO.
+seat-adapter-test:
+	@bash scripts/seat-adapter_test.sh
 
 # Read-only cross-retro failure-mode / root-cause index over current cadence retros.
 retro-index:

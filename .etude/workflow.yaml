@@ -1,4 +1,9 @@
 name: default
+# Seat adapters shell out to model CLIs that read their credentials from the
+# user's home directory. The runner env is otherwise PATH + ETUDE_* only, so
+# without HOME every real seat fails to authenticate. NAMES only — values are
+# resolved at run time and never written to a manifest or a gate record.
+env_allowlist: [HOME]
 stages:
   - name: plan
     produces: plan

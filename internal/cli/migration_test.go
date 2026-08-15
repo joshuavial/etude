@@ -111,8 +111,16 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("codex seat missing")
 	}
-	if !strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
-		t.Errorf("codex invoke missing model_reasoning_effort=\"xhigh\": %q", codex.Invoke)
+	// The SETTING is what must survive, not its shell quoting. An invoke is split
+	// with strings.Fields before exec, so a quoted value would reach codex as the
+	// literal `model_reasoning_effort="xhigh"` including the quote characters.
+	// The quotes were dropped when the seats moved behind the adapter; the
+	// unquoted form is what actually runs (verified against a live codex seat).
+	if !strings.Contains(codex.Invoke, "model_reasoning_effort=xhigh") {
+		t.Errorf("codex invoke missing model_reasoning_effort=xhigh: %q", codex.Invoke)
+	}
+	if strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
+		t.Errorf("codex invoke re-quotes the reasoning effort; strings.Fields would pass the quotes through to codex: %q", codex.Invoke)
 	}
 	if !strings.Contains(codex.Invoke, "-s read-only") {
 		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)
@@ -121,19 +129,60 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 		t.Error("codex model_fallbacks must be non-empty")
 	}
 
+	// Both mechanisms must survive together: invocation_fallbacks is the
+	// CONFIG-level statement of which candidates a consumer may try, and the
+	// seat adapter is the EXECUTION-level bridge that makes any of them
+	// satisfy the seat envelope contract. Neither replaces the other.
 	opus, ok := reg.Seats["opus"]
 	if !ok {
 		t.Fatal("opus seat missing")
 	}
 	invocations := opus.Invocations()
-	if len(invocations) != 2 {
-		t.Fatalf("opus invocations = %v, want primary + agy fallback", invocations)
+	if len(invocations) != 3 {
+		t.Fatalf("opus invocations = %v, want primary + in-harness sub-agent + agy", invocations)
 	}
-	if invocations[0].Harness != "claude-code" || invocations[0].Invoke != "claude -p --model opus" {
+	if invocations[0].Harness != "claude-code" || !strings.Contains(invocations[0].Invoke, "claude -p --model opus") {
 		t.Errorf("opus primary invocation = %+v", invocations[0])
 	}
-	if invocations[1].Harness != "agy" || invocations[1].Invoke != "agy --model opus --print" || invocations[1].Mode != "inline" {
-		t.Errorf("opus fallback invocation = %+v", invocations[1])
+	// The in-harness sub-agent seat is what a Claude Code orchestrator actually
+	// uses, because it cannot authenticate a `claude` subprocess. It lived only
+	// in a prose comment before, which let a worker read it and stop; it is
+	// config now so a consumer can act on it. It is deliberately NOT a shell
+	// command — `in-harness:` means the host runs it rather than exec'ing it.
+	if invocations[1].Harness != "claude-code-subagent" {
+		t.Errorf("opus fallback[0] must be the in-harness sub-agent seat, got %+v", invocations[1])
+	}
+	if !strings.HasPrefix(invocations[1].Invoke, "in-harness:") {
+		t.Errorf("the sub-agent candidate must be marked in-harness so a consumer does not exec it: %q", invocations[1].Invoke)
+	}
+	for _, want := range []string{"subagent_type=general-purpose", "model=opus"} {
+		if !strings.Contains(invocations[1].Invoke, want) {
+			t.Errorf("sub-agent candidate missing %q: %q", want, invocations[1].Invoke)
+		}
+	}
+	if invocations[2].Harness != "agy" || !strings.Contains(invocations[2].Invoke, "agy --model opus --print") || invocations[2].Mode != "inline" {
+		t.Errorf("opus agy fallback = %+v", invocations[2])
+	}
+
+	// Every REVIEW seat must invoke through the adapter on any candidate that is
+	// actually exec'd. A bare model CLI writes prose to stdout and nothing to
+	// $ETUDE_OUTPUT_FILE, so etude classifies it `empty` and the gate escalates —
+	// the command would ship unable to gate anything. (`dev` is a stage RUNNER,
+	// not a review seat, so it is exempt; in-harness candidates are not exec'd.)
+	for _, name := range []string{"opus", "codex", "gemini"} {
+		seat, ok := reg.Seats[name]
+		if !ok {
+			t.Errorf("review seat %q missing from registry", name)
+			continue
+		}
+		for i, inv := range seat.Invocations() {
+			if strings.HasPrefix(inv.Invoke, "in-harness:") {
+				continue
+			}
+			if !strings.Contains(inv.Invoke, "seat-adapter.sh") {
+				t.Errorf("review seat %q invocation[%d] must go through the seat adapter, got %q", name, i, inv.Invoke)
+			}
+		}
 	}
 }
 

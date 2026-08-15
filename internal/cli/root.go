@@ -46,6 +46,7 @@ func NewRootCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.AddCommand(newCaptureGateCommand(out, errOut))
 	cmd.AddCommand(newCaptureRunCommand(out, errOut))
 	cmd.AddCommand(newGCCommand(out, errOut))
+	cmd.AddCommand(newGateCommand(out, errOut))
 	cmd.AddCommand(newImportCommand(out, errOut))
 	cmd.AddCommand(newInitCommand(out, errOut))
 	cmd.AddCommand(newLogCommand(out, errOut))
