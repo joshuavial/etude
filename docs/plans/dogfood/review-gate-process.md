@@ -34,10 +34,15 @@ approval, and never drop a seat or lower a tier to get past a BLOCK.
 itself a Claude Code session — the host session's credentials are not exposed to
 a subprocess. In that case the seat is run as a fresh in-harness sub-agent
 (`subagent_type` general-purpose, `model: opus`) given only the gate prompt, or
-via the substitute named in the registry. This exception currently lives in a
-registry comment rather than in code, so a machine running the gate cannot honour
-it and will fail the seat closed; bead `etude-pqv` makes registry exceptions
-machine-honored. See
+via the substitute named in the registry. The exception IS encoded — bead
+`etude-pqv` (CLOSED) made the registry machine-readable, and `etude-5f6` made
+`etude gate` walk the resulting `invocation_fallbacks` ladder. The gate skips the
+`in-harness:` rung, because nothing can exec it, and tries the remaining rungs;
+today the last exec-able one (`agy`) is itself broken (`etude-8li`), so the seat
+still fails closed and the panel must be completed out of band. If that rung is
+repaired the seat may be filled by another harness, so check WHICH harness filled
+it rather than assuming. Consuming an in-harness verdict directly is bead
+`etude-4ed`. See
 [Supervisor runbook — Degraded gates and stop-the-line](supervisor-runbook.md#degraded-gates-and-stop-the-line).
 
 If any seat cannot complete because of auth, quota, model access, allowance,

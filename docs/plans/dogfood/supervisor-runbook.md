@@ -107,6 +107,31 @@ etude capture docs --run <bead> --output docs-diff=.etude/tmp/<bead>/docs.md \
 its name — so a stage merely *named* `docs` that produces something else does not
 satisfy the docs gate, and the gate writes nothing on that path.
 
+**Run the gate from the WORKER'S worktree, not your own.** `etude gate` execs its
+deterministic checks with the caller's working directory. Supervisor and worker
+are in different worktrees, so running it from yours executes `make test` and
+`make lint` against a tree that does not contain the change, passes both, and
+certifies nothing. Every other gate defect announces itself with a BLOCK; this
+one announces itself with a pass. Measured on `refs/etude/runs/etude-3xt`, the
+first bead run this way: two of its five `etude gate` attempts were invoked from
+the supervisor's worktree before it was noticed. Those two were `plan` and
+`implement`; neither carries a `checks:` block, which is the only reason nothing
+was falsely certified. (Only `verify` declares checks at all, so the exposure is
+that one phase — which is also the phase whose entire value is running them.) Bead `etude-4qi` covers making the
+resolved check directory part of the gate record, which is what would let anyone
+audit this after the fact; today nothing records it.
+
+```bash
+cd <worker-worktree> && <supervisor>/bin/etude gate \
+    --run <bead> --stage <phase> \
+    --artifact .etude/tmp/<bead>/<phase>.md
+```
+
+(Precisely: the checks run in the caller's WORKTREE ROOT, not its literal cwd —
+`etude gate` resolves the root and sets the command's directory from it. Running
+from a subdirectory of the right worktree is fine; running from the wrong
+worktree is not.)
+
 **Exit 0** — the gate passed. Advance to the next phase.
 
 **Non-zero** — the gate did not pass. The supervisor hands the printed
@@ -289,16 +314,51 @@ There is one documented seat exception, and it is live today. The `opus` seat's
 registry invocation is `claude -p --model opus`, which fails to authenticate
 when the orchestrator is itself Claude Code — the host session's credentials are
 not exposed to a subprocess, and the CLI reports that it is not logged in. The
-registry records the workaround in a comment: run that seat as an in-harness
-sub-agent instead.
+registry declares the workaround in the seat's `invocation_fallbacks`, marked
+`in-harness:`: run that seat as a fresh sub-agent instead.
 
-That exception lives in prose, not in code, so `etude gate` cannot honour it. It
-resolves the `invoke` string verbatim, the seat fails, and the gate escalates —
-which is the correct fail-closed behavior for a machine that has been handed a
-rule it cannot read. Bead `etude-pqv` covers making registry exceptions
-machine-honored. Until it lands, a supervisor that is itself a Claude Code
-session runs the opus seat out-of-band and records it via the bootstrap path
-below, writing down which seat could not be invoked and why.
+**That exception is encoded, and `etude gate` reads it.** Bead `etude-pqv` made
+registry exceptions machine-honored and is CLOSED; `etude-5f6` landed the
+fallback ladder in `17d0ab5`, and `runSeatLadder` walks it, skipping the
+in-harness candidate with an explicit `IN_HARNESS_CANDIDATE_SKIPPED` note rather
+than failing blind.
+
+**What `etude gate` still cannot do is CONSUME an in-harness verdict.** Observed
+end to end on `etude-9uf.5`'s `docs.r6`, with a binary built after the ladder
+landed — the recorded `failure_note` is the whole story:
+
+```
+CANDIDATE_FAILED harness=claude-code invoke=…seat-adapter.sh opus claude -p --model opus verdict=failed;
+IN_HARNESS_CANDIDATE_SKIPPED harness=claude-code-subagent invoke=in-harness:task …;
+CANDIDATE_FAILED harness=agy invoke=…seat-adapter.sh opus agy --model opus --print
+```
+
+The ladder walks all three rungs. The primary fails to authenticate, the
+in-harness rung is skipped by design (nothing can exec it), and the `agy` rung —
+the one genuinely exec-able fallback — fails too, because its invocation is wrong
+and that account's quota is exhausted (bead **`etude-8li`**). Only then is the
+seat recorded `failed` and the gate escalated.
+
+So **every gate escalates for a Claude Code supervisor today**, but not because
+the ladder is unwalked: because its last exec-able rung is dead. Fix `etude-8li`
+and the opus seat could be filled by Antigravity, recorded under provider
+`anthropic/claude-opus` — at which point a supervisor MUST check which harness
+actually filled the seat rather than assuming it was the sub-agent. The gap that
+remains regardless is bead **`etude-4ed`** (consume an in-harness verdict), which
+is OPEN.
+
+**Rebuild `bin/etude` (`make build`) before you trust any of this.** A binary predating
+`17d0ab5` does not walk the ladder at all and fails the seat flat, with a bare
+adapter error and no `CANDIDATE_FAILED` markers. That is exactly what produced
+the escalations measured earlier in this epic, and it was not noticed until a
+seat checked the binary's build time against the commit.
+
+So: a supervisor that is itself a Claude Code session runs the opus seat
+out-of-band and records the completed panel via the bootstrap path below, writing
+down which seat could not be invoked and why. **That is the standing procedure
+today, not a temporary measure pending `etude-pqv`** — an earlier version of this
+paragraph said "until it lands", conditioned on a bead that has since closed, so
+the one instruction covering the manual append read as expired.
 
 The bounded exception for *disregarding* a seat — the conditions, the reroll
 bar, who authorizes it, and how it is recorded — is unchanged and lives in
@@ -361,6 +421,91 @@ candidates carry real content.
 
 It is cheaper than it sounds: the exhaustive pass over the adapter's selection
 primitives took one audit and closed a filed follow-up as a side effect.
+
+### Append the verdict BEFORE you act on it
+
+Every tier includes the `opus` seat, and `etude gate` cannot invoke it as a
+subprocess (see the seat exception above — that is the condition when a Claude
+Code session is the supervisor), so **every gate escalates and you must complete
+the panel by hand** through the bootstrap path. Measured on
+`refs/etude/runs/etude-3xt`: `etude gate` alone passed **0 of its 5** attempts.
+
+That manual step is where records go missing. Across `etude-9uf.3` and `.4`, seat
+verdicts were acted on and never appended — each caught only by a later seat
+reading the manifest, never by tooling. It is easiest to skip precisely when the
+verdict is interesting enough to act on immediately.
+
+**The record has a PARTIAL fingerprint for this.** A gap in a phase's round
+sequence — `verify.r1, r3, r4…` with no `r2` — is an attempt whose verdict was
+appended late under a different id, or never. There are exactly three such gaps
+in this epic that ARE missing verdicts: `etude-9uf.3` verify `r2` and docs `r2`,
+and `etude-9uf.4` verify `r2`. They are machine-detectable with a few lines of arithmetic over the
+manifest.
+
+**Partial in BOTH directions, which this epic's own record demonstrates.**
+
+- *False negatives:* a verdict never given a round id leaves no gap. The
+  arithmetic finds holes, not every missed verdict, so a clean check is not proof
+  the record is complete.
+- *False positives:* `etude-9uf.1`'s plan rounds run 1, 3, 4 — a hole by the same
+  rule, but no verdict is missing. `nextPhaseRound` takes its maximum over STAGE
+  names as well as gate rounds, so capturing a stage called `plan.r2` pushes the
+  next gate to `r3` and leaves a hole behind.
+
+  **Do not use "is there a stage of that name?" as the discriminator.** All four
+  holes in this epic have a same-named stage — `.1` `plan.r2`, `.3` `verify.r2`
+  and `docs.r2`, `.4` `verify.r2` — so that test dismisses the three real ones
+  too. The separator that actually works is whether some later attempt reviews an
+  OLD stage: `.3`'s `verify.r6`/`r7` and `docs.r4`, and `.4`'s `verify.r5`, were
+  all appended after their phase had advanced and each reviews a much earlier
+  revision. That is a late append. `.1` has no such attempt.
+
+A sharper false negative than either: `etude-9uf.1` has **no docs or review gate
+attempt at all**. A whole phase missing leaves no hole in any round sequence,
+because there is no sequence.
+
+Treat a hit as a question, not a verdict. Bead `etude-a1i` covers implementing
+the check properly, including telling those cases apart. Until it lands:
+
+```bash
+git show refs/etude/runs/<bead>:manifest.json | python3 -c '
+import json,sys,collections
+g=json.load(sys.stdin)["gates"]; d=collections.defaultdict(list)
+for a in g: ph,_,r=a["gate_id"].rpartition("."); d[ph].append(int(r[1:]))
+for ph,rs in d.items():
+    for n in range(1,max(rs)+1):
+        if n not in rs: print("hole:",ph+".r%d"%n)'
+```
+
+Two more things the bootstrap path does that `etude gate` does not, both measured
+on `etude-9uf.5` and both recorded on `etude-4ed`:
+
+- a hand-assembled panel **re-records** the seats `etude gate` already ran, and
+  the copies carry no `raw_output` and no `session` — so the duplicate is
+  evidence-free, and a run can show more codex verdicts than codex invocations;
+- the completed attempt **does not carry the deterministic check seats**, so on
+  that run the only `pass`-marked verify attempt contained zero check evidence.
+  Read the escalated attempt for that, not the passing one.
+
+### Do not edit an artifact after its gate passes
+
+Folding a seat's optionals into an already-gated artifact leaves the file on disk
+different from the bytes any seat reviewed. The run ref preserves the reviewed
+bytes, so the record stays honest — but a reader opening the worktree sees a
+document nobody gated, with no signal that it diverged.
+
+Measured on `refs/etude/runs/etude-3xt`: two of its five gated artifacts drifted
+(`plan` and `verify`). It then happened again on `etude-9uf.5`, where two of the
+three artifacts that had passed a gate no longer match what was gated. Either
+fold before the gate, or capture the revision under a rerun stage name and gate
+it again. Bead `etude-pq7` covers detecting the drift.
+
+You can check it yourself today — this is how `etude-pq7` was confirmed:
+
+```bash
+shasum -a 256 .etude/tmp/<bead>/<phase>.md
+git show refs/etude/runs/<bead>:manifest.json | grep -A8 '"stage": "<phase>"'
+```
 
 ### If a run ref is lost
 
