@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/joshuavial/etude/internal/ident"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,8 +38,8 @@ type Seat struct {
 	Harness string
 	// Invoke is the canonical non-interactive invocation string (required).
 	Invoke string
-	// Mode is the per-seat execution constraint (optional, e.g. "inline",
-	// "diff-only", "inline-no-tools").
+	// Mode is the per-seat execution constraint. It is optional; valid values
+	// are "inline", "diff-only", and "inline-no-tools".
 	Mode string
 	// ModelFallbacks is an ordered list of fallback model identifiers to try
 	// if the primary model is unavailable.
@@ -57,6 +58,7 @@ type SeatInvocation struct {
 	// Invoke is the canonical non-interactive invocation string (required).
 	Invoke string
 	// Mode overrides the seat execution constraint for this candidate when set.
+	// It accepts the same closed set as Seat.Mode.
 	Mode string
 }
 
@@ -118,12 +120,18 @@ func (r Registry) Validate() error {
 		if strings.TrimSpace(seat.Invoke) == "" {
 			return fmt.Errorf("%w: seat[%q].invoke required", ErrInvalidRegistry, key)
 		}
+		if err := validateSeatMode(fmt.Sprintf("seat[%q].mode", key), seat.Mode); err != nil {
+			return err
+		}
 		for i, fallback := range seat.InvocationFallbacks {
 			if strings.TrimSpace(fallback.Harness) == "" {
 				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].harness required", ErrInvalidRegistry, key, i)
 			}
 			if strings.TrimSpace(fallback.Invoke) == "" {
 				return fmt.Errorf("%w: seat[%q].invocation_fallbacks[%d].invoke required", ErrInvalidRegistry, key, i)
+			}
+			if err := validateSeatMode(fmt.Sprintf("seat[%q].invocation_fallbacks[%d].mode", key, i), fallback.Mode); err != nil {
+				return err
 			}
 		}
 	}
@@ -143,23 +151,25 @@ func (r Registry) Validate() error {
 	return nil
 }
 
+func validateSeatMode(field, mode string) error {
+	switch mode {
+	case "", "inline", "diff-only", "inline-no-tools":
+		return nil
+	default:
+		return fmt.Errorf("%w: %s must be one of inline, diff-only, inline-no-tools, got %q", ErrInvalidRegistry, field, mode)
+	}
+}
+
 // validateIdentKey checks that a map key matches the identifier charset
 // [A-Za-z0-9_.-], mirroring the workflow stage-name rule.
 func validateIdentKey(kind, key string) error {
 	if key == "" {
 		return fmt.Errorf("%w: %s key must not be empty", ErrInvalidRegistry, kind)
 	}
-	for _, r := range key {
-		if !isIdentChar(r) {
-			return fmt.Errorf("%w: invalid %s key %q (must match [A-Za-z0-9_.-])", ErrInvalidRegistry, kind, key)
-		}
+	if !ident.IsValid(key) {
+		return fmt.Errorf("%w: invalid %s key %q (must match [A-Za-z0-9_.-])", ErrInvalidRegistry, kind, key)
 	}
 	return nil
-}
-
-// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier charset.
-func isIdentChar(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
 }
 
 // YAML serializes the Registry to canonical YAML bytes.  Returns an error if

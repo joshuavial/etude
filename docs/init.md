@@ -193,9 +193,11 @@ Validation rules:
 - **`quorum`** — if set, must be `"unanimous"` or `"majority"`.  Omitting it
   is equivalent to `"unanimous"`.
 - **`seats`** — `provider`, `harness`, and `invoke` are required per seat.
-  `mode`, `model_fallbacks`, and `invocation_fallbacks` are optional. Each
+  `mode`, `model_fallbacks`, and `invocation_fallbacks` are optional. When set,
+  `mode` must match exactly `inline`, `diff-only`, or `inline-no-tools`. Each
   invocation fallback requires its own `harness` and `invoke`; `mode` is
-  optional. Seat and tier map keys must match `[A-Za-z0-9_.-]`.
+  optional and uses the same closed set. Seat and tier map keys must match
+  `[A-Za-z0-9_.-]`.
 - **`tiers`** — `seats` is required and must be non-empty.  Every seat key in
   a tier must reference a seat defined in the same file (intra-file check; no
   cross-file resolution at schema time).  `name` and `use` are optional prose.

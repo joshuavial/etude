@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/joshuavial/etude/internal/ident"
 	"gopkg.in/yaml.v3"
 )
 
@@ -430,10 +431,8 @@ func validateRunner(prefix string, r *Runner) error {
 		return fmt.Errorf("%w: %s: only one of name or command may be set", ErrInvalidWorkflow, prefix)
 	}
 	if r.Name != "" {
-		for _, ch := range r.Name {
-			if !isIdentChar(ch) {
-				return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
-			}
+		if !ident.IsValid(r.Name) {
+			return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
 		}
 	}
 	return nil
@@ -545,15 +544,12 @@ func isValidEnvNameWorkflow(name string) bool {
 
 // validateStageName applies the manifest identifier charset to stage names:
 // [A-Za-z0-9_.-] — the same set runmanifest.IsValidIdentifier enforces. The
-// rule is kept as a local per-rune predicate (isIdentChar) rather than calling
-// that exported helper: it is a whole-string check, and adding a sibling
-// workflow->runmanifest import to dedupe one trivial fixed charset is not worth
-// the coupling.
+// rule is shared with registry and runmanifest through internal/ident. Callers
+// must reject blank values first so they can preserve their field-specific
+// required-value error.
 func validateStageName(field, value string) error {
-	for _, r := range value {
-		if !isIdentChar(r) {
-			return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
-		}
+	if !ident.IsValid(value) {
+		return fmt.Errorf("%w: invalid %s %q", ErrInvalidWorkflow, field, value)
 	}
 	return nil
 }
@@ -576,23 +572,20 @@ func validateRoleToken(field, value string) error {
 	return nil
 }
 
-// isIdentChar returns true for [A-Za-z0-9_.-], the manifest identifier charset.
-// Kept local (see validateStageName) rather than reusing runmanifest's exported
-// whole-string IsValidIdentifier, to avoid a sibling-package import for one rule.
-func isIdentChar(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
-}
-
 // YAML serializes the Workflow to canonical YAML bytes.  Returns an error if
 // the workflow fails Validate.
 func (w Workflow) YAML() ([]byte, error) {
 	if err := w.Validate(); err != nil {
 		return nil, err
 	}
+	doc, err := w.toYAML()
+	if err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(w.toYAML()); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return nil, err
 	}
 	if err := enc.Close(); err != nil {
@@ -776,7 +769,7 @@ type nudgeYAML struct {
 	Threshold *int  `yaml:"threshold,omitempty"`
 }
 
-func (w Workflow) toYAML() workflowYAML {
+func (w Workflow) toYAML() (workflowYAML, error) {
 	stages := make([]stageYAML, 0, len(w.Stages))
 	for _, s := range w.Stages {
 		sy := stageYAML{
@@ -792,9 +785,10 @@ func (w Workflow) toYAML() workflowYAML {
 		if s.Runner != nil {
 			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
 			var n yaml.Node
-			if err := n.Encode(rn); err == nil {
-				sy.Runner = n
+			if err := n.Encode(rn); err != nil {
+				return workflowYAML{}, fmt.Errorf("encode stage[%q].runner: %w", s.Name, err)
 			}
+			sy.Runner = n
 		}
 		if s.Gate != nil {
 			gy := gateYAML{
@@ -808,9 +802,10 @@ func (w Workflow) toYAML() workflowYAML {
 				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
 			}
 			var n yaml.Node
-			if err := n.Encode(gy); err == nil {
-				sy.Gate = n
+			if err := n.Encode(gy); err != nil {
+				return workflowYAML{}, fmt.Errorf("encode stage[%q].gate: %w", s.Name, err)
 			}
+			sy.Gate = n
 		}
 		stages = append(stages, sy)
 	}
@@ -818,9 +813,10 @@ func (w Workflow) toYAML() workflowYAML {
 	if w.DefaultRunner != nil {
 		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
 		var n yaml.Node
-		if err := n.Encode(dr); err == nil {
-			out.DefaultRunner = n
+		if err := n.Encode(dr); err != nil {
+			return workflowYAML{}, fmt.Errorf("encode default_runner: %w", err)
 		}
+		out.DefaultRunner = n
 	}
 	if w.Retros != nil {
 		ry := &retrosYAML{
@@ -848,11 +844,12 @@ func (w Workflow) toYAML() workflowYAML {
 		// mapping node (Kind==MappingNode) — no document wrapper is added, so
 		// the result can be assigned to out.Retros directly.
 		var retrosNode yaml.Node
-		if err := retrosNode.Encode(ry); err == nil {
-			out.Retros = retrosNode
+		if err := retrosNode.Encode(ry); err != nil {
+			return workflowYAML{}, fmt.Errorf("encode retros: %w", err)
 		}
+		out.Retros = retrosNode
 	}
-	return out
+	return out, nil
 }
 
 // decodeRetrosNode converts a yaml.Node captured for the retros: key into a

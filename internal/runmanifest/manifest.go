@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/joshuavial/etude/internal/artifactstore"
+	"github.com/joshuavial/etude/internal/ident"
 	"github.com/joshuavial/etude/internal/refstore"
 )
 
@@ -815,15 +816,7 @@ func isValidEnvName(name string) bool {
 // IsValidIdentifier reports whether value is a non-empty string using only
 // the [A-Za-z0-9_.-] character set.
 func IsValidIdentifier(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
-			return false
-		}
-	}
-	return true
+	return ident.IsValid(value)
 }
 
 // IsValidRunID reports whether value is a valid run identifier: it must

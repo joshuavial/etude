@@ -266,6 +266,21 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 	}
 }
 
+func TestValidateEmptyStageNameKeepsRequiredError(t *testing.T) {
+	w := minimalWorkflow()
+	w.Stages[0].Name = ""
+	err := w.Validate()
+	if err == nil {
+		t.Fatal("Validate returned nil error")
+	}
+	if !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
+	}
+	if got, want := err.Error(), "invalid workflow: stage[0] name required"; got != want {
+		t.Fatalf("Validate error = %q, want %q", got, want)
+	}
+}
+
 // TestValidateRejectsReservedProducesRole is a focused test that checks the
 // "reserved" guard specifically — the table harness only asserts err != nil
 // + errors.Is(ErrInvalidWorkflow); this test also asserts the error message
@@ -1314,7 +1329,6 @@ stages:
 	if g.Abstraction != "review at design altitude" {
 		t.Fatalf("Abstraction = %q", g.Abstraction)
 	}
-	_ = threshold
 }
 
 // TestGateParseTier parses a gate with a tier ref.
