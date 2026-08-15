@@ -435,6 +435,12 @@ verdicts were acted on and never appended — each caught only by a later seat
 reading the manifest, never by tooling. It is easiest to skip precisely when the
 verdict is interesting enough to act on immediately.
 
+**Append the previous round's verdict BEFORE capturing the next revision.** Not
+merely before acting on it — before the next capture. Otherwise the new
+artifact's own account of the record excludes a verdict you already hold, and
+every count in it is stale the moment it is frozen. This was the last
+act-then-append instance found on `etude-9uf.5`, by 35 seconds.
+
 **The record has a PARTIAL fingerprint for this.** A gap in a phase's round
 sequence — `verify.r1, r3, r4…` with no `r2` — is an attempt whose verdict was
 appended late under a different id, or never. There are exactly three such gaps

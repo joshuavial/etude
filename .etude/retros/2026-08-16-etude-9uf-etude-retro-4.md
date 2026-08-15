@@ -55,7 +55,15 @@ cannot be audited for this at all.
 
 ## Six unrecorded verdicts, and the three lines that would have caught them
 
-Across `.3` and `.4`, six real seat verdicts were acted on and never appended.
+Across `.3` and `.4`, real seat verdicts were acted on and never appended.
+
+**On the number.** Retro 3 counted five for `.3` alone; the round-hole detector
+below finds three holes across `.3` and `.4`. Those measure different things: the
+five are verdicts appended LATE under other gate ids — all present in the
+manifest, just not where their round says — while the three are holes in a round
+sequence. Neither is "six", which an earlier version of this retro asserted and
+which `etude-9uf.5`'s final review retracted. The landed runbook and `etude-a1i`
+both say three holes.
 I wrote retro 3 about this after `.3` and then reproduced it twice in `.4`.
 
 The cause is structural: the verdict arrives in-harness, appending it is a
