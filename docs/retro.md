@@ -40,7 +40,54 @@ Useful flags:
 ```
 
 The retro id is auto-assigned from the scope, primary subject, and timestamp.
-Prints `captured <commit-sha>` and `ref refs/etude/retros/<id>` on success.
+On success the command prints three lines:
+
+```
+captured <commit-sha>
+ref refs/etude/retros/<retro-id>
+retro markdown .etude/retros/<retro-id>.md
+```
+
+### The landed markdown
+
+Capture writes the retro body to `<repo-root>/.etude/retros/` as well as into the
+ref, and records where it put it in the manifest as `refs.retro_file`. The point
+is that the committed markdown and the ref come out of **one** command: a retro
+that exists as prose in the repo but not as a ref, or the reverse, is a
+divergence nobody is told about.
+
+Two cases:
+
+- **`--file` outside `.etude/retros/` (or `--file -`)** — the body is written to
+  `.etude/retros/<retro-id>.md`, so the file name is the ref name.
+- **`--file` already inside `.etude/retros/`** — the markdown has already landed.
+  Nothing is written and that file is recorded, so capturing a retro you wrote by
+  hand does not leave two copies of the same prose under two names. The recorded
+  value is normalised: repo-relative, with forward slashes, whatever form
+  `--file` took (an absolute path is recorded as
+  `.etude/retros/<name>.md`, not verbatim).
+
+The second case means **`retro_file` is not always `<retro-id>.md`**. A consumer
+that needs the correspondence must read `refs.retro_file` out of each manifest;
+deriving the filename from the ref id reports a false gap on every in-place
+capture. `retro show` prints the key under `metadata:`.
+
+Three things worth knowing:
+
+- **The file is written, not staged.** `etude` never runs `git add` for you. The
+  path is on stdout precisely so you can stage and commit it; until you do,
+  `retro_file` names a working-tree path that is not in history.
+- **The write is create-only.** An existing file at the target path is an error,
+  never an overwrite — a freshly-allocated id cannot normally collide, so a
+  collision means a markdown outlived its ref and clobbering it would destroy the
+  only copy.
+- **A file-write failure exits non-zero *after* the ref has been written.** The
+  error names both artifacts (`retro ref refs/etude/retros/<id> was written, but
+  landing its markdown at .etude/retros/<id>.md failed: …`) so it is clear the
+  ref exists and only the markdown is missing. The ordering is deliberate: the
+  file is written only after the ref commit succeeds, so a failed ref write never
+  leaves a stray file. A scripted caller that treats a non-zero exit as "nothing
+  happened" needs to account for this one case.
 
 ### Original event time
 
@@ -262,17 +309,23 @@ available stage names.
 
 ### Provenance
 
-Generated retros record two extra metadata keys visible in `retro show`:
+Generated retros record two extra metadata keys visible in `retro show`, above
+the `retro_file` that every retro records:
 
 ```
 metadata:
   generator: ./scripts/retro.sh
   produced_via: generate
+  retro_file: .etude/retros/<retro-id>.md
 ```
 
 `produced_via=generate` distinguishes generated retros from captured retros
 (`retro capture` does not set either key). `generator` records the spec that
-was used.
+was used. `retro_file` is set by both commands.
+
+All three are derived by etude, so `--ref produced_via=…`, `--ref generator=…`
+and `--ref retro_file=…` are rejected (`--ref key "<k>" is reserved; etude sets
+it`).
 
 ### Output
 
@@ -281,10 +334,14 @@ On success the command prints:
 ```
 generated <commit-sha>
 ref refs/etude/retros/<retro-id>
+retro markdown .etude/retros/<retro-id>.md
 ```
 
 Generated retros are stored under the same `refs/etude/retros/*` namespace as
-captured retros, so `retro list` and `retro show` treat them uniformly.
+captured retros, so `retro list` and `retro show` treat them uniformly, and the
+generated body lands under `.etude/retros/` exactly as a captured one does (see
+[The landed markdown](#the-landed-markdown)). A generated body has no source
+path, so it always lands under the allocated retro id.
 
 ### `--trigger` flag
 

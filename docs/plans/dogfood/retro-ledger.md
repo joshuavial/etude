@@ -422,6 +422,19 @@ artifact under `refs/etude/retros/*` (dogfooding the retro feature + linking the
 retro to its runs), pushed to origin. Retro outputs go ONLY to skills, formulas,
 repo docs, or `etude` retro artifacts — **never to memory.**
 
+**Run capture, don't hand-write the markdown (bead `etude-3xt`).** A worker lane
+also commits its retro as markdown under `.etude/retros/`. That file is now an
+OUTPUT of the capture above: capture writes `.etude/retros/<retro-id>.md` and
+records it in the manifest as `refs.retro_file`, and prints the path to stage.
+So the sequence is: draft the body, run `etude retro capture`, `git add` the path
+it printed, commit, push the branch and the refs. Writing the markdown by hand
+and skipping capture produces the failure this bead was filed for — three retro
+files on epic `etude-9uf`, two refs, and a cadence check counting the refs. If
+you already wrote the file into `.etude/retros/`, pass that path to `--file`:
+capture records it where it is instead of copying it under a second name.
+Nothing yet *detects* a hand-written retro with no ref — that is bead
+`etude-24d`.
+
 **Cadence retro-meta sidecar (required, etude-8hq.3).** From 2026-05-27 onward,
 every `etude retro capture cohort ... --trigger cadence-retro` is expected to
 include `--meta-file <json>` carrying the 7-key convention (see

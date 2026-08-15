@@ -424,4 +424,11 @@ A BLOCK is information. The response is to fix the work.
    lost when the worktree is removed, which is one of the two conditions the
    completeness check still enforces, and the pre-push hook blocks code pushes on
    exactly that gap.
-6. A retro every three closed beads, committed under `.etude/retros/`.
+6. A retro every three closed beads. Write the body, then run
+   `etude retro capture cohort --file <body> --subject-run <the closed bead-runs>
+   --trigger cadence-retro --meta-file <json>`: that writes the ref AND lands the
+   markdown under `.etude/retros/`, printing the path to stage. Commit that path
+   and push the ref with `etude sync`. Do not hand-write the markdown and skip
+   the capture — that produces a retro the ref namespace cannot see, which is
+   what bead `etude-3xt` was filed for. See `docs/retro.md` §"The landed
+   markdown" and `retro-ledger.md` §"Retro cadence".

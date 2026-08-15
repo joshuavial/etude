@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +25,12 @@ import (
 )
 
 const retrosPrefix = "refs/etude/retros/"
+
+// retrosDirRel is the repo-relative directory a retro body lands in. Lanes
+// commit retro markdown here by hand; capture and generate write it there too,
+// so the ref and the markdown are produced by one command instead of two
+// separately-remembered ones (bead etude-3xt).
+const retrosDirRel = ".etude/retros"
 
 // validRetroScopes is the closed set of allowed scope values.
 var validRetroScopes = map[string]bool{
@@ -111,6 +119,11 @@ type retroWriteParams struct {
 	// retro-meta stage in the manifest (role:retro-meta, application/json).
 	// When nil/empty the manifest has exactly one stage (backward compatible).
 	metaContent []byte
+	// sourceFile is the path the body was read from, when it came from a file.
+	// Empty for stdin and for a generated body. When it already points inside
+	// .etude/retros/ the markdown has landed and is recorded where it is; every
+	// other case lands a copy under the allocated retro id.
+	sourceFile string
 }
 
 func newRetroCommand(out, errOut io.Writer) *cobra.Command {
@@ -517,11 +530,14 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 		return err
 	}
 
-	// Read the retro body.
+	// Read the retro body. A body read from a file may already be the landed
+	// markdown; one read from stdin has no path and is always landed anew.
 	var bodyContent []byte
+	var sourceFile string
 	if cfg.file == "-" {
 		bodyContent, err = io.ReadAll(os.Stdin)
 	} else {
+		sourceFile = cfg.file
 		bodyContent, err = os.ReadFile(cfg.file)
 	}
 	if err != nil {
@@ -573,15 +589,16 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 		producedVia:    "",
 		generatorSpec:  "",
 		metaContent:    metaContent,
+		sourceFile:     sourceFile,
 	}
 
-	commit, retroID, err := assembleAndWriteRetro(ctx, r.store, r.now, bodyContent, p)
+	commit, retroID, retroFile, err := assembleAndWriteRetro(ctx, r.store, r.now, bodyContent, p)
 	if err != nil {
 		return err
 	}
 
 	ref := "refs/etude/retros/" + retroID
-	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\n", commit, ref)
+	_, err = fmt.Fprintf(r.stdout, "captured %s\nref %s\nretro markdown %s\n", commit, ref, retroFile)
 	return err
 }
 
@@ -591,11 +608,19 @@ func (r retroCaptureRunner) run(ctx context.Context, scope string, cfg retroCapt
 func checkReservedRefs(extraRefs map[string]string) error {
 	reservedExactKeys := map[string]bool{
 		"scope": true, "trigger": true, "decision": true, "supersedes": true,
-		"produced_via": true, "generator": true,
+		"produced_via": true, "generator": true, "retro_file": true,
+	}
+	// Keys etude derives itself. They have no flag to point the caller at, so
+	// naming one would be a wrong instruction rather than a helpful one.
+	derivedKeys := map[string]bool{
+		"produced_via": true, "generator": true, "retro_file": true,
 	}
 	reservedPrefixes := []string{"subject_run.", "bead.", "gate.", "bench.", "eval."}
 
 	for k := range extraRefs {
+		if derivedKeys[k] {
+			return fmt.Errorf("--ref key %q is reserved; etude sets it", k)
+		}
 		if reservedExactKeys[k] {
 			return fmt.Errorf("--ref key %q is reserved; use the dedicated flag", k)
 		}
@@ -609,23 +634,37 @@ func checkReservedRefs(extraRefs map[string]string) error {
 }
 
 // assembleAndWriteRetro builds the retro artifact store, manifest, and writes
-// the retro ref. It is shared between retro capture and retro generate.
-// Returns the commit OID and the allocated retro ID.
+// the retro ref, then lands the retro body as markdown under .etude/retros/. It
+// is shared between retro capture and retro generate. Returns the commit OID,
+// the allocated retro ID, and the repo-relative path of the landed markdown.
 //
 // NOTE: extraRefs in params must already have reserved keys stripped (the
 // caller's validation layer is responsible for that check).
+//
+// NOTE: the markdown lands in the repo containing the current directory, while
+// the ref goes to store. Both production callers pass refstore.New(""), which is
+// also the current directory, so the two agree. A caller that passes a store for
+// some OTHER repo would split them — land the markdown here and the ref there.
+// Give this function a store for the repo you are standing in.
 func assembleAndWriteRetro(
 	ctx context.Context,
 	store refstore.Store,
 	nowFn func() time.Time,
 	bodyContent []byte,
 	p retroWriteParams,
-) (commit, retroID string, err error) {
+) (commit, retroID, retroFile string, err error) {
+	// Resolve the repo root BEFORE anything is written, so a repo we cannot
+	// locate fails with no ref left behind.
+	root, err := repoRoot(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+
 	// Build artifact store with the body.
 	artifactStoreInst := artifactstore.New()
 	bodyArtifact, err := artifactStoreInst.AddContent("retro", "text/markdown; charset=utf-8", bodyContent)
 	if err != nil {
-		return "", "", fmt.Errorf("add retro body artifact: %w", err)
+		return "", "", "", fmt.Errorf("add retro body artifact: %w", err)
 	}
 	bodyRef := runmanifest.ArtifactFromManifestArtifact(bodyArtifact)
 
@@ -634,7 +673,7 @@ func assembleAndWriteRetro(
 	if len(p.metaContent) > 0 {
 		metaArtifact, metaErr := artifactStoreInst.AddContent("retro-meta", "application/json", p.metaContent)
 		if metaErr != nil {
-			return "", "", fmt.Errorf("add retro-meta artifact: %w", metaErr)
+			return "", "", "", fmt.Errorf("add retro-meta artifact: %w", metaErr)
 		}
 		metaRef = runmanifest.ArtifactFromManifestArtifact(metaArtifact)
 	}
@@ -694,8 +733,16 @@ func assembleAndWriteRetro(
 
 	retroID, err = retro.AllocateRetroId(ctx, store, idBase)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
+
+	// Decide where the markdown lives before the manifest is built: retro_file
+	// is part of the manifest that gets committed.
+	retroFile, landPath, err := retroMarkdownTarget(root, p.sourceFile, retroID)
+	if err != nil {
+		return "", "", "", err
+	}
+	refsMap["retro_file"] = retroFile
 
 	skill := runmanifest.Skill{
 		ID:      p.skillID,
@@ -746,7 +793,7 @@ func assembleAndWriteRetro(
 	if strings.TrimSpace(p.occurredAt) != "" {
 		parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.occurredAt))
 		if parseErr != nil {
-			return "", "", fmt.Errorf("--occurred-at %q is not a valid RFC3339 timestamp: %w", p.occurredAt, parseErr)
+			return "", "", "", fmt.Errorf("--occurred-at %q is not a valid RFC3339 timestamp: %w", p.occurredAt, parseErr)
 		}
 		occurredAtTime = parsed.UTC()
 	}
@@ -768,9 +815,92 @@ func assembleAndWriteRetro(
 
 	commit, err = (retro.Writer{Store: store}).Write(ctx, manifest, files, retro.WriteOptions{Message: msg})
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return commit, retroID, nil
+
+	// Land the markdown only after the ref exists, so a failed ref write leaves
+	// no stray file. The reverse failure — ref written, file not — cannot be
+	// silent: it names both artifacts, because a retro whose ref claims a file
+	// that is not there is exactly the divergence this landing rule removes.
+	if landPath != "" {
+		if landErr := writeNewFile(landPath, bodyContent); landErr != nil {
+			return "", "", "", fmt.Errorf(
+				"retro ref %s%s was written, but landing its markdown at %s failed: %w",
+				retrosPrefix, retroID, retroFile, landErr)
+		}
+	}
+	return commit, retroID, retroFile, nil
+}
+
+// retroMarkdownTarget decides where a retro body lives on disk, given the
+// resolved repo root and the path the body was read from (empty for stdin or a
+// generated body). It returns the repo-relative path to record as retro_file
+// and the absolute path to write, which is empty when there is nothing to write.
+//
+// A sourceFile already inside .etude/retros/ has landed: it is recorded where it
+// is rather than copied, so capturing a retro a lane wrote by hand does not leave
+// two copies of the same prose under two names. Note this is the one case where
+// retro_file does not equal "<retro-id>.md" — a consumer must read retro_file
+// from the manifest rather than derive the filename from the ref name.
+func retroMarkdownTarget(root, sourceFile, retroID string) (retroFile, landPath string, err error) {
+	retrosDir := filepath.Join(root, retrosDirRel)
+	if sourceFile != "" {
+		abs, absErr := filepath.Abs(sourceFile)
+		if absErr != nil {
+			return "", "", fmt.Errorf("resolve retro file path: %w", absErr)
+		}
+		// Resolve symlinks on both sides before comparing. A temp dir is a
+		// symlink on macOS, so an unresolved comparison reports "outside" for a
+		// file that is plainly inside.
+		abs = evalSymlinksBestEffort(abs)
+		rel, relErr := filepath.Rel(evalSymlinksBestEffort(retrosDir), abs)
+		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			fromRoot, rootErr := filepath.Rel(evalSymlinksBestEffort(root), abs)
+			if rootErr != nil {
+				return "", "", fmt.Errorf("resolve retro file path: %w", rootErr)
+			}
+			return filepath.ToSlash(fromRoot), "", nil
+		}
+	}
+	name := retroID + ".md"
+	return path.Join(retrosDirRel, name), filepath.Join(retrosDir, name), nil
+}
+
+// evalSymlinksBestEffort resolves symlinks when it can and returns the input
+// unchanged when it cannot (a path that does not exist yet, for instance).
+func evalSymlinksBestEffort(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
+}
+
+// writeNewFile creates path with content, creating parent directories. It is
+// create-only: an existing file is an error, never an overwrite. A retro id is
+// freshly allocated, so a collision means a file outlived its ref (deleted ref,
+// surviving markdown) and clobbering it would destroy the only copy.
+//
+// A failure after the file is created removes it. Leaving a truncated file
+// behind would combine with the create-only rule to wedge that path forever: a
+// retry could not overwrite the partial, and the partial is not a retro.
+func writeNewFile(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -979,13 +1109,13 @@ func (r *retroGenerateRunner) run(ctx context.Context, scope string, cfg retroGe
 		metaContent:    genResult.Meta,
 	}
 
-	commit, retroID, err := assembleAndWriteRetro(ctx, r.store, r.now, genResult.Body, p)
+	commit, retroID, retroFile, err := assembleAndWriteRetro(ctx, r.store, r.now, genResult.Body, p)
 	if err != nil {
 		return err
 	}
 
 	ref := "refs/etude/retros/" + retroID
-	_, err = fmt.Fprintf(r.stdout, "generated %s\nref %s\n", commit, ref)
+	_, err = fmt.Fprintf(r.stdout, "generated %s\nref %s\nretro markdown %s\n", commit, ref, retroFile)
 	return err
 }
 

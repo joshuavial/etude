@@ -11,6 +11,13 @@ Retros are optional, triggered artifacts. They explain what happened in a run,
 phase, gate sequence, or workflow, but they do not replace the gate result,
 test result, or bead status that established what passed or failed.
 
+**Capture also lands the markdown (bead `etude-3xt`).** `etude retro capture`
+writes the body to `.etude/retros/<retro-id>.md`, records it as
+`refs.retro_file`, and prints the path — so the committed markdown and the ref
+come from one command instead of two remembered ones. A body already inside
+`.etude/retros/` is recorded where it is rather than copied. The file is not
+staged for you. See `docs/retro.md` §"The landed markdown".
+
 **Cadence retros should carry a `--meta-file` sidecar** (etude-8hq.3): from
 2026-05-27 onward every `--trigger cadence-retro` capture is expected to include
 `--meta-file` with the 7-key convention. This was enforced by the completeness

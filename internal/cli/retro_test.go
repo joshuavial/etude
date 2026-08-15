@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +161,11 @@ func TestRetroCaptureStdinFile(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "ref refs/etude/retros/") {
 		t.Fatalf("stdout missing retros ref: %q", stdout)
+	}
+	// A stdin body has no source path, so it always lands anew.
+	retroID := retroIDFromOutput(t, stdout)
+	if _, statErr := os.Stat(filepath.Join(repo, ".etude", "retros", retroID+".md")); statErr != nil {
+		t.Fatalf("stdin retro body not landed under .etude/retros: %v", statErr)
 	}
 }
 
@@ -1940,5 +1948,220 @@ func TestRetroGenerateOccurredAtSetsField(t *testing.T) {
 	want, _ := time.Parse(time.RFC3339, eventTime)
 	if !manifest.OccurredAt.Equal(want.UTC()) {
 		t.Fatalf("manifest.OccurredAt = %v, want %v", manifest.OccurredAt, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Landed retro markdown (bead etude-3xt)
+//
+// Capture and generate land the retro body under .etude/retros/ and record the
+// path as refs["retro_file"], so the committed markdown a lane lands on
+// origin/main is an output of the command that writes the ref rather than a
+// separately-remembered second step.
+// ---------------------------------------------------------------------------
+
+// retroIDFromOutput extracts the retro id from a capture/generate stdout block.
+func retroIDFromOutput(t *testing.T, stdout string) string {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if strings.HasPrefix(line, "ref refs/etude/retros/") {
+			return strings.TrimPrefix(line, "ref refs/etude/retros/")
+		}
+	}
+	t.Fatalf("could not extract retro id from output: %q", stdout)
+	return ""
+}
+
+// retroMarkdownFiles lists the .md files under <repo>/.etude/retros.
+func retroMarkdownFiles(t *testing.T, repo string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repo, ".etude", "retros"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read .etude/retros: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestRetroCaptureLandsMarkdownUnderEtudeRetros pins the core rule: a body read
+// from outside .etude/retros lands there under the allocated retro id, byte for
+// byte, and the manifest records where it went.
+func TestRetroCaptureLandsMarkdownUnderEtudeRetros(t *testing.T) {
+	repo := initCaptureRepo(t)
+	body := "# Retro\nWhat happened.\n"
+	writeFile(t, repo, "retro.md", body)
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--trigger", "cadence-retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := retroIDFromOutput(t, stdout)
+
+	wantRel := ".etude/retros/" + retroID + ".md"
+	if !strings.Contains(stdout, "retro markdown "+wantRel+"\n") {
+		t.Fatalf("stdout does not report the landed markdown path %q: %q", wantRel, stdout)
+	}
+
+	landed, err := os.ReadFile(filepath.Join(repo, ".etude", "retros", retroID+".md"))
+	if err != nil {
+		t.Fatalf("landed retro markdown not written: %v", err)
+	}
+	if string(landed) != body {
+		t.Fatalf("landed markdown = %q, want %q", string(landed), body)
+	}
+
+	manifest := readRetroManifest(t, repo, retroID)
+	if got := manifest.Refs["retro_file"]; got != wantRel {
+		t.Fatalf("manifest refs[retro_file] = %q, want %q", got, wantRel)
+	}
+}
+
+// TestRetroCaptureInPlaceDoesNotDuplicate pins the other direction: a body that
+// is already the landed markdown is recorded where it is, not copied under a
+// second name. This is the one case where retro_file is not "<retro-id>.md", so
+// a consumer must read the manifest rather than derive the name from the ref.
+func TestRetroCaptureInPlaceDoesNotDuplicate(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, ".etude/retros/2026-08-15-etude-9uf-etude-retro-3.md", "# Landed retro\n")
+	chdir(t, repo)
+
+	stdout, stderr, err := execute("retro", "capture", "cohort",
+		"--file", ".etude/retros/2026-08-15-etude-9uf-etude-retro-3.md",
+		"--subject-run", "r1",
+		"--trigger", "cadence-retro",
+	)
+	if err != nil {
+		t.Fatalf("retro capture returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := retroIDFromOutput(t, stdout)
+
+	wantRel := ".etude/retros/2026-08-15-etude-9uf-etude-retro-3.md"
+	manifest := readRetroManifest(t, repo, retroID)
+	if got := manifest.Refs["retro_file"]; got != wantRel {
+		t.Fatalf("manifest refs[retro_file] = %q, want %q", got, wantRel)
+	}
+	if got := retroMarkdownFiles(t, repo); len(got) != 1 || got[0] != "2026-08-15-etude-9uf-etude-retro-3.md" {
+		t.Fatalf(".etude/retros holds %v, want only the file that was already there", got)
+	}
+}
+
+// TestRetroCaptureRejectsReservedRetroFileRef verifies retro_file cannot be
+// forged or overridden through --ref.
+func TestRetroCaptureRejectsReservedRetroFileRef(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "retro.md", "# Retro\n")
+	chdir(t, repo)
+
+	_, _, err := execute("retro", "capture", "run",
+		"--file", "retro.md",
+		"--subject-run", "r1",
+		"--ref", "retro_file=elsewhere.md",
+	)
+	if err == nil {
+		t.Fatal("expected --ref retro_file to be rejected as reserved")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("error = %v, want a reserved-key error", err)
+	}
+}
+
+// TestRetroLandingIsCreateOnly verifies the landing write never clobbers. A
+// freshly-allocated id normally cannot collide, so a collision means a markdown
+// outlived its ref — and overwriting it would destroy the only copy. The error
+// must name both the ref that now exists and the file that does not.
+func TestRetroLandingIsCreateOnly(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+
+	now := time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
+	retroID := retro.RetroIDBase("cohort", "r1", now)
+	existing := "# Not to be clobbered\n"
+	writeFile(t, repo, ".etude/retros/"+retroID+".md", existing)
+
+	_, _, _, err := assembleAndWriteRetro(
+		context.Background(),
+		refstore.New(repo),
+		func() time.Time { return now },
+		[]byte("# New body\n"),
+		retroWriteParams{
+			scope:        "cohort",
+			subjectRuns:  []string{"r1"},
+			trigger:      "cadence-retro",
+			gitSHA:       headSHA(t, repo),
+			skillID:      "retro",
+			skillRepo:    defaultSkillRepo,
+			skillVersion: defaultSkillVersion,
+		},
+	)
+	if err == nil {
+		t.Fatal("expected landing to fail rather than clobber an existing markdown file")
+	}
+	if !strings.Contains(err.Error(), retrosPrefix+retroID) ||
+		!strings.Contains(err.Error(), ".etude/retros/"+retroID+".md") {
+		t.Fatalf("error %v does not name both the written ref and the unlanded file", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(repo, ".etude", "retros", retroID+".md"))
+	if readErr != nil {
+		t.Fatalf("read existing markdown: %v", readErr)
+	}
+	if string(got) != existing {
+		t.Fatalf("existing markdown was overwritten: %q", string(got))
+	}
+}
+
+// headSHA returns the full HEAD sha of repo, for tests that call
+// assembleAndWriteRetro directly and must supply a resolved git sha.
+func headSHA(t *testing.T, repo string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestRetroGenerateLandsMarkdownUnderEtudeRetros verifies the generated body
+// lands too — capture and generate share one write path, and a generated retro
+// that exists only as a ref is the same divergence.
+func TestRetroGenerateLandsMarkdownUnderEtudeRetros(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	seedRunForGenerate(t, repo, "gen-run-1")
+
+	body := "# Generated retro\n"
+	stub := &retro.StubGenerator{CannedBody: []byte(body)}
+	stdout, stderr, err := executeRetroGenerate(stub, "run", "--subject-run", "gen-run-1")
+	if err != nil {
+		t.Fatalf("retro generate returned error: %v\nstderr: %s", err, stderr)
+	}
+	retroID := retroIDFromOutput(t, stdout)
+
+	if want := "retro markdown .etude/retros/" + retroID + ".md\n"; !strings.Contains(stdout, want) {
+		t.Fatalf("stdout does not report the landed markdown path %q: %q", want, stdout)
+	}
+
+	landed, err := os.ReadFile(filepath.Join(repo, ".etude", "retros", retroID+".md"))
+	if err != nil {
+		t.Fatalf("generated retro markdown not landed: %v", err)
+	}
+	if string(landed) != body {
+		t.Fatalf("landed markdown = %q, want %q", string(landed), body)
+	}
+	if got := readRetroManifest(t, repo, retroID).Refs["retro_file"]; got != ".etude/retros/"+retroID+".md" {
+		t.Fatalf("manifest refs[retro_file] = %q", got)
 	}
 }
