@@ -168,7 +168,29 @@ echo "==> captured run: $RUN_ID"
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Step 2: etude run show $RUN_ID"
-"$ETUDE" run show "$RUN_ID"
+SHOW_OUT="$("$ETUDE" run show "$RUN_ID")"
+echo "$SHOW_OUT"
+
+# Read the original stage artifacts back from the captured run ref. Forward
+# replay prints each stage output sequentially, so their concatenation is the
+# exact byte-for-byte expected replay stream.
+EXPECTED_REPLAY="$WORK/expected-replay.out"
+: > "$EXPECTED_REPLAY"
+printf '%s\n' "$SHOW_OUT" | awk '/^  output: / { for (i = 1; i <= NF; i++) if ($i ~ /^path=/) { sub(/^path=/, "", $i); print $i } }' |
+while IFS= read -r artifact_path; do
+    git -C "$WORK" show "refs/etude/runs/$RUN_ID:$artifact_path" >> "$EXPECTED_REPLAY"
+done
+TONED_PATH="$(printf '%s\n' "$SHOW_OUT" | awk '
+    /^stage: / { stage = $2 }
+    stage == "tone-police" && /^  output: / {
+        for (i = 1; i <= NF; i++) if ($i ~ /^path=/) {
+            sub(/^path=/, "", $i)
+            print $i
+            exit
+        }
+    }
+')"
+git -C "$WORK" show "refs/etude/runs/$RUN_ID:$TONED_PATH" > "$WORK/original-toned.out"
 
 # ---------------------------------------------------------------------------
 # Step 3: forward replay — re-execute all 5 stages with the same recorded
@@ -178,7 +200,12 @@ echo "==> Step 2: etude run show $RUN_ID"
 echo ""
 echo "==> Step 3: etude replay $RUN_ID (forward — all 5 stages)"
 echo "    replay output:"
-"$ETUDE" replay "$RUN_ID"
+"$ETUDE" replay "$RUN_ID" > "$WORK/replay.out"
+cat "$WORK/replay.out"
+cmp "$EXPECTED_REPLAY" "$WORK/replay.out"
+TONED_BYTES="$(wc -c < "$WORK/original-toned.out" | tr -d ' ')"
+tail -c "$TONED_BYTES" "$WORK/replay.out" | cmp "$WORK/original-toned.out" -
+echo "    replay bytes match the original stage artifacts (including toned)"
 
 # ---------------------------------------------------------------------------
 # Done.

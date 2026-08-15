@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,6 +82,9 @@ func TestResearchWalkthroughSmokeTest(t *testing.T) {
 	// The review gate must pass on round 1 (folded optional: catches silent RERUN regression).
 	assertContains(t, outStr, "captured gate review.r1 status=pass",
 		"live run must print gate pass line")
+	if strings.Contains(outStr, "review.r2") {
+		t.Error("live run must not advance the review gate beyond round 1")
+	}
 
 	// The run show output must include the gate pass status.
 	assertContains(t, outStr, "status:   pass", "run show must show gate status=pass")

@@ -1263,16 +1263,36 @@ func TestRunWorkflowResearch(t *testing.T) {
 		t.Errorf("registry-resolved approver seat not found in gate attempt; seats=%v", g.Seats)
 	}
 
-	// AC4: forward replay re-executes all 5 stages without error.
+	// AC4: forward replay re-executes all 5 stages byte-identically.
 	// etude replay <runID> (1-arg forward replay) uses .etude/workflow.yaml
 	// and .etude/registry.yaml to resolve runners for each stage name.
 	replayOut, replaySderr, replayErr := execute("replay", runID)
 	if replayErr != nil {
 		t.Fatalf("etude replay returned error: %v\nstderr: %s\nstdout: %s", replayErr, replaySderr, replayOut)
 	}
-	// Forward replay output is the concatenated output of all 5 stages.
-	if len(replayOut) == 0 {
-		t.Error("forward replay produced no output")
+	// Forward replay stdout is every stage output in manifest order. Compare it
+	// with the original content-addressed artifacts, including the final toned
+	// artifact, rather than merely checking that some bytes were produced.
+	store := refstore.New(repo)
+	runRef := "refs/etude/runs/" + runID
+	var wantReplay []byte
+	for _, stage := range m.Stages {
+		original, err := store.ReadFile(context.Background(), runRef, stage.Output.Path)
+		if err != nil {
+			t.Fatalf("read original %s artifact: %v", stage.Output.Role, err)
+		}
+		wantReplay = append(wantReplay, original...)
+	}
+	if !bytes.Equal([]byte(replayOut), wantReplay) {
+		t.Errorf("forward replay output differs from original stage artifacts")
+	}
+
+	toned, err := store.ReadFile(context.Background(), runRef, m.Stages[len(m.Stages)-1].Output.Path)
+	if err != nil {
+		t.Fatalf("read original toned artifact: %v", err)
+	}
+	if !bytes.HasSuffix([]byte(replayOut), toned) {
+		t.Errorf("forward-replayed toned output differs from original toned artifact")
 	}
 }
 

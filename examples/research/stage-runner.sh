@@ -14,6 +14,7 @@
 #   ETUDE_OUTPUT_FILE  — file to write stage output to
 
 : > "$ETUDE_OUTPUT_FILE"
-for f in $(ls "$ETUDE_INPUTS_DIR" | sort); do
-    cat "$ETUDE_INPUTS_DIR/$f" >> "$ETUDE_OUTPUT_FILE"
+for f in "$ETUDE_INPUTS_DIR"/*; do
+    [ -f "$f" ] || continue
+    cat "$f" >> "$ETUDE_OUTPUT_FILE"
 done
