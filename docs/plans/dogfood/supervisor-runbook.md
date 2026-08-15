@@ -72,6 +72,37 @@ etude gate --run <bead> --stage <phase> --artifact .etude/tmp/<bead>/<phase>.md
 `<role>` is the stage's `produces` value in `.etude/workflow.yaml` (`plan`,
 `diff`, `verify`, `docs-diff`, `review`). `--skill-id` is that stage's `skill`.
 
+**The role is not always the stage name. Two of the five differ, so do not
+pattern-match — read the table.**
+
+| stage | produced role | |
+|---|---|---|
+| `plan` | `plan` | same |
+| `implement` | **`diff`** | **differs** |
+| `verify` | `verify` | same |
+| `docs` | **`docs-diff`** | **differs** |
+| `review` | `review` | same |
+
+A supervisor who infers the role from the three that match writes
+`--output implement=…` or `--output docs=…`, no stage producing `diff` or
+`docs-diff` exists, and the gate then refuses with "no reviewable stage on run".
+`implement` is the easier one to get wrong, since `diff` shares no letters with
+the stage name at all. Copy these rather than deriving them:
+
+```bash
+etude capture implement --run <bead> --output diff=.etude/tmp/<bead>/implement.md \
+    --workflow default --workflow-version default-v1 \
+    --harness claude-code --model <model> --skill-id dev-executor
+
+etude capture docs --run <bead> --output docs-diff=.etude/tmp/<bead>/docs.md \
+    --workflow default --workflow-version default-v1 \
+    --harness claude-code --model <model> --skill-id dev-docs-writer
+```
+
+`etude gate` resolves the reviewed stage by the stage's produced ROLE, never by
+its name — so a stage merely *named* `docs` that produces something else does not
+satisfy the docs gate, and the gate writes nothing on that path.
+
 **Exit 0** — the gate passed. Advance to the next phase.
 
 **Non-zero** — the gate did not pass. The supervisor hands the printed
@@ -294,6 +325,19 @@ It survives this epic because it is the only path available in two cases:
 Using it obliges the supervisor to write down, in the gate record, which seat
 could not be invoked and why. A hand-assembled record with no such note is a
 record of a gate nobody can check.
+
+### Show a seat the evidence in the form it actually lives
+
+A gate packet that inlines only a git diff can only prove things that live in
+git. This repo's tracker is `bd` (beads/dolt), so a requirement satisfied by a
+tracker note is structurally invisible to a diff-only packet — and a seat asked
+to check that requirement will correctly BLOCK on its absence, even though the
+work was done.
+
+That is a packet bug, not a finding: rebuild the packet with the evidence
+inlined and re-run the seat. The general rule is that every requirement a packet
+asks a seat to adjudicate must appear IN the packet, whatever medium it lives in
+— tracker state, a ref, a command's output, a file outside the diff.
 
 ### When a seat blocks twice on one invariant, audit every site
 

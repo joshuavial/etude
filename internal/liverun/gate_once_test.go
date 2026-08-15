@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -544,6 +545,86 @@ func ladderCandidate(harness, invoke string, runner replay.Runner) SeatCandidate
 		InHarness: strings.HasPrefix(invoke, InHarnessPrefix),
 		Runner:    runner,
 		Meta:      SeatMeta{HarnessName: harness, ProviderName: "anthropic", Model: "claude-opus"},
+	}
+}
+
+// gateOnceDocsStage mirrors the workflow's `docs` stage, which is the ONLY stage
+// whose produced role (docs-diff) differs from its own name (docs).
+func gateOnceDocsStage() workflow.Stage {
+	return workflow.Stage{
+		Name:     "docs",
+		Produces: "docs-diff",
+		Gate: &workflow.GateConfig{
+			Tier:        "L2",
+			Abstraction: "docs match implemented behavior; docs policy",
+		},
+	}
+}
+
+// TestGateStageResolvesDocsStageByRoleNotName is the regression for etude-1od.
+//
+// It is deliberately NOT a copy of TestGateStageRunWithoutReviewableStageIsAClearError,
+// which pins the generic "no stage for this role" path. What is pinned here is the
+// thing that produced the bead: resolution keys on the stage's PRODUCED ROLE, and
+// `docs` is the one stage where that role (docs-diff) differs from the stage name.
+// A resolver that keyed on the stage name instead would pass every other stage in
+// the workflow and fail only this one — which is exactly how the original defect
+// stayed invisible.
+func TestGateStageResolvesDocsStageByRoleNotName(t *testing.T) {
+	repo := initTestRepo(t)
+	// The captured stage is named `docs` and produces `docs-diff`.
+	seedGateRun(t, repo, "r1", "docs", "docs-diff")
+	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte("docs artifact"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("a docs stage produced by role docs-diff must be gateable: %v", err)
+	}
+	if !outcome.Passed() {
+		t.Fatalf("expected pass, got %s", outcome.Status)
+	}
+	reviewed := outcome.Attempt.ReviewedStages
+	if len(reviewed) != 1 {
+		t.Fatalf("expected one reviewed stage, got %+v", reviewed)
+	}
+	if reviewed[0].Stage != "docs" || reviewed[0].Role != "docs-diff" {
+		t.Errorf("reviewed stage = %+v; want stage docs with role docs-diff", reviewed[0])
+	}
+}
+
+// TestGateStageDocsWithoutDocsDiffStageWritesNothing pins the half the generic
+// test does not: on the failure path the run ref must be left completely
+// untouched. The original defect was capture-gate REJECTING a gate whose
+// reviewed_stages named an absent stage; etude gate has to refuse upstream
+// without leaving a partial attempt behind.
+func TestGateStageDocsWithoutDocsDiffStageWritesNothing(t *testing.T) {
+	repo := initTestRepo(t)
+	// A run that has a `docs`-NAMED stage but producing the wrong role. A
+	// name-keyed resolver would wrongly accept this.
+	seedGateRun(t, repo, "r1", "docs", "verify")
+	before := readLiveManifest(t, repo, "r1")
+
+	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+	_, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if !errors.Is(err, ErrNoReviewableStage) {
+		t.Fatalf("a stage NAMED docs but producing another role must not satisfy the docs gate; got %v", err)
+	}
+
+	// "Untouched" means untouched: compare the whole manifest, not just counts.
+	// A count check would pass if a stage were swapped for another, or if any
+	// field on the existing attempt were rewritten.
+	after := readLiveManifest(t, repo, "r1")
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the failure path modified the run manifest\n before: %+v\n  after: %+v", before, after)
+	}
+	if len(after.Gates) != 0 {
+		t.Errorf("the failure path wrote %d gate attempts; it must write none", len(after.Gates))
 	}
 }
 
