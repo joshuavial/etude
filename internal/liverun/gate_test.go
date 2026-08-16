@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +30,27 @@ type stubCheckRunner struct {
 
 func (s *stubCheckRunner) RunCheck(_ context.Context, _ replay.RunRequest) (bool, []byte, string) {
 	return s.passed, s.rawOutput, s.detail
+}
+
+type recordingCheckRunner struct {
+	inputs []replay.RunInput
+}
+
+func (r *recordingCheckRunner) RunCheck(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
+	r.inputs = append([]replay.RunInput(nil), req.Inputs...)
+	return true, nil, ""
+}
+
+type mutatingCheckRunner struct {
+	calls int
+}
+
+func (r *mutatingCheckRunner) RunCheck(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
+	r.calls++
+	if err := os.WriteFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"), []byte("check mutation\n"), 0o644); err != nil {
+		return false, nil, err.Error()
+	}
+	return true, nil, ""
 }
 
 // envelopeJSON encodes a seatEnvelope to JSON bytes.
@@ -290,6 +313,203 @@ func TestGateAC1_RecordsGateAttempt(t *testing.T) {
 		if s.Provider.Model != "stub-model" {
 			t.Errorf("seat %q provider.model = %q, want stub-model", s.Seat, s.Provider.Model)
 		}
+	}
+}
+
+type checkoutPolicyRunner struct {
+	wantRead   bool
+	prompts    []string
+	markerRead bool
+	calls      int
+}
+
+func (r *checkoutPolicyRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	if len(req.Inputs) != 1 || req.Inputs[0].Role != gatePromptRole {
+		return replay.RunResult{}, fmt.Errorf("seat inputs = %+v, want one %q prompt", req.Inputs, gatePromptRole)
+	}
+	prompt := string(req.Inputs[0].Content)
+	r.prompts = append(r.prompts, prompt)
+	if r.wantRead {
+		if !strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("read grant prompt missing READ-ONLY mode")
+		}
+		content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
+		if err != nil {
+			return replay.RunResult{}, fmt.Errorf("read checkout marker: %w", err)
+		}
+		if string(content) != "pinned marker\n" {
+			return replay.RunResult{}, fmt.Errorf("checkout marker = %q", content)
+		}
+		r.markerRead = true
+	} else {
+		if !strings.Contains(prompt, "CHECKOUT ACCESS: OUTPUT-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("default prompt missing OUTPUT-ONLY mode")
+		}
+		if strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("output-only prompt also authorizes READ-ONLY")
+		}
+	}
+	return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
+}
+
+func TestGateReadCheckoutPromptAndManifest(t *testing.T) {
+	for _, readCheckout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+			repo := initTestRepo(t)
+			writeTestFile(t, repo, "checkout-marker.txt", "pinned marker\n")
+			// A stray .gitmodules file without a mode-160000 tree entry is not a
+			// submodule and must not false-reject an opted-in read grant.
+			writeTestFile(t, repo, ".gitmodules", "# no gitlinks\n")
+			gitRun(t, repo, "add", "checkout-marker.txt", ".gitmodules")
+			gitRun(t, repo, "commit", "-m", "add marker")
+			sha := headSHA(t, repo)
+			// The live engine must expose the detached pin, not the caller's
+			// mutable source tree after that commit.
+			writeTestFile(t, repo, "checkout-marker.txt", "unpinned mutation\n")
+
+			seat := &checkoutPolicyRunner{wantRead: readCheckout}
+			check := &mutatingCheckRunner{}
+			e := &Engine{
+				Store:         refstore.New(repo),
+				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+				ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+					return check, nil
+				},
+				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+					return seat, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+				},
+				Tiers: fixedTiers(map[string][2]interface{}{
+					"L1": {[]string{"reviewer-a", "reviewer-b"}, ""},
+				}),
+				Root: repo,
+				Now:  fixedClock(),
+			}
+			wf := gatedWorkflow(&workflow.GateConfig{
+				Checks:       []workflow.Runner{{Command: "mutate-checkout"}},
+				Tier:         "L1",
+				ReadCheckout: readCheckout,
+			})
+			runID := fmt.Sprintf("mywf-20260101T000000Z-read%t", readCheckout)
+			if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+			}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			if seat.calls != 2 {
+				t.Fatalf("seat calls = %d, want 2", seat.calls)
+			}
+			if check.calls != 1 {
+				t.Fatalf("check calls = %d, want 1", check.calls)
+			}
+			if seat.markerRead != readCheckout {
+				t.Fatalf("markerRead = %t, want %t", seat.markerRead, readCheckout)
+			}
+			if len(seat.prompts) != 2 || seat.prompts[0] != seat.prompts[1] {
+				t.Fatalf("model seats received different prompts: %#v", seat.prompts)
+			}
+			prompt := seat.prompts[0]
+			if readCheckout && !strings.Contains(prompt, sha) {
+				t.Errorf("read prompt does not name pinned commit %s:\n%s", sha, prompt)
+			}
+			assertMeasurementAuthorityPrompt(t, prompt)
+
+			m := readLiveManifest(t, repo, runID)
+			if len(m.Gates) != 1 || m.Gates[0].ReadCheckout != readCheckout {
+				t.Fatalf("recorded grant = %+v, want %t", m.Gates, readCheckout)
+			}
+			raw, err := m.JSON()
+			if err != nil {
+				t.Fatalf("JSON: %v", err)
+			}
+			if strings.Contains(string(raw), "read_checkout") != readCheckout {
+				t.Fatalf("manifest read_checkout presence mismatch for read=%t:\n%s", readCheckout, raw)
+			}
+		})
+	}
+}
+
+func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
+	for _, readCheckout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+			repo := initTestRepo(t)
+			baseSHA := headSHA(t, repo)
+			gitRun(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+baseSHA+",nested/vendor/sub")
+			gitRun(t, repo, "commit", "-m", "add nested gitlink")
+			sha := headSHA(t, repo)
+
+			seatCalls := 0
+			e := &Engine{
+				Store:         refstore.New(repo),
+				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+					seatCalls++
+					return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+				},
+				Tiers: fixedTiers(map[string][2]interface{}{
+					"L1": {[]string{"reviewer"}, ""},
+				}),
+				Root: repo,
+				Now:  fixedClock(),
+			}
+			wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", ReadCheckout: readCheckout})
+			runID := fmt.Sprintf("mywf-20260101T000001Z-gitlink%t", readCheckout)
+			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+			})
+
+			if readCheckout {
+				if err == nil || !strings.Contains(err.Error(), "nested/vendor/sub") || !strings.Contains(err.Error(), "#14") {
+					t.Fatalf("read grant error = %v, want recursive gitlink and GH #14 guidance", err)
+				}
+				if seatCalls != 0 {
+					t.Fatalf("seat ran %d times before gitlink rejection", seatCalls)
+				}
+				if got := readLiveManifest(t, repo, runID); len(got.Gates) != 0 {
+					t.Fatalf("gitlink rejection recorded %d gate attempts, want none", len(got.Gates))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("output-only gate on gitlink repo changed behavior: %v", err)
+			}
+			if seatCalls != 1 {
+				t.Fatalf("output-only seat calls = %d, want 1", seatCalls)
+			}
+		})
+	}
+}
+
+func TestGateReadCheckoutChecksOnlyResolvesNoGrant(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	check := &recordingCheckRunner{}
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+			return check, nil
+		},
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{
+		Checks:       []workflow.Runner{{Command: "true"}},
+		ReadCheckout: true,
+	})
+	runID := "mywf-20260101T000002Z-checksonly"
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	if len(m.Gates) != 1 || m.Gates[0].ReadCheckout {
+		t.Fatalf("checks-only gate recorded checkout-read grant: %+v", m.Gates)
+	}
+	if len(check.inputs) != 1 || check.inputs[0].Role != "plan" || string(check.inputs[0].Content) != "stage claim" {
+		t.Fatalf("deterministic check inputs = %+v, want raw stage output", check.inputs)
 	}
 }
 

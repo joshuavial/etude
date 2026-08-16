@@ -77,6 +77,9 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 	if gate == nil {
 		return GateOutcome{}, fmt.Errorf("stage %q has no gate configured", req.Stage.Name)
 	}
+	if gate.ReadCheckout {
+		return GateOutcome{}, fmt.Errorf("gate on stage %q: read_checkout is supported by live run workflows only; supervised gates review an uncommitted caller tree and cannot grant reproducible pinned-checkout access", req.Stage.Name)
+	}
 	if len(gate.Checks) > 0 && e.ResolveCheck == nil {
 		return GateOutcome{}, fmt.Errorf("gate on stage %q requires ResolveCheck to be set on Engine", req.Stage.Name)
 	}
@@ -127,7 +130,7 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 
 	round := nextPhaseRound(req.Stage.Name, manifest.Stages, manifest.Gates)
 
-	prompt := buildGatePrompt(req.Stage, gate, seatNames, round, reviewed.Name, req.Artifact)
+	prompt := buildGatePrompt(req.Stage, gate, seatNames, round, reviewed.Name, req.Artifact, false, reviewed.GitSHA)
 	gateInputs := []replay.RunInput{{
 		Role:      gatePromptRole,
 		MediaType: "text/markdown; charset=utf-8",
@@ -150,11 +153,12 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 
 	gateID := fmt.Sprintf("%s.r%d", req.Stage.Name, round)
 	attempt := runmanifest.GateAttempt{
-		GateID: gateID,
-		Phase:  req.Stage.Name,
-		Round:  round,
-		Tier:   tierToInt(gate.Tier),
-		Status: syn.status,
+		GateID:       gateID,
+		Phase:        req.Stage.Name,
+		Round:        round,
+		Tier:         tierToInt(gate.Tier),
+		Status:       syn.status,
+		ReadCheckout: false,
 		ReviewedStages: []runmanifest.ReviewedRef{{
 			Stage:    reviewed.Name,
 			Role:     req.Stage.Produces,
@@ -227,7 +231,7 @@ func readRunAt(ctx context.Context, store refstore.Store, commit string) (runman
 // NOT mention ETUDE_OUTPUT_FILE: writing the JSON envelope is the seat adapter's
 // job, so a model cannot emit a passing envelope without actually stating a
 // verdict the adapter can parse.
-func buildGatePrompt(stage workflow.Stage, gate *workflow.GateConfig, seats []string, round int, reviewedStage string, artifact []byte) []byte {
+func buildGatePrompt(stage workflow.Stage, gate *workflow.GateConfig, seats []string, round int, reviewedStage string, artifact []byte, readCheckout bool, gitSHA string) []byte {
 	var sb strings.Builder
 	sb.WriteString("ROLE: You are an independent reviewer seat on an etude phase gate.\n")
 	sb.WriteString("You are a model identity voting on this shared prompt, not a role persona.\n")
@@ -241,6 +245,21 @@ func buildGatePrompt(stage workflow.Stage, gate *workflow.GateConfig, seats []st
 	}
 	sb.WriteString("\nDECISION STANDARD: return GO when the artifact can advance as-is,\n")
 	sb.WriteString("BLOCK when a required change must land first.\n")
+
+	if readCheckout {
+		sb.WriteString("\nCHECKOUT ACCESS: READ-ONLY\n")
+		fmt.Fprintf(&sb, "You may inspect the immutable checkout pinned at commit %s.\n", gitSHA)
+		sb.WriteString("Use checkout reads only to falsify claims made by the artifact.\n")
+	} else {
+		sb.WriteString("\nCHECKOUT ACCESS: OUTPUT-ONLY\n")
+		sb.WriteString("Do not inspect the process checkout. Only the inlined artifact and its embedded provenance are authorized evidence.\n")
+	}
+
+	sb.WriteString("\nMEASUREMENT AUTHORITY:\n")
+	sb.WriteString("Embedded provenance is AUTHORITATIVE for measurements.\n")
+	sb.WriteString("Do not re-derive arithmetic; provenance is embedded precisely so you do not.\n")
+	sb.WriteString("Checkout reads exist to falsify an artifact claim, not to recompute it.\n")
+	sb.WriteString("If checkout evidence shows the artifact wrong, return BLOCK with evidence; never silently substitute your own numbers.\n")
 
 	if abstraction := strings.TrimSpace(gate.Abstraction); abstraction != "" {
 		sb.WriteString("\nABSTRACTION LEVEL (the altitude to review at):\n")

@@ -229,6 +229,31 @@ for the full live execution semantics (check/seat invocation, synthesis,
 rerun, escalate). This section documents the **seat output envelope** contract
 that seat runners must satisfy when invoked by the live engine.
 
+### Checkout evidence and measurement authority
+
+Every model seat receives one shared prompt that states its checkout policy.
+The default is **OUTPUT-ONLY**. When the workflow gate sets
+`read_checkout: true`, the prompt grants read-only inspection of the detached
+checkout at the run's fixed git SHA. Live execution creates this checkout
+separately from the mutable worktree used by stages and deterministic checks,
+then uses it as the seat command's working directory. That access exists to
+falsify claims in the stage artifact—for example, to find a caller the artifact
+says does not exist.
+
+Embedded provenance remains **authoritative for measurements** in both modes.
+Seats must not re-derive arithmetic: provenance is embedded precisely so they
+do not. A checkout read may falsify an artifact claim, but it is not permission
+to recompute a measurement. If checkout evidence shows the artifact is wrong,
+the seat must return `block` with evidence rather than silently substituting its
+own numbers. This rule is included in the actual seat prompt, not only in this
+documentation.
+
+The checkout mode is a trusted harness/prompt policy rather than an OS-level
+sandbox. Supervised gates cannot grant it because their worktree is the mutable
+caller tree. Live read grants also fail closed before seat invocation when the
+pinned tree contains a submodule gitlink; submodule population and identity are
+tracked by GitHub issue #14.
+
 ### Seat output envelope
 
 A seat runner writes a JSON object to `ETUDE_OUTPUT_FILE`:
@@ -271,6 +296,10 @@ live-specific characteristics:
   empty, or malfunction) — even when the gate still passes — so the audit
   record reflects a degraded panel.
 - `decision.escalation_reason` is required when `status="escalated"`.
+- `read_checkout: true` records that model seats were granted the live pinned
+  checkout. False is omitted, including for checks-only gates. This field is an
+  audit record; current workflow configuration remains the authorization source.
+  It is live-derived and is not accepted in an offline `capture-gate` input file.
 - A run that carries any gate attempts is stored as `manifest_version` 3.
 
 ### Resuming an unusable-seat outage

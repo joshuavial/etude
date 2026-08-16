@@ -20,6 +20,7 @@ import (
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/sessionevidence"
 	"github.com/joshuavial/etude/internal/workflow"
+	"github.com/joshuavial/etude/internal/worktree"
 )
 
 const insufficientUsableSeatsPrefix = "insufficient usable seats:"
@@ -723,6 +724,12 @@ func (e *Engine) runGate(
 	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
 
 	thisAttempts := make([]runmanifest.GateAttempt, 0)
+	var pinnedSeatCheckout *worktree.Worktree
+	defer func() {
+		if pinnedSeatCheckout != nil {
+			_ = pinnedSeatCheckout.Close()
+		}
+	}()
 
 	for {
 		// Resolve seats and next-stronger tier for this iteration.
@@ -742,21 +749,54 @@ func (e *Engine) runGate(
 			nextStronger = ""
 		}
 
+		// The workflow configuration is the authorization source. The manifest
+		// records this resolved decision after the fact; it is never read back as
+		// authority. A checks-only gate has no model seat to grant, so its resolved
+		// grant remains false even if the inert workflow leaf is set.
+		readCheckout := gate.ReadCheckout && len(seatNames) > 0
+		seatWorktreeDir := worktreeDir
+		if readCheckout {
+			gitlink, err := firstCheckoutGitlink(ctx, e.Root, gitSHA)
+			if err != nil {
+				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
+					fmt.Errorf("inspect pinned checkout for read_checkout: %w", err)
+			}
+			if gitlink != "" {
+				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
+					fmt.Errorf("gate on stage %q: read_checkout cannot inspect submodule gitlink %q until GitHub issue #14 populates submodules and records their SHAs", stage.Name, gitlink)
+			}
+			if pinnedSeatCheckout == nil {
+				pinnedSeatCheckout, err = worktree.Checkout(ctx, e.Root, gitSHA)
+				if err != nil {
+					return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
+						fmt.Errorf("create pinned seat checkout for read_checkout: %w", err)
+				}
+			}
+			seatWorktreeDir = pinnedSeatCheckout.Dir
+		}
+
 		// The stage output this gate round is reviewing.
-		gateInputs := []replay.RunInput{
+		checkInputs := []replay.RunInput{
 			{
 				Role:      stage.Produces,
 				MediaType: reviewedOutputRef.MediaType,
 				Content:   reviewedOutputContent,
 			},
 		}
+		promptGate := *gate
+		promptGate.Tier = currentTierName
+		modelInputs := []replay.RunInput{{
+			Role:      gatePromptRole,
+			MediaType: "text/markdown; charset=utf-8",
+			Content:   buildGatePrompt(stage, &promptGate, seatNames, globalRound, reviewedStageName, reviewedOutputContent, readCheckout, gitSHA),
+		}}
 
 		// Run checks then seats.
 		checkSeatResults, checksPassed, checkBlocks := e.runGateChecks(
-			ctx, worktreeDir, scratch, gate.Checks, gateInputs, as, globalRound,
+			ctx, worktreeDir, scratch, gate.Checks, checkInputs, as, globalRound,
 		)
 		modelSeatResults, seatVerdicts, seatBlockRequired, gateLadderNotes := e.runGateSeats(
-			ctx, worktreeDir, scratch, seatNames, gateInputs, as, globalRound,
+			ctx, seatWorktreeDir, scratch, seatNames, modelInputs, as, globalRound,
 		)
 
 		// Synthesize verdict.
@@ -770,11 +810,12 @@ func (e *Engine) runGate(
 		gateID := fmt.Sprintf("%s.r%d", stage.Name, globalRound)
 		allSeats := append(checkSeatResults, modelSeatResults...)
 		attempt := runmanifest.GateAttempt{
-			GateID: gateID,
-			Phase:  stage.Name,
-			Round:  globalRound,
-			Tier:   tierToInt(currentTierName),
-			Status: syn.status,
+			GateID:       gateID,
+			Phase:        stage.Name,
+			Round:        globalRound,
+			Tier:         tierToInt(currentTierName),
+			Status:       syn.status,
+			ReadCheckout: readCheckout,
 			ReviewedStages: []runmanifest.ReviewedRef{
 				{
 					Stage:    reviewedStageName,
@@ -872,6 +913,35 @@ func (e *Engine) runGate(
 			tierRound = 1
 		}
 	}
+}
+
+// firstCheckoutGitlink returns the first recursive mode-160000 entry in the
+// pinned tree. Until GH #14 populates submodules and records their identities,
+// granting reads in such a checkout would expose an empty directory as if it
+// were evidence, so callers fail closed before invoking a model seat.
+func firstCheckoutGitlink(ctx context.Context, worktreeDir, gitSHA string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreeDir, "ls-tree", "-r", "-z", "--full-tree", gitSHA, "--")
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if detail := strings.TrimSpace(string(exitErr.Stderr)); detail != "" {
+				return "", fmt.Errorf("git ls-tree %s: %w: %s", gitSHA, err, detail)
+			}
+		}
+		return "", fmt.Errorf("git ls-tree %s: %w", gitSHA, err)
+	}
+	for _, record := range bytes.Split(out, []byte{0}) {
+		meta, path, ok := bytes.Cut(record, []byte{'\t'})
+		if !ok {
+			continue
+		}
+		fields := bytes.Fields(meta)
+		if len(fields) >= 1 && bytes.Equal(fields[0], []byte("160000")) {
+			return string(path), nil
+		}
+	}
+	return "", nil
 }
 
 // resolveSeatRunner returns the runner for a seat's PRIMARY invocation, used

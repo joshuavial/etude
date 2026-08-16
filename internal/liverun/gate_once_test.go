@@ -194,6 +194,16 @@ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
 	if len(g.Seats) != 2 {
 		t.Fatalf("expected 2 seat results, got %d", len(g.Seats))
 	}
+	if g.ReadCheckout {
+		t.Fatal("supervised output-only gate recorded a checkout-read grant")
+	}
+	rawManifest, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if strings.Contains(string(rawManifest), "read_checkout") {
+		t.Fatalf("false checkout-read grant must be omitted:\n%s", rawManifest)
+	}
 
 	// Every seat must have reviewed byte-identical input: seats are model
 	// identities voting on ONE prompt, not personas with different briefs.
@@ -211,10 +221,73 @@ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
 	if !strings.Contains(prompt, "the artifact under review") {
 		t.Errorf("prompt is missing the inlined artifact:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "CHECKOUT ACCESS: OUTPUT-ONLY") {
+		t.Errorf("prompt is missing the output-only access mode:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not inspect the process checkout") {
+		t.Errorf("prompt does not forbid checkout inspection:\n%s", prompt)
+	}
+	assertMeasurementAuthorityPrompt(t, prompt)
 	// The envelope is the adapter's job, so the prompt must not ask the model
 	// for it — a model that could write the file could fake a pass.
 	if strings.Contains(prompt, "ETUDE_OUTPUT_FILE") {
 		t.Errorf("prompt must not mention ETUDE_OUTPUT_FILE:\n%s", prompt)
+	}
+}
+
+func TestGateStageReadCheckoutFailsBeforeChecksOrSeats(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	stage := gateOnceStage([]workflow.Runner{{Command: "make test"}})
+	stage.Gate.ReadCheckout = true
+	checkResolutions := 0
+	seatResolutions := 0
+	e := &Engine{
+		Store: refstore.New(repo),
+		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+			checkResolutions++
+			return &stubCheckRunner{passed: true}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			seatResolutions++
+			return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L2": {[]string{"opus", "codex"}, "L1"},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+
+	_, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: stage, Artifact: []byte("x"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err == nil {
+		t.Fatal("GateStage accepted read_checkout on a supervised gate")
+	}
+	if !strings.Contains(err.Error(), "live run workflows only") {
+		t.Fatalf("error = %q, want live-run-only guidance", err)
+	}
+	if checkResolutions != 0 || seatResolutions != 0 {
+		t.Fatalf("read grant rejection resolved checks=%d seats=%d, want neither", checkResolutions, seatResolutions)
+	}
+	if got := readLiveManifest(t, repo, "r1"); len(got.Gates) != 0 {
+		t.Fatalf("rejected supervised grant recorded %d attempts, want none", len(got.Gates))
+	}
+}
+
+func assertMeasurementAuthorityPrompt(t *testing.T, prompt string) {
+	t.Helper()
+	for _, literal := range []string{
+		"Embedded provenance is AUTHORITATIVE for measurements.",
+		"Do not re-derive arithmetic; provenance is embedded precisely so you do not.",
+		"Checkout reads exist to falsify an artifact claim, not to recompute it.",
+		"return BLOCK with evidence; never silently substitute your own numbers.",
+	} {
+		if !strings.Contains(prompt, literal) {
+			t.Errorf("prompt is missing policy literal %q:\n%s", literal, prompt)
+		}
 	}
 }
 
