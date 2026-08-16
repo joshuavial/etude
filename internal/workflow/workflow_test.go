@@ -251,6 +251,10 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 		// Reserved produces roles
 		{"produces reserved role task", func(w *Workflow) { w.Stages[0].Produces = "task" }},
 		{"produces reserved role repo-state", func(w *Workflow) { w.Stages[0].Produces = "repo-state" }},
+		{"produces reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Produces = "prior-attempts" }},
+		{"produces reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
+		{"inputs reserved prior-attempts role", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
+		{"inputs reserved prior-attempt prefix", func(w *Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
 	}
 
 	for _, tc := range cases {
@@ -263,6 +267,17 @@ func TestValidateRejectsInvalidWorkflows(t *testing.T) {
 				t.Fatalf("error does not wrap ErrInvalidWorkflow: %v", err)
 			}
 		})
+	}
+}
+
+func TestPriorAttemptRoleReservationAllowsNearMiss(t *testing.T) {
+	w := minimalWorkflow()
+	w.Stages[0].Produces = "prior-attempt"
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate near-miss role: %v", err)
+	}
+	if IsPriorAttemptRole("prior-attempt") {
+		t.Fatal("prior-attempt must not be in the reserved namespace")
 	}
 }
 

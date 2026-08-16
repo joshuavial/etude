@@ -619,10 +619,30 @@ func captureCallerProvenance(ctx context.Context, root string, resolve func(cont
 // Run executes the workflow, capturing each stage incrementally via CAS.
 // If opts.ResumeID is non-empty, resumes an existing partial run from its frontier.
 func (e *Engine) Run(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
+	// ParseYAML calls Workflow.Validate, but Engine also accepts programmatic
+	// workflows. Enforce the engine-owned rerun input namespace here, before a
+	// checkout or runner invocation, so both entry paths fail at the same seam.
+	if err := validatePriorAttemptRoleCollisions(wf); err != nil {
+		return err
+	}
 	if opts.ResumeID != "" {
 		return e.resume(ctx, out, wf, opts.ResumeID)
 	}
 	return e.startFresh(ctx, out, wf, opts)
+}
+
+func validatePriorAttemptRoleCollisions(wf workflow.Workflow) error {
+	for i, stage := range wf.Stages {
+		if workflow.IsPriorAttemptRole(stage.Produces) {
+			return fmt.Errorf("%w: stage[%d] produces role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, stage.Produces)
+		}
+		for j, role := range stage.Inputs {
+			if workflow.IsPriorAttemptRole(role) {
+				return fmt.Errorf("%w: stage[%d] input[%d] role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, j, role)
+			}
+		}
+	}
+	return nil
 }
 
 func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
@@ -773,6 +793,10 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 			refByPath[inp.Path] = inp
 		}
 		refByPath[ms.Output.Path] = ms.Output
+		if ms.Log != nil {
+			ref := *ms.Log
+			refByPath[ref.Path] = ref
+		}
 		if ms.Producer.Session != nil && ms.Producer.Session.TranscriptArtifact != nil {
 			ref := *ms.Producer.Session.TranscriptArtifact
 			refByPath[ref.Path] = ref

@@ -2112,10 +2112,12 @@ func TestEngineResumeRetriesZeroSeatEscalationWithoutRerunningProducer(t *testin
 		Store: refstore.New(repo),
 		ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
 			producerCalls++
-			return &replay.StubRunner{
-				CannedOutput:    []byte("captured plan"),
-				CannedMediaType: "text/plain; charset=utf-8",
-			}, nil
+			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+				return replay.RunResult{
+					Output: []byte("captured plan"), Log: []byte("captured runner log"),
+					MediaType: "text/plain; charset=utf-8", Producer: req.Producer,
+				}, nil
+			}), nil
 		},
 		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
 			return &replay.StubRunner{CannedMediaType: "application/json"}, SeatMeta{
@@ -2494,6 +2496,35 @@ func TestProducerSession_WithoutTranscriptIsNotApplicable(t *testing.T) {
 	session := readLiveManifest(t, repo, runID).Stages[0].Producer.Session
 	if session == nil || session.SessionID != "abc" || session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
 		t.Fatalf("session = %#v, want id abc with not_applicable retrieval", session)
+	}
+}
+
+func TestEngineRejectsPriorAttemptRoleBeforeRunnerInvocation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*workflow.Workflow)
+	}{
+		{name: "produces exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempts" }},
+		{name: "produces evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Produces = "prior-attempt-1-output" }},
+		{name: "input exact index role", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempts"} }},
+		{name: "input evidence prefix", edit: func(w *workflow.Workflow) { w.Stages[0].Inputs = []string{"prior-attempt-1-output"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := workflow.Workflow{Name: "mywf", Stages: []workflow.Stage{{Name: "plan", Produces: "plan", Skill: "sk"}}}
+			tc.edit(&wf)
+			runnerCalls := 0
+			e := &Engine{ResolveRunner: func(workflow.Stage) (replay.Runner, error) {
+				runnerCalls++
+				return &replay.StubRunner{CannedOutput: []byte("unexpected")}, nil
+			}}
+			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{})
+			if !errors.Is(err, workflow.ErrInvalidWorkflow) || !strings.Contains(err.Error(), "reserved for gate reruns") {
+				t.Fatalf("error = %v, want reserved-role workflow error", err)
+			}
+			if runnerCalls != 0 {
+				t.Fatalf("runner calls = %d, want 0", runnerCalls)
+			}
+		})
 	}
 }
 
