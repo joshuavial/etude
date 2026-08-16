@@ -183,9 +183,10 @@ across runs.
 
 - **Immutability is structural.** An artifact blob's content hash *is* its
   identity. A first-draft plan captured as a blob cannot be silently mutated.
-- **Free input reconstruction.** Each stage records the `git_sha` of the repo
-  at the time it ran. To replay, check out that sha in a throwaway worktree —
-  the exact original repo state, no snapshotting needed.
+- **Free input reconstruction.** Each stage records the superproject `git_sha`
+  and, when present, a path-to-SHA `submodules` map. Replay checks out that
+  superproject commit and populates its pinned submodules in a throwaway
+  checkout — the exact original repo state, no snapshotting needed.
 - **Worktree-transparent.** Refs live in the shared `.git` dir, so an artifact
   captured in one workmux worktree is visible in all of them — matters for
   xenota's parallel swarm.
@@ -246,6 +247,9 @@ because objects cannot be pruned while a ref reaches them.
       "stage": "plan",
       "produced_by": "original",
       "git_sha": "442755e5...",
+      "submodules": {
+        "modules/lib": "9f8e7d6c..."
+      },
       "producer": {
         "harness": {
           "name": "claude-code",
@@ -299,8 +303,9 @@ Notes:
   in the skill repo (`~/.claude/skills`, `codewithjv-agent-skills`), not a sha
   in this repo. This is a deliberate provenance design point.
 - `refs` values are always strings (e.g. `"pr": "469"`, not `"pr": 469`).
-- `repo-state` inputs are recorded as a `git_sha` on the stage, not an artifact
-  hash — the repo is already perfectly versioned by git.
+- `repo-state` inputs are recorded as a superproject `git_sha` plus an optional
+  recursive `submodules` path-to-SHA map on the stage, not an artifact hash.
+  The map is omitted when the checkout has no submodules.
 - Each artifact entry carries `role`, `artifact` (sha256 hex), `path`
   (content-addressed path in the run tree), `media_type`, `storage`
   (`"content"` or `"pointer"`), and `size`.
@@ -337,7 +342,8 @@ Two capture paths:
 `etude replay <run-id> <stage>` re-executes one stage end-to-end:
 
 1. Read the run manifest; find the named stage entry.
-2. Check out the recorded `git_sha` in a throwaway git worktree.
+2. Check out the recorded `git_sha` and recursively populate its pinned
+   submodules in a throwaway checkout.
 3. Resolve the recorded input artifacts and feed them to the runner via the
    **skill-runner adapter** (`--runner` or `git config etude.runner`).
 4. Emit the produced output to stdout or `--output <path>`.

@@ -15,6 +15,7 @@ import (
 	"github.com/joshuavial/etude/internal/liverun"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
+	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/workflow"
 )
 
@@ -165,6 +166,41 @@ func TestReplayCleanupAfterRun(t *testing.T) {
 type dirCapturingRunner struct {
 	inner   replay.Runner
 	capture func(replay.RunRequest)
+}
+
+type countingReplayRunner struct {
+	calls int
+}
+
+func (r *countingReplayRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	return replay.RunResult{Output: []byte("unexpected"), MediaType: req.OutputMediaType, Producer: req.Producer}, nil
+}
+
+func rewriteReplayManifest(t *testing.T, repo, runID string, mutate func(*runmanifest.Manifest)) {
+	t.Helper()
+	ctx := context.Background()
+	store := refstore.New(repo)
+	ref := runsPrefix + runID
+	commit, err := store.Resolve(ctx, ref)
+	if err != nil {
+		t.Fatalf("resolve run: %v", err)
+	}
+	m := readRunManifest(t, repo, runID)
+	files := make(map[string][]byte)
+	for _, artifactPath := range runmanifest.ArtifactPaths(m) {
+		files[artifactPath], err = store.ReadCommitFile(ctx, commit, artifactPath)
+		if err != nil {
+			t.Fatalf("read run artifact %q: %v", artifactPath, err)
+		}
+	}
+	mutate(&m)
+	if _, err := runmanifest.WriteManifestTree(ctx, store, runsPrefix, m, files, refstore.WriteOptions{
+		ExpectedOld: commit,
+		Message:     "rewrite replay test manifest",
+	}); err != nil {
+		t.Fatalf("rewrite manifest: %v", err)
+	}
 }
 
 func (d *dirCapturingRunner) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
@@ -554,6 +590,59 @@ func TestReplayRecordCreatesLinkedRun(t *testing.T) {
 	}
 }
 
+func TestReplayRecordAddsActualSubmoduleMapToLegacySource(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	submodule := initCaptureRepo(t)
+	submoduleOID := strings.TrimSpace(gitCapture(t, submodule, "rev-parse", "HEAD"))
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
+	gitCapture(t, repo, "commit", "-am", "add submodule")
+	writeFile(t, repo, "input.txt", "input\n")
+	writeFile(t, repo, "output.txt", "output\n")
+	chdir(t, repo)
+
+	const sourceRunID = "legacy-submodule-source"
+	if _, stderr, err := execute(
+		"capture", "gen", "--run", sourceRunID,
+		"--input", "prompt=input.txt", "--output", "output=output.txt",
+	); err != nil {
+		t.Fatalf("capture source: %v\n%s", err, stderr)
+	}
+	if source := readRunManifest(t, repo, sourceRunID); len(source.Stages[0].Submodules) != 0 {
+		t.Fatalf("manual source unexpectedly recorded submodules: %+v", source.Stages[0].Submodules)
+	}
+
+	fixedTime := time.Date(2026, 5, 22, 10, 30, 0, 0, time.UTC)
+	stub := &replay.StubRunner{CannedOutput: []byte("replayed")}
+	if _, stderr, err := executeReplayWithClock(stub, fixedTime, sourceRunID, "gen", "--record"); err != nil {
+		t.Fatalf("replay --record: %v\n%s", err, stderr)
+	}
+	recorded := readRunManifest(t, repo, sourceRunID+"-replay-20260522T103000Z")
+	if got := recorded.Stages[0].Submodules["modules/lib"]; got != submoduleOID {
+		t.Fatalf("recorded submodule OID = %q, want %q", got, submoduleOID)
+	}
+}
+
+func TestReplaySubmoduleMismatchDoesNotInvokeRunner(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].Submodules = map[string]string{"modules/lib": strings.Repeat("a", 40)}
+	})
+	chdir(t, repo)
+
+	runner := &countingReplayRunner{}
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, &replayRunner{runner: runner, now: time.Now})
+	cmd.SetArgs([]string{runID, "gen"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("replay error = %v, want submodule mismatch", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0", runner.calls)
+	}
+}
+
 // TestReplayRecordNoOutputError verifies that --record with an empty output errors.
 func TestReplayRecordNoOutputError(t *testing.T) {
 	repo, runID := captureStageForReplay(t)
@@ -898,6 +987,28 @@ func TestReplayForwardAllStages(t *testing.T) {
 	want := "replayedreplayedreplayed"
 	if stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestReplayForwardSubmoduleMismatchDoesNotInvokeRunner(t *testing.T) {
+	repo := initCaptureRepo(t)
+	runID := "mywf-20260101T000000Z-forward-mismatch"
+	createLiveRun(t, repo, runID)
+	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[1].Submodules = map[string]string{"modules/lib": strings.Repeat("a", 40)}
+	})
+	chdir(t, repo)
+
+	runner := &countingReplayRunner{}
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, &replayRunner{forwardRunner: runner, now: time.Now})
+	cmd.SetArgs([]string{runID})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("forward replay error = %v, want submodule mismatch", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0", runner.calls)
 	}
 }
 

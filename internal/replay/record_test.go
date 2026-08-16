@@ -47,6 +47,7 @@ func seedRunForRecord(t *testing.T) (store refstore.Store, sourceCommit string, 
 // - Stage.Skill mirrors Producer.Skill.
 func TestRunRecorderHappyPath(t *testing.T) {
 	store, sourceCommit, resolved := seedRunForRecord(t)
+	resolved.Submodules = map[string]string{"modules/lib": strings.Repeat("d", 40)}
 
 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
 	res := RunResult{
@@ -103,6 +104,9 @@ func TestRunRecorderHappyPath(t *testing.T) {
 
 	if s.ProducedBy != "replay" {
 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
+	}
+	if got := s.Submodules["modules/lib"]; got != strings.Repeat("d", 40) {
+		t.Errorf("Submodules[modules/lib] = %q", got)
 	}
 	if s.ReplayOf == nil {
 		t.Fatal("ReplayOf is nil")

@@ -503,3 +503,286 @@ func Test40HexBranchNameRejectedSHA1(t *testing.T) {
 		t.Fatalf("40-hex branch name: got %v, want ErrSHANotFound", err)
 	}
 }
+
+func TestCheckoutPopulatesPinnedSubmoduleWithIsolatedGitDirsAndSharedObjects(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	ctx := context.Background()
+	nested := initRepo(t)
+	writeTestFile(t, nested, "nested.txt", "nested-content\n")
+	gitTest(t, nested, "add", "nested.txt")
+	gitTest(t, nested, "commit", "-m", "nested")
+	nestedOID := gitTest(t, nested, "rev-parse", "HEAD")
+
+	submodule := initRepo(t)
+	writeTestFile(t, submodule, "payload.txt", "pinned-one\n")
+	gitTest(t, submodule, "-c", "protocol.file.allow=always", "submodule", "add", nested, "deps/nested")
+	gitTest(t, submodule, "add", "payload.txt", ".gitmodules", "deps/nested")
+	gitTest(t, submodule, "commit", "-m", "first")
+	submoduleOne := gitTest(t, submodule, "rev-parse", "HEAD")
+
+	superproject := initRepo(t)
+	gitTest(t, superproject, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
+	gitTest(t, filepath.Join(superproject, "modules", "lib"), "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+	gitTest(t, superproject, "commit", "-am", "pin first")
+	superprojectOne := gitTest(t, superproject, "rev-parse", "HEAD")
+
+	writeTestFile(t, submodule, "payload.txt", "pinned-two\n")
+	gitTest(t, submodule, "add", "payload.txt")
+	gitTest(t, submodule, "commit", "-m", "second")
+	submoduleTwo := gitTest(t, submodule, "rev-parse", "HEAD")
+	gitTest(t, filepath.Join(superproject, "modules", "lib"), "fetch", "origin")
+	gitTest(t, filepath.Join(superproject, "modules", "lib"), "checkout", submoduleTwo)
+	gitTest(t, superproject, "add", "modules/lib")
+	gitTest(t, superproject, "commit", "-m", "pin second")
+	superprojectTwo := gitTest(t, superproject, "rev-parse", "HEAD")
+	linkedSource := filepath.Join(t.TempDir(), "linked-source")
+	gitTest(t, superproject, "worktree", "add", "--detach", linkedSource, superprojectTwo)
+	defer func() { gitTest(t, superproject, "worktree", "remove", "--force", linkedSource) }()
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[submodule]\n\tactive = unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	first, err := Checkout(ctx, linkedSource, superprojectOne)
+	if err != nil {
+		t.Fatalf("Checkout(first): %v", err)
+	}
+	defer first.Close()
+	second, err := Checkout(ctx, linkedSource, superprojectTwo)
+	if err != nil {
+		t.Fatalf("Checkout(second): %v", err)
+	}
+	defer second.Close()
+
+	assertSubmoduleCheckout(t, first, "modules/lib", submoduleOne, "pinned-one\n")
+	assertSubmoduleCheckout(t, second, "modules/lib", submoduleTwo, "pinned-two\n")
+	for i, wt := range []*Worktree{first, second} {
+		if got := wt.Submodules["modules/lib/deps/nested"]; got != nestedOID {
+			t.Errorf("checkout[%d] nested OID = %q, want %q", i, got, nestedOID)
+		}
+		content, err := os.ReadFile(filepath.Join(wt.Dir, "modules", "lib", "deps", "nested", "nested.txt"))
+		if err != nil || string(content) != "nested-content\n" {
+			t.Errorf("checkout[%d] nested content = %q, err=%v", i, content, err)
+		}
+	}
+	// Re-read the first checkout after the second exists to catch shared-HEAD
+	// cross-talk between concurrent run checkouts.
+	assertSubmoduleCheckout(t, first, "modules/lib", submoduleOne, "pinned-one\n")
+
+	sourceObjects := filepath.Join(superproject, ".git", "modules", "modules", "lib", "objects")
+	alternates, err := os.ReadFile(filepath.Join(first.Dir, ".git", "modules", "modules", "lib", "objects", "info", "alternates"))
+	if err != nil {
+		t.Fatalf("read submodule alternates: %v", err)
+	}
+	if !strings.Contains(string(alternates), sourceObjects) {
+		t.Fatalf("submodule alternates = %q, want source object store %q", alternates, sourceObjects)
+	}
+	nestedSourceObjects := filepath.Join(superproject, ".git", "modules", "modules", "lib", "modules", "deps", "nested", "objects")
+	nestedAlternates, err := os.ReadFile(filepath.Join(first.Dir, ".git", "modules", "modules", "lib", "modules", "deps", "nested", "objects", "info", "alternates"))
+	if err != nil {
+		t.Fatalf("read nested submodule alternates: %v", err)
+	}
+	if !strings.Contains(string(nestedAlternates), nestedSourceObjects) {
+		t.Fatalf("nested submodule alternates = %q, want source object store %q", nestedAlternates, nestedSourceObjects)
+	}
+
+	firstDir := first.Dir
+	if err := first.Cleanup(ctx); err != nil {
+		t.Fatalf("Cleanup(first): %v", err)
+	}
+	if _, err := os.Stat(firstDir); !os.IsNotExist(err) {
+		t.Fatalf("private clone still exists after cleanup: %v", err)
+	}
+}
+
+func TestCheckoutPreservesRemoteForRelativeSubmoduleURL(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	ctx := context.Background()
+	base := t.TempDir()
+	remotes := filepath.Join(base, "remotes")
+	if err := os.MkdirAll(remotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libRemote := filepath.Join(remotes, "lib.git")
+	appRemote := filepath.Join(remotes, "app.git")
+	gitTest(t, base, "init", "--bare", libRemote)
+	gitTest(t, base, "init", "--bare", appRemote)
+
+	lib := initRepo(t)
+	writeTestFile(t, lib, "payload.txt", "from-relative-url\n")
+	gitTest(t, lib, "add", "payload.txt")
+	gitTest(t, lib, "commit", "-m", "payload")
+	gitTest(t, lib, "remote", "add", "origin", "file://"+libRemote)
+	gitTest(t, lib, "push", "origin", "HEAD:main")
+	gitTest(t, libRemote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	app := initRepo(t)
+	relativeAppRemote, err := filepath.Rel(app, appRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, app, "remote", "add", "origin", relativeAppRemote)
+	gitTest(t, app, "-c", "protocol.file.allow=always", "submodule", "add", "../lib.git", "modules/lib")
+	gitTest(t, app, "commit", "-am", "add relative submodule")
+	appOID := gitTest(t, app, "rev-parse", "HEAD")
+	gitTest(t, app, "push", "origin", "HEAD:main")
+
+	// Remove the source's populated module store so the run checkout must resolve
+	// and clone the relative URL rather than succeeding solely through alternates.
+	gitTest(t, app, "submodule", "deinit", "-f", "--", "modules/lib")
+	if err := os.RemoveAll(filepath.Join(app, ".git", "modules", "modules", "lib")); err != nil {
+		t.Fatal(err)
+	}
+
+	wt, err := Checkout(ctx, app, appOID)
+	if err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	defer wt.Close()
+	content, err := os.ReadFile(filepath.Join(wt.Dir, "modules", "lib", "payload.txt"))
+	if err != nil {
+		t.Fatalf("read populated relative submodule: %v", err)
+	}
+	if string(content) != "from-relative-url\n" {
+		t.Fatalf("payload = %q", content)
+	}
+	if got := gitTest(t, wt.Dir, "remote", "get-url", "origin"); got != appRemote {
+		t.Fatalf("clone origin = %q, want %q", got, appRemote)
+	}
+}
+
+func TestCheckoutGitlinkWithoutConfigurationFailsClosed(t *testing.T) {
+	isolateTempDir(t)
+	ctx := context.Background()
+	submodule := initRepo(t)
+	writeTestFile(t, submodule, "payload.txt", "payload\n")
+	gitTest(t, submodule, "add", "payload.txt")
+	gitTest(t, submodule, "commit", "-m", "payload")
+	submoduleOID := gitTest(t, submodule, "rev-parse", "HEAD")
+
+	superproject := initRepo(t)
+	gitTest(t, superproject, "update-index", "--add", "--cacheinfo", "160000,"+submoduleOID+",modules/lib")
+	gitTest(t, superproject, "commit", "-m", "malformed gitlink")
+	superprojectOID := gitTest(t, superproject, "rev-parse", "HEAD")
+	before := snapshotWorktreeTempDirs(t)
+
+	wt, err := Checkout(ctx, superproject, superprojectOID)
+	if wt != nil {
+		wt.Close()
+		t.Fatal("Checkout returned a worktree for an unconfigured gitlink")
+	}
+	if err == nil || !strings.Contains(err.Error(), "gitlinks but no valid .gitmodules") {
+		t.Fatalf("Checkout error = %v, want missing .gitmodules failure", err)
+	}
+	if leaked := newlyLeakedWorktreeTempDirs(before, snapshotWorktreeTempDirs(t)); len(leaked) > 0 {
+		t.Fatalf("Checkout leaked temp dirs: %v", leaked)
+	}
+}
+
+func TestCheckoutPartiallyConfiguredGitlinksFailClosed(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	isolateTempDir(t)
+	ctx := context.Background()
+	submodule := initRepo(t)
+	writeTestFile(t, submodule, "payload.txt", "payload\n")
+	gitTest(t, submodule, "add", "payload.txt")
+	gitTest(t, submodule, "commit", "-m", "payload")
+	submoduleOID := gitTest(t, submodule, "rev-parse", "HEAD")
+
+	superproject := initRepo(t)
+	gitTest(t, superproject, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/configured")
+	gitTest(t, superproject, "update-index", "--add", "--cacheinfo", "160000,"+submoduleOID+",modules/unconfigured")
+	gitTest(t, superproject, "commit", "-m", "partially configured gitlinks")
+	superprojectOID := gitTest(t, superproject, "rev-parse", "HEAD")
+	before := snapshotWorktreeTempDirs(t)
+
+	wt, err := Checkout(ctx, superproject, superprojectOID)
+	if wt != nil {
+		wt.Close()
+		t.Fatal("Checkout returned a worktree for a partially configured gitlink set")
+	}
+	if err == nil || !strings.Contains(err.Error(), "modules/unconfigured") {
+		t.Fatalf("Checkout error = %v, want unpopulated gitlink failure", err)
+	}
+	if leaked := newlyLeakedWorktreeTempDirs(before, snapshotWorktreeTempDirs(t)); len(leaked) > 0 {
+		t.Fatalf("Checkout leaked temp dirs: %v", leaked)
+	}
+}
+
+func TestCheckoutTreatsGitlinkPathsAsLiteralPathspecs(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	ctx := context.Background()
+	submodule := initRepo(t)
+	writeTestFile(t, submodule, "payload.txt", "literal path\n")
+	gitTest(t, submodule, "add", "payload.txt")
+	gitTest(t, submodule, "commit", "-m", "payload")
+	submoduleOID := gitTest(t, submodule, "rev-parse", "HEAD")
+
+	superproject := initRepo(t)
+	const gitlinkPath = ":(literal)lib"
+	writeTestFile(t, superproject, ".gitmodules", "[submodule \"magic\"]\n\tpath = "+gitlinkPath+"\n\turl = "+submodule+"\n")
+	gitTest(t, superproject, "add", ".gitmodules")
+	gitTest(t, superproject, "update-index", "--add", "--cacheinfo", "160000,"+submoduleOID+","+gitlinkPath)
+	gitTest(t, superproject, "commit", "-m", "add pathspec-like submodule")
+	superprojectOID := gitTest(t, superproject, "rev-parse", "HEAD")
+
+	wt, err := Checkout(ctx, superproject, superprojectOID)
+	if err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	defer wt.Close()
+	assertSubmoduleCheckout(t, wt, gitlinkPath, submoduleOID, "literal path\n")
+}
+
+func TestValidateSubmodulesRejectsRecordedMismatch(t *testing.T) {
+	wt := &Worktree{Submodules: map[string]string{"modules/lib": strings.Repeat("a", 40)}}
+	if err := wt.ValidateSubmodules(nil); err != nil {
+		t.Fatalf("legacy empty map: %v", err)
+	}
+	if err := wt.ValidateSubmodules(map[string]string{"modules/lib": strings.Repeat("a", 40)}); err != nil {
+		t.Fatalf("matching map: %v", err)
+	}
+	if err := wt.ValidateSubmodules(map[string]string{"modules/lib": strings.Repeat("b", 40)}); err == nil {
+		t.Fatal("mismatched recorded map was accepted")
+	}
+}
+
+func gitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func writeTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSubmoduleCheckout(t *testing.T, wt *Worktree, path, wantOID, wantContent string) {
+	t.Helper()
+	if got := wt.Submodules[path]; got != wantOID {
+		t.Errorf("Submodules[%q] = %q, want %q", path, got, wantOID)
+	}
+	if got := gitTest(t, filepath.Join(wt.Dir, filepath.FromSlash(path)), "rev-parse", "HEAD"); got != wantOID {
+		t.Errorf("submodule HEAD = %q, want %q", got, wantOID)
+	}
+	content, err := os.ReadFile(filepath.Join(wt.Dir, filepath.FromSlash(path), "payload.txt"))
+	if err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if string(content) != wantContent {
+		t.Errorf("payload = %q, want %q", content, wantContent)
+	}
+}

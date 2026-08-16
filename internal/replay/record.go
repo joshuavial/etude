@@ -89,6 +89,7 @@ func (r RunRecorder) Record(
 		Name:       sourceStageName,
 		ProducedBy: "replay",
 		GitSHA:     resolved.GitSHA,
+		Submodules: resolved.Submodules,
 		Skill:      skill,
 		Producer:   res.Producer,
 		Inputs:     sourceInputRefs(resolved),

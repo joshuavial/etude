@@ -76,6 +76,32 @@ func readLiveManifest(t *testing.T, repo, runID string) runmanifest.Manifest {
 	return m
 }
 
+func rewriteLiveManifest(t *testing.T, repo, runID string, mutate func(*runmanifest.Manifest)) {
+	t.Helper()
+	ctx := context.Background()
+	store := refstore.New(repo)
+	ref := runsPrefix + runID
+	commit, err := store.Resolve(ctx, ref)
+	if err != nil {
+		t.Fatalf("resolve run: %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	files := make(map[string][]byte)
+	for _, artifactPath := range runmanifest.ArtifactPaths(m) {
+		files[artifactPath], err = store.ReadCommitFile(ctx, commit, artifactPath)
+		if err != nil {
+			t.Fatalf("read run artifact %q: %v", artifactPath, err)
+		}
+	}
+	mutate(&m)
+	if _, err := runmanifest.WriteManifestTree(ctx, store, runsPrefix, m, files, refstore.WriteOptions{
+		ExpectedOld: commit,
+		Message:     "rewrite live-run test manifest",
+	}); err != nil {
+		t.Fatalf("rewrite manifest: %v", err)
+	}
+}
+
 // stubResolveRunner returns a ResolveRunner factory that always returns stub.
 func stubResolveRunner(stub replay.Runner) func(workflow.Stage) (replay.Runner, error) {
 	return func(workflow.Stage) (replay.Runner, error) { return stub, nil }
@@ -165,6 +191,95 @@ func TestEngineRunThreeStages(t *testing.T) {
 	}
 }
 
+func TestEngineRunCheckReadsPinnedSubmoduleAndManifestRecordsSHA(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	submodule := initTestRepo(t)
+	writeTestFile(t, submodule, "payload.txt", "pinned-content\n")
+	gitRun(t, submodule, "add", "payload.txt")
+	gitRun(t, submodule, "commit", "-m", "pinned payload")
+	pinnedSubmoduleOID := headSHA(t, submodule)
+
+	repo := initTestRepo(t)
+	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
+	checkScript := "#!/bin/sh\nset -eu\nactual=$(cat modules/lib/payload.txt)\nprintf '%s\\n' \"$actual\"\ntest \"$actual\" = pinned-content\nif test ! -f .check-rerun-seen; then touch .check-rerun-seen; exit 1; fi\n"
+	writeTestFile(t, repo, "check-submodule.sh", checkScript)
+	if err := os.Chmod(filepath.Join(repo, "check-submodule.sh"), 0o755); err != nil {
+		t.Fatalf("chmod check script: %v", err)
+	}
+	gitRun(t, repo, "add", ".gitmodules", "modules/lib", "check-submodule.sh")
+	gitRun(t, repo, "commit", "-m", "pin submodule and check")
+	superprojectOID := headSHA(t, repo)
+
+	// Advance the source after the superproject pin. A correct run must still
+	// expose the older content selected by the recorded gitlink.
+	writeTestFile(t, submodule, "payload.txt", "newer-source-content\n")
+	gitRun(t, submodule, "add", "payload.txt")
+	gitRun(t, submodule, "commit", "-m", "newer payload")
+
+	wf := workflow.Workflow{
+		Name: "submodule-check",
+		Stages: []workflow.Stage{
+			{
+				Name:     "verify",
+				Skill:    "sk",
+				Produces: "plan",
+				Inputs:   []string{"task"},
+				Gate: &workflow.GateConfig{
+					Checks:    []workflow.Runner{{Command: "./check-submodule.sh"}},
+					MaxRounds: maxRoundsPtr(2),
+				},
+			},
+			{Name: "review", Skill: "sk", Produces: "review", Inputs: []string{"plan"}},
+		},
+	}
+	runID := "submodule-check-20260101T000000Z-aabbccdd"
+	store := refstore.New(repo)
+	e := Engine{
+		Store:         store,
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage output"), CannedMediaType: "text/plain"}),
+		ResolveCheck: func(r workflow.Runner) (CheckRunner, error) {
+			return &execCheckRunner{command: strings.Fields(r.Command), timeout: 10 * time.Second}, nil
+		},
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: superprojectOID,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	manifest := readLiveManifest(t, repo, runID)
+	if len(manifest.Stages) != 3 {
+		t.Fatalf("stages = %d, want original, gate rerun, and review", len(manifest.Stages))
+	}
+	for i, stage := range manifest.Stages {
+		if stage.GitSHA != superprojectOID {
+			t.Errorf("stage[%d].git_sha = %q, want %q", i, stage.GitSHA, superprojectOID)
+		}
+		if got := stage.Submodules["modules/lib"]; got != pinnedSubmoduleOID {
+			t.Errorf("stage[%d].submodules[modules/lib] = %q, want %q", i, got, pinnedSubmoduleOID)
+		}
+	}
+	if len(manifest.Gates) != 2 || len(manifest.Gates[1].Seats) != 1 {
+		t.Fatalf("gate check record missing: %+v", manifest.Gates)
+	}
+	if manifest.Gates[0].Status != runmanifest.GateStatusRerun || manifest.Gates[1].Status != runmanifest.GateStatusPass {
+		t.Fatalf("gate statuses = %q, %q, want rerun then pass", manifest.Gates[0].Status, manifest.Gates[1].Status)
+	}
+	rawRef := manifest.Gates[1].Seats[0].RawOutput
+	if rawRef == nil {
+		t.Fatal("check raw output was not recorded")
+	}
+	raw, err := store.ReadFile(context.Background(), "refs/etude/runs/"+runID, rawRef.Path)
+	if err != nil {
+		t.Fatalf("read check raw output: %v", err)
+	}
+	if string(raw) != "pinned-content\n" {
+		t.Fatalf("check raw output = %q, want pinned content", raw)
+	}
+}
+
 // AC4: Stage B's input ArtifactRef equals Stage A's output ArtifactRef.
 func TestEngineArtifactRefChaining(t *testing.T) {
 	repo := initTestRepo(t)
@@ -217,7 +332,12 @@ func TestEngineArtifactRefChaining(t *testing.T) {
 
 // AC3: Stop-and-capture on failure + resume completes the run.
 func TestEngineResumeAfterFailure(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
 	repo := initTestRepo(t)
+	submodule := initTestRepo(t)
+	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
+	gitRun(t, repo, "commit", "-am", "add submodule")
+	submoduleOID := headSHA(t, submodule)
 	sha := headSHA(t, repo)
 	store := refstore.New(repo)
 
@@ -360,6 +480,11 @@ func TestEngineResumeAfterFailure(t *testing.T) {
 	if len(m.Stages) != 3 {
 		t.Fatalf("final manifest stages = %d, want 3", len(m.Stages))
 	}
+	for i, stage := range m.Stages {
+		if got := stage.Submodules["modules/lib"]; got != submoduleOID {
+			t.Errorf("resumed stage[%d] submodule OID = %q, want %q", i, got, submoduleOID)
+		}
+	}
 
 	// Explicit reseed byte-presence: the resumed stage-b CAS append could only
 	// succeed if the task input blob AND stage-a's output blob were reseeded with
@@ -390,6 +515,49 @@ func TestEngineResumeAfterFailure(t *testing.T) {
 		if len(b) == 0 {
 			t.Errorf("reseeded blob %q is empty", p)
 		}
+	}
+}
+
+func TestEngineResumeSubmoduleMismatchDoesNotResolveRunner(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+	repo := initTestRepo(t)
+	submodule := initTestRepo(t)
+	gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/lib")
+	gitRun(t, repo, "commit", "-am", "add submodule")
+
+	const runID = "mywf-20260101T000000Z-submodule-mismatch"
+	wf := threeStageWorkflow()
+	e := Engine{
+		Store: refstore.New(repo),
+		ResolveRunner: func(stage workflow.Stage) (replay.Runner, error) {
+			if stage.Name == "stage-b" {
+				return &replay.StubRunner{Err: errors.New("stop after stage-a")}, nil
+			}
+			return &replay.StubRunner{CannedOutput: []byte("ok")}, nil
+		},
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: headSHA(t, repo),
+	}); err == nil {
+		t.Fatal("initial run succeeded, want stage-b failure")
+	}
+	rewriteLiveManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].Submodules = map[string]string{"modules/lib": strings.Repeat("a", 40)}
+	})
+
+	resolveCalls := 0
+	e.ResolveRunner = func(workflow.Stage) (replay.Runner, error) {
+		resolveCalls++
+		return &replay.StubRunner{CannedOutput: []byte("unexpected")}, nil
+	}
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{ResumeID: runID})
+	if err == nil || !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("resume error = %v, want submodule mismatch", err)
+	}
+	if resolveCalls != 0 {
+		t.Fatalf("ResolveRunner calls = %d, want 0", resolveCalls)
 	}
 }
 

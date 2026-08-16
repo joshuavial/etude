@@ -63,6 +63,14 @@ func ReplayForward(
 		}
 	}
 	defer wt.Close()
+	for i, stage := range manifest.Stages {
+		if stage.GitSHA != gitSHA {
+			return fmt.Errorf("stage[%d] git sha %q does not match %q", i, stage.GitSHA, gitSHA)
+		}
+		if err := wt.ValidateSubmodules(stage.Submodules); err != nil {
+			return fmt.Errorf("stage %q: %w", stage.Name, err)
+		}
+	}
 
 	scratch, err := os.MkdirTemp("", "etude-forward-replay-scratch-*")
 	if err != nil {
