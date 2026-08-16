@@ -244,16 +244,6 @@ func Default() Registry {
 				Harness:  "claude-code",
 				Invoke:   "claude -p --model opus",
 			},
-			"gemini": {
-				Provider: "google/gemini-3.1-pro-preview",
-				Harness:  "gemini-cli",
-				// No -p: the adapter pipes the prompt on stdin and gemini runs
-				// headless whenever stdin is not a TTY. -p is unusable here anyway,
-				// since strings.Fields would shred a multi-word prompt value.
-				Invoke:         "scripts/seat-adapter.sh gemini env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview",
-				Mode:           "inline-no-tools",
-				ModelFallbacks: []string{"gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"},
-			},
 			"opus": {
 				Provider: "anthropic/claude-opus",
 				Harness:  "claude-code",
@@ -269,17 +259,18 @@ func Default() Registry {
 					Harness: "claude-code-subagent",
 					Invoke:  "in-harness:task subagent_type=general-purpose model=opus",
 					Mode:    "inline",
-				}, {
-					Harness: "agy",
-					Invoke:  "scripts/seat-adapter.sh opus agy --model opus --print",
-					Mode:    "inline",
 				}},
 			},
 		},
 		Tiers: map[string]Tier{
 			"L1": {
-				Name:  "Full three-seat gate",
-				Seats: []string{"gemini", "opus", "codex"},
+				// The gemini seat was removed 2026-08-16: the CLI fails before
+				// review with IneligibleTierError for individual accounts, and
+				// Google's migration path is the Antigravity (agy) CLI, which is
+				// deliberately not used. This panel is therefore identical to L2
+				// and L3 until a genuine third seat is restored.
+				Name:  "Heaviest gate",
+				Seats: []string{"opus", "codex"},
 				Use:   "Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage format / ref-namespace / git-plumbing changes that could lose or corrupt data, or break backward compatibility.",
 			},
 			"L2": {

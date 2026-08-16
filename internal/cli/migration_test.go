@@ -67,13 +67,13 @@ func TestMigrationRegistryParsesAndValidates(t *testing.T) {
 	if got := reg.EffectiveQuorum(); got != "unanimous" {
 		t.Errorf("quorum = %q, want %q", got, "unanimous")
 	}
-	if got := len(reg.Seats); got != 4 {
-		t.Errorf("seat count = %d, want 4 (opus/codex/gemini/dev)", got)
+	if got := len(reg.Seats); got != 3 {
+		t.Errorf("seat count = %d, want 3 (opus/codex/dev)", got)
 	}
 	if got := len(reg.Tiers); got != 4 {
 		t.Errorf("tier count = %d, want 4 (L1/L2/L3/L4)", got)
 	}
-	for _, name := range []string{"opus", "codex", "gemini", "dev"} {
+	for _, name := range []string{"opus", "codex", "dev"} {
 		if _, ok := reg.Seats[name]; !ok {
 			t.Errorf("seat %q missing from registry", name)
 		}
@@ -99,12 +99,11 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 		t.Fatalf("registry.ParseYAML: %v", err)
 	}
 
-	gemini, ok := reg.Seats["gemini"]
-	if !ok {
-		t.Fatal("gemini seat missing")
-	}
-	if !strings.Contains(gemini.Invoke, "--skip-trust") {
-		t.Errorf("gemini invoke missing --skip-trust: %q", gemini.Invoke)
+	// The gemini seat was removed 2026-08-16: the CLI fails before review with
+	// IneligibleTierError for individual accounts. Assert it stays gone so a
+	// regenerated registry cannot silently reintroduce an unreachable seat.
+	if _, ok := reg.Seats["gemini"]; ok {
+		t.Error("gemini seat present; it was removed as unreachable")
 	}
 
 	codex, ok := reg.Seats["codex"]
@@ -138,8 +137,8 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 		t.Fatal("opus seat missing")
 	}
 	invocations := opus.Invocations()
-	if len(invocations) != 3 {
-		t.Fatalf("opus invocations = %v, want primary + in-harness sub-agent + agy", invocations)
+	if len(invocations) != 2 {
+		t.Fatalf("opus invocations = %v, want primary + in-harness sub-agent", invocations)
 	}
 	if invocations[0].Harness != "claude-code" || !strings.Contains(invocations[0].Invoke, "claude -p --model opus") {
 		t.Errorf("opus primary invocation = %+v", invocations[0])
@@ -160,8 +159,13 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 			t.Errorf("sub-agent candidate missing %q: %q", want, invocations[1].Invoke)
 		}
 	}
-	if invocations[2].Harness != "agy" || !strings.Contains(invocations[2].Invoke, "agy --model opus --print") || invocations[2].Mode != "inline" {
-		t.Errorf("opus agy fallback = %+v", invocations[2])
+	// The agy fallback was removed 2026-08-16 along with the gemini seat. Assert
+	// it stays gone: agy is the Antigravity CLI, and reintroducing it as an opus
+	// substitute is what let a lane spend a day concluding opus was unreachable.
+	for i, inv := range invocations {
+		if inv.Harness == "agy" || strings.Contains(inv.Invoke, "agy ") {
+			t.Errorf("agy invocation present at [%d]: %+v", i, inv)
+		}
 	}
 
 	// Every REVIEW seat must invoke through the adapter on any candidate that is
@@ -169,7 +173,7 @@ func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
 	// $ETUDE_OUTPUT_FILE, so etude classifies it `empty` and the gate escalates —
 	// the command would ship unable to gate anything. (`dev` is a stage RUNNER,
 	// not a review seat, so it is exempt; in-harness candidates are not exec'd.)
-	for _, name := range []string{"opus", "codex", "gemini"} {
+	for _, name := range []string{"opus", "codex"} {
 		seat, ok := reg.Seats[name]
 		if !ok {
 			t.Errorf("review seat %q missing from registry", name)

@@ -23,15 +23,6 @@ seats:
     provider: anthropic/claude-opus
     harness: claude-code
     invoke: claude -p --model opus
-  gemini:
-    provider: google/gemini-3.1-pro-preview
-    harness: gemini-cli
-    invoke: scripts/seat-adapter.sh gemini env -u GOOGLE_CLOUD_PROJECT_ID -u GOOGLE_CLOUD_PROJECT -u CLOUDSDK_CORE_PROJECT gemini --skip-trust -m gemini-3.1-pro-preview
-    mode: inline-no-tools
-    model_fallbacks:
-      - gemini-3-pro-preview
-      - gemini-3-flash-preview
-      - gemini-2.5-pro
   opus:
     provider: anthropic/claude-opus
     harness: claude-code
@@ -41,14 +32,10 @@ seats:
       - harness: claude-code-subagent
         invoke: in-harness:task subagent_type=general-purpose model=opus
         mode: inline
-      - harness: agy
-        invoke: scripts/seat-adapter.sh opus agy --model opus --print
-        mode: inline
 tiers:
   L1:
-    name: Full three-seat gate
+    name: Heaviest gate
     seats:
-      - gemini
       - opus
       - codex
     use: 'Heaviest; reserve for the riskiest L1 surfaces or when escalating: storage format / ref-namespace / git-plumbing changes that could lose or corrupt data, or break backward compatibility.'
@@ -888,7 +875,7 @@ func TestDefaultYAMLSelfChecks(t *testing.T) {
 		t.Fatalf("Validate after self-check error: %v", err)
 	}
 	// Verify the output contains all expected seat keys.
-	for _, key := range []string{"codex", "dev", "gemini", "opus"} {
+	for _, key := range []string{"codex", "dev", "opus"} {
 		if !strings.Contains(string(b), key+":") {
 			t.Fatalf("YAML output missing seat %q:\n%s", key, b)
 		}
