@@ -2432,6 +2432,7 @@ func TestEngineResumeDoesNotAdvancePastInterruptedGateRerun(t *testing.T) {
 // RunResult with a Session field populated.
 type sessionStubRunner struct {
 	output          []byte
+	log             []byte
 	transcriptName  string
 	transcriptBytes []byte
 	sessionID       string
@@ -2439,15 +2440,18 @@ type sessionStubRunner struct {
 }
 
 func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
-	path := filepath.Join(req.ScratchDir, r.transcriptName)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return replay.RunResult{}, err
-	}
-	if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
-		return replay.RunResult{}, err
+	if r.transcriptName != "" {
+		path := filepath.Join(req.ScratchDir, r.transcriptName)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return replay.RunResult{}, err
+		}
+		if err := os.WriteFile(path, r.transcriptBytes, 0o644); err != nil {
+			return replay.RunResult{}, err
+		}
 	}
 	return replay.RunResult{
 		Output:    r.output,
+		Log:       r.log,
 		MediaType: "text/plain; charset=utf-8",
 		Producer: runmanifest.Producer{
 			Harness: runmanifest.Harness{Name: r.harnessName},
@@ -2460,26 +2464,21 @@ func (r *sessionStubRunner) Run(_ context.Context, req replay.RunRequest) (repla
 	}, nil
 }
 
-func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
+func TestProducerSession_WithoutTranscriptIsNotApplicable(t *testing.T) {
 	repo := initTestRepo(t)
 	sha := headSHA(t, repo)
-
 	wf := workflow.Workflow{
 		Name: "mywf",
 		Stages: []workflow.Stage{
 			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
 		},
 	}
-
 	stub := &sessionStubRunner{
-		output:          []byte("plan output"),
-		transcriptName:  "transcript.txt",
-		transcriptBytes: []byte("this is the transcript"),
-		sessionID:       "session-abc",
-		harnessName:     "claude-code",
+		output:      []byte("plan output"),
+		sessionID:   "abc",
+		harnessName: "claude-code",
 	}
-
-	runID := "mywf-20260101T000000Z-sesstest1"
+	runID := "mywf-20260101T000000Z-session-without-transcript"
 	e := &Engine{
 		Store:         refstore.New(repo),
 		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
@@ -2487,35 +2486,95 @@ func TestProducerSession_AgenticStagePopulatesSession(t *testing.T) {
 		Now:           fixedClock(),
 	}
 
-	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
-		TaskBytes: []byte("task"),
-		TaskFile:  "task.txt",
-		RunID:     runID,
-		GitSHA:    sha,
-	})
-	if err != nil {
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	session := readLiveManifest(t, repo, runID).Stages[0].Producer.Session
+	if session == nil || session.SessionID != "abc" || session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
+		t.Fatalf("session = %#v, want id abc with not_applicable retrieval", session)
+	}
+}
 
-	m := readLiveManifest(t, repo, runID)
-	if len(m.Stages) != 1 {
-		t.Fatalf("stages = %d, want 1", len(m.Stages))
-	}
-	sess := m.Stages[0].Producer.Session
-	if sess == nil {
-		t.Fatal("expected non-nil producer.session for agentic stage")
-	}
-	if sess.SessionID != "session-abc" {
-		t.Errorf("session_id = %q, want session-abc", sess.SessionID)
-	}
-	if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
-		t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
-	}
-	if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
-		t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
-	}
-	if sess.TranscriptArtifact == nil {
-		t.Error("expected non-nil transcript_artifact")
+func TestProducerSession_ExplicitInlineSessionPopulatesEvidenceAndLog(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		harness string
+		runID   string
+	}{
+		{name: "inline", harness: "", runID: "mywf-20260101T000000Z-sesstest1"},
+		{name: "named agentic harness", harness: "claude-code", runID: "mywf-20260101T000000Z-sesstest1a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initTestRepo(t)
+			sha := headSHA(t, repo)
+
+			wf := workflow.Workflow{
+				Name: "mywf",
+				Stages: []workflow.Stage{
+					{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+				},
+			}
+
+			stub := &sessionStubRunner{
+				output:          []byte("plan output"),
+				log:             []byte("[stdout bytes=3 dropped=0 retained=head]\nlog"),
+				transcriptName:  "transcript.txt",
+				transcriptBytes: []byte("this is the transcript"),
+				sessionID:       "session-abc",
+				harnessName:     tc.harness,
+			}
+
+			runID := tc.runID
+			e := &Engine{
+				Store:         refstore.New(repo),
+				ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+				Root:          repo,
+				Now:           fixedClock(),
+			}
+
+			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+				TaskBytes: []byte("task"),
+				TaskFile:  "task.txt",
+				RunID:     runID,
+				GitSHA:    sha,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			m := readLiveManifest(t, repo, runID)
+			if len(m.Stages) != 1 {
+				t.Fatalf("stages = %d, want 1", len(m.Stages))
+			}
+			sess := m.Stages[0].Producer.Session
+			if sess == nil {
+				t.Fatal("expected non-nil producer.session for agentic stage")
+			}
+			if sess.SessionID != "session-abc" {
+				t.Errorf("session_id = %q, want session-abc", sess.SessionID)
+			}
+			if sess.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported {
+				t.Errorf("retrieval_status = %q, want imported", sess.RetrievalStatus)
+			}
+			if sess.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+				t.Errorf("redaction_status = %q, want passed", sess.RedactionStatus)
+			}
+			if sess.TranscriptArtifact == nil {
+				t.Error("expected non-nil transcript_artifact")
+			}
+			if m.Stages[0].Log == nil {
+				t.Fatal("expected non-nil stage log")
+			}
+			logBytes, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Log.Path)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			if string(logBytes) != string(stub.log) {
+				t.Fatalf("log = %q, want %q", logBytes, stub.log)
+			}
+		})
 	}
 }
 
@@ -2560,5 +2619,39 @@ func TestProducerSession_DeterministicStageNilSession(t *testing.T) {
 	m := readLiveManifest(t, repo, runID)
 	if m.Stages[0].Producer.Session != nil {
 		t.Error("expected nil producer.session for shell/deterministic stage")
+	}
+}
+
+func TestProducerLog_OverLimitFailsBeforeManifest(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	wf := workflow.Workflow{
+		Name: "mywf",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "sk", Produces: "plan", Inputs: []string{"task"}},
+		},
+	}
+	stub := &sessionStubRunner{
+		output:          []byte("plan output"),
+		log:             bytes.Repeat([]byte("x"), replay.MaxStageLogBytes+1),
+		transcriptName:  "transcript.txt",
+		transcriptBytes: []byte("transcript"),
+		sessionID:       "session",
+	}
+	runID := "mywf-20260101T000000Z-loglimit"
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return stub, nil },
+		Root:          repo,
+		Now:           fixedClock(),
+	}
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner log exceeds") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if _, err := e.Store.Resolve(context.Background(), "refs/etude/runs/"+runID); err == nil {
+		t.Fatal("over-limit runner log wrote a manifest ref")
 	}
 }

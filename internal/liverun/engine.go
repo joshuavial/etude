@@ -970,14 +970,6 @@ func (e *Engine) executeStages(
 	return nil
 }
 
-// isAgenticProducer reports whether a stage runner's result indicates an agentic
-// execution that should capture session evidence. Mirrors the harness-side check
-// from requiresSessionEvidence: non-empty and not "shell".
-func isAgenticProducer(harnessName string) bool {
-	h := strings.ToLower(strings.TrimSpace(harnessName))
-	return h != "" && h != "shell"
-}
-
 // runAndCaptureStage executes a single stage run: resolves the runner,
 // invokes it, stores the output artifact, appends the Stage record to
 // completedStages, and writes an incremental CAS manifest commit.
@@ -1109,10 +1101,17 @@ func (e *Engine) runAndCaptureStage(
 			}
 		}
 	}
+	if len(res.Log) > replay.MaxStageLogBytes {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner log exceeds %d bytes", replay.MaxStageLogBytes)
+	}
 
-	// Build producer session evidence when the runner returned session info
-	// and the stage is agentic (not deterministic/shell).
-	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
+	// An explicit runner session is sufficient evidence even for inline
+	// commands whose producer harness metadata is empty. Runners without a
+	// session retain the deterministic/shell behavior.
+	if res.Session != nil && strings.ToLower(strings.TrimSpace(res.Producer.Harness.Name)) != "shell" {
+		if err := replay.ValidateSessionInfo(res.Session); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner session: %w", err)
+		}
 		sess := sessionInfoFields{
 			SessionID:      res.Session.SessionID,
 			TranscriptURI:  res.Session.TranscriptURI,
@@ -1126,6 +1125,16 @@ func (e *Engine) runAndCaptureStage(
 			// Non-fatal: log the note but do not fail the stage.
 			fmt.Fprintf(os.Stderr, "stage %s: session evidence note: %s\n", stageName, note)
 		}
+	}
+
+	var logRef *runmanifest.ArtifactRef
+	if len(res.Log) > 0 {
+		logArtifact, err := as.AddContent(stageName+"-log", "application/octet-stream", res.Log)
+		if err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store log: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
+		logRef = &ref
 	}
 
 	outputMediaType := res.MediaType
@@ -1148,6 +1157,7 @@ func (e *Engine) runAndCaptureStage(
 		Producer:        producer,
 		Inputs:          inputRefs,
 		Output:          outRef,
+		Log:             logRef,
 		Timestamp:       e.clock(),
 	})
 

@@ -2362,6 +2362,7 @@ func TestWorkflowEnvAllowlist_ValidationRejects(t *testing.T) {
 		{"reserved PATH", []string{"PATH"}},
 		{"reserved ETUDE_INPUTS_DIR", []string{"ETUDE_INPUTS_DIR"}},
 		{"reserved ETUDE_OUTPUT_FILE", []string{"ETUDE_OUTPUT_FILE"}},
+		{"reserved ETUDE_SESSION_FILE", []string{"ETUDE_SESSION_FILE"}},
 		{"duplicate", []string{"FOO", "FOO"}},
 	}
 	for _, tc := range cases {

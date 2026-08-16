@@ -28,13 +28,14 @@ var specialRoles = map[string]bool{
 	"repo-state": true,
 }
 
-// reservedEnvNames are the three env var names that ExecRunner always controls.
+// reservedEnvNames are the four env var names that ExecRunner always controls.
 // They must not appear in env_allowlist (fail-fast at validation; the runtime
 // reserved-skip in ExecRunner is defense-in-depth only).
 var reservedEnvNames = map[string]bool{
-	"PATH":              true,
-	"ETUDE_INPUTS_DIR":  true,
-	"ETUDE_OUTPUT_FILE": true,
+	"PATH":               true,
+	"ETUDE_INPUTS_DIR":   true,
+	"ETUDE_OUTPUT_FILE":  true,
+	"ETUDE_SESSION_FILE": true,
 }
 
 // validEvalMethods is the closed set of eval method strings.

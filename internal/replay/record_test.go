@@ -52,6 +52,8 @@ func TestRunRecorderHappyPath(t *testing.T) {
 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
 	res := RunResult{
 		Output:    []byte("replay output bytes"),
+		Log:       []byte("replay log bytes"),
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptURI: "file:///replay-transcript"},
 		MediaType: "text/plain; charset=utf-8",
 		Producer: runmanifest.Producer{
 			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
@@ -101,6 +103,22 @@ func TestRunRecorderHappyPath(t *testing.T) {
 		t.Fatalf("stages = %d, want 1", len(m.Stages))
 	}
 	s := m.Stages[0]
+	if s.Log == nil {
+		t.Fatal("Log is nil")
+	}
+	if s.Producer.Session == nil || s.Producer.Session.SessionID != "replay-session" {
+		t.Fatalf("producer session = %#v", s.Producer.Session)
+	}
+	if s.Producer.Session.TranscriptURI != "file:///replay-transcript" || s.Producer.Session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
+		t.Fatalf("producer session metadata = %#v", s.Producer.Session)
+	}
+	logBytes, err := store.ReadCommitFile(context.Background(), recorded.Commit, s.Log.Path)
+	if err != nil {
+		t.Fatalf("ReadCommitFile log: %v", err)
+	}
+	if !bytes.Equal(logBytes, res.Log) {
+		t.Fatalf("log bytes = %q, want %q", logBytes, res.Log)
+	}
 
 	if s.ProducedBy != "replay" {
 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
@@ -389,6 +407,22 @@ func TestRunRecorderAcceptsEmptyOutput(t *testing.T) {
 	}
 	if recorded.OutputArtifact == "" {
 		t.Error("OutputArtifact is empty even for zero-byte output")
+	}
+}
+
+func TestRunRecorderRejectsOverLimitLog(t *testing.T) {
+	store, _, resolved := seedRunForRecord(t)
+	res := RunResult{
+		Output:    []byte("output"),
+		MediaType: "text/plain",
+		Log:       bytes.Repeat([]byte("x"), MaxStageLogBytes+1),
+		Producer: runmanifest.Producer{
+			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
+		},
+	}
+	_, err := (RunRecorder{Store: store}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err == nil || !strings.Contains(err.Error(), "runner log exceeds") {
+		t.Fatalf("Record error = %v", err)
 	}
 }
 

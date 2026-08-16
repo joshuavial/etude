@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/joshuavial/etude/internal/artifactstore"
@@ -68,6 +69,18 @@ func (r RunRecorder) Record(
 	if err != nil {
 		return RecordedRun{}, fmt.Errorf("record: store output artifact: %w", err)
 	}
+	var logRef *runmanifest.ArtifactRef
+	if len(res.Log) > 0 {
+		if len(res.Log) > MaxStageLogBytes {
+			return RecordedRun{}, fmt.Errorf("record: runner log exceeds %d bytes", MaxStageLogBytes)
+		}
+		logArtifact, err := as.AddContent(sourceStageName+"-log", "application/octet-stream", res.Log)
+		if err != nil {
+			return RecordedRun{}, fmt.Errorf("record: store log artifact: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
+		logRef = &ref
+	}
 	files := as.Files()
 
 	// Copy each source input raw from the source commit. Using ReadCommitFile
@@ -84,16 +97,29 @@ func (r RunRecorder) Record(
 
 	// Build the stage. Both Stage.Skill and Stage.Producer must be set
 	// (mirrors capture.go's pattern; validateStage requires Skill fields).
-	skill := res.Producer.Skill
+	producer := res.Producer
+	if res.Session != nil && strings.ToLower(strings.TrimSpace(producer.Harness.Name)) != "shell" {
+		if err := ValidateSessionInfo(res.Session); err != nil {
+			return RecordedRun{}, fmt.Errorf("record: runner session: %w", err)
+		}
+		producer.Session = &runmanifest.SessionEvidence{
+			SessionID:       res.Session.SessionID,
+			TranscriptURI:   res.Session.TranscriptURI,
+			RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+			RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+		}
+	}
+	skill := producer.Skill
 	stage := runmanifest.Stage{
 		Name:       sourceStageName,
 		ProducedBy: "replay",
 		GitSHA:     resolved.RunGitSHA,
 		Submodules: resolved.Submodules,
 		Skill:      skill,
-		Producer:   res.Producer,
+		Producer:   producer,
 		Inputs:     sourceInputRefs(resolved),
 		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
+		Log:        logRef,
 		Timestamp:  now,
 		ReplayOf: &runmanifest.ReplayLink{
 			RunID:  sourceRunID,

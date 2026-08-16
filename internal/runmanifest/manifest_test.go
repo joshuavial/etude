@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -226,6 +227,51 @@ func TestSubmodulesJSONRoundTripAndLegacyOmission(t *testing.T) {
 	}
 	if strings.Contains(string(legacyCompatible), `"submodules"`) {
 		t.Fatalf("empty submodules should be omitted:\n%s", legacyCompatible)
+	}
+}
+
+func TestStageLogRoundTripsAndIsReferenced(t *testing.T) {
+	store := artifactstore.New()
+	output, err := store.AddContent("output", "text/plain", []byte("output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logArtifact, err := store.AddContent("plan-log", "application/octet-stream", []byte("log bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := validManifest(ArtifactFromManifestArtifact(output))
+	logRef := ArtifactFromManifestArtifact(logArtifact)
+	manifest.Stages[0].Log = &logRef
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseJSON(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Stages[0].Log == nil || parsed.Stages[0].Log.Artifact != logRef.Artifact {
+		t.Fatalf("log = %#v", parsed.Stages[0].Log)
+	}
+	paths := ArtifactPaths(parsed)
+	if !slices.Contains(paths, logRef.Path) {
+		t.Fatalf("ArtifactPaths = %#v, missing log", paths)
+	}
+}
+
+func TestStageLogOmittedForLegacyShape(t *testing.T) {
+	manifest := validManifest(contentArtifact("output", "text/plain", []byte("out")))
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseJSON(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Stages[0].Log != nil {
+		t.Fatalf("log should be nil: %#v", parsed.Stages[0].Log)
 	}
 }
 

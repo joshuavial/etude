@@ -50,6 +50,43 @@ func ReadRegularFileUnder(root, path string) ([]byte, error) {
 	return readCheckedRegularFile(checkedPath)
 }
 
+// ReadRegularFileUnderLimit is ReadRegularFileUnder with a hard byte cap. It
+// reads at most limit+1 bytes from the already-open regular file so a writer
+// cannot race a size pre-check and exceed the cap.
+func ReadRegularFileUnderLimit(root, path string, limit int64) ([]byte, error) {
+	checkedPath, err := checkedRegularPath(path, root)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := os.Lstat(checkedPath)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	f, err := os.OpenFile(checkedPath, os.O_RDONLY|nofollowFlag|nonblockFlag, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err = f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	content, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, fmt.Errorf("file exceeds %d byte limit", limit)
+	}
+	return content, nil
+}
+
 func readCheckedRegularFile(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
 	if err != nil {

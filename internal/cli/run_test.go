@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -292,6 +293,26 @@ func TestRunShowExistingRun(t *testing.T) {
 
 	if stderr != "" {
 		t.Fatalf("stderr not empty: %q", stderr)
+	}
+}
+
+func TestPrintRunDetailShowsLogDigestAndSize(t *testing.T) {
+	logRef := runmanifest.ArtifactRef{
+		Role: "plan-log", Artifact: strings.Repeat("a", 64),
+		Path:      "artifacts/sha256/aa/" + strings.Repeat("a", 64),
+		MediaType: "application/octet-stream", Storage: artifactstore.StorageContent, Size: 109,
+	}
+	m := runmanifest.Manifest{RunID: "run", Workflow: "wf", WorkflowVersion: "v1", Stages: []runmanifest.Stage{{
+		Name: "plan", Producer: runmanifest.Producer{Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"}},
+		Output: runmanifest.ArtifactRef{Role: "output"}, Log: &logRef,
+	}}}
+	var out bytes.Buffer
+	if err := printRunDetail(&out, m); err != nil {
+		t.Fatal(err)
+	}
+	want := "log:    digest=" + strings.Repeat("a", 64) + " size=109 media-type=application/octet-stream"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("output missing %q:\n%s", want, out.String())
 	}
 }
 
