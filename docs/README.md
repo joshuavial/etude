@@ -8,6 +8,7 @@ This directory holds user-facing documentation for implemented behavior.
 ## Sections
 
 - [Init](init.md) - scaffold `.etude/` config and register `refs/etude/*` refspecs.
+- [Doctor](doctor.md) - check Etude setup and receive safe, specific remediation guidance.
 - [Manual Capture](capture.md) - record local file artifacts into a run ref.
 - [Batch Capture](capture-run.md) - capture a complete multi-stage run from a single YAML spec.
 - [Runs](run.md) - list and inspect stored runs.

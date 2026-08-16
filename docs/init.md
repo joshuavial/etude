@@ -190,9 +190,10 @@ the condition and point here; they deliberately **do not embed a runnable
 command**. Emitting a remediation that is correct in every state a setup command
 can observe turned out to be its own source of bugs — a placeholder URL git
 accepts, a preview that dropped the `--remote` selection, a quoted command that
-would not parse when pasted. Producing exact remediation is the job of
-`etude doctor`, a read-only health check where the remediation string is the
-deliverable rather than a by-product.
+would not parse when pasted. Producing safe remediation is the job of
+[`etude doctor`](doctor.md), a read-only health check. It prints an exact
+command when one can be derived; when required contents or policy are
+unknowable, it explicitly requests human authorship instead of inventing one.
 
 These checks are deliberately narrow, and they compare **exactly**. Detecting an
 etude-registered fetch refspec on another remote needs no more than that same
@@ -201,8 +202,7 @@ some *other* refspec is equivalent to the canonical one, whether a refspec
 broader than the namespace (`+refs/*:refs/*`) also prunes it, whether a mapping
 preserves ref names — those need a full model of refspec semantics, and
 answering them confidently but wrongly is worse than not answering. That is the
-job of `etude doctor`, a read-only health check tracked separately; `init` does
-not guess.
+job of [`etude doctor`](doctor.md); `init` does not guess.
 
 In particular a refspec broader than `refs/etude/*` **is** dangerous and init
 neither removes nor reports it. It is also your own configuration — deleting it

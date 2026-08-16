@@ -9,7 +9,7 @@
 
 ## Status
 
-Current implementation: `etude init`, manual capture (`etude capture` and
+Current implementation: `etude init`, `etude doctor`, manual capture (`etude capture` and
 `etude capture-gate`), run inspection, sync, replay, bench, gc, and reindex CLIs
 plus internal storage, manifest, workflow-schema, replay, eval, bench, gc, and
 index packages.
@@ -20,6 +20,8 @@ Implemented:
 - Root command help and version output.
 - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
   and configure `refs/etude/*` fetch/push refspecs on a git remote.
+- `etude doctor` to perform a strictly read-only health check of configuration,
+  refspec safety, locally mirrored run refs, configured paths, and reviewer executables.
 - Manual `etude capture` command for local file artifacts.
 - `etude capture-gate` to append structured review-gate reviewer records to a run.
 - `etude gate` to RUN one stage's review gate — resolving the tier and abstraction
@@ -49,7 +51,7 @@ Implemented:
 
 The storage, manifest, workflow-schema, replay, eval, bench, gc, and index
 packages are Go APIs internal to this module. The implemented CLI surface is
-`etude init`, `etude capture`, `etude capture-gate`, `etude capture-run`, `etude gate`,
+`etude init`, `etude doctor`, `etude capture`, `etude capture-gate`, `etude capture-run`, `etude gate`,
 `etude run list`, `etude run show`, `etude sync`, `etude replay`, `etude bench`,
 `etude gc`, `etude import`, `etude reindex`, `etude retro capture`, `etude retro generate`,
 `etude retro list`, `etude retro show`, `etude prime`, `etude log`,
@@ -121,6 +123,7 @@ version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
 ./bin/etude init
 ./bin/etude init --force
 ./bin/etude init --remote upstream
+./bin/etude doctor
 ./bin/etude capture plan --run run-1 --output output=plan.md
 ./bin/etude capture-run spec.yaml
 ./bin/etude run list
@@ -145,6 +148,7 @@ version/CHANGELOG steps, tagging, and the `refs/etude/*` sync caveat — see
 ```
 
 See [Init](docs/init.md) for the init command.
+See [Doctor](docs/doctor.md) for the read-only setup health check.
 See [Manual Capture](docs/capture.md) for the capture command.
 See [Batch Capture](docs/capture-run.md) for `etude capture-run`.
 See [Gate reviewer records](docs/gates.md) for `etude gate`, `etude capture-gate`, and gate inspection.

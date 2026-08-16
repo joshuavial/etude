@@ -32,7 +32,8 @@ works even if `etude init` was never run.
 refs**, and it is the only thing that does so.
 
 A plain `git fetch` also brings the namespace down, but into the per-remote
-mirror at `refs/etude-mirror/<remote>/…`, never into `refs/etude/*`. That
+mirror at `refs/etude-mirror/<remote>/<kind>/…`, never into the authoritative
+`refs/etude/<kind>/…` namespace. That
 distinction is what makes `git fetch --prune` safe — prune can only reach mirror
 refs — and it is why sync's own refspecs are passed explicitly rather than read
 from config. See [Local refs and remote mirrors](init.md#local-refs-and-remote-mirrors).
@@ -140,10 +141,11 @@ etude sync --remote upstream
 
 ## Relationship to etude init
 
-`etude init` writes the `+refs/etude/*:refs/etude/*` fetch refspec into git
-config so that `git fetch` picks up the namespace automatically on subsequent
-plain fetches. `etude sync` passes the refspec explicitly and does not rely on
-the config entry, so it works independently of whether init was run.
+`etude init` writes per-kind fetch refspecs that map remote
+`refs/etude/<kind>/*` into `refs/etude-mirror/<remote>/<kind>/*`, plus
+name-preserving push refspecs for the authoritative local namespace. `etude
+sync` passes its own refspecs explicitly and does not rely on those config
+entries, so it works independently of whether init was run.
 
 See [Init](init.md) for the init command.
 
