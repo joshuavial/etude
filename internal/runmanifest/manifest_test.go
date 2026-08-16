@@ -1765,8 +1765,8 @@ func TestValidateGateRejects(t *testing.T) {
 	})
 }
 
-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2,
-// 3, and 4 while rejecting unsupported versions.
+// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3,
+// and 4, and rejects unsupported versions with ErrInvalidManifest.
 func TestVersionAllowlist(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	m := validManifest(output)
@@ -1798,16 +1798,19 @@ func TestVersionAllowlist(t *testing.T) {
 		}
 	})
 
+	// Version 4 is one capability level shared by caller provenance and logs.
 	t.Run("accept version 4", func(t *testing.T) {
 		m4 := validManifest(output)
 		m4.Stages[0].RunnerWorkspace = "caller"
 		m4.Stages[0].GitSHA = strings.Repeat("b", 40)
 		m4.OriginalGitSHA = strings.Repeat("a", 40)
+		log := contentArtifact("stage-log", "application/octet-stream", []byte("log"))
+		m4.Stages[0].Log = &log
 		j, err := m4.JSON()
 		if err != nil {
 			t.Fatalf("JSON: %v", err)
 		}
-		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) || !strings.Contains(string(j), `"original_git_sha": "`+strings.Repeat("a", 40)+`"`) {
+		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) || !strings.Contains(string(j), `"original_git_sha": "`+strings.Repeat("a", 40)+`"`) || !strings.Contains(string(j), `"stage-log"`) {
 			t.Fatalf("caller workspace manifest does not emit v4 field:\n%s", j)
 		}
 		got, err := ParseJSON(j)
@@ -1819,6 +1822,27 @@ func TestVersionAllowlist(t *testing.T) {
 		}
 		if got.OriginalCheckout() != strings.Repeat("a", 40) {
 			t.Fatalf("OriginalCheckout = %q, want 40-char original SHA", got.OriginalCheckout())
+		}
+		if got.Stages[0].Log == nil {
+			t.Fatal("stage log was lost during v4 round trip")
+		}
+	})
+
+	t.Run("accept legacy log versions", func(t *testing.T) {
+		m4 := validManifest(output)
+		log := contentArtifact("stage-log", "application/octet-stream", []byte("log"))
+		m4.Stages[0].Log = &log
+		j, err := m4.JSON()
+		if err != nil {
+			t.Fatalf("JSON: %v", err)
+		}
+		// Development builds briefly emitted stage logs under v2/v3 before v4
+		// existed. Keep those durable refs readable while all new writes use v4.
+		for _, legacyVersion := range []int{2, 3} {
+			legacy := strings.Replace(string(j), `"manifest_version": 4`, fmt.Sprintf(`"manifest_version": %d`, legacyVersion), 1)
+			if _, err := ParseJSON([]byte(legacy)); err != nil {
+				t.Fatalf("ParseJSON rejected legacy stage log at version %d: %v", legacyVersion, err)
+			}
 		}
 	})
 

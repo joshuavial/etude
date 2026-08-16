@@ -73,6 +73,11 @@ The new run contains a single stage with:
 - `inputs` — the source stage's artifact refs, copied verbatim (byte-identical
   content-addressed refs).
 - `output` — the artifact produced by the replay run.
+- `log` — the bounded successful runner stdout/stderr artifact, when either
+  stream was non-empty.
+- `producer.session` — the replay runner's reported session identity and, when
+  `transcript_path` resolves beneath replay scratch or its pinned worktree, the
+  imported and secret-scanned transcript artifact.
 - `replay_of` — a link back to the source: `{run_id, stage, commit}`, where
   `commit` is the immutable git commit of the source run ref (not the stage's
   `git_sha`). This pins the link durably even if the source run ref is later
@@ -80,6 +85,13 @@ The new run contains a single stage with:
 
 The `replay_of` field is required for any stage with `produced_by: "replay"`,
 and forbidden otherwise. The manifest validator enforces this bidirectionally.
+
+Transcript capture is best-effort at record time, matching live-stage capture.
+An unreadable transcript or one that fails the secret scan leaves durable
+failed evidence but does not discard an otherwise valid replay output;
+rejected bytes are never stored. If a later gate rerun would depend on a
+redaction-failed transcript, that handoff fails closed before invoking the next
+stage runner.
 
 ### Confirmation and output
 
@@ -119,18 +131,23 @@ The runner is invoked as an external process with:
 
 - **Working directory** set to the throwaway worktree (a pristine checkout of
   the run's original git SHA).
-- **Environment** restricted to three variables:
+- **Environment** restricted to four variables:
   - `PATH` — inherited from the calling process.
   - `ETUDE_INPUTS_DIR` — path to a directory containing one file per stage
     input, named `<NN>-<role>` (two-digit zero-padded index, then the input
     role). For example: `00-context`, `01-rubric`.
   - `ETUDE_OUTPUT_FILE` — path the runner must write its output to. The file
     does not exist before the runner is called; the runner must create it.
-- **Stdout and stderr** are captured but not forwarded to the terminal. Stderr
-  appears in error messages only when the runner exits non-zero.
+  - `ETUDE_SESSION_FILE` — optional JSON sidecar path for session identity and
+    transcript location; publish it atomically as described in
+    [Runs](run.md#producer-session-evidence).
+- **Stdout and stderr** are captured but not forwarded to the terminal. On a
+  successful recorded replay they are stored as the bounded stage-log artifact;
+  stderr appears in error messages when the runner exits non-zero.
 
-All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`, and
-`ETUDE_OUTPUT_FILE` are stripped from the runner's environment.
+All environment variables other than `PATH`, `ETUDE_INPUTS_DIR`,
+`ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE` are stripped from the runner's
+environment.
 
 After the runner exits, `etude replay` reads the file at `ETUDE_OUTPUT_FILE`
 and emits its bytes as the replay output (to stdout or to `--output <path>`).

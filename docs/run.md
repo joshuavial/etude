@@ -541,7 +541,10 @@ rerun continues without transcript bytes. The redaction status reports whether
 the transcript secret scan passed or failed. A transcript that was imported
 but failed that scan stops the rerun before its stage runner is invoked.
 Output and stage-log artifacts follow their existing storage contract and are
-not secret-scanned.
+not secret-scanned. Prior-attempt logs are handed to every later rerun as raw
+inputs, so a credential printed by a producer can persist in the run and cross
+attempt boundaries; runner authors must treat stdout and stderr as durable,
+shared evidence rather than an ephemeral console.
 
 Session ids are opaque and compared byte-for-byte; whitespace is used only to
 recognize an empty id. Reusing an exact non-empty id marks the later attempt as
@@ -565,14 +568,15 @@ by unusable model seats is resumable; substantive reviewer decisions remain
 terminal.
 
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
-manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present).
-Version 4 also requires the run-level `original_git_sha` that pins hermetic
-execution independently of caller-stage post-run provenance. Gate attempts
-appear after stages in
-`etude run show`. No separate `etude capture-gate` call is required for live
-runs. An effective checkout grant is recorded as `read_checkout: true`; false
-is omitted. The workflow is the authorization source—the manifest field is an
-audit record and is never read back to authorize a later seat.
+manifest (`manifest_version` 3, or version 4 when a stage log is present); gate
+manifest (`manifest_version` 3, or version 4 when a stage log is present or a
+stage uses the caller workspace). Caller-workspace runs also require the
+run-level `original_git_sha` that pins hermetic execution independently of
+caller-stage post-run provenance. Gate attempts appear after stages in `etude
+run show`. No separate `etude capture-gate` call is required for live runs. An
+effective checkout grant is recorded as `read_checkout: true`; false is omitted.
+The workflow is the authorization source—the manifest field is an audit record
+and is never read back to authorize a later seat.
 
 ### Env passthrough
 

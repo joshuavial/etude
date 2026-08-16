@@ -1583,6 +1583,45 @@ func TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs(t *t
 	}
 }
 
+func TestBuildPriorAttemptInputsSeedsSessionHistoryFromPassedAttempts(t *testing.T) {
+	as := artifactstore.New()
+	upstreamArtifact, err := as.AddContent("upstream", "text/plain", []byte("passed output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedArtifact, err := as.AddContent("plan", "text/plain", []byte("blocked output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := func() *runmanifest.SessionEvidence {
+		return &runmanifest.SessionEvidence{
+			SessionID:       "reused-session",
+			RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+			RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+		}
+	}
+	stages := []runmanifest.Stage{
+		{Name: "upstream", Output: runmanifest.ArtifactFromManifestArtifact(upstreamArtifact), Producer: runmanifest.Producer{Session: session()}},
+		{Name: "plan", Output: runmanifest.ArtifactFromManifestArtifact(blockedArtifact), Producer: runmanifest.Producer{Session: session()}},
+	}
+	gates := []runmanifest.GateAttempt{
+		{GateID: "upstream.r1", Phase: "upstream", Round: 1, Status: runmanifest.GateStatusPass, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "upstream"}}},
+		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
+	}
+
+	_, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
+	if err != nil {
+		t.Fatalf("buildPriorAttemptInputs: %v", err)
+	}
+	var index priorAttemptsIndex
+	if err := json.Unmarshal(inputs[0].Content, &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if len(index.Attempts) != 1 || !index.Attempts[0].ResumedSession {
+		t.Fatalf("attempt index = %#v, want killed attempt marked resumed from earlier passed producer", index.Attempts)
+	}
+}
+
 func TestBuildPriorAttemptInputsRequiresOneReviewedStage(t *testing.T) {
 	as := artifactstore.New()
 	outputArtifact, err := as.AddContent("plan", "text/plain", []byte("output"))

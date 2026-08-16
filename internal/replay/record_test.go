@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -173,6 +175,57 @@ func TestRunRecorderUsesResolvedRunCheckout(t *testing.T) {
 	}
 	if got := m.Stages[0].RunnerWorkspace; got != "" {
 		t.Fatalf("recorded replay RunnerWorkspace = %q, want hermetic despite source caller workspace", got)
+	}
+}
+
+func TestRunRecorderImportsSessionTranscript(t *testing.T) {
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	transcript := []byte("recorded replay transcript\n")
+	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: "transcript.jsonl"},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	rec := RunRecorder{
+		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC) },
+		SessionScratchDir: scratch,
+	}
+	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := m.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed || session.TranscriptArtifact == nil {
+		t.Fatalf("session evidence = %#v", session)
+	}
+	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, transcript) {
+		t.Fatalf("transcript bytes = %q, want %q", got, transcript)
+	}
+}
+
+func TestResolveRecordedTranscriptPathRejectsRelativeTraversal(t *testing.T) {
+	if path, root := resolveRecordedTranscriptPath("nested/../../outside", t.TempDir(), t.TempDir()); path != "" || root != "" {
+		t.Fatalf("resolveRecordedTranscriptPath traversal = (%q, %q), want rejection", path, root)
 	}
 }
 

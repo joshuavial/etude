@@ -411,14 +411,13 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
 	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
 	files := as.Files()
-	seenSessions := make(map[string]bool)
 
 	for _, gate := range killingGates {
 		if len(gate.ReviewedStages) != 1 {
 			return nil, nil, fmt.Errorf("prior attempts: gate %s has %d reviewed stages, want exactly one", gate.GateID, len(gate.ReviewedStages))
 		}
 		reviewed := gate.ReviewedStages[0]
-		stage, ok := stageByName(stages, reviewed.Stage)
+		stage, stageIndex, ok := stageByName(stages, reviewed.Stage)
 		if !ok {
 			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s", gate.GateID, reviewed.Stage)
 		}
@@ -460,10 +459,7 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 			// an identifier is blank; non-blank identities compare byte-for-byte.
 			sessionID := session.SessionID
 			nonBlankSessionID := strings.TrimSpace(sessionID) != ""
-			attempt.ResumedSession = nonBlankSessionID && seenSessions[sessionID]
-			if nonBlankSessionID {
-				seenSessions[sessionID] = true
-			}
+			attempt.ResumedSession = nonBlankSessionID && sessionSeenBefore(stages[:stageIndex], sessionID)
 			attempt.TranscriptRetrievalStatus = session.RetrievalStatus
 			attempt.TranscriptRedactionStatus = session.RedactionStatus
 			if err := validatePriorTranscriptEvidence(session); err != nil {
@@ -496,13 +492,22 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 	return refs, inputs, nil
 }
 
-func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, bool) {
+func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, int, bool) {
 	for i := len(stages) - 1; i >= 0; i-- {
 		if stages[i].Name == name {
-			return stages[i], true
+			return stages[i], i, true
 		}
 	}
-	return runmanifest.Stage{}, false
+	return runmanifest.Stage{}, 0, false
+}
+
+func sessionSeenBefore(stages []runmanifest.Stage, sessionID string) bool {
+	for _, stage := range stages {
+		if session := stage.Producer.Session; session != nil && session.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 func appendPriorAttemptArtifact(refs []runmanifest.ArtifactRef, inputs []replay.RunInput, files map[string][]byte, source runmanifest.ArtifactRef, role string) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {

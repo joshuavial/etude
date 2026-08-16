@@ -34,8 +34,8 @@ var (
 type Manifest struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates; 4 = caller-workspace stage provenance.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
 	ManifestVersion int
 	RunID           string
 	Workflow        string
@@ -996,8 +996,8 @@ func cloneBytes(in []byte) []byte {
 type manifestJSON struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates; 4 = caller-workspace stage provenance.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
 	ManifestVersion int    `json:"manifest_version,omitempty"`
 	RunID           string `json:"run_id"`
 	Workflow        string `json:"workflow"`
@@ -1199,7 +1199,7 @@ func (m Manifest) toJSON() manifestJSON {
 		}
 	}
 	for _, stage := range m.Stages {
-		if stage.RunnerWorkspace != "" {
+		if stage.RunnerWorkspace != "" || stage.Log != nil {
 			version = 4
 			break
 		}
@@ -1341,7 +1341,7 @@ func ensureEOF(dec *json.Decoder) error {
 
 func (m manifestJSON) toManifest() (Manifest, error) {
 	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
-	// and 4 (caller-workspace stage provenance).
+	// and 4 (caller-workspace provenance and stage-log artifact refs).
 	// Reject 1 (never emitted) and any future version this binary cannot model.
 	switch m.ManifestVersion {
 	case 0, 2, 3, 4:
@@ -1353,7 +1353,16 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		return Manifest{}, fmt.Errorf("%w: original_git_sha requires manifest_version 4", ErrInvalidManifest)
 	}
 	if m.ManifestVersion == 4 && strings.TrimSpace(m.OriginalGitSHA) == "" {
-		return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha", ErrInvalidManifest)
+		hasStageLog := false
+		for _, stage := range m.Stages {
+			if stage.Log != nil {
+				hasStageLog = true
+				break
+			}
+		}
+		if !hasStageLog {
+			return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha or a stage log", ErrInvalidManifest)
+		}
 	}
 
 	created, err := parseTime("created", m.Created)
