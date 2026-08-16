@@ -68,6 +68,8 @@ type seatSessionEnvelope struct {
 	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
+type gateSeatCheckoutFactory func() (dir string, cleanup func() error, err error)
+
 // execCheckRunner implements CheckRunner using an external command. It
 // materializes inputs and sets the strict env (PATH, ETUDE_INPUTS_DIR,
 // ETUDE_OUTPUT_FILE) identically to replay.ExecRunner, but interprets exit
@@ -570,6 +572,7 @@ func (e *Engine) runGateSeats(
 	as *artifactstore.Store,
 	globalRound int,
 	outputOnly bool,
+	checkoutFactory gateSeatCheckoutFactory,
 ) (seatResults []runmanifest.SeatResult, verdicts []runmanifest.SeatVerdict, blockRequired map[string][]string, ladderNotes []string) {
 	blockRequired = make(map[string][]string)
 
@@ -653,6 +656,25 @@ func (e *Engine) runGateSeats(
 				continue
 			}
 		}
+		var checkoutCleanup func() error
+		if checkoutFactory != nil {
+			checkoutDir, cleanup, checkoutErr := checkoutFactory()
+			if checkoutErr != nil {
+				note := fmt.Sprintf("create pinned seat checkout: %v", checkoutErr)
+				seatResults = append(seatResults, runmanifest.SeatResult{
+					Seat:        seatName,
+					Harness:     runmanifest.Harness{Name: meta.HarnessName},
+					Provider:    runmanifest.Provider{Name: meta.ProviderName, Model: meta.Model},
+					Verdict:     runmanifest.SeatVerdictFailed,
+					FailureNote: note,
+					Timestamp:   e.clock(),
+				})
+				verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
+				continue
+			}
+			seatWorktreeDir = checkoutDir
+			checkoutCleanup = cleanup
+		}
 
 		req := replay.RunRequest{
 			WorktreeDir:     seatWorktreeDir,
@@ -703,7 +725,7 @@ func (e *Engine) runGateSeats(
 		if env != nil {
 			sr.Required = env.Required
 			sr.Optional = env.Optional
-			session, sessionFailure := storeSeatSessionEvidence(as, seatName, seatScratch, worktreeDir, env, meta.RequireSessionEvidence)
+			session, sessionFailure := storeSeatSessionEvidence(as, seatName, seatScratch, seatWorktreeDir, env, meta.RequireSessionEvidence)
 			sr.Session = session
 			if sessionFailure != "" {
 				sr.Verdict = runmanifest.SeatVerdictMalfunction
@@ -720,6 +742,17 @@ func (e *Engine) runGateSeats(
 		}
 		if verdict == runmanifest.SeatVerdictBlock && env != nil {
 			blockRequired[seatName] = env.Required
+		}
+		if checkoutCleanup != nil {
+			if cleanupErr := checkoutCleanup(); cleanupErr != nil {
+				delete(blockRequired, seatName)
+				verdict = runmanifest.SeatVerdictFailed
+				sr.Verdict = verdict
+				sr.FailureNote = fmt.Sprintf("cleanup pinned seat checkout: %v", cleanupErr)
+				seatResults = append(seatResults, sr)
+				verdicts = append(verdicts, verdict)
+				break
+			}
 		}
 
 		seatResults = append(seatResults, sr)
@@ -803,6 +836,22 @@ func pathAtOrBelow(root, path string) (bool, error) {
 	}
 }
 
+func lexicalPathAtOrBelow(root, path string) (bool, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return false, err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
 func outputOnlySeatRunner(runner replay.Runner, commandRoot, neutralDir, commandName string, protectedDirs ...string) (replay.Runner, error) {
 	execRunner, ok := runner.(*replay.ExecRunner)
 	if !ok || execRunner == nil {
@@ -829,7 +878,36 @@ func outputOnlySeatRunner(runner replay.Runner, commandRoot, neutralDir, command
 		}
 		clone.Command[0] = candidate
 	}
-	commandPath, err := filepath.EvalSymlinks(clone.Command[0])
+	originalCommandPath := clone.Command[0]
+	resolvedOriginParent, err := filepath.EvalSymlinks(filepath.Dir(originalCommandPath))
+	if err != nil {
+		return nil, fmt.Errorf("resolve seat executable origin parent: %w", err)
+	}
+	resolvedOriginPath := filepath.Join(resolvedOriginParent, filepath.Base(originalCommandPath))
+	originalInsideCheckout := false
+	for _, protectedDir := range append([]string{commandRoot}, protectedDirs...) {
+		insideConfigured, err := lexicalPathAtOrBelow(protectedDir, originalCommandPath)
+		if err != nil {
+			return nil, fmt.Errorf("compare seat executable origin boundary: %w", err)
+		}
+		resolvedProtected, err := resolveGateDir(protectedDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve seat executable origin boundary: %w", err)
+		}
+		insideResolved, err := lexicalPathAtOrBelow(resolvedProtected, originalCommandPath)
+		if err != nil {
+			return nil, fmt.Errorf("compare resolved seat executable origin boundary: %w", err)
+		}
+		insidePhysicalOrigin, err := lexicalPathAtOrBelow(resolvedProtected, resolvedOriginPath)
+		if err != nil {
+			return nil, fmt.Errorf("compare physical seat executable origin boundary: %w", err)
+		}
+		if insideConfigured || insideResolved || insidePhysicalOrigin {
+			originalInsideCheckout = true
+			break
+		}
+	}
+	commandPath, err := filepath.EvalSymlinks(originalCommandPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve seat executable: %w", err)
 	}
@@ -845,6 +923,9 @@ func outputOnlySeatRunner(runner replay.Runner, commandRoot, neutralDir, command
 		}
 	}
 	if !insideCheckout {
+		if originalInsideCheckout {
+			clone.Command[0] = commandPath
+		}
 		return &clone, nil
 	}
 	info, err := os.Stat(commandPath)
@@ -923,13 +1004,6 @@ func (e *Engine) runGate(
 	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
 
 	thisAttempts := make([]runmanifest.GateAttempt, 0)
-	var pinnedSeatCheckout *worktree.Worktree
-	defer func() {
-		if pinnedSeatCheckout != nil {
-			_ = pinnedSeatCheckout.Close()
-		}
-	}()
-
 	for {
 		// Resolve seats and next-stronger tier for this iteration.
 		var seatNames []string
@@ -953,7 +1027,7 @@ func (e *Engine) runGate(
 		// authority. A checks-only gate has no model seat to grant, so its resolved
 		// grant remains false even if the inert workflow leaf is set.
 		readCheckout := gate.ReadCheckout && len(seatNames) > 0
-		seatWorktreeDir := worktreeDir
+		var checkoutFactory gateSeatCheckoutFactory
 		if readCheckout {
 			gitlink, err := firstCheckoutGitlink(ctx, e.Root, gitSHA)
 			if err != nil {
@@ -964,14 +1038,13 @@ func (e *Engine) runGate(
 				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
 					fmt.Errorf("gate on stage %q: read_checkout cannot inspect submodule gitlink %q until GitHub issue #14 populates submodules and records their SHAs", stage.Name, gitlink)
 			}
-			if pinnedSeatCheckout == nil {
-				pinnedSeatCheckout, err = worktree.Checkout(ctx, e.Root, gitSHA)
-				if err != nil {
-					return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
-						fmt.Errorf("create pinned seat checkout for read_checkout: %w", err)
+			checkoutFactory = func() (string, func() error, error) {
+				checkout, checkoutErr := worktree.Checkout(ctx, e.Root, gitSHA)
+				if checkoutErr != nil {
+					return "", nil, checkoutErr
 				}
+				return checkout.Dir, checkout.Close, nil
 			}
-			seatWorktreeDir = pinnedSeatCheckout.Dir
 		}
 
 		// The stage output this gate round is reviewing.
@@ -996,8 +1069,8 @@ func (e *Engine) runGate(
 		)
 		outputOnly := !readCheckout
 		modelSeatResults, seatVerdicts, seatBlockRequired, gateLadderNotes := e.runGateSeats(
-			ctx, seatWorktreeDir, scratch, seatNames, modelInputs, as, globalRound,
-			outputOnly,
+			ctx, worktreeDir, scratch, seatNames, modelInputs, as, globalRound,
+			outputOnly, checkoutFactory,
 		)
 
 		// Synthesize verdict.

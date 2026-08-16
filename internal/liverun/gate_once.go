@@ -144,7 +144,7 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 
 	as := artifactstore.New()
 	checkSeats, checksPassed, _ := e.runGateChecks(ctx, req.WorktreeDir, req.ScratchDir, gate.Checks, gateInputs, as, round)
-	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round, true)
+	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round, true, nil)
 
 	syn := synthesizeVerdict(
 		checksPassed, verdicts,
@@ -249,7 +249,8 @@ func buildGatePrompt(stage workflow.Stage, gate *workflow.GateConfig, seats []st
 
 	if readCheckout {
 		sb.WriteString("\nCHECKOUT ACCESS: READ-ONLY\n")
-		fmt.Fprintf(&sb, "You may inspect the immutable checkout pinned at commit %s.\n", gitSHA)
+		fmt.Fprintf(&sb, "You may inspect a fresh disposable checkout initialized at commit %s.\n", gitSHA)
+		sb.WriteString("Do not modify it; each seat invocation receives a separate pristine checkout.\n")
 		sb.WriteString("Use checkout reads only to falsify claims made by the artifact.\n")
 	} else {
 		sb.WriteString("\nCHECKOUT ACCESS: OUTPUT-ONLY\n")
