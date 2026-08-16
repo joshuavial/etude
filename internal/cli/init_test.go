@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/registry"
 	"github.com/joshuavial/etude/internal/workflow"
 )
@@ -723,22 +725,23 @@ func TestInitSummaryCounts(t *testing.T) {
 	}
 	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
 
-	// First run: all created + 1 configured (push only — no fetch refspec).
+	// First run: all created + 4 configured — the push refspec plus one mirrored
+	// fetch refspec per etude ref kind (runs, retros, evals).
 	stdout, stderr, err := execute("init")
 	if err != nil {
 		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
 	}
-	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 1 configured", expectedCreated)
+	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 4 configured", expectedCreated)
 	if !strings.Contains(stdout, wantSummary1) {
 		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
 	}
 
-	// Second run: all skipped + 1 configured (already-configured → still in configured bucket).
+	// Second run: all skipped + 4 configured (already-configured → same bucket).
 	stdout2, stderr2, err := execute("init")
 	if err != nil {
 		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
 	}
-	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 1 configured", expectedCreated)
+	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 4 configured", expectedCreated)
 	if !strings.Contains(stdout2, wantSummary2) {
 		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
 	}
@@ -1282,5 +1285,282 @@ func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
 	}
 	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(got, canonicalPushRefspec) {
 		t.Fatalf("non-force init did not repair the push refspec: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// etude-jqs: fetched refs mirror to the SIBLING namespace refs/etude-mirror/,
+// so a configured fetch refspec is safe to have again — `git fetch --prune` can
+// only ever delete a disposable mirror ref, never a locally-produced one.
+// ---------------------------------------------------------------------------
+
+func TestInitRegistersMirroredFetchRefspecs(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+	}
+	// The oracle is a LITERAL list, deliberately not refstore.Kinds: a test that
+	// loops over the same enumeration it is checking cannot detect that
+	// enumeration regressing (drop "evals" and both the loop and the count agree
+	// with the bug). Assert the enumeration against the literal too.
+	wantKinds := []string{"runs", "retros", "evals"}
+	if !reflect.DeepEqual(refstore.Kinds, wantKinds) {
+		t.Fatalf("refstore.Kinds = %#v, want %#v — refspec coverage is driven from this", refstore.Kinds, wantKinds)
+	}
+	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+	for _, kind := range wantKinds {
+		want := "+refs/etude/" + kind + "/*:refs/etude-mirror/origin/" + kind + "/*"
+		if !strings.Contains(got, want) {
+			t.Errorf("missing mirrored fetch refspec for %q:\nwant %s\ngot:\n%s", kind, want, got)
+		}
+	}
+	if n := strings.Count(got, ":refs/etude-mirror/origin/"); n != len(wantKinds) {
+		t.Errorf("mirrored fetch refspec count = %d, want %d:\n%s", n, len(wantKinds), got)
+	}
+	// The destination must never be the local namespace — that is the i19 hazard.
+	if strings.Contains(got, ":refs/etude/") {
+		t.Fatalf("a fetch refspec still targets the LOCAL namespace: %q", got)
+	}
+}
+
+// The push refspec is deliberately left alone: it spans exactly the local
+// namespaces, which is correct, and it cannot match a sibling mirror. Narrowing
+// it would need a migration whose predicate would also delete a user's own
+// deliberate variant.
+func TestInitLeavesPushRefspecUntouched(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "refs/etude/*:refs/archive/etude/*")
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+	}
+	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+	if !strings.Contains(push, "refs/etude/*:refs/archive/etude/*") {
+		t.Fatalf("init deleted the user's own push refspec: %q", push)
+	}
+	if !strings.Contains(push, canonicalPushRefspec) {
+		t.Fatalf("canonical push refspec missing: %q", push)
+	}
+	// Count, not just survival: --replace-all with a mis-anchored or
+	// metacharacter-naive value pattern could eat the user's variant while
+	// leaving the canonical one, which a Contains check cannot detect.
+	if n := len(strings.Fields(strings.TrimSpace(push))); n != 2 {
+		t.Fatalf("push refspec line count = %d, want 2 (canonical + the user's own):\n%s", n, push)
+	}
+}
+
+// No push refspec spanning refs/etude/* may match the mirror. This is the whole
+// reason the mirror is a SIBLING rather than nested under refs/etude/remotes/.
+func TestPushRefspecCannotMatchMirrorNamespace(t *testing.T) {
+	for _, kind := range refstore.Kinds {
+		mirror := refstore.MirrorPrefix("origin", kind) + "run-1"
+		if strings.HasPrefix(mirror, "refs/etude/") {
+			t.Fatalf("mirror ref %q is inside refs/etude/, so the broad push refspec would upload it", mirror)
+		}
+	}
+}
+
+// The second init must be a no-op on the refspecs it installed. Under the
+// rejected NESTED layout this self-destructed: i19's cleanup removes any fetch
+// refspec whose destination is inside refs/etude/, which a nested mirror is.
+func TestInitDoesNotRemoveItsOwnMirroredFetchRefspec(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+
+	if _, _, err := execute("init"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	first := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+	if _, _, err := execute("init"); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	second := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+	if first != second {
+		t.Fatalf("second init changed the fetch refspecs it installed:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	for _, kind := range []string{"runs", "retros", "evals"} {
+		if n := strings.Count(second, "refs/etude-mirror/origin/"+kind+"/"); n != 1 {
+			t.Errorf("mirrored fetch refspec for %q appears %d times, want exactly 1", kind, n)
+		}
+	}
+}
+
+// The legacy hazard must STILL be removed — the fixture is the literal i19 value.
+func TestInitStillRemovesLegacyBroadFetchRefspecAfterMirroring(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+	seedHazardousFetchRefspec(t, repo, "origin")
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+	}
+	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
+	if strings.Contains(got, "+refs/etude/*:refs/etude/*") {
+		t.Fatalf("legacy hazardous fetch refspec survived: %q", got)
+	}
+	if !strings.Contains(got, "refs/etude-mirror/origin/runs/") {
+		t.Fatalf("mirrored refspec not installed alongside the removal: %q", got)
+	}
+	if !strings.Contains(got, "refs/remotes/origin/*") {
+		t.Fatalf("init removed the branch fetch refspec: %q", got)
+	}
+}
+
+// A remote whose name cannot form a legal ref must never get a mirror refspec.
+//
+// etude validates this itself, and must: `git remote add` refuses such a name,
+// but a remote written straight into config as remote.<name>.url exists anyway
+// and `git remote get-url` SUCCEEDS for it — so remoteExists returns true and
+// init reaches its refspec code with a name that cannot form a legal ref.
+// Deleting etude's check on the assumption git had already caught it installed
+// three unusable refspecs; see refstore.ValidateMirrorRemote.
+func TestInitInstallsNoMirrorRefspecForIllegalRemoteName(t *testing.T) {
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	const evil = "prod:backup"
+	// Written straight into config: `git remote add` would reject the name, which
+	// is the point — this is the only way such a remote can exist.
+	gitCapture(t, repo, "config", "--local", "remote."+evil+".url", "https://example.com/x.git")
+
+	_, stderr, err := execute("init", "--remote", evil)
+	if err == nil {
+		t.Fatalf("init accepted a remote whose name cannot form a legal ref\nstderr: %s", stderr)
+	}
+	got, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote."+evil+".fetch").Output()
+	if strings.Contains(string(got), "refs/etude-mirror") {
+		t.Fatalf("a mirror refspec was installed for a remote that cannot have one: %q", got)
+	}
+}
+
+// Why etude cannot delegate remote-name validation to git, contrary to
+// appearances. `git remote add` rejects a name that cannot form a legal ref —
+// but a remote written straight into config exists anyway and `git remote
+// get-url` succeeds for it, so it reaches etude's refspec code. This pins both
+// halves, because deleting etude's own check on the first half alone shipped
+// three unusable refspecs.
+func TestConfigWrittenRemoteBypassesGitNameValidation(t *testing.T) {
+	repo := initCaptureRepo(t)
+	const evil = "prod:backup"
+
+	// git's porcelain refuses it...
+	if err := exec.Command("git", "-C", repo, "remote", "add", evil, "https://example.com/x.git").Run(); err == nil {
+		t.Fatalf("git remote add accepted %q; this test's premise is gone", evil)
+	}
+	// ...but a config-written remote is visible to get-url, which is what
+	// etude's remoteExists probes.
+	gitCapture(t, repo, "config", "--local", "remote."+evil+".url", "https://example.com/x.git")
+	if err := exec.Command("git", "-C", repo, "remote", "get-url", evil).Run(); err != nil {
+		t.Fatalf("get-url rejected the config-written remote; etude's own validation would then be unreachable and could be deleted: %v", err)
+	}
+	// So the constructed mirror ref really is illegal and etude must catch it.
+	if err := exec.Command("git", "-C", repo, "check-ref-format",
+		refstore.MirrorPrefix(evil, "runs")+"probe").Run(); err == nil {
+		t.Fatalf("expected %q to produce an illegal mirror ref", evil)
+	}
+}
+
+// TestFetchPruneOnlyDeletesFromMirror is the acceptance test for etude-jqs, and
+// the whole reason the bead exists. It drives a REAL `git fetch --prune` against
+// a REAL bare remote and asserts the asymmetry that makes a configured fetch
+// refspec safe again:
+//
+//   - a locally-produced run ref that the remote has never seen SURVIVES;
+//   - a mirror entry whose source has disappeared from the remote IS pruned.
+//
+// Before etude-i19 the first of those was deleted, destroying three recorded
+// gate attempts. i19 fixed it by removing the fetch refspec entirely; this bead
+// restores the refspec while keeping the guarantee.
+func TestFetchPruneOnlyDeletesFromMirror(t *testing.T) {
+	origin := t.TempDir()
+	gitCapture(t, origin, "init", "--bare")
+
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", origin)
+	gitCapture(t, repo, "push", "origin", "HEAD:main")
+	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+
+	// A run that exists only on the remote, so fetching mirrors it.
+	gitCapture(t, origin, "update-ref", "refs/etude/runs/theirs", head)
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+	}
+
+	// A locally-produced run the remote has never seen. This is the ref the
+	// original incident destroyed.
+	gitCapture(t, repo, "update-ref", "refs/etude/runs/mine", head)
+
+	gitCapture(t, repo, "fetch", "--prune", "origin")
+
+	if !refExists(t, repo, "refs/etude/runs/mine") {
+		t.Fatal("git fetch --prune deleted a locally-produced run ref — this is the etude-nad incident reopened")
+	}
+	mirrored := refstore.MirrorPrefix("origin", "runs") + "theirs"
+	if !refExists(t, repo, mirrored) {
+		t.Fatalf("the remote's run was not mirrored to %s", mirrored)
+	}
+
+	// Now the remote deletes its run. Prune must reap the MIRROR entry — that is
+	// what makes the mirror disposable — while the local run is still untouched.
+	gitCapture(t, origin, "update-ref", "-d", "refs/etude/runs/theirs")
+	gitCapture(t, repo, "fetch", "--prune", "origin")
+
+	if refExists(t, repo, mirrored) {
+		t.Fatalf("stale mirror ref %s survived prune; the mirror is supposed to be prunable", mirrored)
+	}
+	if !refExists(t, repo, "refs/etude/runs/mine") {
+		t.Fatal("second prune deleted the locally-produced run ref")
+	}
+}
+
+// TestBroadPushRefspecDoesNotCarryMirrorToRemote settles by DEMONSTRATION, not
+// assertion, the question of whether the broad push refspec must be narrowed.
+//
+// Under the rejected NESTED layout (refs/etude/remotes/<remote>/…) it must be:
+// refs/etude/*:refs/etude/* matches a nested mirror, so a push uploads this
+// clone's copy of origin back to origin. Under the SIBLING layout it cannot,
+// because refs/etude-mirror/… is not inside refs/etude/. This drives a REAL push
+// against a REAL bare remote with the broad refspec left in place and shows the
+// mirror does not travel.
+func TestBroadPushRefspecDoesNotCarryMirrorToRemote(t *testing.T) {
+	origin := t.TempDir()
+	gitCapture(t, origin, "init", "--bare")
+
+	repo := initCaptureRepo(t)
+	chdir(t, repo)
+	gitCapture(t, repo, "remote", "add", "origin", origin)
+	gitCapture(t, repo, "push", "origin", "HEAD:main")
+	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
+	}
+	// The broad push refspec is deliberately left in place by this bead.
+	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
+		t.Fatalf("precondition: expected the broad push refspec to still be configured, got %q", push)
+	}
+
+	// A local run (should travel) and a mirror ref (must NOT).
+	gitCapture(t, repo, "update-ref", "refs/etude/runs/mine", head)
+	gitCapture(t, repo, "update-ref", refstore.MirrorPrefix("origin", "runs")+"theirs", head)
+
+	gitCapture(t, repo, "push", "origin")
+
+	remoteRefs := gitCapture(t, origin, "for-each-ref", "--format=%(refname)")
+	if !strings.Contains(remoteRefs, "refs/etude/runs/mine") {
+		t.Fatalf("the broad push refspec did not carry a local run ref:\n%s", remoteRefs)
+	}
+	if strings.Contains(remoteRefs, "etude-mirror") {
+		t.Fatalf("the broad push refspec carried the MIRROR namespace to the remote — "+
+			"narrowing it would be required after all:\n%s", remoteRefs)
 	}
 }

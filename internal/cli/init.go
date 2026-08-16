@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/registry"
 	"github.com/joshuavial/etude/internal/workflow"
 	"github.com/spf13/cobra"
@@ -311,9 +312,18 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
 				return []actionLine{{statusNote, note}}, nil
 			}
 
-			// Remote present: drop any etude-registered fetch refspec, then add
-			// the push refspec. Removal runs first so a repo initialised by an
-			// older etude is made safe even if the push step later errors.
+			// Remote present. ORDER IS LOAD-BEARING and the rule is etude-i19's:
+			// a legacy fetch refspec whose destination lands in the LOCAL etude
+			// namespace makes every local run ref prunable, so it is removed
+			// FIRST. Every later step therefore runs from a state that cannot be
+			// pruned by configuration, and an interruption at any point leaves
+			// the dangerous setting gone rather than the safe one missing.
+			//
+			// (Precisely: after this step no NEW fetch can be started with the
+			// legacy refspec. A `git fetch --prune` already in flight read its
+			// refspecs at startup and still holds it; removing config cannot
+			// reach into a running process. That window is one-time and is
+			// inherited from etude-i19, which has the same property.)
 			lines, err := removeEtudeFetchRefspecs(ctx, root, fetchKey)
 			if err != nil {
 				return nil, err
@@ -322,7 +332,18 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
 			if err != nil {
 				return nil, err
 			}
-			return append(lines, pushLines...), nil
+			lines = append(lines, pushLines...)
+
+			// Then install the mirrored fetch refspecs. Their destination is the
+			// SIBLING namespace refs/etude-mirror/<remote>/<kind>/, so a bare
+			// `git fetch --prune` can only ever delete a disposable mirror ref —
+			// which is what makes a configured fetch refspec safe to have again
+			// after etude-i19 had to remove it entirely.
+			mirrorLines, err := addMirroredFetchRefspecs(ctx, root, remote, fetchKey)
+			if err != nil {
+				return nil, err
+			}
+			return append(lines, mirrorLines...), nil
 		},
 	}
 }
@@ -803,4 +824,49 @@ func gitRemotes(ctx context.Context, root string) ([]string, error) {
 		return nil, nil
 	}
 	return strings.Split(raw, "\n"), nil
+}
+
+// mirroredFetchRefspec is the refspec that mirrors one kind from a remote:
+//
+//	+refs/etude/<kind>/*:refs/etude-mirror/<remote>/<kind>/*
+//
+// Forced (+) is correct here and ONLY here. The destination is a copy of the
+// remote, so it should always match the remote and there is nothing of ours to
+// lose in it. The local namespace is never a fetch destination, so no forced
+// refspec can overwrite an authoritative local run.
+func mirroredFetchRefspec(remote, kind string) string {
+	return "+refs/etude/" + kind + "/*:" + refstore.MirrorPrefix(remote, kind) + "*"
+}
+
+// addMirroredFetchRefspecs installs one mirrored fetch refspec per etude ref
+// kind on the target remote, driven from refstore.Kinds so a new kind cannot be
+// silently omitted from one side of the fetch/push pair.
+//
+// Each is a separate `git config` write and therefore a separate crash point.
+// That is safe in any prefix: a partially-installed set mirrors only some kinds,
+// which is incomplete mirroring with no data loss and no upload path — no push
+// refspec can match the mirror namespace at all.
+func addMirroredFetchRefspecs(ctx context.Context, root, remote, fetchKey string) ([]actionLine, error) {
+	// Validate the CONSTRUCTED mirror ref before writing any refspec: one that
+	// cannot work must never be installed.
+	//
+	// This is not redundant with git's own remote-name check. `git remote add`
+	// rejects a name like "prod:backup", but a remote written straight into
+	// config as remote.<name>.url exists and `git remote get-url` succeeds for
+	// it — so remoteExists returns true and we get here with a name that cannot
+	// form a legal ref. Removing this check let exactly that install three
+	// unusable refspecs; see the note in internal/refstore/store.go.
+	if err := (refstore.Store{RepoDir: root}).ValidateMirrorRemote(ctx, remote); err != nil {
+		return nil, fmt.Errorf("cannot mirror remote %q: %w", remote, err)
+	}
+
+	var lines []actionLine
+	for _, kind := range refstore.Kinds {
+		l, err := addRefspecIfAbsent(ctx, root, fetchKey, mirroredFetchRefspec(remote, kind))
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, l...)
+	}
+	return lines, nil
 }

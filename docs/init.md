@@ -8,9 +8,10 @@ remote. Transferring the namespace is the job of [`etude sync`](sync.md), which
 passes its own refspecs on the command line and works whether or not `init`
 configured the remote.
 
-`init` deliberately does **not** register a *fetch* refspec for the namespace,
-and removes one left behind by an older version — see
-[Why there is no fetch refspec](#why-there-is-no-fetch-refspec).
+`init` registers a *fetch* refspec that mirrors the remote's etude refs into a
+separate, disposable namespace — never into your local one — and removes any
+older refspec that pointed at the local namespace directly. See
+[Local refs and remote mirrors](#local-refs-and-remote-mirrors).
 
 ## What it creates
 
@@ -28,20 +29,60 @@ All files are written to the working tree for normal review and commit on main.
 
 ## Refspec configuration
 
-By default init configures `origin` with exactly one refspec:
+By default init configures `origin` with:
 
 ```
-remote.origin.push = refs/etude/*:refs/etude/*
+remote.origin.push  =  refs/etude/*:refs/etude/*
+remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*
+remote.origin.fetch = +refs/etude/retros/*:refs/etude-mirror/origin/retros/*
+remote.origin.fetch = +refs/etude/evals/*:refs/etude-mirror/origin/evals/*
 ```
 
 The push refspec is non-forced: a non-fast-forward push fails loudly rather
-than silently overwriting a remote ref.
+than silently overwriting a remote ref. The fetch refspecs ARE forced, which is
+safe precisely because their destination is the mirror — see below.
 
 If `origin` does not exist, the refspec step is skipped and init still succeeds
 (useful when initializing a repo before the remote is added). Use `--remote` to
 target a different remote.
 
-### Why there is no fetch refspec
+### Local refs and remote mirrors
+
+```
+refs/etude/runs/*                     YOURS. Authoritative. Never pruned.
+refs/etude/retros/*                   YOURS.
+refs/etude/evals/*                    YOURS.
+refs/etude-mirror/<remote>/runs/*     That remote's copy. Disposable, prunable.
+refs/etude-mirror/<remote>/retros/*   Mirror.
+refs/etude-mirror/<remote>/evals/*    Mirror.
+```
+
+Fetched refs land in the **mirror**; refs you produce stay in your own namespace
+and are never a fetch destination. That asymmetry is what makes
+`git fetch --prune` safe: prune deletes refs that the remote no longer has, and
+the only refs it can reach are mirror refs, which are re-created by the next
+fetch. A run you have produced and not yet pushed is not reachable by prune at
+all.
+
+The mirror is a **sibling** of `refs/etude/`, not nested inside it. That is
+deliberate: `refs/etude/*:refs/etude/*` — the push refspec — would match a nested
+mirror and upload this clone's copy of the remote back to the remote. As a
+sibling it cannot match, so no push refspec, present or future, can carry it.
+
+Two consequences worth knowing:
+
+- **Nothing reads the mirror yet.** It is populated by `git fetch` and pruned by
+  `git fetch --prune`, and that is all. `etude run show`, `etude log`, `etude gc`
+  and the index all read your local namespace only. Reporting what a remote has
+  that you do not — and detecting divergence — is a separate, later change.
+- **Mirror refs pin objects.** A plain `git fetch` now downloads the remote's
+  etude objects and the mirror refs keep them reachable, so they are not
+  reclaimed by `git gc`. There is no expiry for the mirror yet, including after a
+  remote is renamed or removed; `refs/etude-mirror/<name>/` for a remote that no
+  longer exists will linger. Delete such a namespace by hand if it matters:
+  `git for-each-ref --format='%(refname)' refs/etude-mirror/<name>/ | xargs -r -n1 git update-ref -d`
+
+### Why the fetch refspec must never target your local namespace
 
 A fetch refspec whose *destination* is the local `refs/etude/*` namespace —
 `+refs/etude/*:refs/etude/*`, which `etude init` used to add — makes every local
@@ -64,18 +105,28 @@ takes every other lane's unpushed run refs with it. The failure is silent:
 `etude capture` treats a missing run ref as "create", so the next capture
 starts a fresh manifest and reports success.
 
-Nothing needed the fetch refspec: `etude sync` passes
-`refs/etude/*:refs/etude/*` explicitly on its own `git fetch` command line, so
-syncing is unaffected. Removing it costs nothing and closes the failure.
+The fix is not to go without a fetch refspec — it is to point it somewhere
+disposable. A refspec whose destination is `refs/etude-mirror/<remote>/…` gives
+prune nothing of yours to delete, which is what `init` now configures.
 
 The push refspec is **not** affected and must stay: it is what makes
 `git push origin` carry run refs at all. Pushing cannot delete a local ref.
 
+Note the corollary: `refs/etude/` now means "everything here is pushed to the
+remote". A future local-only ref — a cache, an index, a cursor — must NOT be
+placed under `refs/etude/`, or the broad push refspec will upload it.
+
+One user-authored spelling can reach the mirror: a refspec written as
+`refs/etude*` (no trailing slash) matches `refs/etude-mirror/…` as well as
+`refs/etude/…`. Everything etude writes anchors on `refs/etude/` with the slash,
+so this cannot arise from `etude init` — but if you hand-write refspecs, keep the
+slash.
+
 ### Migrating an existing repository
 
 Any repository initialised by an older `etude init` still carries the dangerous
-refspec and will not fix itself. Re-run init — it removes it, on both the normal
-and `--force` paths:
+refspec and will not fix itself. Re-run init — it removes that refspec and
+installs the mirrored ones in its place, on both the normal and `--force` paths:
 
 ```bash
 etude init                      # repairs the DEFAULT remote (origin)

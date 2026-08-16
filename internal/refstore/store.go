@@ -19,7 +19,87 @@ const (
 	evalsNS    = "refs/etude/evals/"
 	retrosNS   = "refs/etude/retros/"
 	defaultGit = "git"
+
+	// MirrorNS is where a REMOTE's etude refs are mirrored on fetch. It is a
+	// SIBLING of refs/etude/, deliberately not nested inside it.
+	//
+	// Nesting was tried and rejected: a nested mirror sits inside the namespace
+	// push refspecs span, which made a push upload this clone's mirror of origin
+	// back to origin, made `etude init` delete the very refspec it had just
+	// installed, and made that push hazard repo-GLOBAL because init can only
+	// migrate the one remote it is pointed at. A sibling dissolves all three —
+	// no refspec spanning refs/etude/* can match refs/etude-mirror/*.
+	//
+	// Local refs are AUTHORITATIVE and never pruned. Mirror refs are DISPOSABLE,
+	// re-derived by the next fetch, which is what makes a configured fetch
+	// refspec safe to have again after bead etude-i19 had to remove it.
+	//
+	// NOTE the trailing slash on every namespace constant here. Disjointness
+	// relies on it: as RAW STRINGS "refs/etude-mirror/…" does start with
+	// "refs/etude", so an unanchored prefix test would wrongly match a mirror
+	// ref. Refspec globbing and for-each-ref match on path components and are
+	// unaffected. TestMirrorNamespaceIsDisjointFromLocal pins this.
+	MirrorNS = "refs/etude-mirror/"
 )
+
+// Kinds is the single enumeration of etude ref kinds. Anything building a
+// per-kind refspec drives it from here, so a new kind cannot be silently
+// omitted from one side of the fetch/push pair.
+var Kinds = []string{"runs", "retros", "evals"}
+
+// MirrorPrefix returns the namespace a remote's refs of the given kind are
+// mirrored into: refs/etude-mirror/<remote>/<kind>/.
+//
+// Callers MUST run ValidateMirrorRemote first — see the warning there.
+//
+// Slash-containing names such as "team/origin" are valid and accepted, exactly
+// as git accepts them for refs/remotes/team/origin/*. The cost is that this
+// mapping is not injective across such names — see bead etude-cng — an aliasing
+// that can only occur within the disposable mirror and is re-derived by the next
+// fetch.
+func MirrorPrefix(remote, kind string) string {
+	return MirrorNS + remote + "/" + kind + "/"
+}
+
+// mirrorProbeRef builds a CONCRETE ref under MirrorPrefix for validation. It
+// uses a real trailing component rather than a "*" glob on purpose: "*" is
+// illegal in a plain ref name, so check-ref-format would reject every remote and
+// give the right answer for the wrong reason. This mirrors git's own
+// valid_remote_name, which validates by building refs/remotes/<name>/test.
+func mirrorProbeRef(remote string) string {
+	return MirrorPrefix(remote, "runs") + "probe"
+}
+
+// ValidateMirrorRemote reports whether remote can be interpolated into a mirror
+// ref path, by CONSTRUCTING that path and checking it with git's own ref-format
+// rules rather than a bespoke character rule.
+//
+// This is NOT redundant with git's own remote-name validation, though it looks
+// it. `git remote add` does reject a name like "prod:backup" — but a remote can
+// also exist by writing remote.<name>.url straight into config, and
+// `git remote get-url` then SUCCEEDS for it. So a name git's porcelain would
+// never create can still be present and reachable, and without this check
+// `etude init` installs refspecs whose destination is not a legal ref and which
+// can therefore never work.
+//
+// That was verified the hard way: this function was deleted as "provably
+// unreachable" on the strength of a test whose fixture also wrote a malformed
+// fetch refspec, which was what actually made get-url fail. A test with only the
+// url set immediately installed three illegal mirror refspecs. Do not remove it
+// again without reproducing that case.
+//
+// A colon is the motivating character: illegal in a ref name AND the refspec's
+// own src:dst separator, so it breaks at two levels.
+func (s Store) ValidateMirrorRemote(ctx context.Context, remote string) error {
+	if strings.TrimSpace(remote) == "" {
+		return fmt.Errorf("%w: empty remote name", ErrInvalidRef)
+	}
+	probe := mirrorProbeRef(remote)
+	if _, err := s.git(ctx, nil, nil, "check-ref-format", probe); err != nil {
+		return fmt.Errorf("%w: remote %q produces an invalid mirror ref %q", ErrInvalidRef, remote, probe)
+	}
+	return nil
+}
 
 var (
 	ErrEmptyTree   = errors.New("empty tree")

@@ -924,3 +924,70 @@ func TestStdoutStderrSplit(t *testing.T) {
 		t.Fatalf("Resolve = %q, want %q (stderr contamination?)", oid, want)
 	}
 }
+
+// The disjointness of the local and mirror namespaces is what lets every
+// existing refspec, cleanup predicate and reader stay unchanged. As RAW STRINGS
+// "refs/etude-mirror/..." does start with "refs/etude", so this pins the
+// invariant at the constant level: the local prefix is slash-anchored, and no
+// mirror path starts with it.
+func TestMirrorNamespaceIsDisjointFromLocal(t *testing.T) {
+	for _, kind := range Kinds {
+		local := "refs/etude/" + kind + "/"
+		mirror := MirrorPrefix("origin", kind)
+		if strings.HasPrefix(mirror, local) {
+			t.Errorf("mirror %q is inside local %q — push refspecs and the init cleanup predicate would match it", mirror, local)
+		}
+		if strings.HasPrefix(mirror, "refs/etude/") {
+			t.Errorf("mirror %q is inside refs/etude/ — the whole sibling design rests on it not being", mirror)
+		}
+		// The hazard the naming choice carries: unanchored prefix tests DO match.
+		// Documented so a future reader does not "simplify" a constant by
+		// dropping its trailing slash.
+		if !strings.HasPrefix(mirror, "refs/etude") {
+			t.Errorf("expected the raw-string overlap to exist for %q; if this ever stops being true the warning comments about unanchored prefix checks can go", mirror)
+		}
+	}
+}
+
+// etude must never WRITE to the mirror: it is git's copy of a remote, populated
+// only by fetch. validateRef accepts only the three local namespaces, so this is
+// structural — asserted so a future namespace addition cannot quietly open it.
+func TestRefstoreRejectsWritesToMirrorNamespace(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	for _, kind := range Kinds {
+		ref := MirrorPrefix("origin", kind) + "run-1"
+		_, err := store.WriteCommit(ctx, ref, map[string][]byte{"manifest.json": []byte(`{}`)}, WriteOptions{})
+		if !errors.Is(err, ErrInvalidRef) {
+			t.Errorf("WriteCommit(%q) error = %v, want ErrInvalidRef", ref, err)
+		}
+	}
+}
+
+// Readers use List on the local prefixes. A mirror ref must never come back from
+// one, which is what keeps gc, the index, run, log, bench and liverun correct
+// without any change to them.
+func TestListLocalPrefixesExcludeMirrorRefs(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	store := New(repo)
+
+	if _, err := store.WriteCommit(ctx, "refs/etude/runs/mine", map[string][]byte{"manifest.json": []byte(`{}`)}, WriteOptions{}); err != nil {
+		t.Fatalf("seed local run: %v", err)
+	}
+	// Write a mirror ref the way git would — directly, bypassing the store,
+	// because the store deliberately refuses to.
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "refs/etude/runs/mine"))
+	git(t, repo, "update-ref", MirrorPrefix("origin", "runs")+"theirs", head)
+
+	got, err := store.List(ctx, "refs/etude/runs")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []string{"refs/etude/runs/mine"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("List(refs/etude/runs) = %#v, want %#v — a mirror ref leaked into a local listing", got, want)
+	}
+}

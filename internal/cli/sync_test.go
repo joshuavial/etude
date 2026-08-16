@@ -700,3 +700,87 @@ func TestSyncWorksWithNoConfiguredEtudeFetchRefspec(t *testing.T) {
 		t.Fatal("fetch leg did not retrieve run-1 without a config fetch refspec")
 	}
 }
+
+// TestSyncFetchNeverPrunes pins a constraint that is invisible in sync's own
+// behaviour but load-bearing for etude-jqs.
+//
+// sync fetches with an explicit command-line refspec whose destination is the
+// LOCAL authoritative namespace (that is deliberate — it is how remote runs
+// become readable, and etude-jqs does not change it). Per git-fetch(1), a
+// command-line refspec under --prune prunes according to THAT refspec. So if
+// sync ever gained --prune it would delete local run refs absent from the
+// remote: the exact etude-nad failure, re-armed through a path that etude-i19's
+// config-side fix does not cover, because the refspec is not in config at all.
+//
+// The mirrored fetch refspecs etude-jqs installs make a BARE `git fetch --prune`
+// safe. They cannot make an explicit local-destination refspec safe, so this
+// asserts the one thing that keeps it safe: sync does not pass --prune.
+func TestSyncFetchNeverPrunes(t *testing.T) {
+	src, err := os.ReadFile("sync.go")
+	if err != nil {
+		t.Fatalf("read sync.go: %v", err)
+	}
+	if strings.Contains(string(src), `"--prune"`) {
+		t.Fatal("sync.go passes --prune. Its fetch refspec targets the LOCAL namespace, " +
+			"so pruning by it deletes locally-produced run refs that the remote does not have — " +
+			"the etude-nad data-loss mode.")
+	}
+	// Not passing --prune is NOT sufficient: fetch.prune / remote.<name>.prune in
+	// the user's or global config make git prune command-line refspec
+	// destinations too. --no-prune must be passed explicitly.
+	if !strings.Contains(string(src), `"--no-prune"`) {
+		t.Fatal("sync.go does not pass --no-prune. With fetch.prune=true in user or global " +
+			"config, git prunes the destinations of command-line refspecs, so sync's " +
+			"LOCAL-namespace refspec would delete unpushed refs/etude/* — the etude-nad " +
+			"data-loss mode, via a path the config-side fix in etude-i19 does not cover.")
+	}
+}
+
+// The local fetch destination must also stay NON-forced. A forced refspec into
+// refs/etude/* lets a remote ref overwrite a local unpushed run, which is why
+// sync carries non-fast-forward classification rather than just forcing.
+func TestSyncFetchIntoLocalNamespaceIsNotForced(t *testing.T) {
+	src, err := os.ReadFile("sync.go")
+	if err != nil {
+		t.Fatalf("read sync.go: %v", err)
+	}
+	if strings.Contains(string(src), `"+refs/etude/*:refs/etude/*"`) {
+		t.Fatal("sync.go forces its fetch into the LOCAL namespace; a remote ref could then " +
+			"overwrite a local unpushed run. Forcing is correct ONLY for the mirror destination.")
+	}
+}
+
+// TestSyncDoesNotPruneLocalRunsUnderFetchPruneConfig drives the real hazard
+// rather than inspecting source: with fetch.prune=true set (a common user
+// setting), git prunes the destinations of COMMAND-LINE refspecs too. sync's
+// fetch refspec targets the LOCAL authoritative namespace, so without an
+// explicit --no-prune this deletes unpushed run refs — the etude-nad data-loss
+// mode, reached through a path etude-i19's config-side fix does not cover
+// because this refspec never appears in config.
+func TestSyncDoesNotPruneLocalRunsUnderFetchPruneConfig(t *testing.T) {
+	repoA := initCaptureRepo(t)
+	bare := setupBareRemote(t, repoA)
+
+	capture1Stage(t, repoA, "shared", "plan", "plan.md", "# plan")
+	chdir(t, repoA)
+	if _, stderr, err := execute("sync"); err != nil {
+		t.Fatalf("seed sync: %v\nstderr: %s", err, stderr)
+	}
+
+	repoB := cloneFrom(t, bare)
+	// The user's own setting, not etude's.
+	gitCapture(t, repoB, "config", "--local", "fetch.prune", "true")
+	head := strings.TrimSpace(gitCapture(t, repoB, "rev-parse", "HEAD"))
+	// A run produced locally and never pushed — what the original incident ate.
+	gitCapture(t, repoB, "update-ref", "refs/etude/runs/unpushed-local", head)
+
+	chdir(t, repoB)
+	if _, stderr, err := execute("sync"); err != nil {
+		t.Fatalf("sync under fetch.prune=true: %v\nstderr: %s", err, stderr)
+	}
+	if !refExists(t, repoB, "refs/etude/runs/unpushed-local") {
+		t.Fatal("etude sync deleted a locally-produced unpushed run ref because fetch.prune=true " +
+			"was set in config; sync must pass --no-prune since its refspec targets the " +
+			"authoritative namespace")
+	}
+}

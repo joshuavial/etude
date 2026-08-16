@@ -28,14 +28,19 @@ Sync runs in order:
 Both the fetch and push pass an explicit refspec on the command line, so sync
 works even if `etude init` was never run.
 
-This is why `etude init` configures **only** a push refspec and never a fetch
-refspec into `refs/etude/*`: sync does not need one, and a configured fetch
-refspec into that namespace makes every local run ref prunable by a bare
-`git fetch --prune`. See
-[Why there is no fetch refspec](init.md#why-there-is-no-fetch-refspec).
+`etude sync` is the supported way to pull the namespace down **into your local
+refs**, and it is the only thing that does so.
 
-`etude sync` is therefore the supported way to pull the namespace down. A plain
-`git fetch` does not bring `refs/etude/*` with it, by design.
+A plain `git fetch` also brings the namespace down, but into the per-remote
+mirror at `refs/etude-mirror/<remote>/…`, never into `refs/etude/*`. That
+distinction is what makes `git fetch --prune` safe — prune can only reach mirror
+refs — and it is why sync's own refspecs are passed explicitly rather than read
+from config. See [Local refs and remote mirrors](init.md#local-refs-and-remote-mirrors).
+
+Sync's fetch is deliberately **non-forced** and never passes `--prune`. Its
+destination is your authoritative namespace, so forcing would let a remote ref
+overwrite a local unpushed run, and pruning by a local-destination refspec would
+delete local runs the remote has never seen. Both are asserted by tests.
 
 ## Reconciliation behavior
 

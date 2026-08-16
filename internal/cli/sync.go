@@ -91,7 +91,15 @@ func syncEnv() []string {
 
 // fetch runs git fetch --porcelain and classifies the result.
 func (r syncRunner) fetch(ctx context.Context, root, remote string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "--porcelain", remote, "refs/etude/*:refs/etude/*")
+	// --no-prune is REQUIRED, not defensive. This refspec's destination is the
+	// LOCAL authoritative namespace, and per git-fetch(1) pruning applies to the
+	// destinations of command-line refspecs too — so with fetch.prune or
+	// remote.<name>.prune set to true in the user's or global config, this fetch
+	// would delete local run refs the remote does not have. That is exactly the
+	// etude-nad data-loss mode, reached through a path etude-i19's config-side
+	// fix does not cover because this refspec is not in config at all.
+	// Not passing --prune is not enough; the setting is the user's, not ours.
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "--no-prune", "--porcelain", remote, "refs/etude/*:refs/etude/*")
 	cmd.Env = syncEnv()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
