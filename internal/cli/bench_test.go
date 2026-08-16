@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +192,89 @@ func executeBench(
 		fmt.Fprintln(&errOut, err)
 	}
 	return out.String(), errOut.String(), err
+}
+
+type fakeGateCorpus struct {
+	fixtures []bench.Fixture
+	err      error
+	selector bench.CohortSelector
+}
+
+func (f *fakeGateCorpus) Fixtures(_ context.Context, selector bench.CohortSelector) ([]bench.Fixture, error) {
+	f.selector = selector
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.fixtures, nil
+}
+
+type contentGateJudge struct {
+	calls int
+}
+
+func (j *contentGateJudge) Judge(_ context.Context, req eval.JudgeRequest) (eval.JudgeResponse, error) {
+	j.calls++
+	if len(req.Targets) != 1 || len(req.Context) != 1 {
+		return eval.JudgeResponse{}, fmt.Errorf("gate judge received %d targets and %d context inputs", len(req.Targets), len(req.Context))
+	}
+	prompt := string(req.Context[0].Content)
+	artifact := string(req.Targets[0].Content)
+	if (strings.Contains(prompt, "fail-bad") && strings.Contains(artifact, "bad")) ||
+		(strings.Contains(prompt, "fail-good") && strings.Contains(artifact, "good")) {
+		return eval.JudgeResponse{}, errors.New("planned judge failure")
+	}
+	passed := true
+	switch {
+	case strings.Contains(prompt, "always-block"):
+		passed = false
+	case strings.Contains(prompt, "selective") && strings.Contains(artifact, "bad"):
+		passed = false
+	}
+	return eval.JudgeResponse{
+		Passed:   &passed,
+		Findings: []eval.Finding{{Severity: eval.SeverityInfo, Message: prompt + " on " + artifact}},
+	}, nil
+}
+
+func executeGateBench(corpus bench.CorpusSource, judge eval.Judge, args ...string) (string, string, error) {
+	var out, errOut bytes.Buffer
+	r := &benchRunner{corpus: corpus, judge: judge, now: time.Now}
+	cmd := buildBenchCommand(&out, &errOut, r)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(&errOut, err)
+	}
+	return out.String(), errOut.String(), err
+}
+
+func gateFixture(runID, content string, round int, hint bench.LabelHint) bench.Fixture {
+	return bench.Fixture{
+		Artifact:  []byte(content),
+		MediaType: "text/markdown",
+		Provenance: bench.Provenance{
+			RunID:        runID,
+			Phase:        "plan",
+			Round:        round,
+			SourceCommit: strings.Repeat("a", 40),
+			Stage:        "plan",
+		},
+		Label: hint,
+	}
+}
+
+func writeGateBenchFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+func writeGateLabels(t *testing.T, dir, labels string) string {
+	t.Helper()
+	return writeGateBenchFile(t, dir, "labels.json", `{"version":1,"labels":[`+labels+`]}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -690,4 +775,361 @@ func TestBenchCACHEDMarkerShownOnReusedRow(t *testing.T) {
 			t.Errorf("run-b (non-reused) row unexpectedly contains CACHED: %q", line)
 		}
 	}
+}
+
+func TestBenchGateHappyPathReportsVariantScoresAndCells(t *testing.T) {
+	dir := t.TempDir()
+	selective := writeGateBenchFile(t, dir, "selective.md", "selective")
+	alwaysBlock := writeGateBenchFile(t, dir, "always-block.md", "always-block")
+	labels := writeGateLabels(t, dir,
+		`{"run_id":"run-good","stage":"plan","round":1,"expected":"go","verified":true},`+
+			`{"run_id":"run-bad","stage":"plan","round":1,"expected":"block","verified":true}`)
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{
+		gateFixture("run-good", "good artifact", 1, bench.LabelHint{}),
+		gateFixture("run-bad", "bad artifact", 1, bench.LabelHint{}),
+	}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", selective, "--variant", alwaysBlock,
+		"--cohort", "run-refs", "--labels", labels)
+	if err != nil {
+		t.Fatalf("gate bench returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "gate bench plan: 2 variants over 2 common fixtures; 0 excluded") {
+		t.Fatalf("stdout missing gate headline:\n%s", stdout)
+	}
+	selectiveLine := lineContaining(stdout, selective)
+	selectiveFields := strings.Fields(selectiveLine)
+	if len(selectiveFields) < 9 || selectiveFields[1] != "100.0%" ||
+		selectiveFields[4] != "2" || selectiveFields[5] != "2" ||
+		selectiveFields[6] != "2" || selectiveFields[7] != "0" || selectiveFields[8] != "0" {
+		t.Errorf("selective report does not show perfect explicitly labeled score: %q", selectiveLine)
+	}
+	if !strings.Contains(stdout, "run-good") || !strings.Contains(stdout, "run-bad") ||
+		!strings.Contains(stdout, "true_positive") || !strings.Contains(stdout, "false_positive") {
+		t.Errorf("stdout missing expected per-cell verdicts/outcomes:\n%s", stdout)
+	}
+	if strings.Index(stdout, selective) > strings.Index(stdout, alwaysBlock) {
+		t.Errorf("variant report order does not follow flag order:\n%s", stdout)
+	}
+	if corpus.selector != (bench.CohortSelector{Stage: "plan", Last: 10}) {
+		t.Errorf("selector = %#v, want plan/10", corpus.selector)
+	}
+}
+
+func TestBenchGateUsesProgressionProxyAndWarns(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	hint := bench.LabelHint{Status: bench.GateHintPass, Rounds: 1, FinalRound: 1}
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("run-proxy", "good", 1, hint)}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs")
+	if err != nil {
+		t.Fatalf("gate bench returned error: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, bench.WarningProgressionProxyCircularity) {
+		t.Errorf("stdout missing circularity warning:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "progression-proxy") {
+		t.Errorf("stdout missing per-cell proxy source:\n%s", stdout)
+	}
+}
+
+func TestBenchGateExplicitLabelsOverrideProxy(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "always-block")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block variant two")
+	labels := writeGateLabels(t, dir,
+		`{"run_id":"run-override","stage":"plan","round":1,"expected":"block","verified":true}`)
+	hint := bench.LabelHint{Status: bench.GateHintPass, Rounds: 1, FinalRound: 1}
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("run-override", "good", 1, hint)}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", a, "--variant", b,
+		"--cohort", "run-refs", "--labels", labels)
+	if err != nil {
+		t.Fatalf("gate bench returned error: %v\nstderr: %s", err, stderr)
+	}
+	cellFields := strings.Fields(lineContaining(stdout, "run-override"))
+	if len(cellFields) < 10 || cellFields[4] != "block" || cellFields[5] != "block" ||
+		cellFields[6] != "explicit" || cellFields[7] != "true" || cellFields[8] != "true_positive" {
+		t.Errorf("explicit label did not override pass proxy:\n%s", stdout)
+	}
+	if strings.Contains(stdout, bench.WarningProgressionProxyCircularity) {
+		t.Errorf("proxy warning shown despite explicit override:\n%s", stdout)
+	}
+}
+
+func TestBenchGateLabelsFileWithZeroMatchesFails(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	labels := writeGateLabels(t, dir,
+		`{"run_id":"other-run","stage":"plan","round":1,"expected":"go","verified":true}`)
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("selected-run", "good", 1, bench.LabelHint{})}}
+	judge := &contentGateJudge{}
+
+	_, stderr, err := executeGateBench(corpus, judge,
+		"--gate", "plan", "--variant", a, "--variant", b,
+		"--cohort", "run-refs", "--labels", labels)
+	if err == nil || !strings.Contains(stderr, "matched zero selected fixtures") {
+		t.Fatalf("zero-match labels error = %v, stderr = %q", err, stderr)
+	}
+	if judge.calls != 0 {
+		t.Errorf("judge called %d times before zero-match rejection", judge.calls)
+	}
+}
+
+func TestBenchGateReportsExplicitProxyAndUnlabeledCounts(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "selective variant two")
+	labels := writeGateLabels(t, dir,
+		`{"run_id":"run-explicit","stage":"plan","round":1,"expected":"go","verified":true}`)
+	proxy := bench.LabelHint{Status: bench.GateHintPass, Rounds: 1, FinalRound: 1}
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{
+		gateFixture("run-explicit", "good explicit", 1, bench.LabelHint{}),
+		gateFixture("run-proxy", "good proxy", 1, proxy),
+		gateFixture("run-unlabeled", "good unlabeled", 0, bench.LabelHint{}),
+	}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", a, "--variant", b,
+		"--cohort", "run-refs", "--labels", labels)
+	if err != nil {
+		t.Fatalf("gate bench returned error: %v\nstderr: %s", err, stderr)
+	}
+	fields := strings.Fields(lineContaining(stdout, a))
+	if len(fields) < 9 || fields[4] != "3" || fields[5] != "2" || fields[6] != "1" || fields[7] != "1" || fields[8] != "1" {
+		t.Errorf("variant counts = %v, want common=3 scored=2 explicit=1 proxy=1 unlabeled=1\n%s", fields, stdout)
+	}
+}
+
+func TestBenchGatePartialJudgeFailureUsesCommonFixtureSet(t *testing.T) {
+	dir := t.TempDir()
+	failing := writeGateBenchFile(t, dir, "fail-bad.md", "selective fail-bad")
+	steady := writeGateBenchFile(t, dir, "steady.md", "selective")
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{
+		gateFixture("run-good", "good", 0, bench.LabelHint{}),
+		gateFixture("run-bad", "bad", 0, bench.LabelHint{}),
+	}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", failing, "--variant", steady, "--cohort", "run-refs")
+	if err != nil {
+		t.Fatalf("partial failure should retain one common fixture: %v\nstderr: %s\nstdout: %s", err, stderr, stdout)
+	}
+	for _, variant := range []string{failing, steady} {
+		fields := strings.Fields(lineContaining(stdout, variant))
+		if len(fields) < 5 || fields[4] != "1" {
+			t.Errorf("variant %q common denominator = %v, want 1", variant, fields)
+		}
+	}
+	if !strings.Contains(stdout, "run-bad/plan/r0: failed variants: "+failing) || !strings.Contains(stdout, "ERROR: planned judge failure") {
+		t.Errorf("stdout does not explain excluded fixture:\n%s", stdout)
+	}
+}
+
+func TestBenchGateNoCompleteFixtureExitsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	failBad := writeGateBenchFile(t, dir, "fail-bad.md", "fail-bad")
+	failGood := writeGateBenchFile(t, dir, "fail-good.md", "fail-good")
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{
+		gateFixture("run-good", "good", 0, bench.LabelHint{}),
+		gateFixture("run-bad", "bad", 0, bench.LabelHint{}),
+	}}
+
+	stdout, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", failBad, "--variant", failGood, "--cohort", "run-refs")
+	if err == nil || !strings.Contains(stderr, "no fixture succeeded for all variants") {
+		t.Fatalf("no-common-fixture error = %v, stderr = %q", err, stderr)
+	}
+	if !strings.Contains(stdout, "0 common fixtures; 2 excluded") || !strings.Contains(stdout, "run-good/plan/r0") || !strings.Contains(stdout, "run-bad/plan/r0") {
+		t.Errorf("stdout missing zero-common evidence:\n%s", stdout)
+	}
+}
+
+func TestBenchGateRejectsAliasesOfOneVariantPath(t *testing.T) {
+	dir := t.TempDir()
+	target := writeGateBenchFile(t, dir, "prompt.md", "selective")
+	alias := filepath.Join(dir, "prompt-alias.md")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("run-a", "good", 0, bench.LabelHint{})}}
+
+	_, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", target, "--variant", alias, "--cohort", "run-refs")
+	if err == nil || !strings.Contains(stderr, "aliases") || !strings.Contains(stderr, "canonically distinct") {
+		t.Fatalf("alias error = %v, stderr = %q", err, stderr)
+	}
+}
+
+func TestBenchGateSymlinkResolutionFailureIsValidationError(t *testing.T) {
+	dir := t.TempDir()
+	valid := writeGateBenchFile(t, dir, "valid.md", "selective")
+	broken := filepath.Join(dir, "broken.md")
+	if err := os.Symlink(filepath.Join(dir, "missing.md"), broken); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("run-a", "good", 0, bench.LabelHint{})}}
+
+	_, stderr, err := executeGateBench(corpus, &contentGateJudge{},
+		"--gate", "plan", "--variant", valid, "--variant", broken, "--cohort", "run-refs")
+	if err == nil || !strings.Contains(stderr, "resolve --variant") || !strings.Contains(stderr, "symlinks") {
+		t.Fatalf("broken symlink error = %v, stderr = %q", err, stderr)
+	}
+}
+
+func TestBenchGateValidation(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	empty := writeGateBenchFile(t, dir, "empty.md", " \n\t")
+	badLabels := writeGateBenchFile(t, dir, "bad-labels.json", `{"version":1,"labels":[],"extra":true}`)
+	corpus := &fakeGateCorpus{fixtures: []bench.Fixture{gateFixture("run-a", "good", 0, bench.LabelHint{})}}
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "positional argument", args: []string{"unexpected", "--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs"}, want: "unknown command"},
+		{name: "empty phase", args: []string{"--gate", "", "--variant", a, "--variant", b, "--cohort", "run-refs"}, want: "non-empty phase"},
+		{name: "invalid phase", args: []string{"--gate", "bad phase", "--variant", a, "--variant", b, "--cohort", "run-refs"}, want: "not a valid identifier"},
+		{name: "one variant", args: []string{"--gate", "plan", "--variant", a, "--cohort", "run-refs"}, want: "at least two --variant"},
+		{name: "missing cohort", args: []string{"--gate", "plan", "--variant", a, "--variant", b}, want: "--cohort is required"},
+		{name: "unknown cohort", args: []string{"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "dolt"}, want: "unknown gate-bench cohort"},
+		{name: "unreadable variant", args: []string{"--gate", "plan", "--variant", a, "--variant", filepath.Join(dir, "missing.md"), "--cohort", "run-refs"}, want: "resolve --variant"},
+		{name: "empty variant", args: []string{"--gate", "plan", "--variant", a, "--variant", empty, "--cohort", "run-refs"}, want: "prompt must be non-empty"},
+		{name: "invalid labels", args: []string{"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs", "--labels", badLabels}, want: "parse --labels"},
+		{name: "replay-only runner", args: []string{"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs", "--runner", "runner.sh"}, want: "--runner is not valid in gate mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, err := executeGateBench(corpus, &contentGateJudge{}, tt.args...)
+			if err == nil || !strings.Contains(stderr, tt.want) {
+				t.Errorf("error = %v, stderr = %q, want %q", err, stderr, tt.want)
+			}
+		})
+	}
+}
+
+func TestBenchGateRejectsEveryReplayOnlyFlag(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	base := []string{"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs"}
+	tests := []struct {
+		flag  string
+		value string
+	}{
+		{flag: "runner", value: "runner.sh"},
+		{flag: "seed", value: "1"},
+		{flag: "skill-id", value: "skill"},
+		{flag: "skill-repo", value: "repo"},
+		{flag: "skill-version", value: "v2"},
+		{flag: "model", value: "model"},
+		{flag: "harness", value: "harness"},
+		{flag: "harness-version", value: "v2"},
+		{flag: "no-cache"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.flag, func(t *testing.T) {
+			args := append([]string(nil), base...)
+			args = append(args, "--"+tt.flag)
+			if tt.value != "" {
+				args = append(args, tt.value)
+			}
+			_, stderr, err := executeGateBench(&fakeGateCorpus{}, &contentGateJudge{}, args...)
+			want := "--" + tt.flag + " is not valid in gate mode"
+			if err == nil || !strings.Contains(stderr, want) {
+				t.Errorf("error = %v, stderr = %q, want %q", err, stderr, want)
+			}
+		})
+	}
+}
+
+func TestBenchGateCorpusErrors(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	args := []string{"--gate", "plan", "--variant", a, "--variant", b, "--cohort", "run-refs"}
+
+	_, stderr, err := executeGateBench(&fakeGateCorpus{err: errors.New("corpus unavailable")}, &contentGateJudge{}, args...)
+	if err == nil || !strings.Contains(stderr, "load gate-bench cohort: corpus unavailable") {
+		t.Errorf("corpus error = %v, stderr = %q", err, stderr)
+	}
+
+	_, stderr, err = executeGateBench(&fakeGateCorpus{}, &contentGateJudge{}, args...)
+	if err == nil || !strings.Contains(stderr, `no fixtures selected for gate phase "plan"`) {
+		t.Errorf("empty corpus error = %v, stderr = %q", err, stderr)
+	}
+}
+
+func TestBenchGateResolvedUnreadableVariant(t *testing.T) {
+	dir := t.TempDir()
+	valid := writeGateBenchFile(t, dir, "valid.md", "selective")
+	unreadableDirectory := filepath.Join(dir, "prompt-directory")
+	if err := os.Mkdir(unreadableDirectory, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	_, stderr, err := executeGateBench(&fakeGateCorpus{}, &contentGateJudge{},
+		"--gate", "plan", "--variant", valid, "--variant", unreadableDirectory, "--cohort", "run-refs")
+	if err == nil || !strings.Contains(stderr, "read --variant") {
+		t.Errorf("resolved unreadable variant error = %v, stderr = %q", err, stderr)
+	}
+}
+
+func TestBenchGateTimeoutFlagIsWired(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateBenchFile(t, dir, "a.md", "selective")
+	b := writeGateBenchFile(t, dir, "b.md", "always-block")
+	var out, errOut bytes.Buffer
+	r := &benchRunner{corpus: &fakeGateCorpus{}, judge: &contentGateJudge{}}
+	cmd := buildBenchCommand(&out, &errOut, r)
+	cmd.SetArgs([]string{
+		"--gate", "plan", "--variant", a, "--variant", b,
+		"--cohort", "run-refs", "--timeout", "30s",
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "no fixtures selected") {
+		t.Fatalf("gate command error = %v, want empty-corpus error", err)
+	}
+	if r.timeout != 30*time.Second {
+		t.Errorf("runner timeout = %s, want 30s", r.timeout)
+	}
+}
+
+func TestBenchReplayModeRejectsGateOnlyFlags(t *testing.T) {
+	dir := t.TempDir()
+	prompt := writeGateBenchFile(t, dir, "prompt.md", "selective")
+	_, stderr, err := executeBench(&replay.StubRunner{}, &contentAwareJudge{}, time.Now(),
+		"plan", "--variant", prompt)
+	if err == nil || !strings.Contains(stderr, "--variant is not valid in replay mode") {
+		t.Fatalf("replay gate-only flag error = %v, stderr = %q", err, stderr)
+	}
+}
+
+func TestBenchHelpDocumentsGateMode(t *testing.T) {
+	stdout, stderr, err := executeGateBench(nil, nil, "--help")
+	if err != nil {
+		t.Fatalf("bench --help returned %v: %s", err, stderr)
+	}
+	for _, flag := range []string{"--gate", "--variant", "--cohort", "--labels", "--runner", "--judge"} {
+		if !strings.Contains(stdout, flag) {
+			t.Errorf("help missing %s:\n%s", flag, stdout)
+		}
+	}
+}
+
+func lineContaining(output, needle string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
 }
