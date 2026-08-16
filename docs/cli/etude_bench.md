@@ -11,11 +11,14 @@ etude bench <stage> [flags]
 ### Options
 
 ```
+      --cohort string            gate-bench corpus selector (supported: run-refs)
+      --gate string              benchmark gate-prompt variants for this phase instead of replaying a stage
       --harness string           override harness name in recorded producer (contestant)
       --harness-version string   override harness version in recorded producer (contestant)
   -h, --help                     help for bench
       --judge string             judge command spec (e.g. ./judge.sh)
       --judge-model string       model passed to the judge as ETUDE_MODEL (falls back to git config etude.judgeModel; empty is allowed)
+      --labels string            optional strict gate-labels JSON file
       --last int                 number of most-recent qualifying runs to benchmark (must be >0) (default 10)
       --model string             override model in recorded producer (contestant, NOT the judge/referee — use --judge-model for that)
       --no-cache                 force re-evaluation; skip the eval-result cache
@@ -25,6 +28,7 @@ etude bench <stage> [flags]
       --skill-repo string        override skill repo in recorded producer (contestant)
       --skill-version string     override skill version in recorded producer (contestant)
       --timeout duration         per-invocation timeout for the runner and judge (0 disables) (default 10m0s)
+      --variant stringArray      gate-prompt file to benchmark (repeat for each variant; at least two required)
 ```
 
 ### SEE ALSO
