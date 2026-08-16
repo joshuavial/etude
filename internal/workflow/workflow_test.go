@@ -1387,6 +1387,91 @@ stages:
 	}
 }
 
+func TestGateReadCheckoutRoundTrip(t *testing.T) {
+	const input = `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      tier: L2
+      read_checkout: true
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if !w.Stages[0].Gate.ReadCheckout {
+		t.Fatal("ReadCheckout = false, want true")
+	}
+	got, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	if string(got) != input {
+		t.Fatalf("encoded workflow mismatch\ngot:\n%s\nwant:\n%s", got, input)
+	}
+}
+
+func TestGateReadCheckoutDefaultsOutputOnlyAndOmitsFalse(t *testing.T) {
+	for _, input := range []string{
+		`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      tier: L2
+`,
+		`name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      tier: L2
+      read_checkout: false
+`,
+	} {
+		w, err := ParseYAML([]byte(input))
+		if err != nil {
+			t.Fatalf("ParseYAML error: %v", err)
+		}
+		if w.Stages[0].Gate.ReadCheckout {
+			t.Fatal("ReadCheckout = true, want output-only default")
+		}
+		got, err := w.YAML()
+		if err != nil {
+			t.Fatalf("YAML error: %v", err)
+		}
+		if strings.Contains(string(got), "read_checkout") {
+			t.Fatalf("false read_checkout must be omitted:\n%s", got)
+		}
+	}
+}
+
+func TestGateReadCheckoutRejectsNearMissAndNonBoolean(t *testing.T) {
+	for _, field := range []string{
+		"readcheckout: true",
+		"read-checkout: true",
+		`read_checkout: "not-a-bool"`,
+	} {
+		input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    gate:
+      tier: L2
+      ` + field + "\n"
+		if _, err := ParseYAML([]byte(input)); err == nil {
+			t.Fatalf("ParseYAML accepted invalid gate field %q", field)
+		} else if !errors.Is(err, ErrInvalidWorkflow) {
+			t.Fatalf("error for %q does not wrap ErrInvalidWorkflow: %v", field, err)
+		}
+	}
+}
+
 // TestGateSeatsAndTierErrors asserts that setting both seats and tier is rejected.
 func TestGateSeatsAndTierErrors(t *testing.T) {
 	input := `name: w

@@ -68,6 +68,9 @@ type GateConfig struct {
 	// Tier is a registry tier reference (e.g. "L2").  Mutually exclusive with
 	// Seats.
 	Tier string
+	// ReadCheckout grants model seats read access to the pinned checkout.
+	// False and absent preserve the output-only default.
+	ReadCheckout bool
 	// PassThreshold is the weighted pass fraction for seat votes.  Nil means
 	// the default (1.0 — unanimous).  Must be 0 < t ≤ 1 when set.
 	PassThreshold *float64
@@ -731,6 +734,7 @@ type gateYAML struct {
 	Checks        []runnerYAML `yaml:"checks,omitempty"`
 	Seats         []string     `yaml:"seats,omitempty"`
 	Tier          string       `yaml:"tier,omitempty"`
+	ReadCheckout  bool         `yaml:"read_checkout,omitempty"`
 	PassThreshold *float64     `yaml:"pass_threshold,omitempty"`
 	MaxRounds     *int         `yaml:"max_rounds,omitempty"`
 	Abstraction   string       `yaml:"abstraction,omitempty"`
@@ -794,6 +798,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
 			gy := gateYAML{
 				Seats:         s.Gate.Seats,
 				Tier:          s.Gate.Tier,
+				ReadCheckout:  s.Gate.ReadCheckout,
 				PassThreshold: s.Gate.PassThreshold,
 				MaxRounds:     s.Gate.MaxRounds,
 				Abstraction:   s.Gate.Abstraction,
@@ -981,6 +986,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 			gate := &GateConfig{
 				Seats:         gn.Seats,
 				Tier:          gn.Tier,
+				ReadCheckout:  gn.ReadCheckout,
 				PassThreshold: gn.PassThreshold,
 				MaxRounds:     gn.MaxRounds,
 				Abstraction:   gn.Abstraction,
