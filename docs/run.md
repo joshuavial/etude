@@ -186,9 +186,9 @@ etude run dev-pipeline --task bead.md --timeout 30m
 
 The engine reads `.etude/workflow.yaml` and `.etude/registry.yaml`, resolves
 each stage's runner (from the registry or inline), and walks the stage graph
-in dependency order. All stages share a single evolving worktree checked out
-at the run's git SHA, so mutations from earlier stages are visible to later
-ones.
+in dependency order. By default, stages share one evolving hermetic worktree
+checked out at the run's git SHA, so mutations there remain visible to later
+hermetic stages.
 
 When that commit contains submodules, Etude initializes them recursively before
 any stage or gate check runs. Submodule checkouts use private per-run Git
@@ -240,6 +240,74 @@ stage completes, before the run finishes.
 | `--runner <command>` | Runner command override applied to all stages. |
 | `--timeout <duration>` | Per-stage runner timeout (default `10m`; `0` disables). |
 | `--resume <id>` | Resume a partial run. See [Resume](#resume). |
+
+### Runner workspace
+
+A stage runner uses the hermetic detached worktree by default. A producing
+stage that must edit, test, or commit in the live working tree can opt into the
+directory where `etude` was invoked:
+
+```yaml
+stages:
+  - name: implement
+    skill: dev-executor
+    produces: diff
+    runner:
+      name: codex
+      workspace: caller
+```
+
+`workspace: hermetic` is the explicit spelling of the default. The workspace
+setting can also be placed on `default_runner`. When a default runner supplies
+the command or name, a stage may contain only `runner: {workspace: caller}` as
+a workspace override; a stage-local command or name otherwise replaces the
+default binding. A CLI `--runner` command override changes the command but
+preserves each stage's effective workspace.
+
+Caller-workspace stages require the entire repository to be clean before the
+runner starts and fail closed after it returns unless it is still clean: staged
+changes, unstaged changes, and non-ignored untracked files stop the stage before
+runner invocation or before its output is captured or gated, respectively.
+Ignored files are permitted. A clean runner-created commit is permitted, and
+the stage manifest records that post-run commit together with
+`runner_workspace: caller`. Repositories containing tracked submodules are
+rejected before the runner starts, and a runner that adds one is rejected before
+capture, because nested Git state cannot be covered by the repository-level
+guard.
+
+The post-run check happens only after a successful runner exit. If a caller-workspace
+runner fails, times out, or is rejected by the post-run guard, it may leave the
+live working tree dirty; inspect and recover that tree before resuming. The
+guard also fails closed when Git index visibility flags prevent it from
+inspecting a tracked path. Before the runner starts, the invocation directory
+must canonically resolve to the same
+repository Etude will inspect. Guard Git subprocesses remove ambient `GIT_*`
+overrides and disable replacement objects, so repository, worktree, index, or
+commit rewriting cannot redirect the provenance inspection.
+
+The guard measures the repository after the configured runner and its synchronous
+children have returned. It does not serialize unrelated processes that continue
+writing to the same working tree concurrently; callers must arrange exclusive
+working-tree access while a caller-workspace stage is running.
+
+A process crash after a runner commits cleanly but before Etude captures the
+stage leaves the commit in the caller tree with no stage record. Resume may run
+that frontier stage again, so caller-workspace runners must be repeat-safe and
+the operator must reconcile any such commit before resuming. Ignored files remain
+outside the guard by design; caller runners are responsible for their effects on
+those files. Cleanliness follows Git's configured status/index semantics;
+repository normalization, ignore, and file-mode policies are trusted inputs, not
+a promise of byte-for-byte filesystem identity outside Git's model. Caller
+runners must not change those trusted policies while running; changing Git
+configuration or control files to alter what Git reports is outside this guard's
+contract.
+
+Gates do not inherit the producing runner's workspace. Gate checks and model
+seats continue to execute against the run's original hermetic detached
+checkout, exactly as they do for default runners. A caller runner's new commit
+is named by the stage output and recorded as stage provenance, but it is not
+checked out underneath the gate; the captured stage output remains the gate's
+entire description of that produced state.
 
 ### Run id
 
@@ -358,7 +426,8 @@ by unusable model seats is resumable; substantive reviewer decisions remain
 terminal.
 
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
-manifest (`manifest_version` 3); gate attempts appear after stages in
+manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present);
+gate attempts appear after stages in
 `etude run show`. No separate `etude capture-gate` call is required for live
 runs. An effective checkout grant is recorded as `read_checkout: true`; false
 is omitted. The workflow is the authorization source—the manifest field is an

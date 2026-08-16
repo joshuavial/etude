@@ -70,6 +70,10 @@ func newRunCommand(out, errOut io.Writer) *cobra.Command {
 // the repo default .etude/workflow.yaml. There is deliberately no fallback
 // between the two, so a missing named workflow never reports the default path.
 func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workflowFile, taskFile, runID, gitSHA, resumeID, runnerSpec string, timeout time.Duration) error {
+	callerDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get caller directory: %w", err)
+	}
 	root, err := repoRoot(ctx)
 	if err != nil {
 		return err
@@ -138,6 +142,7 @@ func runWorkflow(ctx context.Context, out, errOut io.Writer, workflowName, workf
 		},
 		Tiers:        liverun.ResolveTiers(reg),
 		Root:         root,
+		CallerDir:    callerDir,
 		EnvAllowlist: envAllowlist,
 	}
 
@@ -343,6 +348,9 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 			fmt.Fprintf(out, "  replay of:   %s/%s\n", stage.ReplayOf.RunID, stage.ReplayOf.Stage)
 		}
 		fmt.Fprintf(out, "  git sha:     %s\n", stage.GitSHA)
+		if stage.RunnerWorkspace != "" {
+			fmt.Fprintf(out, "  runner workspace: %s\n", stage.RunnerWorkspace)
+		}
 		if stage.Producer.Harness.Name != "" {
 			fmt.Fprintf(out, "  harness:     %s\n", formatHarness(stage.Producer.Harness))
 		}

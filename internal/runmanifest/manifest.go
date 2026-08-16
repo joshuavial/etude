@@ -34,8 +34,8 @@ var (
 type Manifest struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
+	// 3 = schema with gates; 4 = caller-workspace stage provenance.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
 	ManifestVersion int
 	RunID           string
 	Workflow        string
@@ -156,9 +156,15 @@ type ReplayLink struct {
 type Stage struct {
 	Name       string
 	ProducedBy string
-	GitSHA     string
+	// GitSHA is the checkout SHA for a hermetic runner and the clean post-run
+	// HEAD for a caller-workspace runner.
+	GitSHA string
 	// Submodules maps populated, root-relative submodule paths to resolved OIDs.
 	Submodules map[string]string
+	// RunnerWorkspace records an explicit non-default stage runner workspace.
+	// Empty means the historical hermetic detached worktree; "caller" means
+	// the runner executed in the CLI invocation directory.
+	RunnerWorkspace string
 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
@@ -482,6 +488,9 @@ func validateStage(index int, stage Stage) error {
 		if !isHexOID(oid) {
 			return fmt.Errorf("%w: %s submodule %q must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix, submodulePath)
 		}
+	}
+	if stage.RunnerWorkspace != "" && stage.RunnerWorkspace != "caller" {
+		return fmt.Errorf("%w: %s runner_workspace %q is not caller", ErrInvalidManifest, prefix, stage.RunnerWorkspace)
 	}
 	if strings.TrimSpace(stage.Skill.ID) == "" {
 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
@@ -924,8 +933,8 @@ func cloneBytes(in []byte) []byte {
 type manifestJSON struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
+	// 3 = schema with gates; 4 = caller-workspace stage provenance.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
 	ManifestVersion int    `json:"manifest_version,omitempty"`
 	RunID           string `json:"run_id"`
 	Workflow        string `json:"workflow"`
@@ -997,10 +1006,11 @@ type gateDecisionJSON struct {
 }
 
 type stageJSON struct {
-	Stage      string            `json:"stage"`
-	ProducedBy string            `json:"produced_by"`
-	GitSHA     string            `json:"git_sha"`
-	Submodules map[string]string `json:"submodules,omitempty"`
+	Stage           string            `json:"stage"`
+	ProducedBy      string            `json:"produced_by"`
+	GitSHA          string            `json:"git_sha"`
+	Submodules      map[string]string `json:"submodules,omitempty"`
+	RunnerWorkspace string            `json:"runner_workspace,omitempty"`
 	// Skill is present only in legacy manifests (no producer block).
 	// New manifests omit it; the skill travels inside producer.
 	Skill     *skillJSON     `json:"skill,omitempty"`
@@ -1100,10 +1110,11 @@ func (m Manifest) toJSON() manifestJSON {
 		}
 
 		stages = append(stages, stageJSON{
-			Stage:      stage.Name,
-			ProducedBy: stage.ProducedBy,
-			GitSHA:     stage.GitSHA,
-			Submodules: cloneStringMap(stage.Submodules),
+			Stage:           stage.Name,
+			ProducedBy:      stage.ProducedBy,
+			GitSHA:          stage.GitSHA,
+			Submodules:      cloneStringMap(stage.Submodules),
+			RunnerWorkspace: stage.RunnerWorkspace,
 			// Do NOT emit top-level skill — it lives inside producer only.
 			Producer:  producerBlock,
 			Inputs:    inputs,
@@ -1119,6 +1130,12 @@ func (m Manifest) toJSON() manifestJSON {
 		gatesOut = make([]gateJSON, 0, len(m.Gates))
 		for _, gate := range m.Gates {
 			gatesOut = append(gatesOut, gate.toJSON())
+		}
+	}
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" {
+			version = 4
+			break
 		}
 	}
 
@@ -1256,13 +1273,14 @@ func ensureEOF(dec *json.Decoder) error {
 }
 
 func (m manifestJSON) toManifest() (Manifest, error) {
-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
+	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
+	// and 4 (caller-workspace stage provenance).
 	// Reject 1 (never emitted) and any future version this binary cannot model.
 	switch m.ManifestVersion {
-	case 0, 2, 3:
+	case 0, 2, 3, 4:
 		// accepted
 	default:
-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
+		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
 	}
 
 	created, err := parseTime("created", m.Created)
@@ -1278,6 +1296,9 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 	}
 	stages := make([]Stage, 0, len(m.Stages))
 	for i, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" && m.ManifestVersion < 4 {
+			return Manifest{}, fmt.Errorf("%w: stage[%d] runner_workspace requires manifest_version 4", ErrInvalidManifest, i)
+		}
 		converted, err := stage.toStage(i)
 		if err != nil {
 			return Manifest{}, err
@@ -1465,16 +1486,17 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 	}
 
 	return Stage{
-		Name:       s.Stage,
-		ProducedBy: s.ProducedBy,
-		GitSHA:     s.GitSHA,
-		Submodules: cloneStringMap(s.Submodules),
-		Skill:      skill,
-		Producer:   producer,
-		Inputs:     inputs,
-		Output:     s.Output.toArtifactRef(),
-		Timestamp:  timestamp,
-		ReplayOf:   replayOf,
+		Name:            s.Stage,
+		ProducedBy:      s.ProducedBy,
+		GitSHA:          s.GitSHA,
+		Submodules:      cloneStringMap(s.Submodules),
+		RunnerWorkspace: s.RunnerWorkspace,
+		Skill:           skill,
+		Producer:        producer,
+		Inputs:          inputs,
+		Output:          s.Output.toArtifactRef(),
+		Timestamp:       timestamp,
+		ReplayOf:        replayOf,
 	}, nil
 }
 

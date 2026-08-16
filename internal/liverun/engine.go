@@ -1,12 +1,14 @@
 package liverun
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,12 @@ import (
 )
 
 const runsPrefix = "refs/etude/runs/"
+
+var (
+	ErrCallerWorkspaceDirty       = errors.New("caller workspace has uncommitted changes")
+	ErrCallerWorkspaceChanged     = errors.New("caller workspace HEAD changed during provenance capture")
+	ErrCallerWorkspaceUnsupported = errors.New("caller workspace repository is unsupported")
+)
 
 // StageError records a stage execution failure with the run id so callers can
 // print a --resume hint.
@@ -190,6 +198,13 @@ type Engine struct {
 	// VALUES are never stored).  The same list must drive both the runner
 	// closures (ResolveRunner/ResolveSeat) and this field so audit cannot lie.
 	EnvAllowlist []string
+	// CallerDir is the directory from which the CLI was invoked. Caller-workspace
+	// runners execute here; an empty value falls back to Root for library users.
+	CallerDir string
+	// ResolveCallerHEAD resolves HEAD during post-run provenance capture. Tests
+	// may inject different consecutive values to prove the race fails closed;
+	// production removes ambient Git overrides and replacement-object rewriting.
+	ResolveCallerHEAD func(context.Context, string) (string, error)
 }
 
 func (e *Engine) clock() time.Time {
@@ -197,6 +212,138 @@ func (e *Engine) clock() time.Time {
 		return e.Now()
 	}
 	return time.Now()
+}
+
+func (e *Engine) callerProvenance(ctx context.Context) (string, error) {
+	resolve := e.ResolveCallerHEAD
+	if resolve == nil {
+		resolve = resolveCallerHEAD
+	}
+	return captureCallerProvenance(ctx, e.Root, resolve)
+}
+
+func callerGitCommand(ctx context.Context, root string, args ...string) *exec.Cmd {
+	commandArgs := append([]string{"-C", root}, args...)
+	cmd := exec.CommandContext(ctx, "git", commandArgs...)
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		name, _, _ := strings.Cut(item, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		env = append(env, item)
+	}
+	cmd.Env = append(env, "GIT_NO_REPLACE_OBJECTS=1")
+	return cmd
+}
+
+func resolveCallerHEAD(ctx context.Context, root string) (string, error) {
+	out, err := callerGitCommand(ctx, root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func resolveCanonicalCallerRoot(ctx context.Context, callerDir string) (string, error) {
+	out, err := callerGitCommand(ctx, callerDir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve caller directory repository: %w", err)
+	}
+	return filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+}
+
+func ensureCallerRepository(ctx context.Context, root, callerDir string) error {
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve guarded repository root: %w", err)
+	}
+	got, err := resolveCanonicalCallerRoot(ctx, callerDir)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("%w: caller directory repository %q does not match guarded root %q", ErrCallerWorkspaceUnsupported, got, want)
+	}
+	return nil
+}
+
+func (e *Engine) callerDir() string {
+	if e.CallerDir != "" {
+		return e.CallerDir
+	}
+	return e.Root
+}
+
+func ensureCallerWorkspaceSupported(ctx context.Context, root string) error {
+	entries, err := callerGitCommand(ctx, root, "ls-files", "--stage", "-z").Output()
+	if err != nil {
+		return fmt.Errorf("inspect caller workspace repository shape: %w", err)
+	}
+	for _, entry := range bytes.Split(entries, []byte{0}) {
+		if bytes.HasPrefix(entry, []byte("160000 ")) {
+			return fmt.Errorf("%w: tracked submodules are not supported", ErrCallerWorkspaceUnsupported)
+		}
+	}
+	return nil
+}
+
+func inspectCallerWorkspaceClean(ctx context.Context, root string) error {
+	if err := ensureCallerWorkspaceSupported(ctx, root); err != nil {
+		return err
+	}
+	tracked, err := callerGitCommand(ctx, root, "ls-files", "-v", "-z").Output()
+	if err != nil {
+		return fmt.Errorf("inspect caller workspace index flags: %w", err)
+	}
+	for _, entry := range bytes.Split(tracked, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		tag := entry[0]
+		if tag == 'S' || (tag >= 'a' && tag <= 'z') {
+			return fmt.Errorf("%w: tracked path is hidden by assume-unchanged or skip-worktree", ErrCallerWorkspaceDirty)
+		}
+	}
+	status, err := callerGitCommand(ctx, root, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none").Output()
+	if err != nil {
+		return fmt.Errorf("inspect caller workspace: %w", err)
+	}
+	if len(status) != 0 {
+		return ErrCallerWorkspaceDirty
+	}
+	return nil
+}
+
+func captureCallerProvenance(ctx context.Context, root string, resolve func(context.Context, string) (string, error)) (string, error) {
+	first, err := resolve(ctx, root)
+	if err != nil {
+		return "", fmt.Errorf("capture caller workspace HEAD: %w", err)
+	}
+	if err := ensureCallerWorkspaceSupported(ctx, root); err != nil {
+		return "", err
+	}
+	if err := inspectCallerWorkspaceClean(ctx, root); err != nil {
+		return "", err
+	}
+	second, err := resolve(ctx, root)
+	if err != nil {
+		return "", fmt.Errorf("recheck caller workspace HEAD: %w", err)
+	}
+	if first != second {
+		return "", fmt.Errorf("%w: %s -> %s", ErrCallerWorkspaceChanged, first, second)
+	}
+	if err := inspectCallerWorkspaceClean(ctx, root); err != nil {
+		return "", err
+	}
+	third, err := resolve(ctx, root)
+	if err != nil {
+		return "", fmt.Errorf("final caller workspace HEAD check: %w", err)
+	}
+	if first != third {
+		return "", fmt.Errorf("%w: %s -> %s", ErrCallerWorkspaceChanged, first, third)
+	}
+	return third, nil
 }
 
 // Run executes the workflow, capturing each stage incrementally via CAS.
@@ -592,9 +739,23 @@ func (e *Engine) runAndCaptureStage(
 		Version: "manual",
 	}
 	producer := runmanifest.Producer{Skill: stageSkill}
+	runnerWorkspace := wf.EffectiveRunnerWorkspace(stage)
+	runnerDir := worktreeDir
+	stageGitSHA := gitSHA
+	manifestWorkspace := ""
+	if runnerWorkspace == workflow.RunnerWorkspaceCaller {
+		runnerDir = e.callerDir()
+		manifestWorkspace = workflow.RunnerWorkspaceCaller
+		if err = ensureCallerRepository(ctx, e.Root, runnerDir); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+		}
+		if err = inspectCallerWorkspaceClean(ctx, e.Root); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+		}
+	}
 
 	res, err := runner.Run(ctx, replay.RunRequest{
-		WorktreeDir:     worktreeDir,
+		WorktreeDir:     runnerDir,
 		ScratchDir:      scratchSubDir,
 		Inputs:          runInputs,
 		OutputRole:      stage.Produces,
@@ -603,6 +764,12 @@ func (e *Engine) runAndCaptureStage(
 	})
 	if err != nil {
 		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+	}
+	if runnerWorkspace == workflow.RunnerWorkspaceCaller {
+		stageGitSHA, err = e.callerProvenance(ctx)
+		if err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+		}
 	}
 
 	// Build producer session evidence when the runner returned session info
@@ -613,7 +780,7 @@ func (e *Engine) runAndCaptureStage(
 			TranscriptURI:  res.Session.TranscriptURI,
 			TranscriptPath: res.Session.TranscriptPath,
 		}
-		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, worktreeDir, sess, false)
+		evidence, note := buildSessionEvidence(as, stageName+"-transcript", scratchSubDir, runnerDir, sess, false)
 		if evidence != nil {
 			producer.Session = evidence
 		}
@@ -634,15 +801,16 @@ func (e *Engine) runAndCaptureStage(
 	outRef := runmanifest.ArtifactFromManifestArtifact(outputArtifact)
 
 	newStages := append(append([]runmanifest.Stage(nil), completedStages...), runmanifest.Stage{
-		Name:       stageName,
-		ProducedBy: "original",
-		GitSHA:     gitSHA,
-		Submodules: cloneStringMap(submodules),
-		Skill:      stageSkill,
-		Producer:   producer,
-		Inputs:     inputRefs,
-		Output:     outRef,
-		Timestamp:  e.clock(),
+		Name:            stageName,
+		ProducedBy:      "original",
+		GitSHA:          stageGitSHA,
+		Submodules:      cloneStringMap(submodules),
+		RunnerWorkspace: manifestWorkspace,
+		Skill:           stageSkill,
+		Producer:        producer,
+		Inputs:          inputRefs,
+		Output:          outRef,
+		Timestamp:       e.clock(),
 	})
 
 	manifest := runmanifest.Manifest{

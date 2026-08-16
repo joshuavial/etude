@@ -1719,8 +1719,8 @@ func TestValidateGateRejects(t *testing.T) {
 	})
 }
 
-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
-// and rejects 1 and 4 with ErrInvalidManifest.
+// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2,
+// 3, and 4 while rejecting unsupported versions.
 func TestVersionAllowlist(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	m := validManifest(output)
@@ -1752,8 +1752,27 @@ func TestVersionAllowlist(t *testing.T) {
 		}
 	})
 
+	t.Run("accept version 4", func(t *testing.T) {
+		m4 := validManifest(output)
+		m4.Stages[0].RunnerWorkspace = "caller"
+		j, err := m4.JSON()
+		if err != nil {
+			t.Fatalf("JSON: %v", err)
+		}
+		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) {
+			t.Fatalf("caller workspace manifest does not emit v4 field:\n%s", j)
+		}
+		got, err := ParseJSON(j)
+		if err != nil {
+			t.Fatalf("ParseJSON rejected version 4: %v", err)
+		}
+		if got.Stages[0].RunnerWorkspace != "caller" {
+			t.Fatalf("RunnerWorkspace = %q, want caller", got.Stages[0].RunnerWorkspace)
+		}
+	})
+
 	// Versions that should be rejected.
-	for _, v := range []int{1, 4, 5, 100} {
+	for _, v := range []int{1, 5, 100} {
 		v := v
 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
@@ -1765,6 +1784,32 @@ func TestVersionAllowlist(t *testing.T) {
 				t.Fatalf("ParseJSON version %d error = %v, want ErrInvalidManifest", v, err)
 			}
 		})
+	}
+}
+
+func TestRunnerWorkspaceRequiresManifestVersionFour(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	withWorkspace := strings.Replace(string(raw), `"git_sha": "abc123",`, "\"git_sha\": \"abc123\",\n      \"runner_workspace\": \"caller\",", 1)
+	_, err = ParseJSON([]byte(withWorkspace))
+	if err == nil || !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("ParseJSON older-version runner_workspace error = %v, want ErrInvalidManifest", err)
+	}
+	if !strings.Contains(err.Error(), "runner_workspace requires manifest_version 4") {
+		t.Fatalf("ParseJSON error = %v, want runner_workspace version requirement", err)
+	}
+}
+
+func TestRunnerWorkspaceRejectsUnknownValue(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	m.Stages[0].RunnerWorkspace = "ambient"
+	if _, err := m.JSON(); err == nil || !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("JSON invalid runner_workspace error = %v, want ErrInvalidManifest", err)
 	}
 }
 
