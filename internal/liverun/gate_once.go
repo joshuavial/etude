@@ -40,9 +40,10 @@ type GateRequest struct {
 	Stage workflow.Stage
 	// Artifact is the reviewed content, inlined into the shared prompt.
 	Artifact []byte
-	// WorktreeDir is where checks and seats execute. For a supervised gate this
-	// is the caller's repo root, NOT a pristine checkout: the work under review
-	// is uncommitted, so `make test` must see the real tree.
+	// WorktreeDir is where checks execute. For a supervised gate this is the
+	// caller's repo root, NOT a pristine checkout: the work under review is
+	// uncommitted, so `make test` must see the real tree. Model seats execute from
+	// per-seat neutral repositories because supervised gates are output-only.
 	WorktreeDir string
 	// ScratchDir must NOT be at or under WorktreeDir (ExecRunner rejects that).
 	ScratchDir string
@@ -143,7 +144,7 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 
 	as := artifactstore.New()
 	checkSeats, checksPassed, _ := e.runGateChecks(ctx, req.WorktreeDir, req.ScratchDir, gate.Checks, gateInputs, as, round)
-	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round)
+	modelSeats, verdicts, _, ladderNotes := e.runGateSeats(ctx, req.WorktreeDir, req.ScratchDir, seatNames, gateInputs, as, round, true)
 
 	syn := synthesizeVerdict(
 		checksPassed, verdicts,

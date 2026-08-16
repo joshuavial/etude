@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,6 +109,45 @@ func (r recordingRunner) Run(ctx context.Context, req replay.RunRequest) (replay
 		}
 	}
 	return r.inner.Run(ctx, req)
+}
+
+type callerWorktreeCheckRunner struct {
+	wantDir string
+	calls   int
+}
+
+func (r *callerWorktreeCheckRunner) RunCheck(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
+	r.calls++
+	if req.WorktreeDir != r.wantDir {
+		return false, nil, fmt.Sprintf("check worktree = %q, want %q", req.WorktreeDir, r.wantDir)
+	}
+	content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
+	if err != nil || string(content) != "caller marker\n" {
+		return false, nil, fmt.Sprintf("check marker = %q, err %v", content, err)
+	}
+	return true, nil, ""
+}
+
+type outputOnlyDenyRunner struct {
+	calls       int
+	worktreeDir string
+}
+
+func (r *outputOnlyDenyRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	r.worktreeDir = req.WorktreeDir
+	if !filepath.IsAbs(req.WorktreeDir) || !filepath.IsAbs(req.ScratchDir) {
+		return replay.RunResult{}, fmt.Errorf("seat paths must be absolute: worktree=%q scratch=%q", req.WorktreeDir, req.ScratchDir)
+	}
+	if _, err := os.Stat(filepath.Join(req.WorktreeDir, ".git")); err != nil {
+		return replay.RunResult{}, fmt.Errorf("seat cwd is not a neutral git repository: %w", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt")); err == nil {
+		return replay.RunResult{}, fmt.Errorf("output-only supervised seat read checkout marker %q", content)
+	} else if !os.IsNotExist(err) {
+		return replay.RunResult{}, fmt.Errorf("output-only marker read error = %v, want not exist", err)
+	}
+	return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
 }
 
 func gateScratch(t *testing.T) string {
@@ -232,6 +272,45 @@ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
 	// for it — a model that could write the file could fake a pass.
 	if strings.Contains(prompt, "ETUDE_OUTPUT_FILE") {
 		t.Errorf("prompt must not mention ETUDE_OUTPUT_FILE:\n%s", prompt)
+	}
+}
+
+func TestGateStageOutputOnlySeatsUseNeutralRepoAndChecksUseCallerTree(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	writeTestFile(t, repo, "checkout-marker.txt", "caller marker\n")
+	check := &callerWorktreeCheckRunner{wantDir: repo}
+	seat := &outputOnlyDenyRunner{}
+	e := &Engine{
+		Store: refstore.New(repo),
+		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+			return check, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return seat, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L2": {[]string{"reviewer"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	stage := gateOnceStage([]workflow.Runner{{Command: "inspect-caller"}})
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: stage, Artifact: []byte("artifact"),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if !outcome.Passed() {
+		t.Fatalf("status = %s, want pass", outcome.Status)
+	}
+	if check.calls != 1 || seat.calls != 1 {
+		t.Fatalf("calls: check=%d seat=%d, want one each", check.calls, seat.calls)
+	}
+	if _, err := os.Stat(seat.worktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("neutral seat directory still exists after GateStage: %q, err=%v", seat.worktreeDir, err)
 	}
 }
 

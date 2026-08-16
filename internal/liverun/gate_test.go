@@ -317,10 +317,184 @@ func TestGateAC1_RecordsGateAttempt(t *testing.T) {
 }
 
 type checkoutPolicyRunner struct {
-	wantRead   bool
-	prompts    []string
-	markerRead bool
-	calls      int
+	wantRead     bool
+	prompts      []string
+	markerRead   bool
+	markerDenied bool
+	calls        int
+}
+
+func TestNewOutputOnlySeatDirIsAbsoluteWithRelativeTMPDIR(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeTemp, err := filepath.Rel(cwd, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", relativeTemp)
+	dir, cleanup, err := newOutputOnlySeatDir(context.Background(), cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("output-only seat dir = %q, want absolute", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("neutral git repository: %v", err)
+	}
+}
+
+func TestNewOutputOnlySeatDirRejectsSymlinkedTMPDIRInsideCheckout(t *testing.T) {
+	checkout := t.TempDir()
+	tempLink := filepath.Join(t.TempDir(), "inside-checkout")
+	if err := os.Symlink(checkout, tempLink); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempLink)
+	if _, _, err := newOutputOnlySeatDir(context.Background(), checkout); err == nil {
+		t.Fatal("accepted a symlinked TMPDIR physically inside the checkout")
+	} else if !strings.Contains(err.Error(), "inside checkout") {
+		t.Fatalf("rejection error = %q, want checkout containment", err)
+	}
+	entries, err := os.ReadDir(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected neutral directory was not cleaned up: %v", entries)
+	}
+}
+
+func TestPathAtOrBelowUsesFilesystemIdentity(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	inside, err := pathAtOrBelow(alias, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inside {
+		t.Fatal("filesystem-identical root alias did not contain its child")
+	}
+	outside, err := pathAtOrBelow(root, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outside {
+		t.Fatal("unrelated directory reported inside root")
+	}
+}
+
+func TestOutputOnlySeatRunnerStripsCheckoutGitEnvironment(t *testing.T) {
+	runner := &replay.ExecRunner{EnvAllowlist: []string{
+		"HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+		"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE",
+	}}
+	gotRunner, err := outputOnlySeatRunner(runner, t.TempDir(), t.TempDir(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := gotRunner.(*replay.ExecRunner)
+	if diff := strings.Join(got.EnvAllowlist, ","); diff != "HOME" {
+		t.Fatalf("filtered env allowlist = %q, want HOME", diff)
+	}
+	if len(runner.EnvAllowlist) != 14 {
+		t.Fatal("output-only filtering mutated the configured runner")
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesCheckoutExecutable(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(checkout, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &replay.ExecRunner{Command: []string{command, "--flag"}}
+	prepared, err := outputOnlySeatRunner(runner, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := prepared.(*replay.ExecRunner)
+	if got.Command[0] != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got.Command[0])
+	}
+	if got.Command[1] != "--flag" {
+		t.Fatalf("command argument changed: %v", got.Command)
+	}
+	if runner.Command[0] != command {
+		t.Fatal("output-only preparation mutated configured command")
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesRelativeCheckoutExecutable(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(checkout, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &replay.ExecRunner{Command: []string{"./seat.sh", "--flag"}}
+	prepared, err := outputOnlySeatRunner(runner, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := prepared.(*replay.ExecRunner)
+	if got.Command[0] != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got.Command[0])
+	}
+	if got.Command[1] != "--flag" {
+		t.Fatalf("command argument changed: %v", got.Command)
+	}
+	if runner.Command[0] != "./seat.sh" {
+		t.Fatal("output-only preparation mutated configured command")
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesExecutableFromAdditionalProtectedRoot(t *testing.T) {
+	commandRoot := t.TempDir()
+	protectedRoot := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(protectedRoot, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(
+		&replay.ExecRunner{Command: []string{command}}, commandRoot, neutral, "primary", protectedRoot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got)
+	}
+}
+
+func TestValidateOutputOnlySeatScratchRejectsCheckoutScratch(t *testing.T) {
+	checkout := t.TempDir()
+	scratch := filepath.Join(checkout, "scratch")
+	if err := os.Mkdir(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateOutputOnlySeatScratch(scratch, checkout); err == nil {
+		t.Fatal("accepted scratch inside checkout")
+	} else if !strings.Contains(err.Error(), "inside checkout") {
+		t.Fatalf("error = %q, want checkout containment", err)
+	}
+	if err := validateOutputOnlySeatScratch(t.TempDir(), checkout); err != nil {
+		t.Fatalf("rejected scratch outside checkout: %v", err)
+	}
 }
 
 func (r *checkoutPolicyRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
@@ -330,11 +504,11 @@ func (r *checkoutPolicyRunner) Run(_ context.Context, req replay.RunRequest) (re
 	}
 	prompt := string(req.Inputs[0].Content)
 	r.prompts = append(r.prompts, prompt)
+	content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
 	if r.wantRead {
 		if !strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
 			return replay.RunResult{}, fmt.Errorf("read grant prompt missing READ-ONLY mode")
 		}
-		content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
 		if err != nil {
 			return replay.RunResult{}, fmt.Errorf("read checkout marker: %w", err)
 		}
@@ -349,6 +523,16 @@ func (r *checkoutPolicyRunner) Run(_ context.Context, req replay.RunRequest) (re
 		if strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
 			return replay.RunResult{}, fmt.Errorf("output-only prompt also authorizes READ-ONLY")
 		}
+		if err == nil {
+			return replay.RunResult{}, fmt.Errorf("output-only seat read checkout marker %q", content)
+		}
+		if !os.IsNotExist(err) {
+			return replay.RunResult{}, fmt.Errorf("output-only marker read error = %v, want not exist", err)
+		}
+		if _, err := os.Stat(filepath.Join(req.WorktreeDir, ".git")); err != nil {
+			return replay.RunResult{}, fmt.Errorf("output-only seat cwd is not a neutral git repository: %w", err)
+		}
+		r.markerDenied = true
 	}
 	return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
 }
@@ -405,6 +589,9 @@ func TestGateReadCheckoutPromptAndManifest(t *testing.T) {
 			}
 			if seat.markerRead != readCheckout {
 				t.Fatalf("markerRead = %t, want %t", seat.markerRead, readCheckout)
+			}
+			if seat.markerDenied != !readCheckout {
+				t.Fatalf("markerDenied = %t, want %t", seat.markerDenied, !readCheckout)
 			}
 			if len(seat.prompts) != 2 || seat.prompts[0] != seat.prompts[1] {
 				t.Fatalf("model seats received different prompts: %#v", seat.prompts)

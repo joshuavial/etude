@@ -232,7 +232,12 @@ that seat runners must satisfy when invoked by the live engine.
 ### Checkout evidence and measurement authority
 
 Every model seat receives one shared prompt that states its checkout policy.
-The default is **OUTPUT-ONLY**. When the workflow gate sets
+The default is **OUTPUT-ONLY**: each model seat starts in its own template-free,
+initially empty Git repository, while deterministic checks continue to run in the caller
+or execution worktree. A seat executable named by a repo-relative path is materialized from that worktree into the
+neutral repository before launch. Other relative path arguments resolve from
+the neutral repository and are unsupported; sibling files are not copied. Use
+absolute paths or PATH-resolved commands for seat dependencies. When the workflow gate sets
 `read_checkout: true`, the prompt grants read-only inspection of the detached
 checkout at the run's fixed git SHA. Live execution creates this checkout
 separately from the mutable worktree used by stages and deterministic checks,
@@ -249,8 +254,12 @@ own numbers. This rule is included in the actual seat prompt, not only in this
 documentation.
 
 The checkout mode is a trusted harness/prompt policy rather than an OS-level
-sandbox. Supervised gates cannot grant it because their worktree is the mutable
-caller tree. Live read grants also fail closed before seat invocation when the
+sandbox: a same-user command that already knows an absolute host path is outside
+this boundary. All `GIT_*` variables are removed from output-only exec-harness
+seat environments, and a configured temporary or scratch directory inside the checkout fails
+closed. Supervised gates cannot grant read access because their worktree
+is the mutable caller tree, so each model seat uses its own neutral output-only
+working directory. Live read grants also fail closed before seat invocation when the
 pinned tree contains a submodule gitlink; submodule population and identity are
 tracked by GitHub issue #14.
 

@@ -569,6 +569,7 @@ func (e *Engine) runGateSeats(
 	gateInputs []replay.RunInput,
 	as *artifactstore.Store,
 	globalRound int,
+	outputOnly bool,
 ) (seatResults []runmanifest.SeatResult, verdicts []runmanifest.SeatVerdict, blockRequired map[string][]string, ladderNotes []string) {
 	blockRequired = make(map[string][]string)
 
@@ -592,9 +593,69 @@ func (e *Engine) runGateSeats(
 			verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
 			continue
 		}
+		candidates = append([]SeatCandidate(nil), candidates...)
+
+		seatWorktreeDir := worktreeDir
+		if outputOnly {
+			if scratchErr := validateOutputOnlySeatScratch(scratch, worktreeDir, e.Root); scratchErr != nil {
+				note := fmt.Sprintf("validate output-only seat scratch: %v", scratchErr)
+				seatResults = append(seatResults, runmanifest.SeatResult{
+					Seat:        seatName,
+					Harness:     runmanifest.Harness{Name: meta.HarnessName},
+					Provider:    runmanifest.Provider{Name: meta.ProviderName, Model: meta.Model},
+					Verdict:     runmanifest.SeatVerdictFailed,
+					FailureNote: note,
+					Timestamp:   e.clock(),
+				})
+				verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
+				continue
+			}
+			neutralDir, cleanup, neutralErr := newOutputOnlySeatDir(ctx, worktreeDir, e.Root)
+			if neutralErr != nil {
+				note := fmt.Sprintf("create output-only seat directory: %v", neutralErr)
+				seatResults = append(seatResults, runmanifest.SeatResult{
+					Seat:        seatName,
+					Harness:     runmanifest.Harness{Name: meta.HarnessName},
+					Provider:    runmanifest.Provider{Name: meta.ProviderName, Model: meta.Model},
+					Verdict:     runmanifest.SeatVerdictFailed,
+					FailureNote: note,
+					Timestamp:   e.clock(),
+				})
+				verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
+				continue
+			}
+			defer cleanup()
+			seatWorktreeDir = neutralDir
+			var prepareErr error
+			if len(candidates) == 0 {
+				runner, prepareErr = outputOnlySeatRunner(runner, worktreeDir, neutralDir, "primary", e.Root)
+			} else {
+				for i := range candidates {
+					candidates[i].Runner, prepareErr = outputOnlySeatRunner(
+						candidates[i].Runner, worktreeDir, neutralDir, fmt.Sprintf("candidate-%d", i), e.Root,
+					)
+					if prepareErr != nil {
+						break
+					}
+				}
+			}
+			if prepareErr != nil {
+				note := fmt.Sprintf("prepare output-only seat command: %v", prepareErr)
+				seatResults = append(seatResults, runmanifest.SeatResult{
+					Seat:        seatName,
+					Harness:     runmanifest.Harness{Name: meta.HarnessName},
+					Provider:    runmanifest.Provider{Name: meta.ProviderName, Model: meta.Model},
+					Verdict:     runmanifest.SeatVerdictFailed,
+					FailureNote: note,
+					Timestamp:   e.clock(),
+				})
+				verdicts = append(verdicts, runmanifest.SeatVerdictFailed)
+				continue
+			}
+		}
 
 		req := replay.RunRequest{
-			WorktreeDir:     worktreeDir,
+			WorktreeDir:     seatWorktreeDir,
 			ScratchDir:      seatScratch,
 			Inputs:          gateInputs,
 			OutputRole:      "seat-output",
@@ -665,6 +726,144 @@ func (e *Engine) runGateSeats(
 		verdicts = append(verdicts, verdict)
 	}
 	return seatResults, verdicts, blockRequired, ladderNotes
+}
+
+func newOutputOnlySeatDir(ctx context.Context, protectedDirs ...string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "etude-output-only-seat-*")
+	if err != nil {
+		return "", nil, err
+	}
+	originalDir := dir
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		_ = os.RemoveAll(originalDir)
+		return "", nil, fmt.Errorf("resolve output-only seat directory: %w", err)
+	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		_ = os.RemoveAll(originalDir)
+		return "", nil, fmt.Errorf("resolve physical output-only seat directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	for _, protectedDir := range protectedDirs {
+		resolvedProtected, err := resolveGateDir(protectedDir)
+		if err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("resolve checkout boundary: %w", err)
+		}
+		insideCheckout, err := pathAtOrBelow(resolvedProtected, dir)
+		if err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("compare checkout boundary: %w", err)
+		}
+		if insideCheckout {
+			cleanup()
+			return "", nil, fmt.Errorf("temporary directory %q is inside checkout %q", dir, resolvedProtected)
+		}
+	}
+	cmd := exec.CommandContext(ctx, "git", "init", "--quiet", "--template=", dir)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("git init: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return dir, cleanup, nil
+}
+
+func validateOutputOnlySeatScratch(scratch string, protectedDirs ...string) error {
+	for _, protectedDir := range protectedDirs {
+		inside, err := pathAtOrBelow(protectedDir, scratch)
+		if err != nil {
+			return fmt.Errorf("compare scratch boundary: %w", err)
+		}
+		if inside {
+			return fmt.Errorf("scratch directory %q is inside checkout %q", scratch, protectedDir)
+		}
+	}
+	return nil
+}
+
+func pathAtOrBelow(root, path string) (bool, error) {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false, err
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(rootInfo, info) {
+			return true, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+	}
+}
+
+func outputOnlySeatRunner(runner replay.Runner, commandRoot, neutralDir, commandName string, protectedDirs ...string) (replay.Runner, error) {
+	execRunner, ok := runner.(*replay.ExecRunner)
+	if !ok || execRunner == nil {
+		return runner, nil
+	}
+	clone := *execRunner
+	clone.Command = append([]string(nil), execRunner.Command...)
+	clone.EnvAllowlist = clone.EnvAllowlist[:0:0]
+	for _, name := range execRunner.EnvAllowlist {
+		if !strings.HasPrefix(name, "GIT_") {
+			clone.EnvAllowlist = append(clone.EnvAllowlist, name)
+		}
+	}
+	if len(clone.Command) == 0 {
+		return &clone, nil
+	}
+	if !filepath.IsAbs(clone.Command[0]) {
+		if !strings.ContainsRune(clone.Command[0], filepath.Separator) {
+			return &clone, nil
+		}
+		candidate := filepath.Join(commandRoot, clone.Command[0])
+		if _, err := os.Stat(candidate); err != nil {
+			return &clone, nil
+		}
+		clone.Command[0] = candidate
+	}
+	commandPath, err := filepath.EvalSymlinks(clone.Command[0])
+	if err != nil {
+		return nil, fmt.Errorf("resolve seat executable: %w", err)
+	}
+	insideCheckout := false
+	for _, protectedDir := range append([]string{commandRoot}, protectedDirs...) {
+		inside, err := pathAtOrBelow(protectedDir, commandPath)
+		if err != nil {
+			return nil, fmt.Errorf("compare seat executable boundary: %w", err)
+		}
+		if inside {
+			insideCheckout = true
+			break
+		}
+	}
+	if !insideCheckout {
+		return &clone, nil
+	}
+	info, err := os.Stat(commandPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat seat executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("seat executable %q is not a regular file", commandPath)
+	}
+	content, err := os.ReadFile(commandPath)
+	if err != nil {
+		return nil, fmt.Errorf("read seat executable: %w", err)
+	}
+	materialized := filepath.Join(neutralDir, "etude-seat-"+commandName)
+	if err := os.WriteFile(materialized, content, info.Mode().Perm()); err != nil {
+		return nil, fmt.Errorf("materialize seat executable: %w", err)
+	}
+	clone.Command[0] = materialized
+	return &clone, nil
 }
 
 // runGate executes the full gate drive loop for a guarded stage output:
@@ -795,8 +994,10 @@ func (e *Engine) runGate(
 		checkSeatResults, checksPassed, checkBlocks := e.runGateChecks(
 			ctx, worktreeDir, scratch, gate.Checks, checkInputs, as, globalRound,
 		)
+		outputOnly := !readCheckout
 		modelSeatResults, seatVerdicts, seatBlockRequired, gateLadderNotes := e.runGateSeats(
 			ctx, seatWorktreeDir, scratch, seatNames, modelInputs, as, globalRound,
+			outputOnly,
 		)
 
 		// Synthesize verdict.
