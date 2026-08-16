@@ -132,7 +132,7 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 	}
 
 	// Step 4: checkout the recorded git SHA.
-	wt, err := worktree.Checkout(ctx, root, resolved.GitSHA)
+	wt, err := worktree.Checkout(ctx, root, resolved.RunGitSHA)
 	if err != nil {
 		return BenchOutcome{}, wrap("checkout git sha", err)
 	}

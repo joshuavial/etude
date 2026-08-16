@@ -47,13 +47,29 @@ type Manifest struct {
 	// When zero it is omitted from JSON serialization.
 	OccurredAt time.Time
 	Refs       map[string]string
-	Stages     []Stage
-	Gates      []GateAttempt
+	// OriginalGitSHA is the immutable checkout selected when a v4 live run
+	// starts. Caller-workspace stage GitSHA values may name later commits.
+	OriginalGitSHA string
+	Stages         []Stage
+	Gates          []GateAttempt
 	// EnvAllowlist records the env var NAMES (never values) that were
 	// configured for passthrough to live runners during this run.
 	// Absent/nil/empty all mean "no passthrough" (semantically equivalent).
 	// Values are never stored here — only the configured names for audit.
 	EnvAllowlist []string
+}
+
+// OriginalCheckout returns the commit used for hermetic execution. Version 4
+// manifests carry it explicitly; legacy manifests used stage zero for both run
+// checkout identity and stage provenance.
+func (m Manifest) OriginalCheckout() string {
+	if m.OriginalGitSHA != "" {
+		return m.OriginalGitSHA
+	}
+	if len(m.Stages) == 0 {
+		return ""
+	}
+	return m.Stages[0].GitSHA
 }
 
 // GateAttempt records one full panel re-examination of one phase gate.
@@ -264,6 +280,29 @@ func (m Manifest) Validate() error {
 	for i, stage := range m.Stages {
 		if err := validateStage(i, stage); err != nil {
 			return err
+		}
+	}
+	hasCallerWorkspace := false
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" {
+			hasCallerWorkspace = true
+			break
+		}
+	}
+	if hasCallerWorkspace && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		return fmt.Errorf("%w: original git sha required for caller-workspace manifest", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace && !isHexOID(m.OriginalGitSHA) {
+		return fmt.Errorf("%w: original git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest)
+	}
+	if !hasCallerWorkspace && m.OriginalGitSHA != "" {
+		return fmt.Errorf("%w: original git sha requires a caller-workspace stage", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace {
+		for i, stage := range m.Stages {
+			if stage.RunnerWorkspace == "" && stage.GitSHA != m.OriginalGitSHA {
+				return fmt.Errorf("%w: stage[%d] hermetic git sha %q does not match original git sha %q", ErrInvalidManifest, i, stage.GitSHA, m.OriginalGitSHA)
+			}
 		}
 	}
 
@@ -480,6 +519,9 @@ func validateStage(index int, stage Stage) error {
 	}
 	if strings.TrimSpace(stage.GitSHA) == "" {
 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+	}
+	if stage.RunnerWorkspace != "" && !isHexOID(stage.GitSHA) {
+		return fmt.Errorf("%w: %s caller git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix)
 	}
 	for submodulePath, oid := range stage.Submodules {
 		if submodulePath == "" || submodulePath == "." || !utf8.ValidString(submodulePath) || strings.ContainsRune(submodulePath, '\x00') || path.IsAbs(submodulePath) || path.Clean(submodulePath) != submodulePath || submodulePath == ".." || strings.HasPrefix(submodulePath, "../") {
@@ -943,10 +985,11 @@ type manifestJSON struct {
 	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
 	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
 	// which would defeat omitempty and pollute all existing manifests.
-	OccurredAt string            `json:"occurred_at,omitempty"`
-	Refs       map[string]string `json:"refs"`
-	Stages     []stageJSON       `json:"stages"`
-	Gates      []gateJSON        `json:"gates,omitempty"`
+	OccurredAt     string            `json:"occurred_at,omitempty"`
+	Refs           map[string]string `json:"refs"`
+	OriginalGitSHA string            `json:"original_git_sha,omitempty"`
+	Stages         []stageJSON       `json:"stages"`
+	Gates          []gateJSON        `json:"gates,omitempty"`
 	// EnvAllowlist records the env var NAMES configured for passthrough (never
 	// values). Absent/null/empty all mean "no passthrough" (omitempty is correct;
 	// no manifest_version bump — additive leaf, same as occurred_at).
@@ -1147,6 +1190,7 @@ func (m Manifest) toJSON() manifestJSON {
 		Created:         formatTime(m.Created),
 		OccurredAt:      formatTimeOmitZero(m.OccurredAt),
 		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
 		Stages:          stages,
 		Gates:           gatesOut,
 		EnvAllowlist:    m.EnvAllowlist,
@@ -1282,6 +1326,12 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 	default:
 		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
 	}
+	if m.ManifestVersion < 4 && m.OriginalGitSHA != "" {
+		return Manifest{}, fmt.Errorf("%w: original_git_sha requires manifest_version 4", ErrInvalidManifest)
+	}
+	if m.ManifestVersion == 4 && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha", ErrInvalidManifest)
+	}
 
 	created, err := parseTime("created", m.Created)
 	if err != nil {
@@ -1325,6 +1375,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		Created:         created,
 		OccurredAt:      occurredAt,
 		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
 		Stages:          stages,
 		Gates:           gates,
 		EnvAllowlist:    m.EnvAllowlist,

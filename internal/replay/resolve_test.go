@@ -168,6 +168,107 @@ func TestResolveInputsSingleInput(t *testing.T) {
 	}
 }
 
+func TestResolveInputsSeparatesCallerStageFromRunCheckout(t *testing.T) {
+	output := []byte("caller output")
+	dir := initRepo(t)
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "original")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	originalOut, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSHA := strings.TrimSpace(string(originalOut))
+	cmd = exec.Command("git", "commit", "--allow-empty", "-m", "caller")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	callerOut, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerSHA := strings.TrimSpace(string(callerOut))
+	stage := makeStage("produce", nil, output)
+	stage.GitSHA = callerSHA
+	stage.RunnerWorkspace = "caller"
+	manifest := makeManifest("run-caller", nil, []runmanifest.Stage{stage})
+	manifest.OriginalGitSHA = originalSHA
+	store := refstore.New(dir)
+	if _, err := (runmanifest.Writer{Store: store}).Write(context.Background(), manifest, map[string][]byte{stage.Output.Path: output}, runmanifest.WriteOptions{}); err != nil {
+		t.Fatalf("seed caller run: %v", err)
+	}
+	runID := manifest.RunID
+
+	result, err := ResolveInputs(context.Background(), store, runID, "produce")
+	if err != nil {
+		t.Fatalf("ResolveInputs: %v", err)
+	}
+	if result.GitSHA != stage.GitSHA {
+		t.Fatalf("source stage GitSHA = %q, want post-run %q", result.GitSHA, stage.GitSHA)
+	}
+	if result.RunGitSHA != manifest.OriginalGitSHA {
+		t.Fatalf("RunGitSHA = %q, want original %q", result.RunGitSHA, manifest.OriginalGitSHA)
+	}
+}
+
+func TestResolveInputsPreservesMissingCallerProvenance(t *testing.T) {
+	output := []byte("caller output")
+	stage := makeStage("produce", nil, output)
+	stage.GitSHA = strings.Repeat("b", 40)
+	stage.RunnerWorkspace = "caller"
+	manifest := makeManifest("run-missing-caller", nil, []runmanifest.Stage{stage})
+	manifest.OriginalGitSHA = strings.Repeat("a", 40)
+	store, runID, _ := seedRun(t, manifest, map[string][]byte{stage.Output.Path: output})
+	resolved, err := ResolveInputs(context.Background(), store, runID, "produce")
+	if err != nil {
+		t.Fatalf("ResolveInputs: %v", err)
+	}
+	if resolved.GitSHA != stage.GitSHA || resolved.RunGitSHA != manifest.OriginalGitSHA {
+		t.Fatalf("resolved provenance = stage %q run %q, want stage %q run %q", resolved.GitSHA, resolved.RunGitSHA, stage.GitSHA, manifest.OriginalGitSHA)
+	}
+}
+
+func TestResolveInputsRejectsLegacyHermeticStageOutsideRunCheckout(t *testing.T) {
+	firstOutput := []byte("first output")
+	targetOutput := []byte("target output")
+	first := makeStage("produce", nil, firstOutput)
+	target := makeStage("verify", nil, targetOutput)
+	target.GitSHA = strings.Repeat("c", 40)
+	manifest := makeManifest("run-inconsistent-legacy", nil, []runmanifest.Stage{first, target})
+	store, runID, _ := seedRun(t, manifest, map[string][]byte{first.Output.Path: firstOutput, target.Output.Path: targetOutput})
+	_, err := ResolveInputs(context.Background(), store, runID, "verify")
+	if err == nil || !strings.Contains(err.Error(), "does not match original checkout") {
+		t.Fatalf("ResolveInputs error = %v, want inconsistent legacy provenance rejection", err)
+	}
+}
+
+func TestResolveInputsHermeticStageDoesNotRequireCallerCommit(t *testing.T) {
+	callerOutput := []byte("caller output")
+	hermeticOutput := []byte("hermetic output")
+	caller := makeStage("produce", nil, callerOutput)
+	caller.GitSHA = strings.Repeat("b", 40)
+	caller.RunnerWorkspace = "caller"
+	hermetic := makeStage("verify", nil, hermeticOutput)
+	hermetic.GitSHA = strings.Repeat("a", 40)
+	manifest := makeManifest("run-missing-caller-select-hermetic", nil, []runmanifest.Stage{caller, hermetic})
+	manifest.OriginalGitSHA = strings.Repeat("a", 40)
+	store, runID, _ := seedRun(t, manifest, map[string][]byte{caller.Output.Path: callerOutput, hermetic.Output.Path: hermeticOutput})
+	resolved, err := ResolveInputs(context.Background(), store, runID, "verify")
+	if err != nil {
+		t.Fatalf("ResolveInputs: %v", err)
+	}
+	if resolved.RunGitSHA != manifest.OriginalGitSHA {
+		t.Fatalf("RunGitSHA = %q, want original %q", resolved.RunGitSHA, manifest.OriginalGitSHA)
+	}
+}
+
 func TestResolveInputsMultiInput(t *testing.T) {
 	content1 := []byte("input-one")
 	content2 := []byte("input-two")

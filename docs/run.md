@@ -203,6 +203,12 @@ ordinary tracked files, mutations made by earlier stages remain visible later bu
 do not rewrite the initial identity recorded on each stage. Repositories without
 submodules omit the map.
 
+For a caller-workspace stage, `git_sha` names the clean post-run caller HEAD,
+while `submodules` continues to describe the immutable original checkout used by
+hermetic stages and gates. Top-level `original_git_sha` is the key that relates
+that map to the pinned checkout; the caller post-run commit may have a different
+submodule tree and caller mode rejects tracked submodules in either case.
+
 Submodule population is fail-closed and has no opt-out: invalid configuration,
 an unavailable required object, or inaccessible credentials stop the run before
 any stage or gate check executes.
@@ -270,10 +276,15 @@ changes, unstaged changes, and non-ignored untracked files stop the stage before
 runner invocation or before its output is captured or gated, respectively.
 Ignored files are permitted. A clean runner-created commit is permitted, and
 the stage manifest records that post-run commit together with
-`runner_workspace: caller`. Repositories containing tracked submodules are
-rejected before the runner starts, and a runner that adds one is rejected before
-capture, because nested Git state cannot be covered by the repository-level
-guard.
+`runner_workspace: caller`. Manifest version 4 also records the run's immutable
+starting checkout separately as top-level `original_git_sha`; resume and other
+hermetic consumers (replay, recovered gates, and bench) use that value rather
+than a caller stage's later commit.
+Version 4 records created before this field existed are rejected rather than
+falling back to the overloaded stage value. Repositories containing tracked
+submodules are rejected before the runner starts, and a runner that adds one is
+rejected before capture, because nested Git state cannot be covered by the
+repository-level guard.
 
 The post-run check happens only after a successful runner exit. If a caller-workspace
 runner fails, times out, or is rejected by the post-run guard, it may leave the
@@ -296,11 +307,25 @@ that frontier stage again, so caller-workspace runners must be repeat-safe and
 the operator must reconcile any such commit before resuming. Ignored files remain
 outside the guard by design; caller runners are responsible for their effects on
 those files. Cleanliness follows Git's configured status/index semantics;
-repository normalization, ignore, and file-mode policies are trusted inputs, not
-a promise of byte-for-byte filesystem identity outside Git's model. Caller
-runners must not change those trusted policies while running; changing Git
-configuration or control files to alter what Git reports is outside this guard's
-contract.
+repository normalization, ignore, and file-mode policies at stage start are
+trusted inputs, not a promise of byte-for-byte filesystem identity outside Git's
+model. Etude snapshots the repository's local config, worktree config, and
+`info/attributes` control files across the runner and fails closed if any
+changes. Effective configuration may legitimately change because the runner
+creates a clean commit on another branch; unchanged control files do not fail
+merely because a branch-conditional include becomes inactive.
+
+Tracked content and executable modes are compared directly with the blobs and
+modes in `HEAD`, independently of clean filters and Git's stat cache. This is
+deliberately conservative: a repository whose clean checkout uses a smudge
+filter to leave tracked working bytes different from the committed blob cannot
+use caller workspace mode without first producing the canonical bytes.
+
+The caller stage SHA is recorded provenance, not the checkout used by later
+hermetic work. Resume, replay, bench, and gates need the original checkout object
+but do not require every caller provenance object to remain locally reachable.
+Normal Git pruning can therefore remove an otherwise-unreferenced caller commit
+without making a later hermetic stage use the wrong tree.
 
 Gates do not inherit the producing runner's workspace. Gate checks and model
 seats continue to execute against the run's original hermetic detached
@@ -395,11 +420,12 @@ an opted-in seat reads; it is the seat command's working directory. Supervised
 gates reject `read_checkout` because they review the caller's mutable,
 uncommitted tree rather than a reproducible pin.
 
-Until submodule checkout identity is implemented by GitHub issue #14, an
-opted-in live gate fails closed before invoking seats when the pinned tree
-contains a submodule gitlink. Output-only gates are unaffected. Workflow files
-using `read_checkout` require a version of Etude that knows the field; older
-strict parsers reject it rather than silently ignoring the grant.
+An opted-in live gate recursively populates submodules in each seat's dedicated
+checkout and validates their OIDs against the recorded stage map before invoking
+the seat. Population or identity mismatch fails closed. Output-only gates do not
+receive a checkout. Workflow files using `read_checkout` require a version of
+Etude that knows the field; older strict parsers reject it rather than silently
+ignoring the grant.
 
 **Synthesis** is fail-closed:
 
@@ -426,8 +452,10 @@ by unusable model seats is resumable; substantive reviewer decisions remain
 terminal.
 
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
-manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present);
-gate attempts appear after stages in
+manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present).
+Version 4 also requires the run-level `original_git_sha` that pins hermetic
+execution independently of caller-stage post-run provenance. Gate attempts
+appear after stages in
 `etude run show`. No separate `etude capture-gate` call is required for live
 runs. An effective checkout grant is recorded as `read_checkout: true`; false
 is omitted. The workflow is the authorization source—the manifest field is an

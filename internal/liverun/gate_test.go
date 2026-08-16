@@ -923,22 +923,41 @@ func TestGateReadCheckoutCapturesSessionBeforeCleanup(t *testing.T) {
 	}
 }
 
-func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
+func TestGateReadCheckoutPopulatesRecordedSubmodule(t *testing.T) {
 	for _, readCheckout := range []bool{false, true} {
 		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+			t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+			submodule := initTestRepo(t)
+			writeTestFile(t, submodule, "payload.txt", "pinned gate content\n")
+			gitRun(t, submodule, "add", "payload.txt")
+			gitRun(t, submodule, "commit", "-m", "add gate payload")
+			submoduleSHA := headSHA(t, submodule)
+
 			repo := initTestRepo(t)
-			baseSHA := headSHA(t, repo)
-			gitRun(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+baseSHA+",nested/vendor/sub")
-			gitRun(t, repo, "commit", "-m", "add nested gitlink")
+			gitRun(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "nested/vendor/sub")
+			gitRun(t, repo, "commit", "-m", "add nested submodule")
 			sha := headSHA(t, repo)
 
 			seatCalls := 0
+			seatRunner := replay.Runner(&replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"})
+			if readCheckout {
+				seatRunner = runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+					content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "nested", "vendor", "sub", "payload.txt"))
+					if err != nil {
+						return replay.RunResult{}, err
+					}
+					if got := string(content); got != "pinned gate content\n" {
+						t.Fatalf("seat submodule content = %q, want pinned content", got)
+					}
+					return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
+				})
+			}
 			e := &Engine{
 				Store:         refstore.New(repo),
 				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
 				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
 					seatCalls++
-					return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+					return seatRunner, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
 				},
 				Tiers: fixedTiers(map[string][2]interface{}{
 					"L1": {[]string{"reviewer"}, ""},
@@ -947,28 +966,23 @@ func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
 				Now:  fixedClock(),
 			}
 			wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", ReadCheckout: readCheckout})
-			runID := fmt.Sprintf("mywf-20260101T000001Z-gitlink%t", readCheckout)
+			runID := fmt.Sprintf("mywf-20260101T000001Z-submodule%t", readCheckout)
 			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
 				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
 			})
 
-			if readCheckout {
-				if err == nil || !strings.Contains(err.Error(), "nested/vendor/sub") || !strings.Contains(err.Error(), "#14") {
-					t.Fatalf("read grant error = %v, want recursive gitlink and GH #14 guidance", err)
-				}
-				if seatCalls != 0 {
-					t.Fatalf("seat ran %d times before gitlink rejection", seatCalls)
-				}
-				if got := readLiveManifest(t, repo, runID); len(got.Gates) != 0 {
-					t.Fatalf("gitlink rejection recorded %d gate attempts, want none", len(got.Gates))
-				}
-				return
-			}
 			if err != nil {
-				t.Fatalf("output-only gate on gitlink repo changed behavior: %v", err)
+				t.Fatalf("Run: %v", err)
 			}
 			if seatCalls != 1 {
-				t.Fatalf("output-only seat calls = %d, want 1", seatCalls)
+				t.Fatalf("seat calls = %d, want 1", seatCalls)
+			}
+			m := readLiveManifest(t, repo, runID)
+			if got := m.Stages[0].Submodules["nested/vendor/sub"]; got != submoduleSHA {
+				t.Fatalf("recorded submodule SHA = %q, want %q", got, submoduleSHA)
+			}
+			if got := m.Gates[0].ReadCheckout; got != readCheckout {
+				t.Fatalf("recorded read_checkout = %t, want %t", got, readCheckout)
 			}
 		})
 	}

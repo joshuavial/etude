@@ -1,8 +1,13 @@
 # Replay
 
 `etude replay` re-executes a recorded stage end-to-end: it resolves the
-stage's recorded inputs, checks out the recorded git SHA into a throwaway
+stage's recorded inputs, checks out the run's original git SHA into a throwaway
 worktree, invokes an external runner, and emits the produced output.
+
+For manifest version 4, top-level `original_git_sha` identifies that checkout;
+a caller-workspace stage's own `git_sha` instead records its clean post-run HEAD.
+Legacy non-caller manifests use stage zero's `git_sha` for the original
+checkout; caller-workspace v4 manifests missing `original_git_sha` are rejected.
 
 Without `--record`, replay only emits the output and does not persist anything.
 With `--record`, it writes a new linked run; see [Recording (--record)](#recording-record) below.
@@ -60,8 +65,8 @@ The new run contains a single stage with:
 
 - `stage` — same name as the source stage.
 - `produced_by` — `"replay"`.
-- `git_sha` — the source stage's recorded git SHA (the replay runs at that
-  commit, so the SHA is preserved).
+- `git_sha` — the source run's original checkout SHA (the replay runs at that
+  commit). This may differ from a caller-workspace source stage's post-run SHA.
 - `producer` — the source stage's producer, merged with any producer-override
   flags (`--skill-version`, `--model`, etc.). Unset override flags inherit from
   the source.
@@ -113,7 +118,7 @@ no runner configured (set --runner or git config etude.runner)
 The runner is invoked as an external process with:
 
 - **Working directory** set to the throwaway worktree (a pristine checkout of
-  the stage's recorded git SHA).
+  the run's original git SHA).
 - **Environment** restricted to three variables:
   - `PATH` — inherited from the calling process.
   - `ETUDE_INPUTS_DIR` — path to a directory containing one file per stage

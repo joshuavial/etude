@@ -170,6 +170,9 @@ func TestHermeticRunnerRemainsDefault(t *testing.T) {
 	if got := m.Stages[0].RunnerWorkspace; got != "" {
 		t.Fatalf("RunnerWorkspace = %q, want omitted hermetic default", got)
 	}
+	if m.OriginalGitSHA != "" {
+		t.Fatalf("OriginalGitSHA = %q, want omitted for hermetic v2", m.OriginalGitSHA)
+	}
 }
 
 func TestCallerWorkspaceRunnerCommitsAndRecordsPostRunProvenance(t *testing.T) {
@@ -207,6 +210,9 @@ func TestCallerWorkspaceRunnerCommitsAndRecordsPostRunProvenance(t *testing.T) {
 	}
 	if got := m.Stages[0].GitSHA; got != postSHA {
 		t.Fatalf("stage git_sha = %q, want post-run HEAD %q", got, postSHA)
+	}
+	if got := m.OriginalGitSHA; got != initialSHA {
+		t.Fatalf("original_git_sha = %q, want invocation HEAD %q", got, initialSHA)
 	}
 	if got := m.Stages[0].RunnerWorkspace; got != workflow.RunnerWorkspaceCaller {
 		t.Fatalf("runner_workspace = %q, want caller", got)
@@ -318,6 +324,9 @@ func TestCallerWorkspaceGateRemainsPinnedToOriginalWorktree(t *testing.T) {
 	m := readLiveManifest(t, repo, "callerwf-20260101T000000Z-gatepin")
 	if m.ManifestVersion != 4 || len(m.Gates) != 1 {
 		t.Fatalf("caller gated manifest version/gates = %d/%d, want 4/1", m.ManifestVersion, len(m.Gates))
+	}
+	if m.OriginalGitSHA != initialSHA {
+		t.Fatalf("gate rewrite original_git_sha = %q, want %q", m.OriginalGitSHA, initialSHA)
 	}
 }
 
@@ -575,7 +584,7 @@ func TestCallerWorkspaceReplacementRefCannotFalsifyProvenance(t *testing.T) {
 }
 
 func TestCallerWorkspaceRejectsTrackedSubmoduleBeforeRunner(t *testing.T) {
-	t.Setenv("GIT_LITERAL_PATHSPECS", "1")
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
 	submodule := initTestRepo(t)
 	writeTestFile(t, submodule, "tracked.txt", "original\n")
 	gitRun(t, submodule, "add", "tracked.txt")
@@ -648,6 +657,9 @@ func TestCallerWorkspaceChangingHEADFailsClosed(t *testing.T) {
 		ResolveCallerHEAD: func(context.Context, string) (string, error) {
 			calls++
 			if calls == 1 {
+				return sha, nil
+			}
+			if calls == 2 {
 				return strings.Repeat("a", 40), nil
 			}
 			return strings.Repeat("b", 40), nil
@@ -661,8 +673,347 @@ func TestCallerWorkspaceChangingHEADFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrCallerWorkspaceChanged) {
 		t.Fatalf("Run error = %v, want ErrCallerWorkspaceChanged", err)
 	}
-	if calls != 2 {
-		t.Fatalf("ResolveCallerHEAD calls = %d, want 2", calls)
+	if calls != 3 {
+		t.Fatalf("ResolveCallerHEAD calls = %d, want 3", calls)
+	}
+}
+
+func TestCallerWorkspaceRejectsFileModeMutationDespiteConfigChange(t *testing.T) {
+	repo := initTestRepo(t)
+	script := filepath.Join(repo, "tracked.sh")
+	writeTestFile(t, repo, "tracked.sh", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "tracked.sh")
+	gitRun(t, repo, "commit", "-m", "add executable")
+	gitRun(t, repo, "config", "core.fileMode", "false")
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		if err := os.Chmod(script, 0o654); err != nil {
+			t.Fatal(err)
+		}
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-filemode"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
+	}
+	if strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want file-mode detection rather than config drift", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after mode mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsSameSizeRewriteDespiteStatConfig(t *testing.T) {
+	repo := initTestRepo(t)
+	tracked := filepath.Join(repo, "README.md")
+	info, err := os.Stat(tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "config", "core.trustctime", "false")
+	gitRun(t, repo, "config", "core.checkStat", "minimal")
+	gitRun(t, repo, "config", "core.ignoreStat", "true")
+	gitRun(t, repo, "config", "core.fsmonitor", "true")
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, "README.md", "best\n")
+		if err := os.Chtimes(tracked, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-statconfig"
+	err = e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
+	}
+	if strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want content detection rather than config drift", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after same-size rewrite: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsStagedIndexOnlyMutation(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		cmd := exec.Command("git", "-C", repo, "hash-object", "-w", "--stdin")
+		cmd.Stdin = strings.NewReader("staged-index-only\n")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hash replacement blob: %v", err)
+		}
+		blob := strings.TrimSpace(string(out))
+		gitRun(t, repo, "update-index", "--cacheinfo", "100644,"+blob+",README.md")
+		worktreeOut, err := exec.Command("git", "-C", repo, "hash-object", "README.md").Output()
+		if err != nil {
+			t.Fatalf("hash working file: %v", err)
+		}
+		headOut, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD:README.md").Output()
+		if err != nil {
+			t.Fatalf("resolve HEAD blob: %v", err)
+		}
+		worktreeBlob := strings.TrimSpace(string(worktreeOut))
+		headBlob := strings.TrimSpace(string(headOut))
+		if worktreeBlob != headBlob {
+			t.Fatalf("working file blob = %s, want HEAD blob %s", worktreeBlob, headBlob)
+		}
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-indexonly"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
+	}
+	if err := exec.Command("git", "-C", repo, "diff", "--cached", "--quiet", "HEAD", "--", "README.md").Run(); err == nil {
+		t.Fatal("test did not leave an index-only mutation")
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after index-only mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsGitInfoAttributesChange(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	gitRun(t, repo, "config", "filter.mask.clean", "sed s/best/test/")
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/info/attributes", "README.md filter=mask\n")
+		writeTestFile(t, repo, "README.md", "best\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-attributes"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want Git control-file mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after attributes mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceAllowsBranchConditionalConfigEffectChange(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	branchOut, err := exec.Command("git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchOut))
+	writeTestFile(t, repo, ".git/main-branch.inc", "[qa]\n\tbranch = included\n")
+	gitRun(t, repo, "config", "includeIf.onbranch:"+branch+".path", "main-branch.inc")
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		gitRun(t, repo, "switch", "-c", "caller-branch")
+		if err := exec.Command("git", "-C", repo, "config", "--get", "qa.branch").Run(); err == nil {
+			t.Fatal("branch-conditional configuration remained active after branch switch")
+		}
+		writeTestFile(t, repo, "README.md", "caller branch commit\n")
+		gitRun(t, repo, "add", "README.md")
+		gitRun(t, repo, "commit", "-m", "caller branch commit")
+		return replay.RunResult{Output: []byte("clean output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-branchconfig"
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	manifest := readLiveManifest(t, repo, runID)
+	if got, want := manifest.Stages[0].GitSHA, headSHA(t, repo); got != want || got == sha {
+		t.Fatalf("caller stage git sha = %q, want clean branch commit %q distinct from %q", got, want, sha)
+	}
+}
+
+func TestCallerWorkspaceRejectsRepositoryMetadataReplacement(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		if err := os.Rename(filepath.Join(repo, ".git"), filepath.Join(repo, ".git-original")); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "init")
+		return replay.RunResult{Output: []byte("redirected output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-replacedgit"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceChanged) || !strings.Contains(err.Error(), "repository identity changed") {
+		t.Fatalf("Run error = %v, want repository identity rejection", err)
+	}
+}
+
+func TestCallerWorkspaceRejectsBranchActivatedCleanFilter(t *testing.T) {
+	repo := initTestRepo(t)
+	writeTestFile(t, repo, ".gitattributes", "README.md filter=mask\n")
+	gitRun(t, repo, "add", ".gitattributes")
+	gitRun(t, repo, "commit", "-m", "add filter attributes")
+	sha := headSHA(t, repo)
+	writeTestFile(t, repo, ".git/caller-branch.inc", "[filter \"mask\"]\n\tclean = sed s/best/test/\n")
+	gitRun(t, repo, "config", "includeIf.onbranch:caller-filter.path", "caller-branch.inc")
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		gitRun(t, repo, "switch", "-c", "caller-filter")
+		gitRun(t, repo, "commit", "--allow-empty", "-m", "activate branch filter")
+		writeTestFile(t, repo, "README.md", "best\n")
+		statusOut, err := exec.Command("git", "-C", repo, "status", "--porcelain=v1").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := strings.TrimSpace(string(statusOut)); status != "" {
+			t.Fatalf("crafted filtered mutation is visible to ordinary Git status: %q", status)
+		}
+		return replay.RunResult{Output: []byte("stale filtered output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-branchfilter"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || strings.Contains(err.Error(), "control files changed") {
+		t.Fatalf("Run error = %v, want raw tracked-byte rejection", err)
+	}
+}
+
+func TestCallerWorkspaceRelativeRootUsesLibraryFallback(t *testing.T) {
+	repo := initTestRepo(t)
+	t.Chdir(repo)
+	sha := headSHA(t, repo)
+	runnerCalled := false
+	runner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+		runnerCalled = true
+		if req.WorktreeDir != "." {
+			t.Fatalf("caller runner dir = %q, want relative fallback root", req.WorktreeDir)
+		}
+		return replay.RunResult{Output: []byte("output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: ".", Now: fixedClock()}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-relroot", GitSHA: sha}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !runnerCalled {
+		t.Fatal("caller runner did not execute")
+	}
+}
+
+func TestCallerWorkspaceResumeRequiresPriorCallerHead(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	runID := "callerwf-20260101T000000Z-lineage"
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{
+		{Name: "first", Skill: "sk", Produces: "plan", Inputs: []string{"task"}, Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}},
+		{Name: "second", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}, Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}},
+	}}
+	e := Engine{
+		Store: refstore.New(repo), Root: repo, Now: fixedClock(),
+		ResolveRunner: func(stage workflow.Stage) (replay.Runner, error) {
+			if stage.Name == "first" {
+				return runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+					writeTestFile(t, repo, "README.md", "first caller commit\n")
+					gitRun(t, repo, "add", "README.md")
+					gitRun(t, repo, "commit", "-m", "first caller commit")
+					return replay.RunResult{Output: []byte("first")}, nil
+				}), nil
+			}
+			return &replay.StubRunner{Err: errors.New("stop after first caller")}, nil
+		},
+	}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: originalSHA}); err == nil {
+		t.Fatal("initial run succeeded, want second-stage failure")
+	}
+	firstCallerSHA := readLiveManifest(t, repo, runID).Stages[0].GitSHA
+	if firstCallerSHA == originalSHA {
+		t.Fatal("first caller stage did not advance HEAD")
+	}
+	gitRun(t, repo, "reset", "--hard", originalSHA)
+
+	runnerCalls := 0
+	e.ResolveRunner = func(workflow.Stage) (replay.Runner, error) {
+		return runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+			runnerCalls++
+			return replay.RunResult{Output: []byte("must not run")}, nil
+		}), nil
+	}
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{ResumeID: runID})
+	if !errors.Is(err, ErrCallerWorkspaceChanged) || !strings.Contains(err.Error(), firstCallerSHA) {
+		t.Fatalf("resume error = %v, want prior caller HEAD mismatch", err)
+	}
+	if runnerCalls != 0 {
+		t.Fatalf("second caller runner calls = %d, want 0", runnerCalls)
+	}
+}
+
+func TestResumeHermeticStageDoesNotRequireCompletedCallerCommit(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	runID := "callerwf-20260101T000000Z-missingcommit"
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{
+		{Name: "produce", Skill: "sk", Produces: "plan", Inputs: []string{"task"}, Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}},
+		{Name: "verify", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+	}}
+	e := Engine{
+		Store: refstore.New(repo), Root: repo, Now: fixedClock(),
+		ResolveRunner: func(stage workflow.Stage) (replay.Runner, error) {
+			if stage.Name == "verify" {
+				return &replay.StubRunner{Err: errors.New("stop after caller")}, nil
+			}
+			return &replay.StubRunner{CannedOutput: []byte("caller")}, nil
+		},
+	}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: originalSHA}); err == nil {
+		t.Fatal("initial run succeeded, want verify failure")
+	}
+	rewriteLiveManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].GitSHA = strings.Repeat("b", 40)
+	})
+	runnerCalls := 0
+	e.ResolveRunner = func(workflow.Stage) (replay.Runner, error) {
+		runnerCalls++
+		return &replay.StubRunner{CannedOutput: []byte("resumed at original checkout")}, nil
+	}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{ResumeID: runID}); err != nil {
+		t.Fatalf("resume hermetic stage with pruned caller provenance: %v", err)
+	}
+	if runnerCalls != 1 {
+		t.Fatalf("ResolveRunner calls = %d, want 1", runnerCalls)
 	}
 }
 
@@ -1092,6 +1443,76 @@ func TestEngineResumeSubmoduleMismatchDoesNotResolveRunner(t *testing.T) {
 	}
 	if resolveCalls != 0 {
 		t.Fatalf("ResolveRunner calls = %d, want 0", resolveCalls)
+	}
+}
+
+func TestEngineResumeAfterCallerCommitUsesOriginalCheckout(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	postRunSHA := ""
+	runID := "callerwf-20260101T000000Z-resumepin"
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{
+		{
+			Name: "produce", Skill: "sk", Produces: "plan", Inputs: []string{"task"},
+			Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+		},
+		{Name: "verify", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}},
+	}}
+
+	callerRunner := runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+		if req.WorktreeDir != repo {
+			t.Fatalf("caller runner dir = %q, want %q", req.WorktreeDir, repo)
+		}
+		writeTestFile(t, repo, "README.md", "caller commit\n")
+		gitRun(t, repo, "add", "README.md")
+		gitRun(t, repo, "commit", "-m", "caller commit")
+		postRunSHA = headSHA(t, repo)
+		return replay.RunResult{Output: []byte("caller output")}, nil
+	})
+
+	e := Engine{
+		Store: refstore.New(repo), Root: repo, Now: fixedClock(),
+		ResolveRunner: func(stage workflow.Stage) (replay.Runner, error) {
+			if stage.Name == "produce" {
+				return callerRunner, nil
+			}
+			return &replay.StubRunner{Err: errors.New("fail once")}, nil
+		},
+	}
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: originalSHA,
+	})
+	var stageErr *StageError
+	if !errors.As(err, &stageErr) || stageErr.StageName != "verify" {
+		t.Fatalf("initial run error = %v, want verify StageError", err)
+	}
+	if postRunSHA == "" || postRunSHA == originalSHA {
+		t.Fatalf("caller post-run SHA = %q, want commit after %q", postRunSHA, originalSHA)
+	}
+	partial := readLiveManifest(t, repo, runID)
+	if partial.OriginalGitSHA != originalSHA || partial.Stages[0].GitSHA != postRunSHA {
+		t.Fatalf("partial provenance original/stage = %q/%q, want %q/%q", partial.OriginalGitSHA, partial.Stages[0].GitSHA, originalSHA, postRunSHA)
+	}
+
+	resumed := false
+	e.ResolveRunner = func(stage workflow.Stage) (replay.Runner, error) {
+		if stage.Name != "verify" {
+			t.Fatalf("resume reran completed caller stage %q", stage.Name)
+		}
+		return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+			resumed = true
+			got := headSHA(t, req.WorktreeDir)
+			if got != originalSHA {
+				t.Fatalf("resumed hermetic HEAD = %q, want original %q (caller post-run %q)", got, originalSHA, postRunSHA)
+			}
+			return replay.RunResult{Output: []byte("resumed")}, nil
+		}), nil
+	}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{ResumeID: runID}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if !resumed {
+		t.Fatal("resume runner did not execute")
 	}
 }
 

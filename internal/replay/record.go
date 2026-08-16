@@ -88,7 +88,7 @@ func (r RunRecorder) Record(
 	stage := runmanifest.Stage{
 		Name:       sourceStageName,
 		ProducedBy: "replay",
-		GitSHA:     resolved.GitSHA,
+		GitSHA:     resolved.RunGitSHA,
 		Submodules: resolved.Submodules,
 		Skill:      skill,
 		Producer:   res.Producer,
