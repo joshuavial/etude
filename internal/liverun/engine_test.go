@@ -219,7 +219,7 @@ func TestCallerWorkspaceRunnerCommitsAndRecordsPostRunProvenance(t *testing.T) {
 	}
 }
 
-func TestCallerWorkspaceRecordsCleanHistoryRewrite(t *testing.T) {
+func TestCallerWorkspaceRejectsCleanHistoryRewrite(t *testing.T) {
 	repo := initTestRepo(t)
 	baseSHA := headSHA(t, repo)
 	writeTestFile(t, repo, "README.md", "invocation commit\n")
@@ -239,15 +239,72 @@ func TestCallerWorkspaceRecordsCleanHistoryRewrite(t *testing.T) {
 	}}}
 	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
 	runID := "callerwf-20260101T000000Z-rewrite"
-	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: invocationSHA}); err != nil {
-		t.Fatalf("Run: %v", err)
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: invocationSHA})
+	if !errors.Is(err, ErrCallerWorkspaceChanged) || !strings.Contains(err.Error(), "history rewrite is not supported") {
+		t.Fatalf("Run error = %v, want clean history rewrite rejection", err)
 	}
 	postSHA := headSHA(t, repo)
 	if got := gitRun(t, repo, "rev-parse", postSHA+"^"); got != baseSHA {
 		t.Fatalf("rewritten commit parent = %q, want base %q", got, baseSHA)
 	}
-	if got := readLiveManifest(t, repo, runID).Stages[0].GitSHA; got != postSHA {
-		t.Fatalf("stage git_sha = %q, want rewritten post-run HEAD %q", got, postSHA)
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after history rewrite to %s: Resolve error = %v", postSHA, resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsGraftedHistoryRewrite(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		gitRun(t, repo, "checkout", "--orphan", "replacement-history")
+		gitRun(t, repo, "rm", "-rf", ".")
+		writeTestFile(t, repo, "README.md", "replacement history\n")
+		gitRun(t, repo, "add", "README.md")
+		gitRun(t, repo, "commit", "-m", "replacement history")
+		replacementSHA := headSHA(t, repo)
+		writeTestFile(t, repo, ".git/info/grafts", replacementSHA+" "+originalSHA+"\n")
+		return replay.RunResult{Output: []byte("grafted output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-graft"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: originalSHA})
+	if !errors.Is(err, ErrCallerWorkspaceUnsupported) || !strings.Contains(err.Error(), "pre-existing info/grafts") {
+		t.Fatalf("Run error = %v, want graft rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after grafted rewrite: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsReplacementGraftedHistoryRewrite(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		gitRun(t, repo, "checkout", "--orphan", "replacement-ref-history")
+		gitRun(t, repo, "rm", "-rf", ".")
+		writeTestFile(t, repo, "README.md", "replacement ref history\n")
+		gitRun(t, repo, "add", "README.md")
+		gitRun(t, repo, "commit", "-m", "replacement ref history")
+		replacementSHA := headSHA(t, repo)
+		gitRun(t, repo, "replace", "--graft", replacementSHA, originalSHA)
+		return replay.RunResult{Output: []byte("replacement-ref output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-replacementgraft"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: originalSHA})
+	if !errors.Is(err, ErrCallerWorkspaceChanged) || !strings.Contains(err.Error(), "history rewrite is not supported") {
+		t.Fatalf("Run error = %v, want replacement-ref ancestry rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after replacement-grafted rewrite: Resolve error = %v", resolveErr)
 	}
 }
 
@@ -422,6 +479,76 @@ func TestCallerWorkspaceRejectsDirtyTreeBeforeRunner(t *testing.T) {
 	}
 	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
 		t.Fatalf("stage was captured despite preexisting dirty caller tree: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsIntentToAddBeforeRunner(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	writeTestFile(t, repo, "valuable.txt", "valuable uncommitted work\n")
+	gitRun(t, repo, "add", "-N", "valuable.txt")
+	runnerCalled := false
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		runnerCalled = true
+		return replay.RunResult{Output: []byte("must not run")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-intent", GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want ErrCallerWorkspaceDirty", err)
+	}
+	if runnerCalled {
+		t.Fatal("runner was invoked with intent-to-add work")
+	}
+}
+
+func TestCallerWorkspaceRejectsPreexistingGraftBeforeRunner(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	writeTestFile(t, repo, ".git/info/grafts", sha+" "+strings.Repeat("1", 40)+"\n")
+	runnerCalled := false
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		runnerCalled = true
+		return replay.RunResult{Output: []byte("must not run")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: "callerwf-20260101T000000Z-pregraft", GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceUnsupported) || !strings.Contains(err.Error(), "pre-existing info/grafts") {
+		t.Fatalf("Run error = %v, want pre-existing graft rejection", err)
+	}
+	if runnerCalled {
+		t.Fatal("runner was invoked with pre-existing graft metadata")
+	}
+}
+
+func TestCallerWorkspaceRejectsCaseAliasUntrackedPath(t *testing.T) {
+	repo := initTestRepo(t)
+	gitRun(t, repo, "config", "core.ignoreCase", "true")
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, "readme.MD", "case alias\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-casealias"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want case-alias untracked rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after case-alias untracked mutation: Resolve error = %v", resolveErr)
 	}
 }
 
@@ -819,6 +946,208 @@ func TestCallerWorkspaceRejectsGitInfoAttributesChange(t *testing.T) {
 	}
 }
 
+func TestCallerWorkspaceRejectsGitInfoExcludeChange(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/info/exclude", "generated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-exclude"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want Git exclude mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after exclude mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsExternalExcludeConcealment(t *testing.T) {
+	repo := initTestRepo(t)
+	excludePath := filepath.Join(repo, ".git", "custom-excludes")
+	writeTestFile(t, repo, ".git/custom-excludes", "")
+	gitRun(t, repo, "config", "core.excludesFile", excludePath)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/custom-excludes", "generated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-externalexclude"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want external exclude mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after external exclude concealment: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsDefaultGlobalExcludeConcealment(t *testing.T) {
+	repo := initTestRepo(t)
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	excludePath := filepath.Join(configDir, "git", "ignore")
+	writeTestFile(t, configDir, "git/ignore", "")
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, configDir, "git/ignore", "generated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-defaultexclude"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want default global exclude mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after default global exclude mutation: Resolve error = %v", resolveErr)
+	}
+	if _, statErr := os.Stat(excludePath); statErr != nil {
+		t.Fatalf("default exclude fixture: %v", statErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsWhitespaceSuffixedExcludePathMutation(t *testing.T) {
+	repo := initTestRepo(t)
+	excludePath := filepath.Join(repo, ".git", "custom-excludes ")
+	writeTestFile(t, repo, ".git/custom-excludes ", "")
+	gitRun(t, repo, "config", "core.excludesFile", excludePath)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/custom-excludes ", "generated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-spaceexclude"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want whitespace-suffixed exclude mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after whitespace-suffixed exclude mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsSelfHiddenUntrackedGitignore(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".gitignore", ".gitignore\ngenerated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-selfhiddenignore"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want self-hidden ignore mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after self-hidden ignore mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsRelativeExternalExcludeMutation(t *testing.T) {
+	repo := initTestRepo(t)
+	writeTestFile(t, repo, ".git/custom-excludes", "")
+	gitRun(t, repo, "config", "core.excludesFile", ".git/custom-excludes")
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/custom-excludes", "generated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-relativeexclude"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want relative external exclude mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after relative external exclude mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsCaseFoldedUntrackedGitignore(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".GITIGNORE", ".GITIGNORE\ngenerated.tmp\n")
+		writeTestFile(t, repo, "generated.tmp", "hidden untracked output\n")
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-casefoldignore"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want case-folded ignore mutation rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after case-folded ignore mutation: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsTreeAsHEAD(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		treeOut, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD^{tree}").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, repo, ".git/HEAD", strings.TrimSpace(string(treeOut))+"\n")
+		return replay.RunResult{Output: []byte("tree provenance")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-treehead"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if err == nil || !strings.Contains(err.Error(), "resolve HEAD as commit") {
+		t.Fatalf("Run error = %v, want non-commit HEAD rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured with tree HEAD: Resolve error = %v", resolveErr)
+	}
+}
+
 func TestCallerWorkspaceAllowsBranchConditionalConfigEffectChange(t *testing.T) {
 	repo := initTestRepo(t)
 	sha := headSHA(t, repo)
@@ -978,6 +1307,57 @@ func TestCallerWorkspaceResumeRequiresPriorCallerHead(t *testing.T) {
 	}
 	if runnerCalls != 0 {
 		t.Fatalf("second caller runner calls = %d, want 0", runnerCalls)
+	}
+}
+
+func TestCallerWorkspaceResumeRequiresOriginalAncestor(t *testing.T) {
+	repo := initTestRepo(t)
+	originalSHA := headSHA(t, repo)
+	runID := "callerwf-20260101T000000Z-originalancestor"
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{
+		{Name: "first", Skill: "sk", Produces: "plan", Inputs: []string{"task"}, Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}},
+		{Name: "second", Skill: "sk", Produces: "diff", Inputs: []string{"plan"}, Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}},
+	}}
+	e := Engine{
+		Store: refstore.New(repo), Root: repo, Now: fixedClock(),
+		ResolveRunner: func(stage workflow.Stage) (replay.Runner, error) {
+			if stage.Name == "second" {
+				return &replay.StubRunner{Err: errors.New("stop after first caller")}, nil
+			}
+			return &replay.StubRunner{CannedOutput: []byte("first")}, nil
+		},
+	}
+	if err := e.Run(context.Background(), io.Discard, wf, RunOptions{TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: originalSHA}); err == nil {
+		t.Fatal("initial run succeeded, want second-stage failure")
+	}
+	gitRun(t, repo, "checkout", "--orphan", "forged-caller-lineage")
+	gitRun(t, repo, "rm", "-rf", ".")
+	writeTestFile(t, repo, "README.md", "forged lineage\n")
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "forged lineage")
+	forgedSHA := headSHA(t, repo)
+	rewriteLiveManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].GitSHA = forgedSHA
+	})
+	runnerCalled := false
+	e.ResolveRunner = func(workflow.Stage) (replay.Runner, error) {
+		return runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+			runnerCalled = true
+			writeTestFile(t, repo, "README.md", "forged descendant\n")
+			gitRun(t, repo, "add", "README.md")
+			gitRun(t, repo, "commit", "-m", "forged descendant")
+			return replay.RunResult{Output: []byte("must not publish")}, nil
+		}), nil
+	}
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{ResumeID: runID})
+	if !errors.Is(err, ErrCallerWorkspaceChanged) || !strings.Contains(err.Error(), originalSHA) {
+		t.Fatalf("resume error = %v, want original-ancestor rejection", err)
+	}
+	if got := len(readLiveManifest(t, repo, runID).Stages); got != 1 {
+		t.Fatalf("captured stages = %d, want prior stage only", got)
+	}
+	if runnerCalled {
+		t.Fatal("runner was invoked before forged original ancestry was rejected")
 	}
 }
 

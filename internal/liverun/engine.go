@@ -238,11 +238,23 @@ func callerGitCommand(ctx context.Context, root string, args ...string) *exec.Cm
 }
 
 func resolveCallerHEAD(ctx context.Context, root string) (string, error) {
-	out, err := callerGitCommand(ctx, root, "rev-parse", "HEAD").Output()
+	out, err := callerGitCommand(ctx, root, "rev-parse", "--verify", "HEAD^{commit}").Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve HEAD as commit: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func ensureCallerDescendsFrom(ctx context.Context, root, ancestor, descendant string) error {
+	err := callerGitCommand(ctx, root, "merge-base", "--is-ancestor", ancestor, descendant).Run()
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return fmt.Errorf("%w: caller history rewrite is not supported; %s is not an ancestor of %s", ErrCallerWorkspaceChanged, ancestor, descendant)
+	}
+	return fmt.Errorf("verify caller commit ancestry: %w", err)
 }
 
 func resolveCanonicalCallerRoot(ctx context.Context, callerDir string) (string, error) {
@@ -338,6 +350,17 @@ func ensureCallerWorkspaceSupported(ctx context.Context, root string) error {
 			return fmt.Errorf("%w: tracked submodules are not supported", ErrCallerWorkspaceUnsupported)
 		}
 	}
+	graftsOut, err := callerGitCommand(ctx, root, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts").Output()
+	if err != nil {
+		return fmt.Errorf("resolve caller workspace graft file: %w", err)
+	}
+	grafts, err := os.ReadFile(strings.TrimSpace(string(graftsOut)))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read caller workspace graft file: %w", err)
+	}
+	if len(grafts) != 0 {
+		return fmt.Errorf("%w: pre-existing info/grafts is not supported", ErrCallerWorkspaceUnsupported)
+	}
 	return nil
 }
 
@@ -368,12 +391,23 @@ func inspectCallerWorkspaceClean(ctx context.Context, root string) error {
 	if err := inspectCallerTrackedBytes(ctx, root); err != nil {
 		return err
 	}
-	untracked, err := callerGitCommand(ctx, root, "ls-files", "--others", "--exclude-standard", "-z").Output()
+	untracked, err := callerGitCommand(ctx, root, "-c", "core.ignoreCase=false", "ls-files", "--others", "-z").Output()
 	if err != nil {
 		return fmt.Errorf("inspect caller workspace untracked files: %w", err)
 	}
-	if len(untracked) != 0 {
-		return ErrCallerWorkspaceDirty
+	for _, pathBytes := range bytes.Split(untracked, []byte{0}) {
+		if len(pathBytes) == 0 {
+			continue
+		}
+		checkErr := callerGitCommand(ctx, root, "-c", "core.ignoreCase=false", "check-ignore", "--quiet", "--no-index", "--", string(pathBytes)).Run()
+		if checkErr == nil {
+			continue
+		}
+		var exitErr *exec.ExitError
+		if errors.As(checkErr, &exitErr) && exitErr.ExitCode() == 1 {
+			return ErrCallerWorkspaceDirty
+		}
+		return fmt.Errorf("inspect caller workspace untracked path %q: %w", pathBytes, checkErr)
 	}
 	return nil
 }
@@ -443,7 +477,7 @@ func inspectCallerTrackedBytes(ctx context.Context, root string) error {
 
 func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) {
 	var snapshot bytes.Buffer
-	for _, name := range []string{"config", "config.worktree", "info/attributes"} {
+	for _, name := range []string{"config", "config.worktree", "info/attributes", "info/exclude", "info/grafts"} {
 		out, err := callerGitCommand(ctx, root, "rev-parse", "--path-format=absolute", "--git-path", name).Output()
 		if err != nil {
 			return nil, fmt.Errorf("resolve caller workspace git control file %q: %w", name, err)
@@ -458,6 +492,54 @@ func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) 
 			return nil, fmt.Errorf("read caller workspace git control file %q: %w", name, err)
 		}
 		fmt.Fprintf(&snapshot, "%s\x00present\x00%d\x00", name, len(contents))
+		snapshot.Write(contents)
+	}
+	excludesOut, err := callerGitCommand(ctx, root, "config", "-z", "--path", "--get", "core.excludesFile").Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("resolve caller workspace external excludes file: %w", err)
+		}
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			homeDir, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return nil, fmt.Errorf("resolve default caller workspace external excludes file: %w", homeErr)
+			}
+			configDir = filepath.Join(homeDir, ".config")
+		}
+		excludesOut = []byte(filepath.Join(configDir, "git", "ignore"))
+	} else {
+		excludesOut = bytes.TrimSuffix(excludesOut, []byte{0})
+	}
+	excludesPath := string(excludesOut)
+	if !filepath.IsAbs(excludesPath) {
+		excludesPath = filepath.Join(root, excludesPath)
+	}
+	contents, err := os.ReadFile(excludesPath)
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(&snapshot, "core.excludesFile\x00%s\x00missing\x00", excludesPath)
+	} else if err != nil {
+		return nil, fmt.Errorf("read caller workspace external excludes file: %w", err)
+	} else {
+		fmt.Fprintf(&snapshot, "core.excludesFile\x00%s\x00present\x00%d\x00", excludesPath, len(contents))
+		snapshot.Write(contents)
+	}
+
+	untrackedOut, err := callerGitCommand(ctx, root, "-c", "core.ignoreCase=false", "ls-files", "--others", "-z").Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect caller workspace untracked ignore files: %w", err)
+	}
+	for _, pathBytes := range bytes.Split(untrackedOut, []byte{0}) {
+		if len(pathBytes) == 0 || !strings.EqualFold(filepath.Base(string(pathBytes)), ".gitignore") {
+			continue
+		}
+		path := string(pathBytes)
+		contents, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if readErr != nil {
+			return nil, fmt.Errorf("read caller workspace untracked ignore file %q: %w", path, readErr)
+		}
+		fmt.Fprintf(&snapshot, ".gitignore\x00%s\x00%d\x00", path, len(contents))
 		snapshot.Write(contents)
 	}
 	return snapshot.Bytes(), nil
@@ -901,6 +983,7 @@ func (e *Engine) runAndCaptureStage(
 	manifestWorkspace := ""
 	var callerControl []byte
 	var callerIdentity callerRepositoryIdentity
+	callerExpectedHEAD := ""
 	if runnerWorkspace == workflow.RunnerWorkspaceCaller {
 		runnerDir = e.callerDir()
 		manifestWorkspace = workflow.RunnerWorkspaceCaller
@@ -914,10 +997,10 @@ func (e *Engine) runAndCaptureStage(
 		if err = inspectCallerWorkspaceClean(ctx, e.Root); err != nil {
 			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
 		}
-		expectedHEAD := originalGitSHA
+		callerExpectedHEAD = originalGitSHA
 		for i := len(completedStages) - 1; i >= 0; i-- {
 			if completedStages[i].RunnerWorkspace == workflow.RunnerWorkspaceCaller {
-				expectedHEAD = completedStages[i].GitSHA
+				callerExpectedHEAD = completedStages[i].GitSHA
 				break
 			}
 		}
@@ -929,9 +1012,12 @@ func (e *Engine) runAndCaptureStage(
 		if resolveErr != nil {
 			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("capture caller workspace pre-run HEAD: %w", resolveErr)
 		}
-		if actualHEAD != expectedHEAD {
+		if actualHEAD != callerExpectedHEAD {
 			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit,
-				fmt.Errorf("%w: expected %s, found %s", ErrCallerWorkspaceChanged, expectedHEAD, actualHEAD)
+				fmt.Errorf("%w: expected %s, found %s", ErrCallerWorkspaceChanged, callerExpectedHEAD, actualHEAD)
+		}
+		if err = ensureCallerDescendsFrom(ctx, e.Root, originalGitSHA, callerExpectedHEAD); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
 		}
 		callerControl, err = callerGitControlSnapshot(ctx, e.Root)
 		if err != nil {
@@ -973,6 +1059,14 @@ func (e *Engine) runAndCaptureStage(
 		stageGitSHA, err = e.callerProvenance(ctx)
 		if err != nil {
 			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+		}
+		if err := ensureCallerDescendsFrom(ctx, e.Root, originalGitSHA, stageGitSHA); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+		}
+		if callerExpectedHEAD != originalGitSHA {
+			if err := ensureCallerDescendsFrom(ctx, e.Root, callerExpectedHEAD, stageGitSHA); err != nil {
+				return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, err
+			}
 		}
 	}
 

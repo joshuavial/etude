@@ -280,6 +280,8 @@ the stage manifest records that post-run commit together with
 starting checkout separately as top-level `original_git_sha`; resume and other
 hermetic consumers (replay, recovered gates, and bench) use that value rather
 than a caller stage's later commit.
+Etude records the caller commit but does not push it or publish/move the caller
+branch on a remote; that publication remains the operator's responsibility.
 Version 4 records created before this field existed are rejected rather than
 falling back to the overloaded stage value. Repositories containing tracked
 submodules are rejected before the runner starts, and a runner that adds one is
@@ -309,11 +311,17 @@ outside the guard by design; caller runners are responsible for their effects on
 those files. Cleanliness follows Git's configured status/index semantics;
 repository normalization, ignore, and file-mode policies at stage start are
 trusted inputs, not a promise of byte-for-byte filesystem identity outside Git's
-model. Etude snapshots the repository's local config, worktree config, and
-`info/attributes` control files across the runner and fails closed if any
-changes. Effective configuration may legitimately change because the runner
-creates a clean commit on another branch; unchanged control files do not fail
+model. Etude snapshots the repository's local config, worktree config,
+`info/attributes`, and `info/exclude` control files across the runner and fails
+closed if any changes. Effective configuration may legitimately change because
+the runner creates a clean commit on another branch; unchanged control files do not fail
 merely because a branch-conditional include becomes inactive.
+
+Etude rejects a non-empty pre-existing `info/grafts`, and snapshots that file,
+the effective external excludes file, and
+any untracked `.gitignore` files. This prevents a runner from using graft
+overlays or changed ignore controls to conceal post-run state. Other ignored
+paths remain the caller runner's responsibility.
 
 Tracked content and executable modes are compared directly with the blobs and
 modes in `HEAD`, independently of clean filters and Git's stat cache. This is
@@ -326,6 +334,11 @@ hermetic work. Resume, replay, bench, and gates need the original checkout objec
 but do not require every caller provenance object to remain locally reachable.
 Normal Git pruning can therefore remove an otherwise-unreferenced caller commit
 without making a later hermetic stage use the wrong tree.
+
+Each caller stage's post-run `HEAD` must resolve to a commit descended from the
+run's original checkout, or from the preceding caller stage commit. Clean
+history rewrites fail closed so the original hermetic checkout remains reachable
+through the caller branch while the run is being produced.
 
 Gates do not inherit the producing runner's workspace. Gate checks and model
 seats continue to execute against the run's original hermetic detached
