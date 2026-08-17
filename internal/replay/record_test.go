@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -226,6 +227,101 @@ func TestRunRecorderImportsSessionTranscript(t *testing.T) {
 func TestResolveRecordedTranscriptPathRejectsRelativeTraversal(t *testing.T) {
 	if path, root := resolveRecordedTranscriptPath("nested/../../outside", t.TempDir(), t.TempDir()); path != "" || root != "" {
 		t.Fatalf("resolveRecordedTranscriptPath traversal = (%q, %q), want rejection", path, root)
+	}
+}
+
+func TestRunRecorderImportsAbsoluteTranscriptThroughRootAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink alias proof is Unix-specific")
+	}
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	transcript := []byte("aliased replay transcript\n")
+	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(scratch, alias); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: filepath.Join(alias, "transcript.jsonl")},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	recorded, err := (RunRecorder{
+		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 11, 0, 0, 0, time.UTC) },
+		SessionScratchDir: scratch,
+	}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := manifest.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.TranscriptArtifact == nil {
+		t.Fatalf("session evidence = %#v", session)
+	}
+	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, transcript) {
+		t.Fatalf("transcript = %q, want %q", got, transcript)
+	}
+}
+
+func TestRunRecorderRejectsSymlinkBelowAliasedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink alias proof is Unix-specific")
+	}
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "transcript.jsonl"), []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(scratch, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(scratch, "internal-link")); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: filepath.Join(alias, "internal-link", "transcript.jsonl")},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	recorded, err := (RunRecorder{Store: store, SessionScratchDir: scratch}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := manifest.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceFailed || session.TranscriptArtifact != nil {
+		t.Fatalf("session evidence = %#v", session)
 	}
 }
 

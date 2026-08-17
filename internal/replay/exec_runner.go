@@ -354,6 +354,9 @@ func readSessionSidecar(root, path string) (*SessionInfo, error) {
 	if !utf8.Valid(content) {
 		return nil, fmt.Errorf("%w: sidecar is not valid UTF-8", ErrSessionInvalid)
 	}
+	if err := validateJSONUnicodeEscapes(content); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
+	}
 	var session SessionInfo
 	dec := json.NewDecoder(bytes.NewReader(content))
 	dec.DisallowUnknownFields()
@@ -379,6 +382,62 @@ func readSessionSidecar(root, path string) (*SessionInfo, error) {
 	return &session, nil
 }
 
+// validateJSONUnicodeEscapes rejects unpaired UTF-16 surrogate escapes before
+// encoding/json replaces them with U+FFFD. A literal U+FFFD or a non-surrogate
+// \uFFFD escape remains valid Unicode and is deliberately accepted.
+func validateJSONUnicodeEscapes(content []byte) error {
+	for i := 0; i < len(content); i++ {
+		if content[i] != '\\' || i+1 >= len(content) {
+			continue
+		}
+		if content[i+1] != 'u' {
+			i++
+			continue
+		}
+		code, ok := decodeHexQuad(content[i+2:])
+		if !ok {
+			continue // encoding/json reports malformed/truncated escapes.
+		}
+		switch {
+		case code >= 0xd800 && code <= 0xdbff:
+			if i+12 > len(content) || content[i+6] != '\\' || content[i+7] != 'u' {
+				return errors.New("unpaired high-surrogate Unicode escape")
+			}
+			low, ok := decodeHexQuad(content[i+8:])
+			if !ok || low < 0xdc00 || low > 0xdfff {
+				return errors.New("unpaired high-surrogate Unicode escape")
+			}
+			i += 11
+		case code >= 0xdc00 && code <= 0xdfff:
+			return errors.New("unpaired low-surrogate Unicode escape")
+		default:
+			i += 5
+		}
+	}
+	return nil
+}
+
+func decodeHexQuad(content []byte) (uint16, bool) {
+	if len(content) < 4 {
+		return 0, false
+	}
+	var value uint16
+	for _, char := range content[:4] {
+		value <<= 4
+		switch {
+		case char >= '0' && char <= '9':
+			value |= uint16(char - '0')
+		case char >= 'a' && char <= 'f':
+			value |= uint16(char-'a') + 10
+		case char >= 'A' && char <= 'F':
+			value |= uint16(char-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
 // ValidateSessionInfo applies the durable engine boundary to any Runner.
 func ValidateSessionInfo(session *SessionInfo) error {
 	if session == nil {
@@ -392,7 +451,7 @@ func ValidateSessionInfo(session *SessionInfo) error {
 		"transcript_uri":  session.TranscriptURI,
 		"transcript_path": session.TranscriptPath,
 	} {
-		if !utf8.ValidString(value) || strings.ContainsRune(value, utf8.RuneError) {
+		if !utf8.ValidString(value) {
 			return fmt.Errorf("%s contains invalid Unicode", name)
 		}
 		if strings.IndexFunc(value, unicode.IsControl) >= 0 {

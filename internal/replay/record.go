@@ -201,9 +201,8 @@ func resolveRecordedTranscriptPath(pathValue, scratchDir, worktreeDir string) (s
 			if root == "" {
 				continue
 			}
-			rel, err := filepath.Rel(root, pathValue)
-			if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return pathValue, root
+			if matchingRoot := matchingAbsoluteRoot(pathValue, root); matchingRoot != "" {
+				return pathValue, matchingRoot
 			}
 		}
 		return "", ""
@@ -222,6 +221,30 @@ func resolveRecordedTranscriptPath(pathValue, scratchDir, worktreeDir string) (s
 		return filepath.Join(worktreeDir, cleanPath), worktreeDir
 	}
 	return "", ""
+}
+
+// matchingAbsoluteRoot returns the spelling of root found in pathValue's
+// ancestor chain. os.SameFile handles equivalent system aliases such as macOS
+// /var and /private/var without resolving any component below the boundary;
+// ReadRegularFileUnder therefore still rejects an internal symlink.
+func matchingAbsoluteRoot(pathValue, root string) string {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return ""
+	}
+	for current := filepath.Dir(pathValue); ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err != nil {
+			return ""
+		}
+		if os.SameFile(rootInfo, info) {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+	}
 }
 
 // AllocateRunID probes for a free replay run id, trying base then

@@ -1015,11 +1015,13 @@ func TestExecRunner_RejectsInvalidSessionSidecars(t *testing.T) {
 		t.Skip("POSIX sh tests skipped on Windows")
 	}
 	cases := map[string]string{
-		"empty":              ``,
-		"malformed":          `{`,
-		"unknown field":      `{"session_id":"s","unexpected":true}`,
-		"missing id":         `{"transcript_uri":"file:///t"}`,
-		"unpaired surrogate": `{"session_id":"\ud800"}`,
+		"empty":                     ``,
+		"malformed":                 `{`,
+		"unknown field":             `{"session_id":"s","unexpected":true}`,
+		"missing id":                `{"transcript_uri":"file:///t"}`,
+		"unpaired high surrogate":   `{"session_id":"\ud800"}`,
+		"unpaired low surrogate":    `{"session_id":"\udc00"}`,
+		"high surrogate then ascii": `{"session_id":"\ud800\u0061"}`,
 	}
 	for name, sidecar := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1031,6 +1033,40 @@ func TestExecRunner_RejectsInvalidSessionSidecars(t *testing.T) {
 				t.Fatalf("error = %v, want ErrSessionInvalid", err)
 			}
 		})
+	}
+}
+
+func TestExecRunner_AcceptsValidSurrogatePairInSessionID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{"session_id":"session-\ud83d\ude80"}' > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "session-🚀" {
+		t.Fatalf("session = %#v", res.Session)
+	}
+}
+
+func TestExecRunner_AcceptsReplacementCharacterInSessionID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{"session_id":"session-\ufffd"}' > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "session-\ufffd" {
+		t.Fatalf("session = %#v", res.Session)
 	}
 }
 
@@ -1060,7 +1096,9 @@ func TestExecRunner_TimeoutRetainsStderrTail(t *testing.T) {
 	writeScript(t, script, `printf 'timeout diagnostic' >&2
 sleep 30`)
 	runner := execRunner(script)
-	runner.Timeout = 500 * time.Millisecond
+	// Leave enough launch headroom for loaded builders: this assertion is about
+	// retaining diagnostics after a timeout, not sub-second process startup.
+	runner.Timeout = 3 * time.Second
 	_, err := runner.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timeout diagnostic") {
 		t.Fatalf("error = %v", err)
@@ -1095,21 +1133,21 @@ func TestMaximalFramedLogFitsEngineLimit(t *testing.T) {
 
 func TestValidateSessionInfoBoundary(t *testing.T) {
 	for name, session := range map[string]*SessionInfo{
-		"nil":               nil,
-		"valid":             {SessionID: "session"},
-		"missing id":        {TranscriptURI: "file:///transcript"},
-		"long id":           {SessionID: strings.Repeat("s", MaxSessionFieldBytes+1)},
-		"long uri":          {SessionID: "session", TranscriptURI: strings.Repeat("u", MaxSessionFieldBytes+1)},
-		"long path":         {SessionID: "session", TranscriptPath: strings.Repeat("p", MaxSessionFieldBytes+1)},
-		"invalid utf8":      {SessionID: string([]byte{0xff})},
-		"replacement rune":  {SessionID: "bad\ufffdid"},
-		"control character": {SessionID: "bad\nid"},
-		"invalid uri":       {SessionID: "session", TranscriptURI: "bad\ufffduri"},
-		"invalid path":      {SessionID: "session", TranscriptPath: string([]byte{0xff})},
+		"nil":                    nil,
+		"valid":                  {SessionID: "session"},
+		"missing id":             {TranscriptURI: "file:///transcript"},
+		"long id":                {SessionID: strings.Repeat("s", MaxSessionFieldBytes+1)},
+		"long uri":               {SessionID: "session", TranscriptURI: strings.Repeat("u", MaxSessionFieldBytes+1)},
+		"long path":              {SessionID: "session", TranscriptPath: strings.Repeat("p", MaxSessionFieldBytes+1)},
+		"invalid utf8":           {SessionID: string([]byte{0xff})},
+		"valid replacement rune": {SessionID: "valid\ufffdid"},
+		"control character":      {SessionID: "bad\nid"},
+		"valid replacement uri":  {SessionID: "session", TranscriptURI: "valid\ufffduri"},
+		"invalid path":           {SessionID: "session", TranscriptPath: string([]byte{0xff})},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := ValidateSessionInfo(session)
-			wantErr := name != "nil" && name != "valid"
+			wantErr := name != "nil" && name != "valid" && name != "valid replacement rune" && name != "valid replacement uri"
 			if (err != nil) != wantErr {
 				t.Fatalf("error = %v, wantErr=%v", err, wantErr)
 			}

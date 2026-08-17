@@ -407,6 +407,9 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 			killingGates = append(killingGates, gate)
 		}
 	}
+	if len(killingGates) == 0 {
+		return nil, nil, nil
+	}
 	index := priorAttemptsIndex{Version: 1, Attempts: make([]priorAttemptEvidence, 0, len(killingGates))}
 	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
 	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
@@ -417,9 +420,9 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 			return nil, nil, fmt.Errorf("prior attempts: gate %s has %d reviewed stages, want exactly one", gate.GateID, len(gate.ReviewedStages))
 		}
 		reviewed := gate.ReviewedStages[0]
-		stage, stageIndex, ok := stageByName(stages, reviewed.Stage)
+		stage, stageIndex, ok := stageByReviewedRef(stages, reviewed)
 		if !ok {
-			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s", gate.GateID, reviewed.Stage)
+			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s with artifact %s", gate.GateID, reviewed.Stage, reviewed.Artifact)
 		}
 		attemptNumber := len(index.Attempts) + 1
 		attempt := priorAttemptEvidence{
@@ -492,9 +495,9 @@ func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []r
 	return refs, inputs, nil
 }
 
-func stageByName(stages []runmanifest.Stage, name string) (runmanifest.Stage, int, bool) {
+func stageByReviewedRef(stages []runmanifest.Stage, reviewed runmanifest.ReviewedRef) (runmanifest.Stage, int, bool) {
 	for i := len(stages) - 1; i >= 0; i-- {
-		if stages[i].Name == name {
+		if stages[i].Name == reviewed.Stage && stages[i].Output.Artifact == reviewed.Artifact {
 			return stages[i], i, true
 		}
 	}
@@ -1385,35 +1388,6 @@ func (e *Engine) runGate(
 			tierRound = 1
 		}
 	}
-}
-
-// firstCheckoutGitlink returns the first recursive mode-160000 entry in the
-// pinned tree. Until GH #14 populates submodules and records their identities,
-// granting reads in such a checkout would expose an empty directory as if it
-// were evidence, so callers fail closed before invoking a model seat.
-func firstCheckoutGitlink(ctx context.Context, worktreeDir, gitSHA string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreeDir, "ls-tree", "-r", "-z", "--full-tree", gitSHA, "--")
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if detail := strings.TrimSpace(string(exitErr.Stderr)); detail != "" {
-				return "", fmt.Errorf("git ls-tree %s: %w: %s", gitSHA, err, detail)
-			}
-		}
-		return "", fmt.Errorf("git ls-tree %s: %w", gitSHA, err)
-	}
-	for _, record := range bytes.Split(out, []byte{0}) {
-		meta, path, ok := bytes.Cut(record, []byte{'\t'})
-		if !ok {
-			continue
-		}
-		fields := bytes.Fields(meta)
-		if len(fields) >= 1 && bytes.Equal(fields[0], []byte("160000")) {
-			return string(path), nil
-		}
-	}
-	return "", nil
 }
 
 // resolveSeatRunner returns the runner for a seat's PRIMARY invocation, used

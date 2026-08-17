@@ -1249,6 +1249,9 @@ func TestGateAC2_FailingCheckHardBlocks(t *testing.T) {
 
 func TestGateAC3_RerunWithFeedback(t *testing.T) {
 	repo := initTestRepo(t)
+	writeTestFile(t, repo, "checkout-marker.txt", "pinned marker\n")
+	gitRun(t, repo, "add", "checkout-marker.txt")
+	gitRun(t, repo, "commit", "-m", "add checkout marker")
 	sha := headSHA(t, repo)
 
 	// Round 1: seats block → RERUN.
@@ -1280,7 +1283,8 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 		}, nil
 	}
 
-	ss := &stubSeats{responses: seatResponses}
+	seatCall := 0
+	var seatCheckoutDirs []string
 	two := 2
 	e := &Engine{
 		Store:         refstore.New(repo),
@@ -1289,7 +1293,19 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 			return &stubCheckRunner{passed: true}, nil
 		},
 		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
-			return ss.runner(), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+			response := seatResponses[seatCall]
+			seatCall++
+			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+				content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
+				if err != nil {
+					return replay.RunResult{}, err
+				}
+				if string(content) != "pinned marker\n" {
+					return replay.RunResult{}, fmt.Errorf("checkout marker = %q", content)
+				}
+				seatCheckoutDirs = append(seatCheckoutDirs, req.WorktreeDir)
+				return replay.RunResult{Output: response, MediaType: "application/json"}, nil
+			}), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
 		},
 		Tiers: fixedTiers(map[string][2]interface{}{
 			"L2": {[]string{"seatA", "seatB"}, "L1"},
@@ -1300,8 +1316,9 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 	_ = e.ResolveCheck // ensure ResolveCheck is set; checks are configured but pass
 
 	wf := gatedWorkflow(&workflow.GateConfig{
-		Tier:      "L2",
-		MaxRounds: &two,
+		Tier:         "L2",
+		MaxRounds:    &two,
+		ReadCheckout: true,
 	})
 
 	runID := "mywf-20260101T000000Z-gateac03"
@@ -1319,6 +1336,19 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 		t.Error("rerun stage runner did not receive gate-feedback input")
 	}
 	assertPriorAttemptInputs(t, rerunInputs)
+	if len(seatCheckoutDirs) != 4 {
+		t.Fatalf("seat checkout count = %d, want 4", len(seatCheckoutDirs))
+	}
+	seenCheckoutDirs := make(map[string]bool, len(seatCheckoutDirs))
+	for _, dir := range seatCheckoutDirs {
+		if seenCheckoutDirs[dir] {
+			t.Fatalf("seat checkout %q was reused across isolated invocations", dir)
+		}
+		seenCheckoutDirs[dir] = true
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("seat checkout %q still exists after invocation: %v", dir, err)
+		}
+	}
 
 	m := readLiveManifest(t, repo, runID)
 
@@ -1331,6 +1361,9 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 	}
 	if m.Gates[1].Status != runmanifest.GateStatusPass {
 		t.Errorf("gate[1].status = %q, want pass", m.Gates[1].Status)
+	}
+	if !m.Gates[0].ReadCheckout || !m.Gates[1].ReadCheckout {
+		t.Fatalf("read_checkout grants = %t/%t, want true/true", m.Gates[0].ReadCheckout, m.Gates[1].ReadCheckout)
 	}
 
 	// Round numbers must match.
@@ -1553,10 +1586,10 @@ func TestBuildPriorAttemptInputsMarksResumedSessionAndKeepsIdenticalOutputs(t *t
 		{Name: "plan.r4", Output: output},
 	}
 	gates := []runmanifest.GateAttempt{
-		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
-		{GateID: "plan.r2", Phase: "plan", Round: 2, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r2"}}},
-		{GateID: "plan.r3", Phase: "plan", Round: 3, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r3"}}},
-		{GateID: "plan.r4", Phase: "plan", Round: 4, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r4"}}},
+		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan", Artifact: output.Artifact}}},
+		{GateID: "plan.r2", Phase: "plan", Round: 2, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r2", Artifact: output.Artifact}}},
+		{GateID: "plan.r3", Phase: "plan", Round: 3, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r3", Artifact: output.Artifact}}},
+		{GateID: "plan.r4", Phase: "plan", Round: 4, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan.r4", Artifact: output.Artifact}}},
 	}
 	refs, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
 	if err != nil {
@@ -1605,8 +1638,8 @@ func TestBuildPriorAttemptInputsSeedsSessionHistoryFromPassedAttempts(t *testing
 		{Name: "plan", Output: runmanifest.ArtifactFromManifestArtifact(blockedArtifact), Producer: runmanifest.Producer{Session: session()}},
 	}
 	gates := []runmanifest.GateAttempt{
-		{GateID: "upstream.r1", Phase: "upstream", Round: 1, Status: runmanifest.GateStatusPass, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "upstream"}}},
-		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan"}}},
+		{GateID: "upstream.r1", Phase: "upstream", Round: 1, Status: runmanifest.GateStatusPass, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "upstream", Artifact: upstreamArtifact.SHA256}}},
+		{GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun, ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan", Artifact: blockedArtifact.SHA256}}},
 	}
 
 	_, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
@@ -1638,6 +1671,52 @@ func TestBuildPriorAttemptInputsRequiresOneReviewedStage(t *testing.T) {
 	_, _, err = buildPriorAttemptInputs("plan", stages, gates, as)
 	if err == nil || !strings.Contains(err.Error(), "want exactly one") {
 		t.Fatalf("buildPriorAttemptInputs error = %v, want reviewed-stage cardinality error", err)
+	}
+}
+
+func TestBuildPriorAttemptInputsBindsReviewedNameAndArtifact(t *testing.T) {
+	as := artifactstore.New()
+	firstArtifact, err := as.AddContent("plan", "text/plain", []byte("first output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondArtifact, err := as.AddContent("plan", "text/plain", []byte("second output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := runmanifest.ArtifactFromManifestArtifact(firstArtifact)
+	second := runmanifest.ArtifactFromManifestArtifact(secondArtifact)
+	stages := []runmanifest.Stage{
+		{Name: "plan", Output: first},
+		{Name: "plan", Output: second},
+	}
+	gates := []runmanifest.GateAttempt{{
+		GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusRerun,
+		ReviewedStages: []runmanifest.ReviewedRef{{Stage: "plan", Artifact: first.Artifact}},
+	}}
+
+	_, inputs, err := buildPriorAttemptInputs("plan", stages, gates, as)
+	if err != nil {
+		t.Fatalf("buildPriorAttemptInputs: %v", err)
+	}
+	byRole := make(map[string][]byte, len(inputs))
+	for _, input := range inputs {
+		byRole[input.Role] = input.Content
+	}
+	if got := string(byRole["prior-attempt-1-output"]); got != "first output" {
+		t.Fatalf("reviewed output = %q, want exact first artifact", got)
+	}
+}
+
+func TestBuildPriorAttemptInputsOmitsEscalatedOnlyHistory(t *testing.T) {
+	refs, inputs, err := buildPriorAttemptInputs("plan", nil, []runmanifest.GateAttempt{{
+		GateID: "plan.r1", Phase: "plan", Round: 1, Status: runmanifest.GateStatusEscalated,
+	}}, artifactstore.New())
+	if err != nil {
+		t.Fatalf("buildPriorAttemptInputs: %v", err)
+	}
+	if len(refs) != 0 || len(inputs) != 0 {
+		t.Fatalf("refs/inputs = %#v/%#v, want no prior-attempt bundle", refs, inputs)
 	}
 }
 
@@ -1799,12 +1878,6 @@ func TestGateThirdAttemptReceivesRebuiltHistoryAndResumedSession(t *testing.T) {
 			t.Errorf("input role %s count = %d, want 1", role, roleCounts[role])
 		}
 	}
-}
-
-type runnerFunc func(context.Context, replay.RunRequest) (replay.RunResult, error)
-
-func (f runnerFunc) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
-	return f(ctx, req)
 }
 
 // ---------------------------------------------------------------------------
