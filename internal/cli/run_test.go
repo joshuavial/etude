@@ -1148,13 +1148,13 @@ seats:
   approver:
     provider: deterministic/approver
     harness: shell
-    invoke: %s
+    invoke: ./approve-seat.sh
 tiers:
   L1:
     name: Research review tier
     seats:
       - approver
-`, stageRunnerPath, approvePath)
+`, stageRunnerPath)
 	if err := os.WriteFile(filepath.Join(etDir, "registry.yaml"), []byte(registryContent), 0o644); err != nil {
 		t.Fatalf("write registry.yaml: %v", err)
 	}
@@ -1179,6 +1179,8 @@ func TestRunWorkflowResearch(t *testing.T) {
 	repo := initCaptureRepo(t)
 	writeResearchFiles(t, repo)
 	writeFile(t, repo, "topic.txt", "research task content\n")
+	gitCapture(t, repo, "add", "stage-runner.sh", "approve-seat.sh", "gate-check.sh", ".etude/workflow.yaml", ".etude/registry.yaml", "topic.txt")
+	gitCapture(t, repo, "commit", "-m", "add research workflow fixture")
 	chdir(t, repo)
 
 	runID := "research-20260101T000000Z-genproof1"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1219,6 +1220,123 @@ func TestGateRoundTrip(t *testing.T) {
 	}
 	if g1.Decision.DegradedReason == "" {
 		t.Fatalf("gate[1].Decision.DegradedReason should be set")
+	}
+}
+
+func TestGateReadCheckoutJSONRoundTrip(t *testing.T) {
+	now := time.Date(2026, 8, 16, 1, 0, 0, 0, time.UTC)
+	gate := GateAttempt{
+		GateID:         "plan.r1",
+		Phase:          "plan",
+		Round:          1,
+		Tier:           1,
+		Status:         GateStatusPass,
+		ReadCheckout:   true,
+		ReviewedStages: []ReviewedRef{{Stage: "plan", Role: "plan"}},
+		Seats: []SeatResult{{
+			Seat:      "opus",
+			Harness:   Harness{Name: "claude-code", Version: "opus"},
+			Provider:  Provider{Name: "anthropic", Model: "claude-opus"},
+			Verdict:   SeatVerdictGo,
+			Timestamp: now,
+		}},
+		Timestamp: now,
+	}
+
+	// Runtime population lands in etude-n9b.2; this codec regression directly
+	// constructs the grant so the wire contract is pinned independently first.
+	encodedGate, err := json.MarshalIndent(gate.toJSON(), "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent gate: %v", err)
+	}
+	const wantGate = `{
+  "gate_id": "plan.r1",
+  "phase": "plan",
+  "round": 1,
+  "tier": 1,
+  "status": "pass",
+  "read_checkout": true,
+  "reviewed_stages": [
+    {
+      "stage": "plan",
+      "role": "plan"
+    }
+  ],
+  "seats": [
+    {
+      "seat": "opus",
+      "harness": {
+        "name": "claude-code",
+        "version": "opus"
+      },
+      "provider": {
+        "name": "anthropic",
+        "model": "claude-opus"
+      },
+      "verdict": "go",
+      "timestamp": "2026-08-16T01:00:00Z"
+    }
+  ],
+  "decision": {},
+  "timestamp": "2026-08-16T01:00:00Z"
+}`
+	if string(encodedGate) != wantGate {
+		t.Fatalf("encoded gate mismatch\ngot:\n%s\nwant:\n%s", encodedGate, wantGate)
+	}
+
+	m := validManifest(contentArtifact("plan", "text/markdown", []byte("plan")))
+	m.Gates = []GateAttempt{gate}
+	manifestJSON, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	got, err := ParseJSON(manifestJSON)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if !got.Gates[0].ReadCheckout {
+		t.Fatal("ReadCheckout = false after round-trip, want true")
+	}
+}
+
+func TestGateReadCheckoutFalseOmittedAndLegacyParses(t *testing.T) {
+	m := gateManifest(t)
+	m.Gates = m.Gates[:1]
+	encoded, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if strings.Contains(string(encoded), "read_checkout") {
+		t.Fatalf("false read_checkout must be omitted:\n%s", encoded)
+	}
+	got, err := ParseJSON(encoded)
+	if err != nil {
+		t.Fatalf("ParseJSON legacy gate: %v", err)
+	}
+	if got.Gates[0].ReadCheckout {
+		t.Fatal("legacy gate decoded with ReadCheckout true")
+	}
+}
+
+func TestGateReadCheckoutRejectsNearMissAndNonBoolean(t *testing.T) {
+	m := gateManifest(t)
+	m.Gates = m.Gates[:1]
+	encoded, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	marker := `"gate_id": "plan.r1",`
+	for _, field := range []string{
+		`"readcheckout": true,`,
+		`"read-checkout": true,`,
+		`"read_checkout": "yes",`,
+	} {
+		payload := strings.Replace(string(encoded), marker, marker+"\n      "+field, 1)
+		if _, err := ParseJSON([]byte(payload)); err == nil {
+			t.Fatalf("ParseJSON accepted invalid gate field %s", field)
+		} else if !errors.Is(err, ErrInvalidManifest) {
+			t.Fatalf("error for %s does not wrap ErrInvalidManifest: %v", field, err)
+		}
 	}
 }
 

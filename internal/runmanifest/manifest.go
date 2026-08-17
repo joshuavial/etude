@@ -60,11 +60,14 @@ type Manifest struct {
 // Every rerun (BLOCK -> incorporate -> rerun) is a new GateAttempt with an
 // incremented Round; prior rounds are retained as the queryable history.
 type GateAttempt struct {
-	GateID         string
-	Phase          string
-	Round          int
-	Tier           int
-	Status         GateStatus
+	GateID string
+	Phase  string
+	Round  int
+	Tier   int
+	Status GateStatus
+	// ReadCheckout records that model seats were granted read access to the
+	// pinned checkout. False and absent mean output-only.
+	ReadCheckout   bool
 	ReviewedStages []ReviewedRef
 	Seats          []SeatResult
 	Decision       GateDecision
@@ -947,6 +950,7 @@ type gateJSON struct {
 	Round          int               `json:"round"`
 	Tier           int               `json:"tier"`
 	Status         string            `json:"status"`
+	ReadCheckout   bool              `json:"read_checkout,omitempty"`
 	ReviewedStages []reviewedRefJSON `json:"reviewed_stages"`
 	Seats          []seatResultJSON  `json:"seats"`
 	Decision       gateDecisionJSON  `json:"decision,omitempty"`
@@ -1151,6 +1155,7 @@ func (g GateAttempt) toJSON() gateJSON {
 		Round:          g.Round,
 		Tier:           g.Tier,
 		Status:         string(g.Status),
+		ReadCheckout:   g.ReadCheckout,
 		ReviewedStages: refs,
 		Seats:          seats,
 		Decision:       g.Decision.toJSON(),
@@ -1332,6 +1337,7 @@ func (g gateJSON) toGate(index int) (GateAttempt, error) {
 		Round:          g.Round,
 		Tier:           g.Tier,
 		Status:         GateStatus(g.Status),
+		ReadCheckout:   g.ReadCheckout,
 		ReviewedStages: refs,
 		Seats:          seats,
 		Decision: GateDecision{

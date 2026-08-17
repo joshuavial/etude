@@ -134,6 +134,13 @@ what was tested, how it was tested, observed result, failures, screenshots or
 artifact references when useful, and bug beads for defects that should not be
 fixed in the current bead.
 
+For an opt-in capability boundary, exercise the same adversarial consumer with
+the capability both enabled and disabled. The consumer must actively attempt the
+protected action in both runs; a cooperative refusal based only on prompt wording
+is not evidence that the default denies access. Preserve the real commands and
+observed output in the review artifact or pull request for every opt-in
+capability-boundary proof.
+
 AI-driven browser testing, such as Playwright execution, is still a Verify
 lane. If the test genuinely requires human execution, Verify returns `blocked`
 with a request for the human manual-test input. After that input is supplied,

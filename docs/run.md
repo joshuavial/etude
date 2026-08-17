@@ -307,6 +307,32 @@ A gate has two seat kinds:
   out, produce no output, or produce non-JSON output are recorded as
   `failed`/`empty`/`malfunction` and excluded from the vote count.
 
+Model seats are **output-only by default**: their shared prompt authorizes only
+the inlined stage artifact and its embedded provenance. A workflow can opt the
+gate's configured model seats into read access to a dedicated detached checkout
+at the run's fixed git SHA:
+
+```yaml
+gate:
+  tier: L1
+  read_checkout: true
+```
+
+The grant is gate-wide; every model seat receives the same prompt. It does not
+apply to deterministic checks, and a checks-only gate records no grant. This is
+a policy enforced by the configured seat harness and prompt, not an operating
+system sandbox. The dedicated checkout is separate from the mutable worktree
+used by stages and deterministic checks, so their writes cannot change the code
+an opted-in seat reads; it is the seat command's working directory. Supervised
+gates reject `read_checkout` because they review the caller's mutable,
+uncommitted tree rather than a reproducible pin.
+
+Until submodule checkout identity is implemented by GitHub issue #14, an
+opted-in live gate fails closed before invoking seats when the pinned tree
+contains a submodule gitlink. Output-only gates are unaffected. Workflow files
+using `read_checkout` require a version of Etude that knows the field; older
+strict parsers reject it rather than silently ignoring the grant.
+
 **Synthesis** is fail-closed:
 
 1. Any failing check → not a pass (skip seat vote).
@@ -334,7 +360,9 @@ terminal.
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
 manifest (`manifest_version` 3); gate attempts appear after stages in
 `etude run show`. No separate `etude capture-gate` call is required for live
-runs.
+runs. An effective checkout grant is recorded as `read_checkout: true`; false
+is omitted. The workflow is the authorization source—the manifest field is an
+audit record and is never read back to authorize a later seat.
 
 ### Env passthrough
 

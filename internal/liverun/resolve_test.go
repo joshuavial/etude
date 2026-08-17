@@ -24,6 +24,31 @@ func TestGenerateRunID(t *testing.T) {
 	}
 }
 
+func TestResolvedOutputOnlySeatRunnerSupportsGitEnvironmentFiltering(t *testing.T) {
+	reg := registry.Registry{Seats: map[string]registry.Seat{
+		"reviewer": {
+			Provider: "example/model",
+			Harness:  "shell",
+			Invoke:   "review-seat",
+		},
+	}}
+	runner, _, err := ResolveGateSeat(reg, "reviewer", time.Minute, []string{"HOME", "GIT_DIR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filteredRunner, err := outputOnlySeatRunner(runner, t.TempDir(), t.TempDir(), "resolved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, ok := filteredRunner.(*replay.ExecRunner)
+	if !ok {
+		t.Fatalf("resolved output-only seat runner = %T, want *replay.ExecRunner", runner)
+	}
+	if got := strings.Join(filtered.EnvAllowlist, ","); got != "HOME" {
+		t.Fatalf("filtered env allowlist = %q, want HOME", got)
+	}
+}
+
 func TestGenerateRunIDUniqueness(t *testing.T) {
 	a, _ := GenerateRunID("wf")
 	b, _ := GenerateRunID("wf")

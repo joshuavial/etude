@@ -1,14 +1,18 @@
 package liverun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
@@ -28,6 +32,27 @@ type stubCheckRunner struct {
 
 func (s *stubCheckRunner) RunCheck(_ context.Context, _ replay.RunRequest) (bool, []byte, string) {
 	return s.passed, s.rawOutput, s.detail
+}
+
+type recordingCheckRunner struct {
+	inputs []replay.RunInput
+}
+
+func (r *recordingCheckRunner) RunCheck(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
+	r.inputs = append([]replay.RunInput(nil), req.Inputs...)
+	return true, nil, ""
+}
+
+type mutatingCheckRunner struct {
+	calls int
+}
+
+func (r *mutatingCheckRunner) RunCheck(_ context.Context, req replay.RunRequest) (bool, []byte, string) {
+	r.calls++
+	if err := os.WriteFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"), []byte("check mutation\n"), 0o644); err != nil {
+		return false, nil, err.Error()
+	}
+	return true, nil, ""
 }
 
 // envelopeJSON encodes a seatEnvelope to JSON bytes.
@@ -290,6 +315,694 @@ func TestGateAC1_RecordsGateAttempt(t *testing.T) {
 		if s.Provider.Model != "stub-model" {
 			t.Errorf("seat %q provider.model = %q, want stub-model", s.Seat, s.Provider.Model)
 		}
+	}
+}
+
+type checkoutPolicyRunner struct {
+	wantRead     bool
+	prompts      []string
+	markerRead   bool
+	markerDenied bool
+	calls        int
+}
+
+func TestNewOutputOnlySeatDirIsAbsoluteWithRelativeTMPDIR(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeTemp, err := filepath.Rel(cwd, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", relativeTemp)
+	dir, cleanup, err := newOutputOnlySeatDir(context.Background(), cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("output-only seat dir = %q, want absolute", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("neutral git repository: %v", err)
+	}
+}
+
+func TestNewOutputOnlySeatDirRejectsSymlinkedTMPDIRInsideCheckout(t *testing.T) {
+	checkout := t.TempDir()
+	tempLink := filepath.Join(t.TempDir(), "inside-checkout")
+	if err := os.Symlink(checkout, tempLink); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempLink)
+	if _, _, err := newOutputOnlySeatDir(context.Background(), checkout); err == nil {
+		t.Fatal("accepted a symlinked TMPDIR physically inside the checkout")
+	} else if !strings.Contains(err.Error(), "inside checkout") {
+		t.Fatalf("rejection error = %q, want checkout containment", err)
+	}
+	entries, err := os.ReadDir(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected neutral directory was not cleaned up: %v", entries)
+	}
+}
+
+func TestPathAtOrBelowUsesFilesystemIdentity(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "root-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	inside, err := pathAtOrBelow(alias, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inside {
+		t.Fatal("filesystem-identical root alias did not contain its child")
+	}
+	outside, err := pathAtOrBelow(root, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outside {
+		t.Fatal("unrelated directory reported inside root")
+	}
+}
+
+func TestOutputOnlySeatRunnerStripsCheckoutGitEnvironment(t *testing.T) {
+	runner := &replay.ExecRunner{EnvAllowlist: []string{
+		"HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+		"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE",
+	}}
+	gotRunner, err := outputOnlySeatRunner(runner, t.TempDir(), t.TempDir(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := gotRunner.(*replay.ExecRunner)
+	if diff := strings.Join(got.EnvAllowlist, ","); diff != "HOME" {
+		t.Fatalf("filtered env allowlist = %q, want HOME", diff)
+	}
+	if len(runner.EnvAllowlist) != 14 {
+		t.Fatal("output-only filtering mutated the configured runner")
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesCheckoutExecutable(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(checkout, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &replay.ExecRunner{Command: []string{command, "--flag"}}
+	prepared, err := outputOnlySeatRunner(runner, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := prepared.(*replay.ExecRunner)
+	if got.Command[0] != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got.Command[0])
+	}
+	if got.Command[1] != "--flag" {
+		t.Fatalf("command argument changed: %v", got.Command)
+	}
+	if runner.Command[0] != command {
+		t.Fatal("output-only preparation mutated configured command")
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesRelativeCheckoutExecutable(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(checkout, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &replay.ExecRunner{Command: []string{"./seat.sh", "--flag"}}
+	prepared, err := outputOnlySeatRunner(runner, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := prepared.(*replay.ExecRunner)
+	if got.Command[0] != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got.Command[0])
+	}
+	if got.Command[1] != "--flag" {
+		t.Fatalf("command argument changed: %v", got.Command)
+	}
+	if runner.Command[0] != "./seat.sh" {
+		t.Fatal("output-only preparation mutated configured command")
+	}
+}
+
+func TestOutputOnlySeatRunnerLaunchesResolvedExternalSymlinkTarget(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	external := t.TempDir()
+	writeTestFile(t, checkout, "checkout-marker.txt", "must not be visible beside argv zero\n")
+	target := filepath.Join(external, "seat.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nif [ -e \"$(dirname \"$0\")/checkout-marker.txt\" ]; then verdict=block; else verdict=go; fi\nprintf '{\"verdict\":\"%s\"}' \"$verdict\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(checkout, "seat-link.sh")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(&replay.ExecRunner{Command: []string{link}}, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := prepared.(*replay.ExecRunner)
+	if got.Command[0] == link {
+		t.Fatalf("command still launches through checkout symlink %q", link)
+	}
+	gotInfo, err := os.Stat(got.Command[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, targetInfo) {
+		t.Fatalf("resolved command %q does not identify target %q", got.Command[0], target)
+	}
+	res, err := got.Run(context.Background(), replay.RunRequest{WorktreeDir: neutral, ScratchDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(res.Output, []byte(`"verdict":"go"`)) {
+		t.Fatalf("seat launched through checkout symlink path: %s", res.Output)
+	}
+}
+
+func TestOutputOnlySeatRunnerLaunchesResolvedTargetThroughProtectedSymlinkedParent(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	external := t.TempDir()
+	target := filepath.Join(external, "seat.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(checkout, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(checkout, "bin", "seat.sh")
+	prepared, err := outputOnlySeatRunner(&replay.ExecRunner{Command: []string{linkPath}}, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != resolvedTarget {
+		t.Fatalf("command = %q, want resolved target %q", got, resolvedTarget)
+	}
+}
+
+func TestOutputOnlySeatRunnerRecognizesResolvedProtectedRootAlias(t *testing.T) {
+	physicalCheckout := t.TempDir()
+	aliasParent := t.TempDir()
+	checkoutAlias := filepath.Join(aliasParent, "checkout-alias")
+	if err := os.Symlink(physicalCheckout, checkoutAlias); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	target := filepath.Join(external, "seat.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(physicalCheckout, "seat-link.sh")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(&replay.ExecRunner{Command: []string{linkPath}}, checkoutAlias, t.TempDir(), "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != resolvedTarget {
+		t.Fatalf("command = %q, want resolved target %q", got, resolvedTarget)
+	}
+}
+
+func TestOutputOnlySeatRunnerLeavesExternalSymlinkPathUnchanged(t *testing.T) {
+	checkout := t.TempDir()
+	external := t.TempDir()
+	target := filepath.Join(t.TempDir(), "python3")
+	if err := os.WriteFile(target, []byte("binary placeholder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(external, "venv-python")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(&replay.ExecRunner{Command: []string{link}}, checkout, t.TempDir(), "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != link {
+		t.Fatalf("external symlink command = %q, want original path %q", got, link)
+	}
+}
+
+func TestOutputOnlySeatRunnerCopiesProtectedSymlinkTarget(t *testing.T) {
+	checkout := t.TempDir()
+	neutral := t.TempDir()
+	target := filepath.Join(checkout, "seat-target.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(checkout, "seat-link.sh")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(&replay.ExecRunner{Command: []string{link}}, checkout, neutral, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("protected symlink command = %q, want neutral copy", got)
+	}
+}
+
+func TestOutputOnlySeatRunnerMaterializesExecutableFromAdditionalProtectedRoot(t *testing.T) {
+	commandRoot := t.TempDir()
+	protectedRoot := t.TempDir()
+	neutral := t.TempDir()
+	command := filepath.Join(protectedRoot, "seat.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := outputOnlySeatRunner(
+		&replay.ExecRunner{Command: []string{command}}, commandRoot, neutral, "primary", protectedRoot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.(*replay.ExecRunner).Command[0]; got != filepath.Join(neutral, "etude-seat-primary") {
+		t.Fatalf("materialized command = %q", got)
+	}
+}
+
+func TestValidateOutputOnlySeatScratchRejectsCheckoutScratch(t *testing.T) {
+	checkout := t.TempDir()
+	scratch := filepath.Join(checkout, "scratch")
+	if err := os.Mkdir(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateOutputOnlySeatScratch(scratch, checkout); err == nil {
+		t.Fatal("accepted scratch inside checkout")
+	} else if !strings.Contains(err.Error(), "inside checkout") {
+		t.Fatalf("error = %q, want checkout containment", err)
+	}
+	if err := validateOutputOnlySeatScratch(t.TempDir(), checkout); err != nil {
+		t.Fatalf("rejected scratch outside checkout: %v", err)
+	}
+}
+
+func (r *checkoutPolicyRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	if len(req.Inputs) != 1 || req.Inputs[0].Role != gatePromptRole {
+		return replay.RunResult{}, fmt.Errorf("seat inputs = %+v, want one %q prompt", req.Inputs, gatePromptRole)
+	}
+	prompt := string(req.Inputs[0].Content)
+	r.prompts = append(r.prompts, prompt)
+	content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "checkout-marker.txt"))
+	if r.wantRead {
+		if !strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("read grant prompt missing READ-ONLY mode")
+		}
+		if err != nil {
+			return replay.RunResult{}, fmt.Errorf("read checkout marker: %w", err)
+		}
+		if string(content) != "pinned marker\n" {
+			return replay.RunResult{}, fmt.Errorf("checkout marker = %q", content)
+		}
+		r.markerRead = true
+	} else {
+		if !strings.Contains(prompt, "CHECKOUT ACCESS: OUTPUT-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("default prompt missing OUTPUT-ONLY mode")
+		}
+		if strings.Contains(prompt, "CHECKOUT ACCESS: READ-ONLY") {
+			return replay.RunResult{}, fmt.Errorf("output-only prompt also authorizes READ-ONLY")
+		}
+		if err == nil {
+			return replay.RunResult{}, fmt.Errorf("output-only seat read checkout marker %q", content)
+		}
+		if !os.IsNotExist(err) {
+			return replay.RunResult{}, fmt.Errorf("output-only marker read error = %v, want not exist", err)
+		}
+		if _, err := os.Stat(filepath.Join(req.WorktreeDir, ".git")); err != nil {
+			return replay.RunResult{}, fmt.Errorf("output-only seat cwd is not a neutral git repository: %w", err)
+		}
+		r.markerDenied = true
+	}
+	return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
+}
+
+func TestGateReadCheckoutPromptAndManifest(t *testing.T) {
+	for _, readCheckout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+			repo := initTestRepo(t)
+			writeTestFile(t, repo, "checkout-marker.txt", "pinned marker\n")
+			// A stray .gitmodules file without a mode-160000 tree entry is not a
+			// submodule and must not false-reject an opted-in read grant.
+			writeTestFile(t, repo, ".gitmodules", "# no gitlinks\n")
+			gitRun(t, repo, "add", "checkout-marker.txt", ".gitmodules")
+			gitRun(t, repo, "commit", "-m", "add marker")
+			sha := headSHA(t, repo)
+			// The live engine must expose the detached pin, not the caller's
+			// mutable source tree after that commit.
+			writeTestFile(t, repo, "checkout-marker.txt", "unpinned mutation\n")
+
+			seat := &checkoutPolicyRunner{wantRead: readCheckout}
+			check := &mutatingCheckRunner{}
+			e := &Engine{
+				Store:         refstore.New(repo),
+				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+				ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+					return check, nil
+				},
+				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+					return seat, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+				},
+				Tiers: fixedTiers(map[string][2]interface{}{
+					"L1": {[]string{"reviewer-a", "reviewer-b"}, ""},
+				}),
+				Root: repo,
+				Now:  fixedClock(),
+			}
+			wf := gatedWorkflow(&workflow.GateConfig{
+				Checks:       []workflow.Runner{{Command: "mutate-checkout"}},
+				Tier:         "L1",
+				ReadCheckout: readCheckout,
+			})
+			runID := fmt.Sprintf("mywf-20260101T000000Z-read%t", readCheckout)
+			if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+			}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			if seat.calls != 2 {
+				t.Fatalf("seat calls = %d, want 2", seat.calls)
+			}
+			if check.calls != 1 {
+				t.Fatalf("check calls = %d, want 1", check.calls)
+			}
+			if seat.markerRead != readCheckout {
+				t.Fatalf("markerRead = %t, want %t", seat.markerRead, readCheckout)
+			}
+			if seat.markerDenied != !readCheckout {
+				t.Fatalf("markerDenied = %t, want %t", seat.markerDenied, !readCheckout)
+			}
+			if len(seat.prompts) != 2 || seat.prompts[0] != seat.prompts[1] {
+				t.Fatalf("model seats received different prompts: %#v", seat.prompts)
+			}
+			prompt := seat.prompts[0]
+			if readCheckout && !strings.Contains(prompt, sha) {
+				t.Errorf("read prompt does not name pinned commit %s:\n%s", sha, prompt)
+			}
+			assertMeasurementAuthorityPrompt(t, prompt)
+
+			m := readLiveManifest(t, repo, runID)
+			if len(m.Gates) != 1 || m.Gates[0].ReadCheckout != readCheckout {
+				t.Fatalf("recorded grant = %+v, want %t", m.Gates, readCheckout)
+			}
+			raw, err := m.JSON()
+			if err != nil {
+				t.Fatalf("JSON: %v", err)
+			}
+			if strings.Contains(string(raw), "read_checkout") != readCheckout {
+				t.Fatalf("manifest read_checkout presence mismatch for read=%t:\n%s", readCheckout, raw)
+			}
+		})
+	}
+}
+
+type contaminatingCheckoutRunner struct {
+	seat          string
+	firstCheckout *string
+	called        *bool
+}
+
+func TestRunGateSeatsStopsAfterPinnedCheckoutCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	resolveCalls := 0
+	e := &Engine{
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			resolveCalls++
+			return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{
+				HarnessName: "stub", ProviderName: "stub", Model: "stub",
+			}, nil
+		},
+		Root: root,
+		Now:  fixedClock(),
+	}
+	checkout := t.TempDir()
+	factoryCalls := 0
+	results, verdicts, _, _ := e.runGateSeats(
+		context.Background(), root, t.TempDir(), []string{"writer", "reader"}, nil,
+		artifactstore.New(), 1, false,
+		func() (string, func() error, error) {
+			factoryCalls++
+			return checkout, func() error { return errors.New("cleanup failed") }, nil
+		},
+	)
+	if resolveCalls != 1 || factoryCalls != 1 {
+		t.Fatalf("calls after cleanup failure: resolve=%d factory=%d, want 1 each", resolveCalls, factoryCalls)
+	}
+	if len(results) != 1 || len(verdicts) != 1 || verdicts[0] != runmanifest.SeatVerdictFailed {
+		t.Fatalf("results=%+v verdicts=%v", results, verdicts)
+	}
+	if !strings.Contains(results[0].FailureNote, "cleanup pinned seat checkout") {
+		t.Fatalf("failure note = %q", results[0].FailureNote)
+	}
+}
+
+func (r contaminatingCheckoutRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	*r.called = true
+	marker := filepath.Join(req.WorktreeDir, "checkout-marker.txt")
+	switch r.seat {
+	case "writer":
+		*r.firstCheckout = req.WorktreeDir
+		if err := os.WriteFile(marker, []byte("contaminated\n"), 0o644); err != nil {
+			return replay.RunResult{}, err
+		}
+	case "reader":
+		if *r.firstCheckout == "" {
+			return replay.RunResult{}, errors.New("writer checkout was not recorded")
+		}
+		if _, err := os.Stat(*r.firstCheckout); !os.IsNotExist(err) {
+			return replay.RunResult{}, fmt.Errorf("writer checkout still exists before reader invocation: %v", err)
+		}
+		if req.WorktreeDir == *r.firstCheckout {
+			return replay.RunResult{}, errors.New("reader reused writer checkout")
+		}
+		content, err := os.ReadFile(marker)
+		if err != nil {
+			return replay.RunResult{}, err
+		}
+		if string(content) != "pinned\n" {
+			return replay.RunResult{}, fmt.Errorf("reader marker = %q, want pinned commit", content)
+		}
+	}
+	return replay.RunResult{Output: goEnvelope(), MediaType: "application/json"}, nil
+}
+
+func TestGateReadCheckoutSeatsReceivePristineCheckouts(t *testing.T) {
+	repo := initTestRepo(t)
+	writeTestFile(t, repo, "checkout-marker.txt", "pinned\n")
+	gitRun(t, repo, "add", "checkout-marker.txt")
+	gitRun(t, repo, "commit", "-m", "add pinned marker")
+	pinnedSHA := headSHA(t, repo)
+	writeTestFile(t, repo, "checkout-marker.txt", "new-head\n")
+	gitRun(t, repo, "add", "checkout-marker.txt")
+	gitRun(t, repo, "commit", "-m", "move mutable head")
+
+	firstCheckout := ""
+	writerCalled, readerCalled := false, false
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveSeat: func(seatName string) (replay.Runner, SeatMeta, error) {
+			called := &writerCalled
+			if seatName == "reader" {
+				called = &readerCalled
+			}
+			return contaminatingCheckoutRunner{seat: seatName, firstCheckout: &firstCheckout, called: called}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"writer", "reader"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", ReadCheckout: true})
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: "mywf-20260101T000000Z-pristine", GitSHA: pinnedSHA,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !writerCalled || !readerCalled {
+		t.Fatalf("seat calls: writer=%t reader=%t", writerCalled, readerCalled)
+	}
+}
+
+type checkoutTranscriptSeatRunner struct {
+	checkoutPath *string
+}
+
+func (r checkoutTranscriptSeatRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	*r.checkoutPath = req.WorktreeDir
+	if err := os.WriteFile(filepath.Join(req.WorktreeDir, "seat-transcript.md"), []byte("checkout transcript literal\n"), 0o644); err != nil {
+		return replay.RunResult{}, err
+	}
+	return replay.RunResult{
+		Output:    sessionEnvelopeJSONWithPath("block", "seat-transcript.md"),
+		MediaType: "application/json",
+	}, nil
+}
+
+func TestGateReadCheckoutCapturesSessionBeforeCleanup(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	checkoutPath := ""
+	one := 1
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			return checkoutTranscriptSeatRunner{checkoutPath: &checkoutPath}, SeatMeta{
+				HarnessName: "codex", ProviderName: "openai", Model: "gpt-5.5", RequireSessionEvidence: true,
+			}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L1": {[]string{"codex"}, ""},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", ReadCheckout: true, MaxRounds: &one})
+	runID := "mywf-20260101T000000Z-session-cleanup"
+	err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	})
+	var gateErr *GateEscalationError
+	if !errors.As(err, &gateErr) {
+		t.Fatalf("Run error = %v, want terminal block", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	seat := m.Gates[0].Seats[0]
+	if seat.Session == nil || seat.Session.TranscriptArtifact == nil {
+		t.Fatalf("session transcript not captured: %+v", seat.Session)
+	}
+	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, seat.Session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "checkout transcript literal\n" {
+		t.Fatalf("transcript = %q", content)
+	}
+	if _, err := os.Stat(checkoutPath); !os.IsNotExist(err) {
+		t.Fatalf("seat checkout still exists after block: %v", err)
+	}
+}
+
+func TestGateReadCheckoutGitlinkBoundary(t *testing.T) {
+	for _, readCheckout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read=%t", readCheckout), func(t *testing.T) {
+			repo := initTestRepo(t)
+			baseSHA := headSHA(t, repo)
+			gitRun(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+baseSHA+",nested/vendor/sub")
+			gitRun(t, repo, "commit", "-m", "add nested gitlink")
+			sha := headSHA(t, repo)
+
+			seatCalls := 0
+			e := &Engine{
+				Store:         refstore.New(repo),
+				ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+				ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+					seatCalls++
+					return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+				},
+				Tiers: fixedTiers(map[string][2]interface{}{
+					"L1": {[]string{"reviewer"}, ""},
+				}),
+				Root: repo,
+				Now:  fixedClock(),
+			}
+			wf := gatedWorkflow(&workflow.GateConfig{Tier: "L1", ReadCheckout: readCheckout})
+			runID := fmt.Sprintf("mywf-20260101T000001Z-gitlink%t", readCheckout)
+			err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+				TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+			})
+
+			if readCheckout {
+				if err == nil || !strings.Contains(err.Error(), "nested/vendor/sub") || !strings.Contains(err.Error(), "#14") {
+					t.Fatalf("read grant error = %v, want recursive gitlink and GH #14 guidance", err)
+				}
+				if seatCalls != 0 {
+					t.Fatalf("seat ran %d times before gitlink rejection", seatCalls)
+				}
+				if got := readLiveManifest(t, repo, runID); len(got.Gates) != 0 {
+					t.Fatalf("gitlink rejection recorded %d gate attempts, want none", len(got.Gates))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("output-only gate on gitlink repo changed behavior: %v", err)
+			}
+			if seatCalls != 1 {
+				t.Fatalf("output-only seat calls = %d, want 1", seatCalls)
+			}
+		})
+	}
+}
+
+func TestGateReadCheckoutChecksOnlyResolvesNoGrant(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	check := &recordingCheckRunner{}
+	e := &Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: stubResolveRunner(&replay.StubRunner{CannedOutput: []byte("stage claim"), CannedMediaType: "text/plain; charset=utf-8"}),
+		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+			return check, nil
+		},
+		Root: repo,
+		Now:  fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{
+		Checks:       []workflow.Runner{{Command: "true"}},
+		ReadCheckout: true,
+	})
+	runID := "mywf-20260101T000002Z-checksonly"
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: sha,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	m := readLiveManifest(t, repo, runID)
+	if len(m.Gates) != 1 || m.Gates[0].ReadCheckout {
+		t.Fatalf("checks-only gate recorded checkout-read grant: %+v", m.Gates)
+	}
+	if len(check.inputs) != 1 || check.inputs[0].Role != "plan" || string(check.inputs[0].Content) != "stage claim" {
+		t.Fatalf("deterministic check inputs = %+v, want raw stage output", check.inputs)
 	}
 }
 
