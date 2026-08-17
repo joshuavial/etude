@@ -427,6 +427,9 @@ func inspectCallerTrackedBytes(ctx context.Context, root string) error {
 			return fmt.Errorf("inspect caller workspace HEAD tree: unexpected entry %q", entry)
 		}
 		mode, wantOID := string(fields[0]), string(fields[2])
+		if err := inspectTrackedPathAncestors(root, string(gitPath)); err != nil {
+			return err
+		}
 		workPath := filepath.Join(root, filepath.FromSlash(string(gitPath)))
 		info, err := os.Lstat(workPath)
 		if errors.Is(err, os.ErrNotExist) {
@@ -475,6 +478,25 @@ func inspectCallerTrackedBytes(ctx context.Context, root string) error {
 	return nil
 }
 
+func inspectTrackedPathAncestors(root, gitPath string) error {
+	parts := strings.Split(gitPath, "/")
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, filepath.FromSlash(part))
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrCallerWorkspaceDirty
+		}
+		if err != nil {
+			return fmt.Errorf("inspect tracked path ancestor %q: %w", current, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return ErrCallerWorkspaceDirty
+		}
+	}
+	return nil
+}
+
 func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) {
 	var snapshot bytes.Buffer
 	for _, name := range []string{"config", "config.worktree", "info/attributes", "info/exclude", "info/grafts"} {
@@ -483,15 +505,22 @@ func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) 
 			return nil, fmt.Errorf("resolve caller workspace git control file %q: %w", name, err)
 		}
 		controlPath := strings.TrimSpace(string(out))
-		contents, err := os.ReadFile(controlPath)
+		info, err := os.Lstat(controlPath)
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(&snapshot, "%s\x00missing\x00", name)
+			fmt.Fprintf(&snapshot, "%s\x00%s\x00missing\x00", name, controlPath)
 			continue
 		}
 		if err != nil {
+			return nil, fmt.Errorf("inspect caller workspace git control file %q: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: Git control file %q is not regular", ErrCallerWorkspaceUnsupported, name)
+		}
+		contents, err := os.ReadFile(controlPath)
+		if err != nil {
 			return nil, fmt.Errorf("read caller workspace git control file %q: %w", name, err)
 		}
-		fmt.Fprintf(&snapshot, "%s\x00present\x00%d\x00", name, len(contents))
+		fmt.Fprintf(&snapshot, "%s\x00%s\x00present\x00%d\x00", name, controlPath, len(contents))
 		snapshot.Write(contents)
 	}
 	excludesOut, err := callerGitCommand(ctx, root, "config", "-z", "--path", "--get", "core.excludesFile").Output()
@@ -516,11 +545,15 @@ func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) 
 	if !filepath.IsAbs(excludesPath) {
 		excludesPath = filepath.Join(root, excludesPath)
 	}
-	contents, err := os.ReadFile(excludesPath)
+	info, err := os.Lstat(excludesPath)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(&snapshot, "core.excludesFile\x00%s\x00missing\x00", excludesPath)
 	} else if err != nil {
-		return nil, fmt.Errorf("read caller workspace external excludes file: %w", err)
+		return nil, fmt.Errorf("inspect caller workspace external excludes file: %w", err)
+	} else if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: external excludes file is not regular", ErrCallerWorkspaceUnsupported)
+	} else if contents, readErr := os.ReadFile(excludesPath); readErr != nil {
+		return nil, fmt.Errorf("read caller workspace external excludes file: %w", readErr)
 	} else {
 		fmt.Fprintf(&snapshot, "core.excludesFile\x00%s\x00present\x00%d\x00", excludesPath, len(contents))
 		snapshot.Write(contents)
@@ -535,6 +568,13 @@ func callerGitControlSnapshot(ctx context.Context, root string) ([]byte, error) 
 			continue
 		}
 		path := string(pathBytes)
+		info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(path)))
+		if statErr != nil {
+			return nil, fmt.Errorf("inspect caller workspace untracked ignore file %q: %w", path, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: untracked ignore file %q is not regular", ErrCallerWorkspaceUnsupported, path)
+		}
 		contents, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if readErr != nil {
 			return nil, fmt.Errorf("read caller workspace untracked ignore file %q: %w", path, readErr)

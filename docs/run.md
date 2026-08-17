@@ -323,6 +323,11 @@ any untracked `.gitignore` files. This prevents a runner from using graft
 overlays or changed ignore controls to conceal post-run state. Other ignored
 paths remain the caller runner's responsibility.
 
+Git control files and effective ignore-control files must be regular files.
+Tracked paths may not be reached through symlinked parent directories; both
+topology changes fail closed even when the bytes visible through the symlink
+match the pre-run state.
+
 Tracked content and executable modes are compared directly with the blobs and
 modes in `HEAD`, independently of clean filters and Git's stat cache. This is
 deliberately conservative: a repository whose clean checkout uses a smudge

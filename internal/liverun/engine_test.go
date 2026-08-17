@@ -1205,6 +1205,76 @@ func TestCallerWorkspaceRejectsRepositoryMetadataReplacement(t *testing.T) {
 	}
 }
 
+func TestCallerWorkspaceRejectsGitConfigSymlinkReplacement(t *testing.T) {
+	repo := initTestRepo(t)
+	sha := headSHA(t, repo)
+	configPath := filepath.Join(repo, ".git", "config")
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		writeTestFile(t, repo, ".git/config-copy", string(configBytes))
+		if err := os.Remove(configPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("config-copy", configPath); err != nil {
+			t.Fatal(err)
+		}
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-configsymlink"
+	err = e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) || !strings.Contains(err.Error(), "Git control files changed") {
+		t.Fatalf("Run error = %v, want Git config topology rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after Git config symlink replacement: Resolve error = %v", resolveErr)
+	}
+}
+
+func TestCallerWorkspaceRejectsTrackedPathAncestorSymlink(t *testing.T) {
+	repo := initTestRepo(t)
+	writeTestFile(t, repo, "vendor/file", "pinned bytes\n")
+	writeTestFile(t, repo, ".gitignore", "vendor\n")
+	gitRun(t, repo, "add", ".gitignore")
+	gitRun(t, repo, "add", "-f", "vendor/file")
+	gitRun(t, repo, "commit", "-m", "track ignored vendor file")
+	sha := headSHA(t, repo)
+	external := t.TempDir()
+	writeTestFile(t, external, "file", "pinned bytes\n")
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		if err := os.Remove(filepath.Join(repo, "vendor", "file")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(repo, "vendor")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(repo, "vendor")); err != nil {
+			t.Fatal(err)
+		}
+		return replay.RunResult{Output: []byte("stale output")}, nil
+	})
+	wf := workflow.Workflow{Name: "callerwf", Stages: []workflow.Stage{{
+		Name: "implement", Skill: "sk", Produces: "diff",
+		Runner: &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller},
+	}}}
+	e := Engine{Store: refstore.New(repo), ResolveRunner: stubResolveRunner(runner), Root: repo, Now: fixedClock()}
+	runID := "callerwf-20260101T000000Z-ancestorsymlink"
+	err := e.Run(context.Background(), io.Discard, wf, RunOptions{RunID: runID, GitSHA: sha})
+	if !errors.Is(err, ErrCallerWorkspaceDirty) {
+		t.Fatalf("Run error = %v, want tracked ancestor symlink rejection", err)
+	}
+	if _, resolveErr := e.Store.Resolve(context.Background(), runsPrefix+runID); !errors.Is(resolveErr, refstore.ErrNotFound) {
+		t.Fatalf("stage was captured after tracked ancestor symlink replacement: Resolve error = %v", resolveErr)
+	}
+}
+
 func TestCallerWorkspaceRejectsBranchActivatedCleanFilter(t *testing.T) {
 	repo := initTestRepo(t)
 	writeTestFile(t, repo, ".gitattributes", "README.md filter=mask\n")
