@@ -1420,6 +1420,103 @@ func TestGateAC3_RerunWithFeedback(t *testing.T) {
 	}
 }
 
+func TestGateRerunCallerWorkspaceDeliversEvidenceWithReadCheckout(t *testing.T) {
+	repo := initTestRepo(t)
+	writeTestFile(t, repo, "checkout-marker.txt", "original checkout\n")
+	gitRun(t, repo, "add", "checkout-marker.txt")
+	gitRun(t, repo, "commit", "-m", "add checkout marker")
+	originalSHA := headSHA(t, repo)
+
+	blockEnv := envelopeJSON("block", []string{"fix the plan"})
+	goEnv := envelopeJSON("go", nil)
+	seatResponses := [][]byte{blockEnv, blockEnv, goEnv, goEnv}
+	stageCalls := 0
+	var rerunInputs []replay.RunInput
+	resolveStage := func(workflow.Stage) (replay.Runner, error) {
+		return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+			stageCalls++
+			if req.WorktreeDir != repo {
+				t.Fatalf("caller runner directory = %q, want %q", req.WorktreeDir, repo)
+			}
+			if stageCalls == 2 {
+				rerunInputs = append([]replay.RunInput(nil), req.Inputs...)
+			}
+			writeTestFile(t, repo, "caller-attempt.txt", fmt.Sprintf("attempt %d\n", stageCalls))
+			gitRun(t, repo, "add", "caller-attempt.txt")
+			gitRun(t, repo, "commit", "-m", fmt.Sprintf("caller attempt %d", stageCalls))
+			transcript := "transcript"
+			log := "runner log"
+			output := "plan v1"
+			if stageCalls == 2 {
+				transcript = "transcript v2"
+				log = "runner log v2"
+				output = "plan v2"
+			}
+			if err := os.WriteFile(filepath.Join(req.ScratchDir, "stage-transcript.txt"), []byte(transcript), 0o600); err != nil {
+				return replay.RunResult{}, err
+			}
+			return replay.RunResult{
+				Output: []byte(output), Log: []byte(log), MediaType: "text/plain; charset=utf-8",
+				Producer: runmanifest.Producer{Harness: runmanifest.Harness{Name: "stub"}, Skill: req.Producer.Skill},
+				Session:  &replay.SessionInfo{SessionID: fmt.Sprintf("session-%d", stageCalls), TranscriptPath: "stage-transcript.txt"},
+			}, nil
+		}), nil
+	}
+
+	seatCall := 0
+	var seatCheckoutDirs []string
+	two := 2
+	e := &Engine{
+		Store: refstore.New(repo), ResolveRunner: resolveStage,
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			response := seatResponses[seatCall]
+			seatCall++
+			return runnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+				if got := headSHA(t, req.WorktreeDir); got != originalSHA {
+					t.Fatalf("seat checkout HEAD = %q, want original %q", got, originalSHA)
+				}
+				if _, err := os.Stat(filepath.Join(req.WorktreeDir, "caller-attempt.txt")); !os.IsNotExist(err) {
+					t.Fatalf("seat checkout exposed caller mutation: %v", err)
+				}
+				seatCheckoutDirs = append(seatCheckoutDirs, req.WorktreeDir)
+				return replay.RunResult{Output: response, MediaType: "application/json"}, nil
+			}), SeatMeta{HarnessName: "stub", ProviderName: "stub", Model: "stub"}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{"L2": {[]string{"seatA", "seatB"}, "L1"}}),
+		Root:  repo, Now: fixedClock(),
+	}
+	wf := gatedWorkflow(&workflow.GateConfig{Tier: "L2", MaxRounds: &two, ReadCheckout: true})
+	wf.Stages[0].Runner = &workflow.Runner{Command: "unused", Workspace: workflow.RunnerWorkspaceCaller}
+	const runID = "mywf-20260101T000000Z-caller-rerun"
+	if err := e.Run(context.Background(), noopWriter(), wf, RunOptions{
+		TaskBytes: []byte("task"), TaskFile: "task.txt", RunID: runID, GitSHA: originalSHA,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	assertPriorAttemptInputs(t, rerunInputs)
+	if stageCalls != 2 || len(seatCheckoutDirs) != 4 {
+		t.Fatalf("stage/seat calls = %d/%d, want 2/4", stageCalls, len(seatCheckoutDirs))
+	}
+	m := readLiveManifest(t, repo, runID)
+	if m.ManifestVersion != 4 || m.OriginalGitSHA != originalSHA {
+		t.Fatalf("manifest version/original = %d/%q, want 4/%q", m.ManifestVersion, m.OriginalGitSHA, originalSHA)
+	}
+	if len(m.Stages) != 2 || m.Stages[0].RunnerWorkspace != workflow.RunnerWorkspaceCaller || m.Stages[1].RunnerWorkspace != workflow.RunnerWorkspaceCaller {
+		t.Fatalf("caller stages = %#v", m.Stages)
+	}
+	if m.Stages[0].Log == nil || m.Stages[0].Producer.Session == nil || m.Stages[0].Producer.Session.TranscriptArtifact == nil {
+		t.Fatalf("first caller evidence log/session = %#v/%#v", m.Stages[0].Log, m.Stages[0].Producer.Session)
+	}
+	transcript, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Producer.Session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(transcript) != "transcript" {
+		t.Fatalf("stored caller transcript = %q", transcript)
+	}
+}
+
 // feedbackCheckRunner is a replay.Runner that records whether it received a
 // gate-feedback input.
 type feedbackCheckRunner struct {
