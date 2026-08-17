@@ -265,7 +265,7 @@ func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Work
 		chain["task"] = roleArtifact{ref: taskRef, content: opts.TaskBytes}
 	}
 
-	return e.executeStages(ctx, out, wf, runID, gitSHA, e.clock(), as, chain, "", 0, nil, nil, false, wt.Dir, scratch)
+	return e.executeStages(ctx, out, wf, runID, gitSHA, wt.Submodules, e.clock(), as, chain, "", 0, nil, nil, false, wt.Dir, scratch)
 }
 
 func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow, resumeID string) error {
@@ -323,6 +323,14 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 		return fmt.Errorf("checkout %q for resume: %w", gitSHA, err)
 	}
 	defer wt.Close()
+	for i, stage := range manifest.Stages {
+		if stage.GitSHA != gitSHA {
+			return fmt.Errorf("run %q stage[%d] git sha %q does not match %q", resumeID, i, stage.GitSHA, gitSHA)
+		}
+		if err := wt.ValidateSubmodules(stage.Submodules); err != nil {
+			return fmt.Errorf("run %q stage[%d]: %w", resumeID, i, err)
+		}
+	}
 
 	scratch, err := os.MkdirTemp("", "etude-live-scratch-*")
 	if err != nil {
@@ -412,7 +420,7 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 
 		oldArtifact := captured.Output.Artifact
 		allAttempts, updatedStages, newCommit, finalRef, finalContent, gateErr := e.runGate(
-			ctx, out, manifest.RunID, gitSHA, manifest.Created, wf,
+			ctx, out, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, wf,
 			stage, stageIdx, inputRefs, runInputs, as, completedStages, gateAttempts, commit,
 			captured.Output, outputContent, captured.Name, wt.Dir, scratch,
 		)
@@ -429,13 +437,13 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 				fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
 				return nil
 			}
-			return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
+			return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, as, chain,
 				commit, stageIdx+1, completedStages, gateAttempts, true, wt.Dir, scratch)
 		}
 	}
 
 	if frontier < len(wf.Stages) {
-		return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, manifest.Created, as, chain,
+		return e.executeStages(ctx, out, wf, manifest.RunID, gitSHA, wt.Submodules, manifest.Created, as, chain,
 			commit, frontier, completedStages, gateAttempts, false, wt.Dir, scratch)
 	}
 	fmt.Fprintf(out, "ref %s%s\n", runsPrefix, manifest.RunID)
@@ -450,6 +458,7 @@ func (e *Engine) executeStages(
 	out io.Writer,
 	wf workflow.Workflow,
 	runID, gitSHA string,
+	submodules map[string]string,
 	created time.Time,
 	as *artifactstore.Store,
 	chain map[string]roleArtifact,
@@ -503,7 +512,7 @@ func (e *Engine) executeStages(
 			executionName = fmt.Sprintf("%s.r%d", stage.Name, nextPhaseRound(stage.Name, completedStages, gateAttempts))
 		}
 		outputRef, outputContent, newStages, newCommit, err := e.runAndCaptureStage(
-			ctx, out, runID, gitSHA, created, wf,
+			ctx, out, runID, gitSHA, submodules, created, wf,
 			stage, executionName, inputRefs, runInputs,
 			stageScratch, as, completedStages, gateAttempts, prevCommit, worktreeDir,
 		)
@@ -517,7 +526,7 @@ func (e *Engine) executeStages(
 		// Execute the gate when configured.
 		if stage.Gate != nil {
 			allAttempts, updatedStages, newCommit2, finalOutputRef, finalOutputContent, gateErr := e.runGate(
-				ctx, out, runID, gitSHA, created, wf,
+				ctx, out, runID, gitSHA, submodules, created, wf,
 				stage, stageIdx, inputRefs, runInputs,
 				as, completedStages, gateAttempts, prevCommit,
 				outputRef, outputContent, executionName, worktreeDir, scratch,
@@ -558,6 +567,7 @@ func (e *Engine) runAndCaptureStage(
 	ctx context.Context,
 	out io.Writer,
 	runID, gitSHA string,
+	submodules map[string]string,
 	created time.Time,
 	wf workflow.Workflow,
 	stage workflow.Stage,
@@ -627,6 +637,7 @@ func (e *Engine) runAndCaptureStage(
 		Name:       stageName,
 		ProducedBy: "original",
 		GitSHA:     gitSHA,
+		Submodules: cloneStringMap(submodules),
 		Skill:      stageSkill,
 		Producer:   producer,
 		Inputs:     inputRefs,
@@ -658,6 +669,17 @@ func (e *Engine) runAndCaptureStage(
 	}
 	fmt.Fprintf(out, "captured %s\n", newCommit)
 	return outRef, res.Output, newStages, newCommit, nil
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // filesForManifest returns only the artifact files referenced by the manifest.

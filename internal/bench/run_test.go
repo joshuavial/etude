@@ -3,7 +3,9 @@ package bench
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +43,42 @@ func initRepoWithCommit(t *testing.T) (repoDir, headSHA string) {
 	run("commit", "--allow-empty", "-m", "initial")
 	sha := run("rev-parse", "HEAD")
 	return dir, sha
+}
+
+func gitBenchRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func initRepoWithSubmoduleCommit(t *testing.T) (repoDir, superprojectSHA, submoduleSHA string) {
+	t.Helper()
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file")
+
+	submoduleDir, _ := initRepoWithCommit(t)
+	if err := os.WriteFile(filepath.Join(submoduleDir, "payload.txt"), []byte("pinned bench content\n"), 0o644); err != nil {
+		t.Fatalf("write submodule payload: %v", err)
+	}
+	gitBenchRun(t, submoduleDir, "add", "payload.txt")
+	gitBenchRun(t, submoduleDir, "commit", "-m", "add bench payload")
+	submoduleSHA = gitBenchRun(t, submoduleDir, "rev-parse", "HEAD")
+
+	repoDir, _ = initRepoWithCommit(t)
+	gitBenchRun(t, repoDir, "-c", "protocol.file.allow=always", "submodule", "add", submoduleDir, "modules/lib")
+	gitBenchRun(t, repoDir, "commit", "-am", "pin bench submodule")
+	superprojectSHA = gitBenchRun(t, repoDir, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(submoduleDir, "payload.txt"), []byte("newer unpinned content\n"), 0o644); err != nil {
+		t.Fatalf("advance submodule payload: %v", err)
+	}
+	gitBenchRun(t, submoduleDir, "add", "payload.txt")
+	gitBenchRun(t, submoduleDir, "commit", "-m", "advance bench payload")
+	return repoDir, superprojectSHA, submoduleSHA
 }
 
 // seedSourceRun writes a source run manifest into the store, using headSHA
@@ -85,6 +123,60 @@ func newBenchPipeline(store refstore.Store, runner replay.Runner, judge eval.Jud
 		Judge:    judge,
 		Recorder: rec,
 		Now:      func() time.Time { return fixedTime },
+	}
+}
+
+type countingBenchRunner struct {
+	calls int
+}
+
+type submoduleBenchRunner struct {
+	content []byte
+}
+
+func (r *submoduleBenchRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	content, err := os.ReadFile(filepath.Join(req.WorktreeDir, "modules", "lib", "payload.txt"))
+	if err != nil {
+		return replay.RunResult{}, err
+	}
+	r.content = content
+	return replay.RunResult{Output: content, MediaType: req.OutputMediaType, Producer: req.Producer}, nil
+}
+
+func (r *countingBenchRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	return replay.RunResult{Output: []byte("unexpected"), MediaType: req.OutputMediaType, Producer: req.Producer}, nil
+}
+
+func rewriteBenchManifest(t *testing.T, store refstore.Store, runID string, mutate func(*runmanifest.Manifest)) {
+	t.Helper()
+	ctx := context.Background()
+	ref := runsPrefix + runID
+	commit, err := store.Resolve(ctx, ref)
+	if err != nil {
+		t.Fatalf("resolve run: %v", err)
+	}
+	raw, err := store.ReadCommitFile(ctx, commit, "manifest.json")
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	m, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	files := make(map[string][]byte)
+	for _, artifactPath := range runmanifest.ArtifactPaths(m) {
+		files[artifactPath], err = store.ReadCommitFile(ctx, commit, artifactPath)
+		if err != nil {
+			t.Fatalf("read run artifact %q: %v", artifactPath, err)
+		}
+	}
+	mutate(&m)
+	if _, err := runmanifest.WriteManifestTree(ctx, store, runsPrefix, m, files, refstore.WriteOptions{
+		ExpectedOld: commit,
+		Message:     "rewrite bench test manifest",
+	}); err != nil {
+		t.Fatalf("rewrite manifest: %v", err)
 	}
 }
 
@@ -191,6 +283,64 @@ func TestBenchRunHappyPath(t *testing.T) {
 	}
 	if len(tB.Artifact) != 64 {
 		t.Errorf("Targets[1].Artifact length = %d, want 64", len(tB.Artifact))
+	}
+}
+
+func TestBenchRunSubmoduleMismatchDoesNotInvokeRunner(t *testing.T) {
+	repoDir, headSHA := initRepoWithCommit(t)
+	store := newStore(repoDir)
+	cr, _ := seedSourceRun(t, store, headSHA)
+	rewriteBenchManifest(t, store, cr.RunID, func(m *runmanifest.Manifest) {
+		m.Stages[0].Submodules = map[string]string{"modules/lib": strings.Repeat("a", 40)}
+	})
+
+	runner := &countingBenchRunner{}
+	p := newBenchPipeline(store, runner, &eval.StubJudge{}, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
+	_, err := p.BenchRun(context.Background(), repoDir, cr)
+	if err == nil || !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("BenchRun error = %v, want submodule mismatch", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0", runner.calls)
+	}
+}
+
+func TestBenchRunRecordsPopulatedSubmodulesForLegacySource(t *testing.T) {
+	repoDir, superprojectSHA, submoduleSHA := initRepoWithSubmoduleCommit(t)
+	store := newStore(repoDir)
+	cr, _ := seedSourceRun(t, store, superprojectSHA)
+	if len(cr.Stage.Submodules) != 0 {
+		t.Fatalf("legacy source submodules = %v, want absent", cr.Stage.Submodules)
+	}
+
+	runner := &submoduleBenchRunner{}
+	p := newBenchPipeline(
+		store,
+		runner,
+		&eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerTie}},
+		time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	)
+	outcome, err := p.BenchRun(context.Background(), repoDir, cr)
+	if err != nil {
+		t.Fatalf("BenchRun: %v", err)
+	}
+	if got := string(runner.content); got != "pinned bench content\n" {
+		t.Fatalf("runner submodule content = %q, want pinned content", got)
+	}
+
+	raw, err := store.ReadCommitFile(context.Background(), outcome.ReplayCommit, "manifest.json")
+	if err != nil {
+		t.Fatalf("read replay manifest: %v", err)
+	}
+	m, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatalf("parse replay manifest: %v", err)
+	}
+	if len(m.Stages) != 1 {
+		t.Fatalf("replay stages = %d, want 1", len(m.Stages))
+	}
+	if got := m.Stages[0].Submodules["modules/lib"]; got != submoduleSHA {
+		t.Fatalf("recorded modules/lib SHA = %q, want populated SHA %q", got, submoduleSHA)
 	}
 }
 

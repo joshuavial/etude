@@ -190,6 +190,23 @@ in dependency order. All stages share a single evolving worktree checked out
 at the run's git SHA, so mutations from earlier stages are visible to later
 ones.
 
+When that commit contains submodules, Etude initializes them recursively before
+any stage or gate check runs. Submodule checkouts use private per-run Git
+metadata while borrowing already-available objects from the source repository;
+Git still contacts repository-controlled URLs from `.gitmodules` files at each
+recursively pinned commit to establish private clones with ambient Git credentials,
+but transfers required objects from that remote only when they are unavailable
+through the local alternate. Each stage's machine-readable manifest entry records a
+`submodules` map from root-relative path to the resolved submodule SHA alongside
+`git_sha`. The pair identifies the pinned checkout prepared for the run; as with
+ordinary tracked files, mutations made by earlier stages remain visible later but
+do not rewrite the initial identity recorded on each stage. Repositories without
+submodules omit the map.
+
+Submodule population is fail-closed and has no opt-out: invalid configuration,
+an unavailable required object, or inaccessible credentials stop the run before
+any stage or gate check executes.
+
 After each stage completes its runner, the engine chains the stage's output
 artifact into the next stage's inputs by role (matching `capture-run`
 semantics), then captures the stage to `refs/etude/runs/<id>` via an
@@ -371,6 +388,11 @@ a live run: it replays what was captured, in order.
 Single-stage flags (`--record`, `--output`, producer overrides) are not valid
 in forward-replay mode and return an error if supplied.
 
+Forward replay uses one shared checkout, so every captured stage must record the
+same `git_sha`. For a historical or manually captured run whose stages record
+different commits, replay each stage independently with
+`etude replay <run-id> <stage>`.
+
 ## Resume
 
 When a stage runner exits non-zero or times out, `etude run` stops, leaves
@@ -392,6 +414,11 @@ etude run <workflow> --resume <id>
 artifact blobs (including the task input) from the run commit, and continues
 CAS-appending from the current run ref head. It normally resumes at the first
 stage whose output role has not been produced yet.
+
+Resume also continues in one shared checkout and therefore requires all already
+captured stages to record the same `git_sha`. A mixed-commit capture cannot be
+resumed as one live workflow, but its stages remain available to single-stage
+`etude replay <run-id> <stage>`.
 
 A run whose stages are all captured can also resume a gate that stopped only
 because every model seat was unusable (`failed`, `empty`, `malfunction`, or

@@ -154,6 +154,8 @@ type Stage struct {
 	Name       string
 	ProducedBy string
 	GitSHA     string
+	// Submodules maps populated, root-relative submodule paths to resolved OIDs.
+	Submodules map[string]string
 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
@@ -469,6 +471,14 @@ func validateStage(index int, stage Stage) error {
 	}
 	if strings.TrimSpace(stage.GitSHA) == "" {
 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
+	}
+	for submodulePath, oid := range stage.Submodules {
+		if submodulePath == "" || submodulePath == "." || !utf8.ValidString(submodulePath) || strings.ContainsRune(submodulePath, '\x00') || path.IsAbs(submodulePath) || path.Clean(submodulePath) != submodulePath || submodulePath == ".." || strings.HasPrefix(submodulePath, "../") {
+			return fmt.Errorf("%w: %s submodule path %q must be clean and relative", ErrInvalidManifest, prefix, submodulePath)
+		}
+		if !isHexOID(oid) {
+			return fmt.Errorf("%w: %s submodule %q must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix, submodulePath)
+		}
 	}
 	if strings.TrimSpace(stage.Skill.ID) == "" {
 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
@@ -983,9 +993,10 @@ type gateDecisionJSON struct {
 }
 
 type stageJSON struct {
-	Stage      string `json:"stage"`
-	ProducedBy string `json:"produced_by"`
-	GitSHA     string `json:"git_sha"`
+	Stage      string            `json:"stage"`
+	ProducedBy string            `json:"produced_by"`
+	GitSHA     string            `json:"git_sha"`
+	Submodules map[string]string `json:"submodules,omitempty"`
 	// Skill is present only in legacy manifests (no producer block).
 	// New manifests omit it; the skill travels inside producer.
 	Skill     *skillJSON     `json:"skill,omitempty"`
@@ -1088,6 +1099,7 @@ func (m Manifest) toJSON() manifestJSON {
 			Stage:      stage.Name,
 			ProducedBy: stage.ProducedBy,
 			GitSHA:     stage.GitSHA,
+			Submodules: cloneStringMap(stage.Submodules),
 			// Do NOT emit top-level skill — it lives inside producer only.
 			Producer:  producerBlock,
 			Inputs:    inputs,
@@ -1450,6 +1462,7 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 		Name:       s.Stage,
 		ProducedBy: s.ProducedBy,
 		GitSHA:     s.GitSHA,
+		Submodules: cloneStringMap(s.Submodules),
 		Skill:      skill,
 		Producer:   producer,
 		Inputs:     inputs,
@@ -1457,6 +1470,17 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 		Timestamp:  timestamp,
 		ReplayOf:   replayOf,
 	}, nil
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (a artifactJSON) toArtifactRef() ArtifactRef {

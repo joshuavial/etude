@@ -200,6 +200,9 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 		}
 	}
 	defer wt.Close()
+	if err := wt.ValidateSubmodules(resolved.Submodules); err != nil {
+		return fmt.Errorf("stage %q: %w", stageName, err)
+	}
 
 	// Step 6: create a scratch directory outside the worktree.
 	scratch, err := os.MkdirTemp("", "etude-replay-scratch-*")
@@ -259,6 +262,9 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 		if len(res.Output) == 0 {
 			return fmt.Errorf("replay produced no output; cannot record empty run")
 		}
+		// The replay checkout is authoritative even for a legacy source manifest
+		// that predates submodule recording.
+		resolved.Submodules = wt.Submodules
 		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
 			return err
 		}

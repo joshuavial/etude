@@ -192,6 +192,42 @@ func TestParseJSONRoundTripsManifestAndArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestSubmodulesJSONRoundTripAndLegacyOmission(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	manifest := validManifest(output)
+	manifest.Stages[0].Submodules = map[string]string{
+		"modules/lib":        strings.Repeat("a", 40),
+		"modules/lib/nested": strings.Repeat("b", 64),
+	}
+
+	content, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(content), `"submodules": {`) {
+		t.Fatalf("JSON omitted populated submodules:\n%s", content)
+	}
+	parsed, err := ParseJSON(content)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if got := parsed.Stages[0].Submodules["modules/lib"]; got != strings.Repeat("a", 40) {
+		t.Fatalf("modules/lib OID = %q", got)
+	}
+	if got := parsed.Stages[0].Submodules["modules/lib/nested"]; got != strings.Repeat("b", 64) {
+		t.Fatalf("nested OID = %q", got)
+	}
+
+	manifest.Stages[0].Submodules = nil
+	legacyCompatible, err := manifest.JSON()
+	if err != nil {
+		t.Fatalf("JSON without submodules: %v", err)
+	}
+	if strings.Contains(string(legacyCompatible), `"submodules"`) {
+		t.Fatalf("empty submodules should be omitted:\n%s", legacyCompatible)
+	}
+}
+
 func TestParseJSONRejectsMalformedUnknownAndInvalidManifest(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	manifest := validManifest(output)
@@ -237,6 +273,15 @@ func TestValidateRejectsInvalidManifests(t *testing.T) {
 		{"missing stage name", func(m *Manifest) { m.Stages[0].Name = "" }},
 		{"missing produced by", func(m *Manifest) { m.Stages[0].ProducedBy = "" }},
 		{"missing git sha", func(m *Manifest) { m.Stages[0].GitSHA = "" }},
+		{"absolute submodule path", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"/module": strings.Repeat("a", 40)} }},
+		{"unclean submodule path", func(m *Manifest) {
+			m.Stages[0].Submodules = map[string]string{"module/../other": strings.Repeat("a", 40)}
+		}},
+		{"parent submodule path", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"../module": strings.Repeat("a", 40)} }},
+		{"invalid utf8 submodule path", func(m *Manifest) {
+			m.Stages[0].Submodules = map[string]string{string([]byte{0xff}): strings.Repeat("a", 40)}
+		}},
+		{"invalid submodule oid", func(m *Manifest) { m.Stages[0].Submodules = map[string]string{"module": strings.Repeat("A", 40)} }},
 		{"missing skill id", func(m *Manifest) { m.Stages[0].Skill.ID = "" }},
 		{"missing skill repo", func(m *Manifest) { m.Stages[0].Skill.Repo = "" }},
 		{"missing skill version", func(m *Manifest) { m.Stages[0].Skill.Version = "" }},

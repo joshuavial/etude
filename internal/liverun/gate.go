@@ -680,6 +680,7 @@ func (e *Engine) runGate(
 	ctx context.Context,
 	out io.Writer,
 	runID, gitSHA string,
+	submodules map[string]string,
 	created time.Time,
 	wf workflow.Workflow,
 	stage workflow.Stage,
@@ -848,7 +849,7 @@ func (e *Engine) runGate(
 			}
 
 			newOutputRef, newOutputContent, newStages, newCommit3, err := e.runAndCaptureStage(
-				ctx, out, runID, gitSHA, created, wf,
+				ctx, out, runID, gitSHA, submodules, created, wf,
 				stage, rerunName, inputRefs, runInputs,
 				rerunScratch, as, completedStages, allAttempts, prevCommit, worktreeDir,
 			)

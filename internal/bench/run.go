@@ -137,6 +137,9 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 		return BenchOutcome{}, wrap("checkout git sha", err)
 	}
 	defer wt.Close()
+	if err := wt.ValidateSubmodules(resolved.Submodules); err != nil {
+		return BenchOutcome{}, wrap("validate submodule checkout", err)
+	}
 
 	// Step 5: create a scratch directory and run the replay.
 	scratch, err := os.MkdirTemp("", "etude-bench-scratch-*")
@@ -176,6 +179,9 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 	}
 
 	// Step 6: record the replay run.
+	// The bench checkout is authoritative even for a legacy source manifest
+	// that predates submodule recording.
+	resolved.Submodules = wt.Submodules
 	recorded, err := p.Recorder.Record(ctx, cr.RunID, stageName, resolved, res)
 	if err != nil {
 		return BenchOutcome{}, wrap("record replay run", err)
