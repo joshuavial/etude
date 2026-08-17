@@ -127,6 +127,37 @@ func TestRunRecorderHappyPath(t *testing.T) {
 	}
 }
 
+func TestRunRecorderUsesResolvedRunCheckout(t *testing.T) {
+	store, _, resolved := seedRunForRecord(t)
+	resolved.GitSHA = strings.Repeat("b", 40)
+	resolved.RunGitSHA = strings.Repeat("a", 40)
+	resolved.RunnerWorkspace = "caller"
+	res := RunResult{
+		Output: []byte("replay output"), MediaType: "text/plain",
+		Producer: runmanifest.Producer{Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"}},
+	}
+	recorded, err := (RunRecorder{Store: store, Now: func() time.Time {
+		return time.Date(2026, 5, 22, 11, 0, 0, 0, time.UTC)
+	}}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stages[0].GitSHA; got != resolved.RunGitSHA {
+		t.Fatalf("recorded replay GitSHA = %q, want run checkout %q (source stage %q)", got, resolved.RunGitSHA, resolved.GitSHA)
+	}
+	if got := m.Stages[0].RunnerWorkspace; got != "" {
+		t.Fatalf("recorded replay RunnerWorkspace = %q, want hermetic despite source caller workspace", got)
+	}
+}
+
 // TestRunRecorderInputBytesCopiedVerbatim verifies that source input raw bytes
 // appear byte-identical in the recorded replay run (reading from the source commit
 // path is the mechanism that handles both content and pointer records correctly).

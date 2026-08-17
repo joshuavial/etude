@@ -1214,6 +1214,66 @@ stages:
 	}
 }
 
+func TestRunnerWorkspaceCallerParseAndRoundTrip(t *testing.T) {
+	input := `name: w
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      command: make plan
+      workspace: caller
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if got := w.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
+		t.Fatalf("Runner.Workspace = %q, want caller", got)
+	}
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
+		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
+	}
+	encoded, err := w.YAML()
+	if err != nil {
+		t.Fatalf("YAML error: %v", err)
+	}
+	if !strings.Contains(string(encoded), "workspace: caller") {
+		t.Fatalf("encoded workflow omits caller workspace:\n%s", encoded)
+	}
+	reparsed, err := ParseYAML(encoded)
+	if err != nil {
+		t.Fatalf("ParseYAML round trip: %v", err)
+	}
+	if got := reparsed.Stages[0].Runner.Workspace; got != RunnerWorkspaceCaller {
+		t.Fatalf("round-trip Runner.Workspace = %q, want caller", got)
+	}
+}
+
+func TestRunnerWorkspaceValidationAndHermeticDefault(t *testing.T) {
+	w := minimalWorkflow()
+	w.Stages[0].Runner = &Runner{Command: "make plan", Workspace: "somewhere"}
+	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("Validate workspace error = %v, want ErrInvalidWorkflow", err)
+	}
+	w.Stages[0].Runner.Workspace = ""
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
+		t.Fatalf("empty workspace effective value = %q, want hermetic", got)
+	}
+	w.Stages[0].Runner.Workspace = "hermetic"
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
+		t.Fatalf("explicit hermetic effective value = %q, want hermetic", got)
+	}
+}
+
+func TestGateCheckCannotSelectCallerWorkspace(t *testing.T) {
+	w := minimalWorkflow()
+	w.Stages[0].Gate = &GateConfig{Checks: []Runner{{Command: "make test", Workspace: RunnerWorkspaceCaller}}}
+	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("Validate gate check workspace error = %v, want ErrInvalidWorkflow", err)
+	}
+}
+
 // TestRunnerBothSetErrors asserts that setting both name and command is rejected.
 func TestRunnerBothSetErrors(t *testing.T) {
 	input := `name: w
@@ -1737,6 +1797,72 @@ stages:
 	}
 	if w.DefaultRunner.Name != "opus" {
 		t.Fatalf("DefaultRunner.Name = %q, want %q", w.DefaultRunner.Name, "opus")
+	}
+}
+
+func TestDefaultRunnerWorkspaceCallerIsInherited(t *testing.T) {
+	input := `name: w
+default_runner:
+  command: make plan
+  workspace: caller
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
+		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
+	}
+}
+
+func TestStageWorkspaceOnlyOverridesDefaultRunner(t *testing.T) {
+	input := `name: w
+default_runner:
+  command: make plan
+stages:
+  - name: plan
+    produces: plan
+    skill: dev-planner
+    runner:
+      workspace: caller
+`
+	w, err := ParseYAML([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseYAML error: %v", err)
+	}
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != RunnerWorkspaceCaller {
+		t.Fatalf("EffectiveRunnerWorkspace = %q, want caller", got)
+	}
+}
+
+func TestStageHermeticWorkspaceOverridesCallerDefault(t *testing.T) {
+	w := Workflow{
+		Name:          "w",
+		DefaultRunner: &Runner{Command: "make plan", Workspace: RunnerWorkspaceCaller},
+		Stages: []Stage{{
+			Name: "plan", Produces: "plan", Skill: "dev-planner",
+			Runner: &Runner{Workspace: RunnerWorkspaceHermetic},
+		}},
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := w.EffectiveRunnerWorkspace(w.Stages[0]); got != "hermetic" {
+		t.Fatalf("EffectiveRunnerWorkspace = %q, want hermetic", got)
+	}
+}
+
+func TestStageWorkspaceOnlyRequiresDefaultRunner(t *testing.T) {
+	w := Workflow{Name: "w", Stages: []Stage{{
+		Name: "plan", Produces: "plan", Skill: "dev-planner",
+		Runner: &Runner{Workspace: RunnerWorkspaceCaller},
+	}}}
+	if err := w.Validate(); !errors.Is(err, ErrInvalidWorkflow) {
+		t.Fatalf("Validate error = %v, want ErrInvalidWorkflow", err)
 	}
 }
 

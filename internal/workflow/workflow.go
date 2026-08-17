@@ -52,7 +52,16 @@ type Runner struct {
 	Name string
 	// Command is an inline shell command (e.g. "make test").
 	Command string
+	// Workspace selects where a live stage runner executes. Empty and
+	// "hermetic" preserve the detached-worktree default; "caller" opts into
+	// the directory from which etude was invoked.
+	Workspace string
 }
+
+const (
+	RunnerWorkspaceHermetic = "hermetic"
+	RunnerWorkspaceCaller   = "caller"
+)
 
 // GateConfig holds the optional gate block for a stage, defining how the
 // stage output is reviewed.  At least one of Checks, Seats, or Tier must be
@@ -120,6 +129,27 @@ type Workflow struct {
 	// Replay stays hermetic unless --allow-env is passed.  Checks always remain
 	// hermetic regardless of this list.  Nil/empty means no passthrough (default).
 	EnvAllowlist []string
+}
+
+// EffectiveRunnerWorkspace returns the execution workspace for stage. An
+// explicit stage workspace wins; a stage-local command/name without one is a
+// complete binding whose workspace defaults to hermetic.
+func (w Workflow) EffectiveRunnerWorkspace(stage Stage) string {
+	if stage.Runner != nil {
+		if stage.Runner.Workspace == RunnerWorkspaceCaller {
+			return RunnerWorkspaceCaller
+		}
+		if stage.Runner.Workspace == RunnerWorkspaceHermetic {
+			return RunnerWorkspaceHermetic
+		}
+		if stage.Runner.Name != "" || stage.Runner.Command != "" {
+			return RunnerWorkspaceHermetic
+		}
+	}
+	if w.DefaultRunner != nil && w.DefaultRunner.Workspace == RunnerWorkspaceCaller {
+		return RunnerWorkspaceCaller
+	}
+	return RunnerWorkspaceHermetic
 }
 
 // RetrosConfig holds the parsed retros: configuration block.  Fields use
@@ -390,7 +420,7 @@ func (w Workflow) Validate() error {
 			}
 		}
 		if s.Runner != nil {
-			if err := validateRunner(prefix+".runner", s.Runner); err != nil {
+			if err := validateStageRunner(prefix+".runner", s.Runner, w.DefaultRunner != nil); err != nil {
 				return err
 			}
 		}
@@ -401,6 +431,19 @@ func (w Workflow) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateStageRunner(prefix string, r *Runner, hasDefault bool) error {
+	if r.Name == "" && r.Command == "" && r.Workspace != "" {
+		if !hasDefault {
+			return fmt.Errorf("%w: %s: workspace-only override requires default_runner", ErrInvalidWorkflow, prefix)
+		}
+		if r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
+			return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
+		}
+		return nil
+	}
+	return validateRunner(prefix, r)
 }
 
 func validateEval(prefix string, e *Eval) error {
@@ -435,6 +478,9 @@ func validateRunner(prefix string, r *Runner) error {
 			return fmt.Errorf("%w: %s.name %q contains invalid character", ErrInvalidWorkflow, prefix, r.Name)
 		}
 	}
+	if r.Workspace != "" && r.Workspace != RunnerWorkspaceHermetic && r.Workspace != RunnerWorkspaceCaller {
+		return fmt.Errorf("%w: %s.workspace %q is not one of hermetic, caller", ErrInvalidWorkflow, prefix, r.Workspace)
+	}
 	return nil
 }
 
@@ -448,6 +494,9 @@ func validateGate(prefix string, g *GateConfig) error {
 		c := g.Checks[i]
 		if err := validateRunner(fmt.Sprintf("%s.checks[%d]", prefix, i), &c); err != nil {
 			return err
+		}
+		if c.Workspace != "" {
+			return fmt.Errorf("%w: %s.checks[%d].workspace is not allowed; gates always use the pinned worktree", ErrInvalidWorkflow, prefix, i)
 		}
 	}
 	hasChecks := len(g.Checks) > 0
@@ -725,8 +774,9 @@ type stageYAML struct {
 
 // runnerYAML is the decode/encode counterpart to Runner.
 type runnerYAML struct {
-	Name    string `yaml:"name,omitempty"`
-	Command string `yaml:"command,omitempty"`
+	Name      string `yaml:"name,omitempty"`
+	Command   string `yaml:"command,omitempty"`
+	Workspace string `yaml:"workspace,omitempty"`
 }
 
 // gateYAML is the decode/encode counterpart to GateConfig.
@@ -787,7 +837,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
 			sy.Eval = &evalYAML{Method: s.Eval.Method, Rubric: s.Eval.Rubric}
 		}
 		if s.Runner != nil {
-			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command}
+			rn := runnerYAML{Name: s.Runner.Name, Command: s.Runner.Command, Workspace: s.Runner.Workspace}
 			var n yaml.Node
 			if err := n.Encode(rn); err != nil {
 				return workflowYAML{}, fmt.Errorf("encode stage[%q].runner: %w", s.Name, err)
@@ -804,7 +854,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
 				Abstraction:   s.Gate.Abstraction,
 			}
 			for _, c := range s.Gate.Checks {
-				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command})
+				gy.Checks = append(gy.Checks, runnerYAML{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
 			}
 			var n yaml.Node
 			if err := n.Encode(gy); err != nil {
@@ -816,7 +866,7 @@ func (w Workflow) toYAML() (workflowYAML, error) {
 	}
 	out := workflowYAML{Name: w.Name, Stages: stages, EnvAllowlist: w.EnvAllowlist}
 	if w.DefaultRunner != nil {
-		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command}
+		dr := runnerYAML{Name: w.DefaultRunner.Name, Command: w.DefaultRunner.Command, Workspace: w.DefaultRunner.Workspace}
 		var n yaml.Node
 		if err := n.Encode(dr); err != nil {
 			return workflowYAML{}, fmt.Errorf("encode default_runner: %w", err)
@@ -976,7 +1026,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 			return Workflow{}, fmt.Errorf("%w: stage %q decode runner: %v", ErrInvalidWorkflow, s.Name, err)
 		}
 		if rn != nil {
-			st.Runner = &Runner{Name: rn.Name, Command: rn.Command}
+			st.Runner = &Runner{Name: rn.Name, Command: rn.Command, Workspace: rn.Workspace}
 		}
 		gn, err := decodeGateNode(s.Gate)
 		if err != nil {
@@ -992,7 +1042,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 				Abstraction:   gn.Abstraction,
 			}
 			for _, c := range gn.Checks {
-				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command})
+				gate.Checks = append(gate.Checks, Runner{Name: c.Name, Command: c.Command, Workspace: c.Workspace})
 			}
 			st.Gate = gate
 		}
@@ -1004,7 +1054,7 @@ func (d workflowYAML) toWorkflow() (Workflow, error) {
 		return Workflow{}, fmt.Errorf("%w: decode default_runner: %v", ErrInvalidWorkflow, err)
 	}
 	if drn != nil {
-		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command}
+		w.DefaultRunner = &Runner{Name: drn.Name, Command: drn.Command, Workspace: drn.Workspace}
 	}
 	ry, err := decodeRetrosNode(d.Retros)
 	if err != nil {

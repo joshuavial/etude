@@ -92,6 +92,52 @@ func TestReplayEmitsOutputToStdout(t *testing.T) {
 	}
 }
 
+func TestReplayCallerStageUsesOriginalCheckout(t *testing.T) {
+	repo, runID := captureStageForReplay(t)
+	chdir(t, repo)
+	originalSHA := headSHA(t, repo)
+	writeFile(t, repo, "README.md", "caller commit\n")
+	gitCapture(t, repo, "add", "README.md")
+	gitCapture(t, repo, "commit", "-m", "caller commit")
+	postRunSHA := headSHA(t, repo)
+
+	manifest := readRunManifest(t, repo, runID)
+	manifest.OriginalGitSHA = originalSHA
+	manifest.Stages[0].GitSHA = postRunSHA
+	manifest.Stages[0].RunnerWorkspace = workflow.RunnerWorkspaceCaller
+	store := refstore.New(repo)
+	old, err := store.Resolve(context.Background(), "refs/etude/runs/"+runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make(map[string][]byte)
+	for _, path := range runmanifest.ArtifactPaths(manifest) {
+		files[path], err = store.ReadCommitFile(context.Background(), old, path)
+		if err != nil {
+			t.Fatalf("read artifact %q: %v", path, err)
+		}
+	}
+	if _, err := (runmanifest.Writer{Store: store}).Write(context.Background(), manifest, files, runmanifest.WriteOptions{ExpectedOld: old}); err != nil {
+		t.Fatalf("write caller manifest: %v", err)
+	}
+
+	runner := &dirCapturingRunner{
+		inner: &replay.StubRunner{CannedOutput: []byte("replayed")},
+		capture: func(req replay.RunRequest) {
+			if got := headSHA(t, req.WorktreeDir); got != originalSHA {
+				t.Fatalf("single-stage replay HEAD = %q, want original %q (caller post-run %q)", got, originalSHA, postRunSHA)
+			}
+		},
+	}
+	r := &replayRunner{runner: runner}
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, r)
+	cmd.SetArgs([]string{runID, "gen"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("replay: %v\nstderr: %s", err, errOut.String())
+	}
+}
+
 // TestReplayEmitsOutputToFile verifies --output writes to a file and prints a
 // confirmation to stdout.
 func TestReplayEmitsOutputToFile(t *testing.T) {

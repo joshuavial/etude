@@ -50,7 +50,7 @@ func ReplayForward(
 		return fmt.Errorf("run %q has no stages to replay", runID)
 	}
 
-	gitSHA := manifest.Stages[0].GitSHA
+	gitSHA := manifest.OriginalCheckout()
 	wt, err := worktree.Checkout(ctx, root, gitSHA)
 	if err != nil {
 		switch {
@@ -64,7 +64,7 @@ func ReplayForward(
 	}
 	defer wt.Close()
 	for i, stage := range manifest.Stages {
-		if stage.GitSHA != gitSHA {
+		if stage.RunnerWorkspace == "" && stage.GitSHA != gitSHA {
 			return fmt.Errorf("stage[%d] git sha %q does not match %q", i, stage.GitSHA, gitSHA)
 		}
 		if err := wt.ValidateSubmodules(stage.Submodules); err != nil {

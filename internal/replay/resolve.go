@@ -25,6 +25,9 @@ var (
 // resolution metadata.
 type ResolvedStage struct {
 	runmanifest.Stage
+	// RunGitSHA is the source run's immutable original checkout. It can differ
+	// from the embedded caller-workspace stage's post-run GitSHA.
+	RunGitSHA string
 	// Refs is the manifest-level Refs map (e.g. PR number, branch).
 	Refs map[string]string
 	// Commit is the resolved git commit OID at which the manifest was read.
@@ -85,7 +88,6 @@ func ResolveInputs(ctx context.Context, store refstore.Store, runID, stageName s
 	if err != nil {
 		return ResolvedStage{}, err
 	}
-
 	// Step 4: defense-in-depth — run id must match.
 	if manifest.RunID != runID {
 		return ResolvedStage{}, fmt.Errorf("manifest run id mismatch: got %q, want %q", manifest.RunID, runID)
@@ -128,6 +130,10 @@ func ResolveInputs(ctx context.Context, store refstore.Store, runID, stageName s
 	}
 
 	stage := matches[0]
+	runGitSHA := manifest.OriginalCheckout()
+	if stage.RunnerWorkspace == "" && stage.GitSHA != runGitSHA {
+		return ResolvedStage{}, fmt.Errorf("stage %q git sha %q does not match original checkout %q", stage.Name, stage.GitSHA, runGitSHA)
+	}
 
 	// Step 6: build ResolvedInputs. Each ReadContent closure captures the
 	// resolved commit OID (not the ref) for snapshot consistency.
@@ -154,6 +160,7 @@ func ResolveInputs(ctx context.Context, store refstore.Store, runID, stageName s
 	// Step 7: return resolved stage.
 	return ResolvedStage{
 		Stage:           stage,
+		RunGitSHA:       runGitSHA,
 		Refs:            manifest.Refs,
 		Commit:          commit,
 		Workflow:        manifest.Workflow,

@@ -34,8 +34,8 @@ var (
 type Manifest struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
+	// 3 = schema with gates; 4 = caller-workspace stage provenance.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
 	ManifestVersion int
 	RunID           string
 	Workflow        string
@@ -47,13 +47,29 @@ type Manifest struct {
 	// When zero it is omitted from JSON serialization.
 	OccurredAt time.Time
 	Refs       map[string]string
-	Stages     []Stage
-	Gates      []GateAttempt
+	// OriginalGitSHA is the immutable checkout selected when a v4 live run
+	// starts. Caller-workspace stage GitSHA values may name later commits.
+	OriginalGitSHA string
+	Stages         []Stage
+	Gates          []GateAttempt
 	// EnvAllowlist records the env var NAMES (never values) that were
 	// configured for passthrough to live runners during this run.
 	// Absent/nil/empty all mean "no passthrough" (semantically equivalent).
 	// Values are never stored here — only the configured names for audit.
 	EnvAllowlist []string
+}
+
+// OriginalCheckout returns the commit used for hermetic execution. Version 4
+// manifests carry it explicitly; legacy manifests used stage zero for both run
+// checkout identity and stage provenance.
+func (m Manifest) OriginalCheckout() string {
+	if m.OriginalGitSHA != "" {
+		return m.OriginalGitSHA
+	}
+	if len(m.Stages) == 0 {
+		return ""
+	}
+	return m.Stages[0].GitSHA
 }
 
 // GateAttempt records one full panel re-examination of one phase gate.
@@ -156,9 +172,15 @@ type ReplayLink struct {
 type Stage struct {
 	Name       string
 	ProducedBy string
-	GitSHA     string
+	// GitSHA is the checkout SHA for a hermetic runner and the clean post-run
+	// HEAD for a caller-workspace runner.
+	GitSHA string
 	// Submodules maps populated, root-relative submodule paths to resolved OIDs.
 	Submodules map[string]string
+	// RunnerWorkspace records an explicit non-default stage runner workspace.
+	// Empty means the historical hermetic detached worktree; "caller" means
+	// the runner executed in the CLI invocation directory.
+	RunnerWorkspace string
 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
@@ -258,6 +280,29 @@ func (m Manifest) Validate() error {
 	for i, stage := range m.Stages {
 		if err := validateStage(i, stage); err != nil {
 			return err
+		}
+	}
+	hasCallerWorkspace := false
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" {
+			hasCallerWorkspace = true
+			break
+		}
+	}
+	if hasCallerWorkspace && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		return fmt.Errorf("%w: original git sha required for caller-workspace manifest", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace && !isHexOID(m.OriginalGitSHA) {
+		return fmt.Errorf("%w: original git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest)
+	}
+	if !hasCallerWorkspace && m.OriginalGitSHA != "" {
+		return fmt.Errorf("%w: original git sha requires a caller-workspace stage", ErrInvalidManifest)
+	}
+	if hasCallerWorkspace {
+		for i, stage := range m.Stages {
+			if stage.RunnerWorkspace == "" && stage.GitSHA != m.OriginalGitSHA {
+				return fmt.Errorf("%w: stage[%d] hermetic git sha %q does not match original git sha %q", ErrInvalidManifest, i, stage.GitSHA, m.OriginalGitSHA)
+			}
 		}
 	}
 
@@ -475,6 +520,9 @@ func validateStage(index int, stage Stage) error {
 	if strings.TrimSpace(stage.GitSHA) == "" {
 		return fmt.Errorf("%w: %s git sha required", ErrInvalidManifest, prefix)
 	}
+	if stage.RunnerWorkspace != "" && !isHexOID(stage.GitSHA) {
+		return fmt.Errorf("%w: %s caller git sha must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix)
+	}
 	for submodulePath, oid := range stage.Submodules {
 		if submodulePath == "" || submodulePath == "." || !utf8.ValidString(submodulePath) || strings.ContainsRune(submodulePath, '\x00') || path.IsAbs(submodulePath) || path.Clean(submodulePath) != submodulePath || submodulePath == ".." || strings.HasPrefix(submodulePath, "../") {
 			return fmt.Errorf("%w: %s submodule path %q must be clean and relative", ErrInvalidManifest, prefix, submodulePath)
@@ -482,6 +530,9 @@ func validateStage(index int, stage Stage) error {
 		if !isHexOID(oid) {
 			return fmt.Errorf("%w: %s submodule %q must be a 40- or 64-char lowercase hex git oid", ErrInvalidManifest, prefix, submodulePath)
 		}
+	}
+	if stage.RunnerWorkspace != "" && stage.RunnerWorkspace != "caller" {
+		return fmt.Errorf("%w: %s runner_workspace %q is not caller", ErrInvalidManifest, prefix, stage.RunnerWorkspace)
 	}
 	if strings.TrimSpace(stage.Skill.ID) == "" {
 		return fmt.Errorf("%w: %s skill id required", ErrInvalidManifest, prefix)
@@ -924,8 +975,8 @@ func cloneBytes(in []byte) []byte {
 type manifestJSON struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3.)
+	// 3 = schema with gates; 4 = caller-workspace stage provenance.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
 	ManifestVersion int    `json:"manifest_version,omitempty"`
 	RunID           string `json:"run_id"`
 	Workflow        string `json:"workflow"`
@@ -934,10 +985,11 @@ type manifestJSON struct {
 	// OccurredAt is omitted from JSON when empty (zero time → "" → omitempty drops it).
 	// Do NOT use formatTime here; formatTime on zero emits "0001-01-01T00:00:00Z"
 	// which would defeat omitempty and pollute all existing manifests.
-	OccurredAt string            `json:"occurred_at,omitempty"`
-	Refs       map[string]string `json:"refs"`
-	Stages     []stageJSON       `json:"stages"`
-	Gates      []gateJSON        `json:"gates,omitempty"`
+	OccurredAt     string            `json:"occurred_at,omitempty"`
+	Refs           map[string]string `json:"refs"`
+	OriginalGitSHA string            `json:"original_git_sha,omitempty"`
+	Stages         []stageJSON       `json:"stages"`
+	Gates          []gateJSON        `json:"gates,omitempty"`
 	// EnvAllowlist records the env var NAMES configured for passthrough (never
 	// values). Absent/null/empty all mean "no passthrough" (omitempty is correct;
 	// no manifest_version bump — additive leaf, same as occurred_at).
@@ -997,10 +1049,11 @@ type gateDecisionJSON struct {
 }
 
 type stageJSON struct {
-	Stage      string            `json:"stage"`
-	ProducedBy string            `json:"produced_by"`
-	GitSHA     string            `json:"git_sha"`
-	Submodules map[string]string `json:"submodules,omitempty"`
+	Stage           string            `json:"stage"`
+	ProducedBy      string            `json:"produced_by"`
+	GitSHA          string            `json:"git_sha"`
+	Submodules      map[string]string `json:"submodules,omitempty"`
+	RunnerWorkspace string            `json:"runner_workspace,omitempty"`
 	// Skill is present only in legacy manifests (no producer block).
 	// New manifests omit it; the skill travels inside producer.
 	Skill     *skillJSON     `json:"skill,omitempty"`
@@ -1100,10 +1153,11 @@ func (m Manifest) toJSON() manifestJSON {
 		}
 
 		stages = append(stages, stageJSON{
-			Stage:      stage.Name,
-			ProducedBy: stage.ProducedBy,
-			GitSHA:     stage.GitSHA,
-			Submodules: cloneStringMap(stage.Submodules),
+			Stage:           stage.Name,
+			ProducedBy:      stage.ProducedBy,
+			GitSHA:          stage.GitSHA,
+			Submodules:      cloneStringMap(stage.Submodules),
+			RunnerWorkspace: stage.RunnerWorkspace,
 			// Do NOT emit top-level skill — it lives inside producer only.
 			Producer:  producerBlock,
 			Inputs:    inputs,
@@ -1121,6 +1175,12 @@ func (m Manifest) toJSON() manifestJSON {
 			gatesOut = append(gatesOut, gate.toJSON())
 		}
 	}
+	for _, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" {
+			version = 4
+			break
+		}
+	}
 
 	return manifestJSON{
 		ManifestVersion: version,
@@ -1130,6 +1190,7 @@ func (m Manifest) toJSON() manifestJSON {
 		Created:         formatTime(m.Created),
 		OccurredAt:      formatTimeOmitZero(m.OccurredAt),
 		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
 		Stages:          stages,
 		Gates:           gatesOut,
 		EnvAllowlist:    m.EnvAllowlist,
@@ -1256,13 +1317,20 @@ func ensureEOF(dec *json.Decoder) error {
 }
 
 func (m manifestJSON) toManifest() (Manifest, error) {
-	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates).
+	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
+	// and 4 (caller-workspace stage provenance).
 	// Reject 1 (never emitted) and any future version this binary cannot model.
 	switch m.ManifestVersion {
-	case 0, 2, 3:
+	case 0, 2, 3, 4:
 		// accepted
 	default:
-		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3)", ErrInvalidManifest, m.ManifestVersion)
+		return Manifest{}, fmt.Errorf("%w: unsupported manifest_version %d (accepted: 0, 2, 3, 4)", ErrInvalidManifest, m.ManifestVersion)
+	}
+	if m.ManifestVersion < 4 && m.OriginalGitSHA != "" {
+		return Manifest{}, fmt.Errorf("%w: original_git_sha requires manifest_version 4", ErrInvalidManifest)
+	}
+	if m.ManifestVersion == 4 && strings.TrimSpace(m.OriginalGitSHA) == "" {
+		return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha", ErrInvalidManifest)
 	}
 
 	created, err := parseTime("created", m.Created)
@@ -1278,6 +1346,9 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 	}
 	stages := make([]Stage, 0, len(m.Stages))
 	for i, stage := range m.Stages {
+		if stage.RunnerWorkspace != "" && m.ManifestVersion < 4 {
+			return Manifest{}, fmt.Errorf("%w: stage[%d] runner_workspace requires manifest_version 4", ErrInvalidManifest, i)
+		}
 		converted, err := stage.toStage(i)
 		if err != nil {
 			return Manifest{}, err
@@ -1304,6 +1375,7 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		Created:         created,
 		OccurredAt:      occurredAt,
 		Refs:            refs,
+		OriginalGitSHA:  m.OriginalGitSHA,
 		Stages:          stages,
 		Gates:           gates,
 		EnvAllowlist:    m.EnvAllowlist,
@@ -1465,16 +1537,17 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 	}
 
 	return Stage{
-		Name:       s.Stage,
-		ProducedBy: s.ProducedBy,
-		GitSHA:     s.GitSHA,
-		Submodules: cloneStringMap(s.Submodules),
-		Skill:      skill,
-		Producer:   producer,
-		Inputs:     inputs,
-		Output:     s.Output.toArtifactRef(),
-		Timestamp:  timestamp,
-		ReplayOf:   replayOf,
+		Name:            s.Stage,
+		ProducedBy:      s.ProducedBy,
+		GitSHA:          s.GitSHA,
+		Submodules:      cloneStringMap(s.Submodules),
+		RunnerWorkspace: s.RunnerWorkspace,
+		Skill:           skill,
+		Producer:        producer,
+		Inputs:          inputs,
+		Output:          s.Output.toArtifactRef(),
+		Timestamp:       timestamp,
+		ReplayOf:        replayOf,
 	}, nil
 }
 

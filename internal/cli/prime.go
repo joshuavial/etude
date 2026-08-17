@@ -68,7 +68,7 @@ Content-addressed artifacts live under:
 
 where <aa> is the first two hex chars of the SHA-256 digest (fan-out prefix).
 
-Each run ref contains a manifest.json (manifest_version 2 or 3) with:
+Each run ref contains a manifest.json (manifest_version 2, 3, or 4) with:
   - workflow name + version (hash of workflow.yaml)
   - stages array: name, inputs, output artifact hash, producer block
   - producer block per stage: harness, model, skill (id/repo/version), git_sha

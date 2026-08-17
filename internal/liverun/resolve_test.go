@@ -92,6 +92,20 @@ func TestResolveStageRunnerDefaultRunner(t *testing.T) {
 	}
 }
 
+func TestResolveStageRunnerWorkspaceOnlyUsesDefaultBinding(t *testing.T) {
+	wf := workflow.Workflow{
+		Name:          "mywf",
+		DefaultRunner: &workflow.Runner{Command: "cat"},
+		Stages: []workflow.Stage{{
+			Name: "plan", Skill: "my-skill", Produces: "plan",
+			Runner: &workflow.Runner{Workspace: workflow.RunnerWorkspaceCaller},
+		}},
+	}
+	if _, err := ResolveStageRunner(wf, registry.Registry{}, wf.Stages[0], 10*time.Second, nil); err != nil {
+		t.Fatalf("ResolveStageRunner workspace override: %v", err)
+	}
+}
+
 func TestResolveStageRunnerNoRunnerError(t *testing.T) {
 	wf := workflow.Workflow{
 		Name: "mywf",

@@ -34,7 +34,7 @@ func GenerateRunID(workflowName string) (string, error) {
 // the runner; nil/empty means hermetic (default, unchanged behavior).
 func ResolveStageRunner(wf workflow.Workflow, reg registry.Registry, stage workflow.Stage, timeout time.Duration, envAllowlist []string) (replay.Runner, error) {
 	r := stage.Runner
-	if r == nil {
+	if r == nil || (r.Name == "" && r.Command == "") {
 		r = wf.DefaultRunner
 	}
 	if r == nil {

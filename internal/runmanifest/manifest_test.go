@@ -1719,8 +1719,8 @@ func TestValidateGateRejects(t *testing.T) {
 	})
 }
 
-// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3
-// and rejects 1 and 4 with ErrInvalidManifest.
+// TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2,
+// 3, and 4 while rejecting unsupported versions.
 func TestVersionAllowlist(t *testing.T) {
 	output := contentArtifact("output", "text/plain", []byte("out"))
 	m := validManifest(output)
@@ -1752,8 +1752,32 @@ func TestVersionAllowlist(t *testing.T) {
 		}
 	})
 
+	t.Run("accept version 4", func(t *testing.T) {
+		m4 := validManifest(output)
+		m4.Stages[0].RunnerWorkspace = "caller"
+		m4.Stages[0].GitSHA = strings.Repeat("b", 40)
+		m4.OriginalGitSHA = strings.Repeat("a", 40)
+		j, err := m4.JSON()
+		if err != nil {
+			t.Fatalf("JSON: %v", err)
+		}
+		if !strings.Contains(string(j), `"manifest_version": 4`) || !strings.Contains(string(j), `"runner_workspace": "caller"`) || !strings.Contains(string(j), `"original_git_sha": "`+strings.Repeat("a", 40)+`"`) {
+			t.Fatalf("caller workspace manifest does not emit v4 field:\n%s", j)
+		}
+		got, err := ParseJSON(j)
+		if err != nil {
+			t.Fatalf("ParseJSON rejected version 4: %v", err)
+		}
+		if got.Stages[0].RunnerWorkspace != "caller" {
+			t.Fatalf("RunnerWorkspace = %q, want caller", got.Stages[0].RunnerWorkspace)
+		}
+		if got.OriginalCheckout() != strings.Repeat("a", 40) {
+			t.Fatalf("OriginalCheckout = %q, want 40-char original SHA", got.OriginalCheckout())
+		}
+	})
+
 	// Versions that should be rejected.
-	for _, v := range []int{1, 4, 5, 100} {
+	for _, v := range []int{1, 5, 100} {
 		v := v
 		t.Run(fmt.Sprintf("reject version %d", v), func(t *testing.T) {
 			raw := strings.Replace(string(baseJSON), `"manifest_version": 2`, fmt.Sprintf(`"manifest_version": %d`, v), 1)
@@ -1765,6 +1789,123 @@ func TestVersionAllowlist(t *testing.T) {
 				t.Fatalf("ParseJSON version %d error = %v, want ErrInvalidManifest", v, err)
 			}
 		})
+	}
+}
+
+func TestManifestOriginalCheckoutVersionRules(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+
+	t.Run("legacy falls back to stage zero", func(t *testing.T) {
+		m := validManifest(output)
+		if got := m.OriginalCheckout(); got != m.Stages[0].GitSHA {
+			t.Fatalf("OriginalCheckout = %q, want stage zero %q", got, m.Stages[0].GitSHA)
+		}
+	})
+
+	t.Run("caller manifest requires original sha", func(t *testing.T) {
+		m := validManifest(output)
+		m.Stages[0].RunnerWorkspace = "caller"
+		m.Stages[0].GitSHA = strings.Repeat("b", 40)
+		if _, err := m.JSON(); err == nil || !strings.Contains(err.Error(), "original git sha required") {
+			t.Fatalf("JSON error = %v, want missing original git sha", err)
+		}
+	})
+
+	t.Run("caller manifest requires immutable oid", func(t *testing.T) {
+		m := validManifest(output)
+		m.Stages[0].RunnerWorkspace = "caller"
+		m.Stages[0].GitSHA = strings.Repeat("b", 40)
+		m.OriginalGitSHA = "main"
+		if _, err := m.JSON(); err == nil || !strings.Contains(err.Error(), "40- or 64-char lowercase hex git oid") {
+			t.Fatalf("JSON error = %v, want immutable Git OID rejection", err)
+		}
+		m.OriginalGitSHA = strings.Repeat("a", 40)
+		raw, err := m.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		validField := `"original_git_sha": "` + strings.Repeat("a", 40) + `"`
+		raw = []byte(strings.Replace(string(raw), validField, `"original_git_sha": "main"`, 1))
+		if _, err := ParseJSON(raw); err == nil || !strings.Contains(err.Error(), "40- or 64-char lowercase hex git oid") {
+			t.Fatalf("ParseJSON error = %v, want immutable Git OID rejection", err)
+		}
+	})
+
+	t.Run("caller stage requires immutable oid", func(t *testing.T) {
+		m := validManifest(output)
+		m.Stages[0].RunnerWorkspace = "caller"
+		m.Stages[0].GitSHA = "abc123"
+		m.OriginalGitSHA = strings.Repeat("a", 40)
+		if _, err := m.JSON(); err == nil || !strings.Contains(err.Error(), "caller git sha must be a 40- or 64-char lowercase hex git oid") {
+			t.Fatalf("JSON error = %v, want caller stage OID rejection", err)
+		}
+	})
+
+	t.Run("version four requires hermetic stages at original sha", func(t *testing.T) {
+		m := validManifest(output)
+		m.Stages[0].RunnerWorkspace = "caller"
+		m.Stages[0].GitSHA = strings.Repeat("b", 40)
+		m.OriginalGitSHA = strings.Repeat("a", 40)
+		hermetic := m.Stages[0]
+		hermetic.Name = "verify"
+		hermetic.RunnerWorkspace = ""
+		hermetic.GitSHA = strings.Repeat("c", 40)
+		m.Stages = append(m.Stages, hermetic)
+		if _, err := m.JSON(); err == nil || !strings.Contains(err.Error(), "hermetic git sha") {
+			t.Fatalf("JSON error = %v, want hermetic topology rejection", err)
+		}
+	})
+
+	t.Run("older version rejects original sha", func(t *testing.T) {
+		m := validManifest(output)
+		raw, err := m.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		withOriginal := strings.Replace(string(raw), `"stages": [`, "\"original_git_sha\": \"abc123\",\n  \"stages\": [", 1)
+		_, err = ParseJSON([]byte(withOriginal))
+		if err == nil || !strings.Contains(err.Error(), "original_git_sha requires manifest_version 4") {
+			t.Fatalf("ParseJSON error = %v, want older-version rejection", err)
+		}
+	})
+
+	t.Run("version four fails closed without original sha", func(t *testing.T) {
+		m := validManifest(output)
+		raw, err := m.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		v4 := strings.Replace(string(raw), `"manifest_version": 2`, `"manifest_version": 4`, 1)
+		_, err = ParseJSON([]byte(v4))
+		if err == nil || !strings.Contains(err.Error(), "manifest_version 4 requires original_git_sha") {
+			t.Fatalf("ParseJSON error = %v, want fail-closed v4 rejection", err)
+		}
+	})
+}
+
+func TestRunnerWorkspaceRequiresManifestVersionFour(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	raw, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	withWorkspace := strings.Replace(string(raw), `"git_sha": "abc123",`, "\"git_sha\": \"abc123\",\n      \"runner_workspace\": \"caller\",", 1)
+	_, err = ParseJSON([]byte(withWorkspace))
+	if err == nil || !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("ParseJSON older-version runner_workspace error = %v, want ErrInvalidManifest", err)
+	}
+	if !strings.Contains(err.Error(), "runner_workspace requires manifest_version 4") {
+		t.Fatalf("ParseJSON error = %v, want runner_workspace version requirement", err)
+	}
+}
+
+func TestRunnerWorkspaceRejectsUnknownValue(t *testing.T) {
+	output := contentArtifact("output", "text/plain", []byte("out"))
+	m := validManifest(output)
+	m.Stages[0].RunnerWorkspace = "ambient"
+	if _, err := m.JSON(); err == nil || !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("JSON invalid runner_workspace error = %v, want ErrInvalidManifest", err)
 	}
 }
 

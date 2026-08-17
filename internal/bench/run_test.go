@@ -16,6 +16,12 @@ import (
 	"github.com/joshuavial/etude/internal/runmanifest"
 )
 
+type benchRunnerFunc func(context.Context, replay.RunRequest) (replay.RunResult, error)
+
+func (f benchRunnerFunc) Run(ctx context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	return f(ctx, req)
+}
+
 // ---------------------------------------------------------------------------
 // Test fixture helpers
 // ---------------------------------------------------------------------------
@@ -341,6 +347,48 @@ func TestBenchRunRecordsPopulatedSubmodulesForLegacySource(t *testing.T) {
 	}
 	if got := m.Stages[0].Submodules["modules/lib"]; got != submoduleSHA {
 		t.Fatalf("recorded modules/lib SHA = %q, want populated SHA %q", got, submoduleSHA)
+	}
+}
+
+func TestBenchRunCallerStageUsesOriginalCheckout(t *testing.T) {
+	repoDir, originalSHA := initRepoWithCommit(t)
+	cmd := exec.Command("git", "-C", repoDir, "commit", "--allow-empty", "-m", "caller commit")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create caller commit: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	postRunSHA := strings.TrimSpace(string(out))
+
+	store := newStore(repoDir)
+	inputRef, inputBytes := contentArtifact("prompt", []byte("bench input"))
+	outputBytes := []byte("caller output")
+	stage := makeStageWithSHA("plan", postRunSHA, []runmanifest.ArtifactRef{inputRef}, outputBytes)
+	stage.RunnerWorkspace = "caller"
+	manifest := makeManifest("bench-caller-run", time.Now().UTC(), []runmanifest.Stage{stage})
+	manifest.OriginalGitSHA = originalSHA
+	commit := seedRunInto(t, store, manifest, map[string][]byte{
+		inputRef.Path: inputBytes, stage.Output.Path: outputBytes,
+	})
+	cr := CohortRun{RunID: manifest.RunID, Commit: commit, Stage: stage, Created: manifest.Created}
+
+	runner := benchRunnerFunc(func(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+		cmd := exec.Command("git", "-C", req.WorktreeDir, "rev-parse", "HEAD")
+		out, err := cmd.Output()
+		if err != nil {
+			return replay.RunResult{}, err
+		}
+		if got := strings.TrimSpace(string(out)); got != originalSHA {
+			t.Fatalf("bench replay HEAD = %q, want original %q (caller post-run %q)", got, originalSHA, postRunSHA)
+		}
+		return replay.RunResult{Output: []byte("bench replay"), MediaType: "text/plain", Producer: req.Producer}, nil
+	})
+	p := newBenchPipeline(store, runner, &eval.StubJudge{Canned: eval.JudgeResponse{Winner: eval.WinnerTie}}, time.Now().UTC())
+	if _, err := p.BenchRun(context.Background(), repoDir, cr); err != nil {
+		t.Fatalf("BenchRun: %v", err)
 	}
 }
 

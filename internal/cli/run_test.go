@@ -796,6 +796,63 @@ func TestRunWorkflowThreeStages(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowRunnerOverridePreservesCallerWorkspace(t *testing.T) {
+	repo := initCaptureRepo(t)
+	workflowYAML := `name: callerwf
+default_runner:
+  command: /bin/true
+stages:
+  - name: implement
+    skill: echo-skill
+    produces: diff
+    runner:
+      workspace: caller
+`
+	writeFile(t, repo, ".etude/workflow.yaml", workflowYAML)
+	writeFile(t, repo, "task.txt", "task data")
+	writeFile(t, repo, "nested/.keep", "")
+	gitCapture(t, repo, "add", ".etude/workflow.yaml", "task.txt", "nested/.keep")
+	gitCapture(t, repo, "commit", "-m", "add caller workflow")
+
+	runner := filepath.Join(t.TempDir(), "record-pwd.sh")
+	if err := os.WriteFile(runner, []byte("#!/bin/sh\nprintf '%s\\n' \"$PWD\" > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	callerDir := filepath.Join(repo, "nested")
+	chdir(t, callerDir)
+	runID := "callerwf-20260101T000000Z-aabbccdd"
+	if _, stderr, err := execute("run", "callerwf",
+		"--task", "../task.txt",
+		"--run-id", runID,
+		"--runner", runner,
+	); err != nil {
+		t.Fatalf("run returned error: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, runID)
+	if got := m.Stages[0].RunnerWorkspace; got != "caller" {
+		t.Fatalf("runner_workspace = %q, want caller", got)
+	}
+	content, err := refstore.New(repo).ReadFile(context.Background(), "refs/etude/runs/"+runID, m.Stages[0].Output.Path)
+	if err != nil {
+		t.Fatalf("read output artifact: %v", err)
+	}
+	wantDir, err := filepath.EvalSymlinks(callerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(content)); got != wantDir {
+		t.Fatalf("runner pwd = %q, want caller directory %q", got, wantDir)
+	}
+	stdout, _, err := execute("run", "show", runID)
+	if err != nil {
+		t.Fatalf("run show: %v", err)
+	}
+	if !strings.Contains(stdout, "runner workspace: caller") {
+		t.Fatalf("run show omitted caller workspace:\n%s", stdout)
+	}
+}
+
 // AC4 (CLI level): stage-b's input artifact matches stage-a's output artifact.
 func TestRunWorkflowArtifactRefChaining(t *testing.T) {
 	repo := initCaptureRepo(t)

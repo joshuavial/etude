@@ -960,7 +960,7 @@ func outputOnlySeatRunner(runner replay.Runner, commandRoot, neutralDir, command
 func (e *Engine) runGate(
 	ctx context.Context,
 	out io.Writer,
-	runID, gitSHA string,
+	runID, originalGitSHA string,
 	submodules map[string]string,
 	created time.Time,
 	wf workflow.Workflow,
@@ -1030,19 +1030,14 @@ func (e *Engine) runGate(
 		readCheckout := gate.ReadCheckout && len(seatNames) > 0
 		var checkoutFactory gateSeatCheckoutFactory
 		if readCheckout {
-			gitlink, err := firstCheckoutGitlink(ctx, e.Root, gitSHA)
-			if err != nil {
-				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
-					fmt.Errorf("inspect pinned checkout for read_checkout: %w", err)
-			}
-			if gitlink != "" {
-				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent,
-					fmt.Errorf("gate on stage %q: read_checkout cannot inspect submodule gitlink %q until GitHub issue #14 populates submodules and records their SHAs", stage.Name, gitlink)
-			}
 			checkoutFactory = func() (string, func() error, error) {
-				checkout, checkoutErr := worktree.Checkout(ctx, e.Root, gitSHA)
+				checkout, checkoutErr := worktree.Checkout(ctx, e.Root, originalGitSHA)
 				if checkoutErr != nil {
 					return "", nil, checkoutErr
+				}
+				if validateErr := checkout.ValidateSubmodules(submodules); validateErr != nil {
+					_ = checkout.Close()
+					return "", nil, validateErr
 				}
 				return checkout.Dir, checkout.Close, nil
 			}
@@ -1061,7 +1056,7 @@ func (e *Engine) runGate(
 		modelInputs := []replay.RunInput{{
 			Role:      gatePromptRole,
 			MediaType: "text/markdown; charset=utf-8",
-			Content:   buildGatePrompt(stage, &promptGate, seatNames, globalRound, reviewedStageName, reviewedOutputContent, readCheckout, gitSHA),
+			Content:   buildGatePrompt(stage, &promptGate, seatNames, globalRound, reviewedStageName, reviewedOutputContent, readCheckout, originalGitSHA),
 		}}
 
 		// Run checks then seats.
@@ -1115,6 +1110,7 @@ func (e *Engine) runGate(
 			WorkflowVersion: wf.Name + "-v1",
 			Created:         created,
 			Refs:            map[string]string{},
+			OriginalGitSHA:  manifestOriginalGitSHA(completedStages, originalGitSHA),
 			Stages:          completedStages,
 			Gates:           allAttempts,
 			EnvAllowlist:    e.EnvAllowlist,
@@ -1164,7 +1160,7 @@ func (e *Engine) runGate(
 			}
 
 			newOutputRef, newOutputContent, newStages, newCommit3, err := e.runAndCaptureStage(
-				ctx, out, runID, gitSHA, submodules, created, wf,
+				ctx, out, runID, originalGitSHA, submodules, created, wf,
 				stage, rerunName, inputRefs, runInputs,
 				rerunScratch, as, completedStages, allAttempts, prevCommit, worktreeDir,
 			)

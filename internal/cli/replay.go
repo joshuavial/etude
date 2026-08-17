@@ -170,7 +170,7 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 	}
 
 	// Step 2: require a recorded git SHA before any worktree or scratch work.
-	gitSHA := resolved.GitSHA
+	gitSHA := resolved.RunGitSHA
 	if gitSHA == "" {
 		return fmt.Errorf("stage %q has no recorded git sha", stageName)
 	}

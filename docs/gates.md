@@ -70,7 +70,10 @@ recorded artifacts (its output or one of its inputs). The gate JSON is parsed
 strictly: an unknown or misspelled field (at any nesting level) is rejected
 rather than silently dropped, as is any trailing content after the gate object.
 Invalid input is rejected without changing the run. A run that carries
-any gates is written as `manifest_version` 3; gate-less runs are unchanged.
+any gates is written as `manifest_version` 3; a run containing a
+caller-workspace stage uses version 4 instead. Version 4 also carries top-level
+`original_git_sha`, keeping the run's pinned hermetic checkout distinct from
+each caller stage's clean post-run `git_sha`.
 
 The capture input above uses `session.transcript_path` because it points at a
 local file to import. Stored manifests replace that input-only path with:
@@ -273,9 +276,10 @@ this boundary. All `GIT_*` variables are removed from output-only exec-harness
 seat environments, and a configured temporary or scratch directory inside the checkout fails
 closed. Supervised gates cannot grant read access because their worktree
 is the mutable caller tree, so each model seat uses its own neutral output-only
-working directory. Live read grants also fail closed before seat invocation when the
-pinned tree contains a submodule gitlink; submodule population and identity are
-tracked by GitHub issue #14.
+working directory. Each live read-grant seat receives its own checkout at the
+run's immutable original Git SHA. Etude recursively populates its submodules and
+validates them against the stage's recorded submodule map before invoking the
+seat; a population or identity mismatch fails closed.
 
 ### Seat output envelope
 
@@ -323,7 +327,9 @@ live-specific characteristics:
   checkout. False is omitted, including for checks-only gates. This field is an
   audit record; current workflow configuration remains the authorization source.
   It is live-derived and is not accepted in an offline `capture-gate` input file.
-- A run that carries any gate attempts is stored as `manifest_version` 3.
+- A run that carries any gate attempts is stored as `manifest_version` 3, or
+  version 4 when it also contains a caller-workspace stage. Version 4 requires
+  top-level `original_git_sha` for the run's pinned hermetic checkout.
 
 ### Resuming an unusable-seat outage
 
@@ -335,10 +341,11 @@ must be non-usable, and no model seat in the phase's history may have returned
 `go` or `block`. Deterministic check entries do not count as model seats.
 
 Etude reuses the latest content-addressed output for the stage's role and runs
-the current checks and seats in a fresh checkout at the run's recorded git SHA.
-It does not rerun the producer on the passing recovery path. Missing or
-inconsistent artifacts fail closed. Outage-only attempts retain their unique,
-monotonic round numbers but do not spend substantive round or tier budget; the
+the current checks and seats in a fresh checkout at the run's top-level
+`original_git_sha`. It does not rerun the producer on the passing recovery path.
+Missing or inconsistent artifacts fail closed. Outage-only attempts retain
+their unique, monotonic round numbers but do not spend substantive round or tier
+budget; the
 retry begins from the current configured tier or current inline seat list.
 
 A mixed attempt (for example, one `block` plus failed seats), any earlier
