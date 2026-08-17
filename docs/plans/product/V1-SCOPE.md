@@ -42,7 +42,8 @@ Source: `internal/cli/root.go:36-48`.
   per-run refs; no shared write point (`internal/refstore`).
 - **Content-addressed inline artifacts** — blobs stored by hash inside the
   ref store (`internal/artifactstore/store.go`).
-- **Run manifests v2 and v3** — v3 adds gate-reviewer records; the producer
+- **Run manifests v2, v3, and v4** — v3 adds gate-reviewer records; v4 adds
+  stage-log artifact references; the producer
   record is authoritative (`internal/runmanifest/manifest.go:932-935, 1063,
   1196`).
 - **Retro-meta sidecars** — retrospective metadata stored alongside run

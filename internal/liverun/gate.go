@@ -351,6 +351,200 @@ func buildGateFeedback(checkBlocks []string, seatBlockRequired map[string][]stri
 	return []byte(sb.String())
 }
 
+type priorAttemptsIndex struct {
+	Version  int                    `json:"version"`
+	Attempts []priorAttemptEvidence `json:"attempts"`
+}
+
+type priorAttemptEvidence struct {
+	Stage                     string                  `json:"stage"`
+	Round                     int                     `json:"round"`
+	SessionID                 string                  `json:"session_id,omitempty"`
+	ResumedSession            bool                    `json:"resumed_session"`
+	OutputDigest              string                  `json:"output_digest"`
+	OutputRole                string                  `json:"output_role"`
+	LogDigest                 string                  `json:"log_digest,omitempty"`
+	LogRole                   string                  `json:"log_role,omitempty"`
+	TranscriptDigest          string                  `json:"transcript_digest,omitempty"`
+	TranscriptRole            string                  `json:"transcript_role,omitempty"`
+	TranscriptRetrievalStatus string                  `json:"transcript_retrieval_status,omitempty"`
+	TranscriptRedactionStatus string                  `json:"transcript_redaction_status,omitempty"`
+	KillingVerdict            priorAttemptGateVerdict `json:"killing_verdict"`
+}
+
+type priorAttemptGateVerdict struct {
+	GateID string                    `json:"gate_id"`
+	Status runmanifest.GateStatus    `json:"status"`
+	Seats  []priorAttemptSeatVerdict `json:"seats"`
+}
+
+type priorAttemptSeatVerdict struct {
+	Seat     string                  `json:"seat"`
+	Verdict  runmanifest.SeatVerdict `json:"verdict"`
+	Required []string                `json:"required,omitempty"`
+}
+
+func filterPriorAttemptInputs(refs []runmanifest.ArtifactRef, inputs []replay.RunInput) ([]runmanifest.ArtifactRef, []replay.RunInput) {
+	filteredRefs := make([]runmanifest.ArtifactRef, 0, len(refs))
+	for _, ref := range refs {
+		if !workflow.IsPriorAttemptRole(ref.Role) {
+			filteredRefs = append(filteredRefs, ref)
+		}
+	}
+	filteredInputs := make([]replay.RunInput, 0, len(inputs))
+	for _, input := range inputs {
+		if !workflow.IsPriorAttemptRole(input.Role) {
+			filteredInputs = append(filteredInputs, input)
+		}
+	}
+	return filteredRefs, filteredInputs
+}
+
+func buildPriorAttemptInputs(phase string, stages []runmanifest.Stage, gates []runmanifest.GateAttempt, as *artifactstore.Store) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
+	killingGates := make([]runmanifest.GateAttempt, 0)
+	for _, gate := range gates {
+		if gate.Phase == phase && gate.Status == runmanifest.GateStatusRerun {
+			killingGates = append(killingGates, gate)
+		}
+	}
+	if len(killingGates) == 0 {
+		return nil, nil, nil
+	}
+	index := priorAttemptsIndex{Version: 1, Attempts: make([]priorAttemptEvidence, 0, len(killingGates))}
+	refs := make([]runmanifest.ArtifactRef, 0, 1+3*len(killingGates))
+	inputs := make([]replay.RunInput, 0, 1+3*len(killingGates))
+	files := as.Files()
+
+	for _, gate := range killingGates {
+		if len(gate.ReviewedStages) != 1 {
+			return nil, nil, fmt.Errorf("prior attempts: gate %s has %d reviewed stages, want exactly one", gate.GateID, len(gate.ReviewedStages))
+		}
+		reviewed := gate.ReviewedStages[0]
+		stage, stageIndex, ok := stageByReviewedRef(stages, reviewed)
+		if !ok {
+			return nil, nil, fmt.Errorf("prior attempts: gate %s reviewed missing stage %s with artifact %s", gate.GateID, reviewed.Stage, reviewed.Artifact)
+		}
+		attemptNumber := len(index.Attempts) + 1
+		attempt := priorAttemptEvidence{
+			Stage:        stage.Name,
+			Round:        gate.Round,
+			OutputDigest: stage.Output.Artifact,
+			OutputRole:   fmt.Sprintf("prior-attempt-%d-output", attemptNumber),
+			KillingVerdict: priorAttemptGateVerdict{
+				GateID: gate.GateID,
+				Status: gate.Status,
+				Seats:  make([]priorAttemptSeatVerdict, 0, len(gate.Seats)),
+			},
+		}
+		for _, seat := range gate.Seats {
+			attempt.KillingVerdict.Seats = append(attempt.KillingVerdict.Seats, priorAttemptSeatVerdict{
+				Seat: seat.Seat, Verdict: seat.Verdict, Required: append([]string(nil), seat.Required...),
+			})
+		}
+
+		var err error
+		refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, stage.Output, attempt.OutputRole)
+		if err != nil {
+			return nil, nil, err
+		}
+		if stage.Log != nil {
+			attempt.LogDigest = stage.Log.Artifact
+			attempt.LogRole = fmt.Sprintf("prior-attempt-%d-log", attemptNumber)
+			refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *stage.Log, attempt.LogRole)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+
+		if session := stage.Producer.Session; session != nil {
+			attempt.SessionID = session.SessionID
+			// Session identifiers are opaque. Whitespace only determines whether
+			// an identifier is blank; non-blank identities compare byte-for-byte.
+			sessionID := session.SessionID
+			nonBlankSessionID := strings.TrimSpace(sessionID) != ""
+			attempt.ResumedSession = nonBlankSessionID && sessionSeenBefore(stages[:stageIndex], sessionID)
+			attempt.TranscriptRetrievalStatus = session.RetrievalStatus
+			attempt.TranscriptRedactionStatus = session.RedactionStatus
+			if err := validatePriorTranscriptEvidence(session); err != nil {
+				return nil, nil, fmt.Errorf("prior attempts: stage %s: %w", stage.Name, err)
+			}
+			if session.TranscriptArtifact != nil {
+				attempt.TranscriptDigest = session.TranscriptArtifact.Artifact
+				attempt.TranscriptRole = fmt.Sprintf("prior-attempt-%d-transcript", attemptNumber)
+				refs, inputs, err = appendPriorAttemptArtifact(refs, inputs, files, *session.TranscriptArtifact, attempt.TranscriptRole)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		index.Attempts = append(index.Attempts, attempt)
+	}
+
+	indexBytes, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode prior attempts: %w", err)
+	}
+	indexBytes = append(indexBytes, '\n')
+	artifact, err := as.AddContent("prior-attempts", "application/json", indexBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store prior attempts: %w", err)
+	}
+	indexRef := runmanifest.ArtifactFromManifestArtifact(artifact)
+	refs = append([]runmanifest.ArtifactRef{indexRef}, refs...)
+	inputs = append([]replay.RunInput{{Role: indexRef.Role, MediaType: indexRef.MediaType, Content: indexBytes}}, inputs...)
+	return refs, inputs, nil
+}
+
+func stageByReviewedRef(stages []runmanifest.Stage, reviewed runmanifest.ReviewedRef) (runmanifest.Stage, int, bool) {
+	for i := len(stages) - 1; i >= 0; i-- {
+		if stages[i].Name == reviewed.Stage && stages[i].Output.Artifact == reviewed.Artifact {
+			return stages[i], i, true
+		}
+	}
+	return runmanifest.Stage{}, 0, false
+}
+
+func sessionSeenBefore(stages []runmanifest.Stage, sessionID string) bool {
+	for _, stage := range stages {
+		if session := stage.Producer.Session; session != nil && session.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func appendPriorAttemptArtifact(refs []runmanifest.ArtifactRef, inputs []replay.RunInput, files map[string][]byte, source runmanifest.ArtifactRef, role string) ([]runmanifest.ArtifactRef, []replay.RunInput, error) {
+	content, ok := files[source.Path]
+	if !ok {
+		return nil, nil, fmt.Errorf("prior attempts: artifact %s is not materialized", source.Artifact)
+	}
+	ref := source
+	ref.Role = role
+	return append(refs, ref), append(inputs, replay.RunInput{Role: role, MediaType: ref.MediaType, Content: content}), nil
+}
+
+func validatePriorTranscriptEvidence(session *runmanifest.SessionEvidence) error {
+	if session == nil {
+		return nil
+	}
+	if session.TranscriptArtifact == nil {
+		switch {
+		case session.RetrievalStatus == runmanifest.SessionEvidenceFailed && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
+			return nil
+		case session.RetrievalStatus == runmanifest.SessionEvidenceRetrievalImported && session.RedactionStatus == runmanifest.SessionEvidenceFailed:
+			return fmt.Errorf("transcript redaction failed; refusing rerun without safely scanned evidence")
+		case session.RetrievalStatus == runmanifest.SessionEvidenceNotApplicable && session.RedactionStatus == runmanifest.SessionEvidenceNotApplicable:
+			return nil
+		default:
+			return fmt.Errorf("invalid transcript evidence state without artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
+		}
+	}
+	if session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed {
+		return fmt.Errorf("invalid transcript evidence state with artifact: retrieval=%q redaction=%q", session.RetrievalStatus, session.RedactionStatus)
+	}
+	return nil
+}
+
 // storeRawOutput adds raw bytes to the artifact store and returns the artifact.
 // Returns nil when content is empty (no artifact stored).
 func storeRawOutput(as *artifactstore.Store, role string, content []byte) *artifactstore.ManifestArtifact {
@@ -1000,9 +1194,12 @@ func (e *Engine) runGate(
 	reviewedStageName := initialOutputStage
 	reviewedOutputRef := initialOutputRef
 	reviewedOutputContent := initialOutputContent
-	// inputRefs/runInputs grow each RERUN as gate-feedback is appended.
-	inputRefs := append([]runmanifest.ArtifactRef(nil), baseInputRefs...)
-	runInputs := append([]replay.RunInput(nil), baseRunInputs...)
+	// Ordinary inputs retain the workflow inputs plus cumulative gate feedback.
+	// A recovered rerun Stage may also carry an older engine-owned prior bundle;
+	// strip that reserved namespace and rebuild it from durable Stage/Gate history.
+	ordinaryInputRefs, ordinaryRunInputs := filterPriorAttemptInputs(baseInputRefs, baseRunInputs)
+	inputRefs := append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...)
+	runInputs := append([]replay.RunInput(nil), ordinaryRunInputs...)
 
 	thisAttempts := make([]runmanifest.GateAttempt, 0)
 	for {
@@ -1142,12 +1339,19 @@ func (e *Engine) runGate(
 					fmt.Errorf("store gate feedback: %w", err)
 			}
 			feedbackRef := runmanifest.ArtifactFromManifestArtifact(feedbackArt)
-			inputRefs = append(inputRefs, feedbackRef)
-			runInputs = append(runInputs, replay.RunInput{
+			ordinaryInputRefs = append(ordinaryInputRefs, feedbackRef)
+			ordinaryRunInputs = append(ordinaryRunInputs, replay.RunInput{
 				Role:      "gate-feedback",
 				MediaType: "text/markdown; charset=utf-8",
 				Content:   feedbackBytes,
 			})
+
+			priorRefs, priorInputs, err := buildPriorAttemptInputs(stage.Name, completedStages, allAttempts, as)
+			if err != nil {
+				return nil, completedStages, prevCommit, reviewedOutputRef, reviewedOutputContent, err
+			}
+			inputRefs = append(append([]runmanifest.ArtifactRef(nil), ordinaryInputRefs...), priorRefs...)
+			runInputs = append(append([]replay.RunInput(nil), ordinaryRunInputs...), priorInputs...)
 
 			globalRound++
 			tierRound++
@@ -1184,35 +1388,6 @@ func (e *Engine) runGate(
 			tierRound = 1
 		}
 	}
-}
-
-// firstCheckoutGitlink returns the first recursive mode-160000 entry in the
-// pinned tree. Until GH #14 populates submodules and records their identities,
-// granting reads in such a checkout would expose an empty directory as if it
-// were evidence, so callers fail closed before invoking a model seat.
-func firstCheckoutGitlink(ctx context.Context, worktreeDir, gitSHA string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreeDir, "ls-tree", "-r", "-z", "--full-tree", gitSHA, "--")
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if detail := strings.TrimSpace(string(exitErr.Stderr)); detail != "" {
-				return "", fmt.Errorf("git ls-tree %s: %w: %s", gitSHA, err, detail)
-			}
-		}
-		return "", fmt.Errorf("git ls-tree %s: %w", gitSHA, err)
-	}
-	for _, record := range bytes.Split(out, []byte{0}) {
-		meta, path, ok := bytes.Cut(record, []byte{'\t'})
-		if !ok {
-			continue
-		}
-		fields := bytes.Fields(meta)
-		if len(fields) >= 1 && bytes.Equal(fields[0], []byte("160000")) {
-			return string(path), nil
-		}
-	}
-	return "", nil
 }
 
 // resolveSeatRunner returns the runner for a seat's PRIMARY invocation, used

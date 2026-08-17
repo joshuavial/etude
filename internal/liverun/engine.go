@@ -619,10 +619,30 @@ func captureCallerProvenance(ctx context.Context, root string, resolve func(cont
 // Run executes the workflow, capturing each stage incrementally via CAS.
 // If opts.ResumeID is non-empty, resumes an existing partial run from its frontier.
 func (e *Engine) Run(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
+	// ParseYAML calls Workflow.Validate, but Engine also accepts programmatic
+	// workflows. Enforce the engine-owned rerun input namespace here, before a
+	// checkout or runner invocation, so both entry paths fail at the same seam.
+	if err := validatePriorAttemptRoleCollisions(wf); err != nil {
+		return err
+	}
 	if opts.ResumeID != "" {
 		return e.resume(ctx, out, wf, opts.ResumeID)
 	}
 	return e.startFresh(ctx, out, wf, opts)
+}
+
+func validatePriorAttemptRoleCollisions(wf workflow.Workflow) error {
+	for i, stage := range wf.Stages {
+		if workflow.IsPriorAttemptRole(stage.Produces) {
+			return fmt.Errorf("%w: stage[%d] produces role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, stage.Produces)
+		}
+		for j, role := range stage.Inputs {
+			if workflow.IsPriorAttemptRole(role) {
+				return fmt.Errorf("%w: stage[%d] input[%d] role %q is reserved for gate reruns", workflow.ErrInvalidWorkflow, i, j, role)
+			}
+		}
+	}
+	return nil
 }
 
 func (e *Engine) startFresh(ctx context.Context, out io.Writer, wf workflow.Workflow, opts RunOptions) error {
@@ -773,6 +793,10 @@ func (e *Engine) resume(ctx context.Context, out io.Writer, wf workflow.Workflow
 			refByPath[inp.Path] = inp
 		}
 		refByPath[ms.Output.Path] = ms.Output
+		if ms.Log != nil {
+			ref := *ms.Log
+			refByPath[ref.Path] = ref
+		}
 		if ms.Producer.Session != nil && ms.Producer.Session.TranscriptArtifact != nil {
 			ref := *ms.Producer.Session.TranscriptArtifact
 			refByPath[ref.Path] = ref
@@ -970,14 +994,6 @@ func (e *Engine) executeStages(
 	return nil
 }
 
-// isAgenticProducer reports whether a stage runner's result indicates an agentic
-// execution that should capture session evidence. Mirrors the harness-side check
-// from requiresSessionEvidence: non-empty and not "shell".
-func isAgenticProducer(harnessName string) bool {
-	h := strings.ToLower(strings.TrimSpace(harnessName))
-	return h != "" && h != "shell"
-}
-
 // runAndCaptureStage executes a single stage run: resolves the runner,
 // invokes it, stores the output artifact, appends the Stage record to
 // completedStages, and writes an incremental CAS manifest commit.
@@ -1109,10 +1125,17 @@ func (e *Engine) runAndCaptureStage(
 			}
 		}
 	}
+	if len(res.Log) > replay.MaxStageLogBytes {
+		return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner log exceeds %d bytes", replay.MaxStageLogBytes)
+	}
 
-	// Build producer session evidence when the runner returned session info
-	// and the stage is agentic (not deterministic/shell).
-	if res.Session != nil && isAgenticProducer(res.Producer.Harness.Name) {
+	// An explicit runner session is sufficient evidence even for inline
+	// commands whose producer harness metadata is empty. Runners without a
+	// session retain the deterministic/shell behavior.
+	if res.Session != nil && strings.ToLower(strings.TrimSpace(res.Producer.Harness.Name)) != "shell" {
+		if err := replay.ValidateSessionInfo(res.Session); err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("runner session: %w", err)
+		}
 		sess := sessionInfoFields{
 			SessionID:      res.Session.SessionID,
 			TranscriptURI:  res.Session.TranscriptURI,
@@ -1126,6 +1149,16 @@ func (e *Engine) runAndCaptureStage(
 			// Non-fatal: log the note but do not fail the stage.
 			fmt.Fprintf(os.Stderr, "stage %s: session evidence note: %s\n", stageName, note)
 		}
+	}
+
+	var logRef *runmanifest.ArtifactRef
+	if len(res.Log) > 0 {
+		logArtifact, err := as.AddContent(stageName+"-log", "application/octet-stream", res.Log)
+		if err != nil {
+			return runmanifest.ArtifactRef{}, nil, completedStages, prevCommit, fmt.Errorf("store log: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
+		logRef = &ref
 	}
 
 	outputMediaType := res.MediaType
@@ -1148,6 +1181,7 @@ func (e *Engine) runAndCaptureStage(
 		Producer:        producer,
 		Inputs:          inputRefs,
 		Output:          outRef,
+		Log:             logRef,
 		Timestamp:       e.clock(),
 	})
 

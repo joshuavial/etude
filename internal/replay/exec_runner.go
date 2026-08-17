@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/sessionevidence"
 )
 
 // Sentinel errors for ExecRunner.
@@ -25,6 +29,7 @@ var (
 	ErrOutputMissing       = errors.New("output missing")
 	ErrOutputNotRegular    = errors.New("output is not a regular file")
 	ErrOutputTooLarge      = errors.New("output too large")
+	ErrSessionInvalid      = errors.New("session sidecar invalid")
 )
 
 // runnerWaitDelay is the grace period after context cancellation or process
@@ -103,11 +108,15 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		}
 	}
 
-	// Step 5: scratch hygiene — remove stale output and reset inputs dir.
+	// Step 5: scratch hygiene — remove stale output/session and reset inputs dir.
 	outputPath := filepath.Join(resolvedScratch, "output")
+	sessionPath := filepath.Join(resolvedScratch, "session.json")
 	inputsDir := filepath.Join(resolvedScratch, "inputs")
 
 	_ = os.Remove(outputPath) // ignore os.IsNotExist; stale output must not survive
+	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+		return RunResult{}, fmt.Errorf("%w: remove stale session sidecar: %v", ErrInvalidScratchDir, err)
+	}
 
 	if err := os.RemoveAll(inputsDir); err != nil {
 		return RunResult{}, fmt.Errorf("%w: remove inputs dir: %v", ErrInvalidScratchDir, err)
@@ -152,11 +161,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		"PATH=" + extractEnv(environ, "PATH"),
 		"ETUDE_INPUTS_DIR=" + inputsDir,
 		"ETUDE_OUTPUT_FILE=" + outputPath,
+		"ETUDE_SESSION_FILE=" + sessionPath,
 	}
 	reservedEnv := map[string]bool{
-		"PATH":              true,
-		"ETUDE_INPUTS_DIR":  true,
-		"ETUDE_OUTPUT_FILE": true,
+		"PATH":               true,
+		"ETUDE_INPUTS_DIR":   true,
+		"ETUDE_OUTPUT_FILE":  true,
+		"ETUDE_SESSION_FILE": true,
 	}
 	for _, name := range r.EnvAllowlist {
 		if reservedEnv[name] {
@@ -170,12 +181,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 		// not which values were actually delivered.
 	}
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	stdoutBuf := newBoundedStream(true, MaxCapturedStreamBytes)
+	stderrBuf := newBoundedStream(false, MaxCapturedStreamBytes)
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 	cmd.Dir = resolvedWorktree
 	cmd.Env = env
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
 	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
 	// Without it, a backgrounded grandchild holding inherited pipe write-ends
 	// open can cause cmd.Run to hang indefinitely.
@@ -185,14 +197,25 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 
 	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
 	if ctx.Err() != nil {
+		var base error
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return RunResult{}, fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
+			base = fmt.Errorf("runner: timed out after %v: %w", r.Timeout, ctx.Err())
+		} else {
+			base = fmt.Errorf("runner: context done: %w", ctx.Err())
 		}
-		return RunResult{}, fmt.Errorf("runner: context done: %w", ctx.Err())
+		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
 	}
 	if runErr != nil {
-		stderr := strings.TrimSpace(stderrBuf.String())
-		return RunResult{}, fmt.Errorf("%w: %s: %v: %s", ErrRunnerFailed, r.Command[0], runErr, stderr)
+		base := fmt.Errorf("%w: %s: %v", ErrRunnerFailed, r.Command[0], runErr)
+		return RunResult{}, withStderrDiagnostic(base, stderrBuf.Bytes())
+	}
+
+	var session *SessionInfo
+	if strings.ToLower(strings.TrimSpace(req.Producer.Harness.Name)) != "shell" {
+		session, err = readSessionSidecar(resolvedScratch, sessionPath)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 
 	// Step 9: read output (symlink-safe via Lstat).
@@ -239,10 +262,206 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 	// Step 10: assemble result and apply defaults.
 	res := RunResult{
 		Output:   data,
+		Log:      frameStageLog(stdoutBuf, stderrBuf),
 		Producer: req.Producer,
+		Session:  session,
 	}
 	applyResultDefaults(req, &res)
 	return res, nil
+}
+
+type boundedStream struct {
+	buf     []byte
+	dropped int64
+	head    bool
+	limit   int
+}
+
+func newBoundedStream(head bool, limit int) *boundedStream {
+	return &boundedStream{head: head, limit: limit}
+}
+
+func (w *boundedStream) Write(p []byte) (int, error) {
+	n := len(p)
+	if w.head {
+		remaining := w.limit - len(w.buf)
+		if remaining > 0 {
+			keep := min(remaining, len(p))
+			w.buf = append(w.buf, p[:keep]...)
+			w.dropped += int64(len(p) - keep)
+		} else {
+			w.dropped += int64(len(p))
+		}
+		return n, nil
+	}
+	if len(p) >= w.limit {
+		w.dropped += int64(len(w.buf) + len(p) - w.limit)
+		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
+		return n, nil
+	}
+	over := len(w.buf) + len(p) - w.limit
+	if over > 0 {
+		w.dropped += int64(over)
+		copy(w.buf, w.buf[over:])
+		w.buf = w.buf[:len(w.buf)-over]
+	}
+	w.buf = append(w.buf, p...)
+	return n, nil
+}
+
+func (w *boundedStream) Bytes() []byte { return w.buf }
+
+func frameStageLog(stdout, stderr *boundedStream) []byte {
+	var out bytes.Buffer
+	write := func(name, retained string, stream *boundedStream) {
+		if len(stream.buf) == 0 && stream.dropped == 0 {
+			return
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		fmt.Fprintf(&out, "[%s bytes=%d dropped=%d retained=%s]\n", name, len(stream.buf), stream.dropped, retained)
+		out.Write(stream.buf)
+	}
+	write("stdout", "head", stdout)
+	write("stderr", "tail", stderr)
+	if out.Len() == 0 {
+		return nil
+	}
+	return out.Bytes()
+}
+
+func withStderrDiagnostic(base error, stderr []byte) error {
+	const maxDiagnosticBytes = 8 << 10
+	if len(stderr) > maxDiagnosticBytes {
+		stderr = stderr[len(stderr)-maxDiagnosticBytes:]
+	}
+	diagnostic := strings.TrimSpace(string(stderr))
+	if diagnostic == "" {
+		return base
+	}
+	return fmt.Errorf("%w: stderr: %s", base, diagnostic)
+}
+
+func readSessionSidecar(root, path string) (*SessionInfo, error) {
+	content, err := sessionevidence.ReadRegularFileUnderLimit(root, path, 64<<10)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
+	}
+	if !utf8.Valid(content) {
+		return nil, fmt.Errorf("%w: sidecar is not valid UTF-8", ErrSessionInvalid)
+	}
+	if err := validateJSONUnicodeEscapes(content); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
+	}
+	var session SessionInfo
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&session); err != nil {
+		return nil, fmt.Errorf("%w: decode: %v", ErrSessionInvalid, err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: trailing JSON", ErrSessionInvalid)
+	}
+	if err := ValidateSessionInfo(&session); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSessionInvalid, err)
+	}
+	if filepath.IsAbs(session.TranscriptPath) {
+		rel, err := filepath.Rel(root, session.TranscriptPath)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			// Return scratch-local transcript paths in relative form. Besides
+			// making the containment boundary explicit, this avoids macOS's
+			// /var -> /private/var alias making the engine misclassify the same
+			// attempt scratch directory as an external absolute path.
+			session.TranscriptPath = rel
+		}
+	}
+	return &session, nil
+}
+
+// validateJSONUnicodeEscapes rejects unpaired UTF-16 surrogate escapes before
+// encoding/json replaces them with U+FFFD. A literal U+FFFD or a non-surrogate
+// \uFFFD escape remains valid Unicode and is deliberately accepted.
+func validateJSONUnicodeEscapes(content []byte) error {
+	for i := 0; i < len(content); i++ {
+		if content[i] != '\\' || i+1 >= len(content) {
+			continue
+		}
+		if content[i+1] != 'u' {
+			i++
+			continue
+		}
+		code, ok := decodeHexQuad(content[i+2:])
+		if !ok {
+			continue // encoding/json reports malformed/truncated escapes.
+		}
+		switch {
+		case code >= 0xd800 && code <= 0xdbff:
+			if i+12 > len(content) || content[i+6] != '\\' || content[i+7] != 'u' {
+				return errors.New("unpaired high-surrogate Unicode escape")
+			}
+			low, ok := decodeHexQuad(content[i+8:])
+			if !ok || low < 0xdc00 || low > 0xdfff {
+				return errors.New("unpaired high-surrogate Unicode escape")
+			}
+			i += 11
+		case code >= 0xdc00 && code <= 0xdfff:
+			return errors.New("unpaired low-surrogate Unicode escape")
+		default:
+			i += 5
+		}
+	}
+	return nil
+}
+
+func decodeHexQuad(content []byte) (uint16, bool) {
+	if len(content) < 4 {
+		return 0, false
+	}
+	var value uint16
+	for _, char := range content[:4] {
+		value <<= 4
+		switch {
+		case char >= '0' && char <= '9':
+			value |= uint16(char - '0')
+		case char >= 'a' && char <= 'f':
+			value |= uint16(char-'a') + 10
+		case char >= 'A' && char <= 'F':
+			value |= uint16(char-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
+// ValidateSessionInfo applies the durable engine boundary to any Runner.
+func ValidateSessionInfo(session *SessionInfo) error {
+	if session == nil {
+		return nil
+	}
+	if strings.TrimSpace(session.SessionID) == "" {
+		return errors.New("session_id is required")
+	}
+	for name, value := range map[string]string{
+		"session_id":      session.SessionID,
+		"transcript_uri":  session.TranscriptURI,
+		"transcript_path": session.TranscriptPath,
+	} {
+		if !utf8.ValidString(value) {
+			return fmt.Errorf("%s contains invalid Unicode", name)
+		}
+		if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s contains a control character", name)
+		}
+		if len(value) > MaxSessionFieldBytes {
+			return fmt.Errorf("%s exceeds %d bytes", name, MaxSessionFieldBytes)
+		}
+	}
+	return nil
 }
 
 // resolveDir validates that path is non-empty, absolute, exists, and is a

@@ -1,11 +1,14 @@
 package replay
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -637,7 +640,7 @@ func TestExecRunner_ExtractEnvExactKeyMatch(t *testing.T) {
 }
 
 // TestExecRunner_EnvIsolation proves that the child process's environment is
-// the strict set (PATH + ETUDE_INPUTS_DIR + ETUDE_OUTPUT_FILE) and does NOT
+// the strict set (PATH plus the three reserved ETUDE paths) and does NOT
 // inherit arbitrary parent-process environment variables.
 func TestExecRunner_EnvIsolation(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -906,4 +909,285 @@ printf 'done' > "$ETUDE_OUTPUT_FILE"`)
 	case <-time.After(5 * time.Second):
 		t.Fatal("ExecRunner.Run did not return within 5s; WaitDelay regression: surviving child held pipes open")
 	}
+}
+
+func TestExecRunner_SessionSidecarAndLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '%s' '{"session_id":"session-17","transcript_uri":"file:///transcript","transcript_path":"transcript.jsonl"}' > "$ETUDE_SESSION_FILE.tmp"
+mv "$ETUDE_SESSION_FILE.tmp" "$ETUDE_SESSION_FILE"
+printf 'hello'
+printf 'warning' >&2`)
+
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "session-17" || res.Session.TranscriptPath != "transcript.jsonl" {
+		t.Fatalf("session = %#v", res.Session)
+	}
+	wantLog := "[stdout bytes=5 dropped=0 retained=head]\nhello\n[stderr bytes=7 dropped=0 retained=tail]\nwarning"
+	if string(res.Log) != wantLog {
+		t.Fatalf("log = %q, want %q", res.Log, wantLog)
+	}
+}
+
+func TestExecRunner_MinimalSessionSidecar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '%s' '{"session_id":"abc"}' > "$ETUDE_SESSION_FILE"`)
+
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := &SessionInfo{SessionID: "abc"}
+	if !reflect.DeepEqual(res.Session, want) {
+		t.Fatalf("session = %#v, want %#v", res.Session, want)
+	}
+}
+
+func TestExecRunner_NormalizesScratchAbsoluteTranscriptPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+transcript="${ETUDE_SESSION_FILE%/*}/transcript.jsonl"
+printf 'transcript' > "$transcript"
+printf '{"session_id":"session-17","transcript_path":"%s"}' "$transcript" > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.TranscriptPath != "transcript.jsonl" {
+		t.Fatalf("session = %#v, want scratch-relative transcript path", res.Session)
+	}
+}
+
+func TestExecRunner_AbsentSessionAndStreamsRemainNil(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session != nil || res.Log != nil {
+		t.Fatalf("session/log = %#v/%q, want nil/nil", res.Session, res.Log)
+	}
+}
+
+func TestExecRunner_ShellProducerIgnoresSessionSidecar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{' > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{
+		WorktreeDir: worktree, ScratchDir: scratch,
+		Producer: runmanifest.Producer{Harness: runmanifest.Harness{Name: "shell"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session != nil {
+		t.Fatalf("session = %#v, want nil", res.Session)
+	}
+}
+
+func TestExecRunner_RejectsInvalidSessionSidecars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	cases := map[string]string{
+		"empty":                     ``,
+		"malformed":                 `{`,
+		"unknown field":             `{"session_id":"s","unexpected":true}`,
+		"missing id":                `{"transcript_uri":"file:///t"}`,
+		"unpaired high surrogate":   `{"session_id":"\ud800"}`,
+		"unpaired low surrogate":    `{"session_id":"\udc00"}`,
+		"high surrogate then ascii": `{"session_id":"\ud800\u0061"}`,
+	}
+	for name, sidecar := range cases {
+		t.Run(name, func(t *testing.T) {
+			worktree, scratch := makeSiblingDirs(t)
+			script := filepath.Join(scratch, "runner.sh")
+			writeScript(t, script, fmt.Sprintf("printf 'artifact' > \"$ETUDE_OUTPUT_FILE\"\nprintf '%%s' '%s' > \"$ETUDE_SESSION_FILE\"", sidecar))
+			_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+			if !errors.Is(err, ErrSessionInvalid) {
+				t.Fatalf("error = %v, want ErrSessionInvalid", err)
+			}
+		})
+	}
+}
+
+func TestExecRunner_AcceptsValidSurrogatePairInSessionID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{"session_id":"session-\ud83d\ude80"}' > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "session-🚀" {
+		t.Fatalf("session = %#v", res.Session)
+	}
+}
+
+func TestExecRunner_AcceptsReplacementCharacterInSessionID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{"session_id":"session-\ufffd"}' > "$ETUDE_SESSION_FILE"`)
+	res, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Session == nil || res.Session.SessionID != "session-\ufffd" {
+		t.Fatalf("session = %#v", res.Session)
+	}
+}
+
+func TestExecRunner_RejectsInvalidUTF8SessionSidecar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '{"session_id":"\377"}' > "$ETUDE_SESSION_FILE"`)
+	_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestExecRunner_TimeoutRetainsStderrTail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	orig := runnerWaitDelay
+	runnerWaitDelay = 200 * time.Millisecond
+	defer func() { runnerWaitDelay = orig }()
+	worktree, scratch := makeSiblingDirs(t)
+	script := filepath.Join(scratch, "runner.sh")
+	writeScript(t, script, `printf 'timeout diagnostic' >&2
+sleep 30`)
+	runner := execRunner(script)
+	// Leave enough launch headroom for loaded builders: this assertion is about
+	// retaining diagnostics after a timeout, not sub-second process startup.
+	runner.Timeout = 3 * time.Second
+	_, err := runner.Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timeout diagnostic") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestBoundedStreamsRetainHeadAndTail(t *testing.T) {
+	head := newBoundedStream(true, 4)
+	tail := newBoundedStream(false, 4)
+	_, _ = head.Write([]byte("abcdef"))
+	_, _ = tail.Write([]byte("abcdef"))
+	if string(head.Bytes()) != "abcd" || head.dropped != 2 {
+		t.Fatalf("head = %q dropped=%d", head.Bytes(), head.dropped)
+	}
+	if string(tail.Bytes()) != "cdef" || tail.dropped != 2 {
+		t.Fatalf("tail = %q dropped=%d", tail.Bytes(), tail.dropped)
+	}
+}
+
+func TestMaximalFramedLogFitsEngineLimit(t *testing.T) {
+	stdout := newBoundedStream(true, MaxCapturedStreamBytes)
+	stderr := newBoundedStream(false, MaxCapturedStreamBytes)
+	_, _ = stdout.Write(bytes.Repeat([]byte("o"), MaxCapturedStreamBytes))
+	_, _ = stderr.Write(bytes.Repeat([]byte("e"), MaxCapturedStreamBytes))
+	stdout.dropped = math.MaxInt64
+	stderr.dropped = math.MaxInt64
+	log := frameStageLog(stdout, stderr)
+	if len(log) > MaxStageLogBytes {
+		t.Fatalf("maximal framed log = %d bytes, engine limit = %d", len(log), MaxStageLogBytes)
+	}
+}
+
+func TestValidateSessionInfoBoundary(t *testing.T) {
+	for name, session := range map[string]*SessionInfo{
+		"nil":                    nil,
+		"valid":                  {SessionID: "session"},
+		"missing id":             {TranscriptURI: "file:///transcript"},
+		"long id":                {SessionID: strings.Repeat("s", MaxSessionFieldBytes+1)},
+		"long uri":               {SessionID: "session", TranscriptURI: strings.Repeat("u", MaxSessionFieldBytes+1)},
+		"long path":              {SessionID: "session", TranscriptPath: strings.Repeat("p", MaxSessionFieldBytes+1)},
+		"invalid utf8":           {SessionID: string([]byte{0xff})},
+		"valid replacement rune": {SessionID: "valid\ufffdid"},
+		"control character":      {SessionID: "bad\nid"},
+		"valid replacement uri":  {SessionID: "session", TranscriptURI: "valid\ufffduri"},
+		"invalid path":           {SessionID: "session", TranscriptPath: string([]byte{0xff})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateSessionInfo(session)
+			wantErr := name != "nil" && name != "valid" && name != "valid replacement rune" && name != "valid replacement uri"
+			if (err != nil) != wantErr {
+				t.Fatalf("error = %v, wantErr=%v", err, wantErr)
+			}
+		})
+	}
+}
+
+func TestExecRunner_RejectsOversizedAndSymlinkSessionSidecars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sh tests skipped on Windows")
+	}
+	t.Run("oversized", func(t *testing.T) {
+		worktree, scratch := makeSiblingDirs(t)
+		script := filepath.Join(scratch, "runner.sh")
+		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+dd if=/dev/zero of="$ETUDE_SESSION_FILE" bs=65537 count=1 2>/dev/null`)
+		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		worktree, scratch := makeSiblingDirs(t)
+		script := filepath.Join(scratch, "runner.sh")
+		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+printf '%s' '{"session_id":"s"}' > "$ETUDE_SESSION_FILE.target"
+ln -s "$ETUDE_SESSION_FILE.target" "$ETUDE_SESSION_FILE"`)
+		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+	t.Run("fifo", func(t *testing.T) {
+		worktree, scratch := makeSiblingDirs(t)
+		script := filepath.Join(scratch, "runner.sh")
+		writeScript(t, script, `printf 'artifact' > "$ETUDE_OUTPUT_FILE"
+mkfifo "$ETUDE_SESSION_FILE"`)
+		_, err := execRunner(script).Run(context.Background(), RunRequest{WorktreeDir: worktree, ScratchDir: scratch})
+		if !errors.Is(err, ErrSessionInvalid) || !strings.Contains(err.Error(), "regular") {
+			t.Fatalf("error = %v", err)
+		}
+	})
 }

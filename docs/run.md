@@ -96,8 +96,12 @@ Per stage, the detail view shows:
 - `skill` — always printed as `id@version (repo)`
 - Each input as `role=… path=… size=… storage=… media-type=…`
 - The output in the same format
-- `session` evidence — printed only when the stage's producer was an agentic
-  runner that reported a session (see [Producer session evidence](#producer-session-evidence))
+- `log` — the successful stage runner's bounded stdout/stderr artifact using
+  the exact labels `digest=… size=… media-type=…`; omitted when both streams
+  were empty or the stage failed
+- `session` evidence — printed when the stage record contains evidence from a
+  valid `ETUDE_SESSION_FILE` sidecar or another session-reporting runner (see
+  [Producer session evidence](#producer-session-evidence))
 
 `path` is the content-addressed `artifacts/sha256/…` path of the stored
 artifact, `size` is its size in bytes, and `storage` is `content` for inline
@@ -133,6 +137,49 @@ Capture is **best-effort**: a stage runner that reports no session, or whose
 transcript cannot be read, never fails the stage — the evidence is simply
 omitted or marked `failed`. Transcripts are secret-scanned before storage; a
 failed scan is recorded as `redaction: failed` rather than storing the bytes.
+
+Command-backed external stage runners report identity through the optional
+reserved `ETUDE_SESSION_FILE`. Etude sets it to
+`<attempt-scratch>/session.json`. A runner must publish a complete sidecar by
+atomically renaming a sibling temporary file before it exits:
+
+```json
+{"session_id":"session-123","transcript_uri":"etude-session://session-123","transcript_path":"transcript.jsonl"}
+```
+
+`session_id` is required and must be non-empty; the transcript fields are optional. The 64 KiB
+whole-file cap is a pre-parse read bound; each field is independently capped at
+4 KiB. Exceeding either bound, unknown fields, invalid Unicode, malformed JSON,
+and non-regular files fail the stage rather than truncating evidence. If the
+file is absent, behavior is unchanged and no session is recorded.
+
+`transcript_uri` is opaque identity metadata: Etude records but never fetches
+it. `transcript_path` independently selects bytes for best-effort import. A
+relative path resolves first beneath the attempt scratch directory, then the
+pinned worktree for compatibility; an absolute path must be beneath one of
+those roots. External runners should copy transcripts into attempt scratch and
+report a scratch-relative path. Import and secret-scan behavior follows the
+policy described above. A path outside both roots leaves the session id/URI in
+the manifest with transcript retrieval marked `failed`; it does not fail an
+otherwise successful stage.
+
+An empty sidecar is malformed and fails the stage; omit the file entirely when
+the runner has no session to report.
+
+Successful runner stdout and stderr are stored as one
+`application/octet-stream` stage-log artifact. Etude retains stdout's first
+1 MiB and stderr's final 1 MiB while continuing to drain both pipes. Each
+present stream has a byte-count and dropped-byte framing header; stdout is
+listed before stderr. Raw log bytes are never printed by `etude run show`.
+Logs are stored as raw runner evidence and are not secret-scanned like imported
+transcripts; runners must not print credentials or other secrets to either
+stream.
+
+Failed-runner stderr remains bounded in the reported error but is not stored as
+a stage log because a failed attempt has no Stage record. To retrieve a stored
+successful log, read its `path` from `etude run show <id> --json`, then read that
+path from `refs/etude/runs/<id>` with Git (for example,
+`git show refs/etude/runs/<id>:<path>`).
 
 When a run carries review-gate attempts, they are printed after the stages —
 see [Gate reviewer records](gates.md) for the gate output format and how to
@@ -461,6 +508,57 @@ that artifact appended to its inputs (role `gate-feedback`). The re-run stage
 is captured as `<stage>.r<round>` (round ≥ 2); the gate is re-evaluated
 against its output.
 
+The rerun also receives a rebuilt, digest-bound history of every earlier
+attempt killed by a `rerun` verdict:
+
+- `prior-attempts` is a deterministic JSON index. In chronological manifest
+  order it records each attempt's stage and round, session id, whether that
+  exact non-empty session id appeared on an earlier attempt, output/log/
+  transcript digests and input roles, transcript retrieval/redaction status,
+  and the killing gate's aggregate status plus ordered seat verdicts and
+  required changes.
+- `prior-attempt-<N>-output` always carries the attempt output, where `N` is
+  the attempt's 1-based position in the chronological index. Optional
+  `prior-attempt-<N>-log` and `prior-attempt-<N>-transcript` inputs carry the
+  corresponding stored artifacts when present; a transcript is attached only
+  after successful import and secret scanning. Distinct roles may point at the
+  same digest when attempts produced identical bytes.
+
+These are ordinary declared stage inputs, so their content-addressed digests
+are recorded in the rerun stage manifest. The bundle is rebuilt from durable
+run history on every round rather than copied forward; `gate-feedback` remains
+cumulative. Consequently the handover grows with the number and size of prior
+attempts.
+
+Only attempts whose gate status is `rerun` enter this history. An `escalated`
+gate re-evaluates the latest stage output at a stronger tier without invoking
+the stage again, so it does not create a producer attempt to hand forward.
+
+A stage runner may report no session. That is the legitimate no-transcript
+state: the attempt still contributes output, log, and verdict evidence without
+a transcript. Transcript retrieval failure is recorded in the index and the
+rerun continues without transcript bytes. The redaction status reports whether
+the transcript secret scan passed or failed. A transcript that was imported
+but failed that scan stops the rerun before its stage runner is invoked.
+Output and stage-log artifacts follow their existing storage contract and are
+not secret-scanned. Prior-attempt logs are handed to every later rerun as raw
+inputs, so a credential printed by a producer can persist in the run and cross
+attempt boundaries; runner authors must treat stdout and stderr as durable,
+shared evidence rather than an ephemeral console.
+
+Session ids are opaque and compared byte-for-byte; whitespace is used only to
+recognize an empty id. Reusing an exact non-empty id marks the later attempt as
+resuming a prior session. Such an attempt is intentionally **not replayable
+from its declared inputs alone**, because the external model session contains
+state outside the run manifest; the repeated id makes that condition
+detectable without a manifest schema change.
+
+The roles `prior-attempts` and the `prior-attempt-` prefix are reserved for the
+engine. Workflow validation rejects them in stage `inputs` and `produces`, and
+the live engine repeats that check at entry so programmatically constructed
+workflows fail before checkout or stage invocation. The near-miss role
+`prior-attempt` is not reserved.
+
 On **escalated**: the engine advances the tier ladder toward L1 (strongest)
 and re-runs the gate against the latest stage output at the stronger tier. If
 no stronger tier exists (already at L1, or the gate used inline seats with no
@@ -470,21 +568,22 @@ by unusable model seats is resumable; substantive reviewer decisions remain
 terminal.
 
 Each gate attempt is recorded automatically as a `GateAttempt` in the run
-manifest (`manifest_version` 3, or 4 when a caller-workspace stage is present).
-Version 4 also requires the run-level `original_git_sha` that pins hermetic
-execution independently of caller-stage post-run provenance. Gate attempts
-appear after stages in
-`etude run show`. No separate `etude capture-gate` call is required for live
-runs. An effective checkout grant is recorded as `read_checkout: true`; false
-is omitted. The workflow is the authorization source—the manifest field is an
-audit record and is never read back to authorize a later seat.
+manifest (`manifest_version` 3, or version 4 when a stage log is present); gate
+manifest (`manifest_version` 3, or version 4 when a stage log is present or a
+stage uses the caller workspace). Caller-workspace runs also require the
+run-level `original_git_sha` that pins hermetic execution independently of
+caller-stage post-run provenance. Gate attempts appear after stages in `etude
+run show`. No separate `etude capture-gate` call is required for live runs. An
+effective checkout grant is recorded as `read_checkout: true`; false is omitted.
+The workflow is the authorization source—the manifest field is an audit record
+and is never read back to authorize a later seat.
 
 ### Env passthrough
 
 By default, each stage runner receives a hermetic environment containing only
-`PATH`, `ETUDE_INPUTS_DIR`, and `ETUDE_OUTPUT_FILE`. To pass additional env
-vars (such as API keys) to live runners, declare an allowlist of names in
-`.etude/workflow.yaml`:
+`PATH`, `ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, and `ETUDE_SESSION_FILE`. To
+pass additional env vars (such as API keys) to live runners, declare an
+allowlist of names in `.etude/workflow.yaml`:
 
 ```yaml
 env_allowlist: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
@@ -499,8 +598,9 @@ Deterministic gate checks are always hermetic (they receive no allowlist entries
 regardless of configuration).
 
 **Validation.** Each entry must be a valid POSIX env var name
-(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the three reserved names (`PATH`,
-`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`) are rejected at workflow load time.
+(`[A-Za-z_][A-Za-z0-9_]*`). Duplicates and the four reserved names (`PATH`,
+`ETUDE_INPUTS_DIR`, `ETUDE_OUTPUT_FILE`, `ETUDE_SESSION_FILE`) are rejected at
+workflow load time.
 
 **Audit.** The configured names (never values) appear in `etude run show` as an
 `env allowlist:` header line and in the run manifest (`env_allowlist` field).

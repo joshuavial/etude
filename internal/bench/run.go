@@ -182,7 +182,10 @@ func (p Pipeline) BenchRun(ctx context.Context, root string, cr CohortRun) (Benc
 	// The bench checkout is authoritative even for a legacy source manifest
 	// that predates submodule recording.
 	resolved.Submodules = wt.Submodules
-	recorded, err := p.Recorder.Record(ctx, cr.RunID, stageName, resolved, res)
+	recorder := p.Recorder
+	recorder.SessionScratchDir = scratch
+	recorder.SessionWorktreeDir = wt.Dir
+	recorded, err := recorder.Record(ctx, cr.RunID, stageName, resolved, res)
 	if err != nil {
 		return BenchOutcome{}, wrap("record replay run", err)
 	}

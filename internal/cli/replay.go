@@ -265,7 +265,7 @@ func (r *replayRunner) run(ctx context.Context, out io.Writer, runID, stageName,
 		// The replay checkout is authoritative even for a legacy source manifest
 		// that predates submodule recording.
 		resolved.Submodules = wt.Submodules
-		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs); err != nil {
+		if err := r.recordRun(ctx, store, out, runID, stageName, resolved, res, inputs, scratch, wt.Dir); err != nil {
 			return err
 		}
 	}
@@ -316,8 +316,12 @@ func (r *replayRunner) recordRun(
 	resolved replay.ResolvedStage,
 	res replay.RunResult,
 	_ []replay.RunInput, // materialized inputs unused here; raw bytes come from source commit
+	scratchDir, worktreeDir string,
 ) error {
-	rec := replay.RunRecorder{Store: store, Now: r.now}
+	rec := replay.RunRecorder{
+		Store: store, Now: r.now,
+		SessionScratchDir: scratchDir, SessionWorktreeDir: worktreeDir,
+	}
 	recorded, err := rec.Record(ctx, sourceRunID, sourceStageName, resolved, res)
 	if err != nil {
 		return err

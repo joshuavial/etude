@@ -51,9 +51,9 @@ type RunRequest struct {
 // When a runner (e.g. a dev runner) has a session sidecar or envelope, it
 // populates this field; engine.go wires it into Producer.Session evidence.
 type SessionInfo struct {
-	SessionID      string
-	TranscriptURI  string
-	TranscriptPath string
+	SessionID      string `json:"session_id"`
+	TranscriptURI  string `json:"transcript_uri,omitempty"`
+	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
 // RunResult is the outcome of a stage execution.
@@ -67,10 +67,20 @@ type SessionInfo struct {
 // Deterministic and shell runners leave this nil.
 type RunResult struct {
 	Output    []byte
+	Log       []byte               // bounded stdout/stderr evidence; nil when both streams are empty
 	MediaType string               // if empty, Run defaults it to req.OutputMediaType
 	Producer  runmanifest.Producer // producer identity actually used; MAY differ from req.Producer (e.g. when the replay uses a newer skill version/model)
 	Session   *SessionInfo         // non-nil when the runner has a session (agentic only)
 }
+
+const (
+	// MaxCapturedStreamBytes is retained independently for stdout and stderr.
+	MaxCapturedStreamBytes = 1 << 20
+	// MaxStageLogBytes includes two captured streams plus their fixed framing.
+	MaxStageLogBytes = 2*MaxCapturedStreamBytes + 256
+	// MaxSessionFieldBytes bounds each string accepted from a runner session.
+	MaxSessionFieldBytes = 4 << 10
+)
 
 // stubConcatSeparator is the separator used by StubRunner in CONCAT mode.
 // Defined as a named constant so test assertions and behavior cannot drift.

@@ -28,13 +28,21 @@ var specialRoles = map[string]bool{
 	"repo-state": true,
 }
 
-// reservedEnvNames are the three env var names that ExecRunner always controls.
+// IsPriorAttemptRole reports whether role belongs to the engine-owned input
+// namespace used to hand prior stage attempts to gate reruns. Workflows may
+// not declare these roles because the engine injects them dynamically.
+func IsPriorAttemptRole(role string) bool {
+	return role == "prior-attempts" || strings.HasPrefix(role, "prior-attempt-")
+}
+
+// reservedEnvNames are the four env var names that ExecRunner always controls.
 // They must not appear in env_allowlist (fail-fast at validation; the runtime
 // reserved-skip in ExecRunner is defense-in-depth only).
 var reservedEnvNames = map[string]bool{
-	"PATH":              true,
-	"ETUDE_INPUTS_DIR":  true,
-	"ETUDE_OUTPUT_FILE": true,
+	"PATH":               true,
+	"ETUDE_INPUTS_DIR":   true,
+	"ETUDE_OUTPUT_FILE":  true,
+	"ETUDE_SESSION_FILE": true,
 }
 
 // validEvalMethods is the closed set of eval method strings.
@@ -373,6 +381,9 @@ func (w Workflow) Validate() error {
 		if err := validateRoleToken(prefix+".produces", s.Produces); err != nil {
 			return err
 		}
+		if IsPriorAttemptRole(s.Produces) {
+			return fmt.Errorf("%w: %s produces role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, s.Produces)
+		}
 		// A reserved special role (task, repo-state) is an implicit input
 		// available to every stage; a stage producing one is meaningless, so
 		// reject it rather than let it slip through as a no-op.
@@ -397,6 +408,9 @@ func (w Workflow) Validate() error {
 			}
 			if err := validateRoleToken(fmt.Sprintf("%s.input[%d]", prefix, j), inp); err != nil {
 				return err
+			}
+			if IsPriorAttemptRole(inp) {
+				return fmt.Errorf("%w: %s input[%d] role %q is reserved for gate reruns", ErrInvalidWorkflow, prefix, j, inp)
 			}
 			// Duplicate inputs within a stage are rejected: an input appearing
 			// twice gives no additional information and most likely indicates a

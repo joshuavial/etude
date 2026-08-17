@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/joshuavial/etude/internal/artifactmedia"
 	"github.com/joshuavial/etude/internal/artifactstore"
 	"github.com/joshuavial/etude/internal/refstore"
 	"github.com/joshuavial/etude/internal/runmanifest"
+	"github.com/joshuavial/etude/internal/sessionevidence"
 )
 
 // RecordedRun is the result of RunRecorder.Record: the identity of the new
@@ -32,6 +37,11 @@ type RunRecorder struct {
 	// Now returns the current time. Defaults to time.Now when nil; tests inject a
 	// fixed clock to make replay run ids deterministic.
 	Now func() time.Time
+	// SessionScratchDir and SessionWorktreeDir are the containment roots from
+	// the runner invocation. They remain live through Record and let a reported
+	// transcript_path be imported without trusting an arbitrary filesystem path.
+	SessionScratchDir  string
+	SessionWorktreeDir string
 }
 
 // Record writes a new linked replay run and returns its identity.
@@ -68,6 +78,26 @@ func (r RunRecorder) Record(
 	if err != nil {
 		return RecordedRun{}, fmt.Errorf("record: store output artifact: %w", err)
 	}
+	var logRef *runmanifest.ArtifactRef
+	if len(res.Log) > 0 {
+		if len(res.Log) > MaxStageLogBytes {
+			return RecordedRun{}, fmt.Errorf("record: runner log exceeds %d bytes", MaxStageLogBytes)
+		}
+		logArtifact, err := as.AddContent(sourceStageName+"-log", "application/octet-stream", res.Log)
+		if err != nil {
+			return RecordedRun{}, fmt.Errorf("record: store log artifact: %w", err)
+		}
+		ref := runmanifest.ArtifactFromManifestArtifact(logArtifact)
+		logRef = &ref
+	}
+
+	producer := res.Producer
+	if res.Session != nil {
+		if err := ValidateSessionInfo(res.Session); err != nil {
+			return RecordedRun{}, fmt.Errorf("record: runner session: %w", err)
+		}
+		producer.Session = r.buildSessionEvidence(as, sourceStageName+"-transcript", res.Session)
+	}
 	files := as.Files()
 
 	// Copy each source input raw from the source commit. Using ReadCommitFile
@@ -84,16 +114,17 @@ func (r RunRecorder) Record(
 
 	// Build the stage. Both Stage.Skill and Stage.Producer must be set
 	// (mirrors capture.go's pattern; validateStage requires Skill fields).
-	skill := res.Producer.Skill
+	skill := producer.Skill
 	stage := runmanifest.Stage{
 		Name:       sourceStageName,
 		ProducedBy: "replay",
 		GitSHA:     resolved.RunGitSHA,
 		Submodules: resolved.Submodules,
 		Skill:      skill,
-		Producer:   res.Producer,
+		Producer:   producer,
 		Inputs:     sourceInputRefs(resolved),
 		Output:     runmanifest.ArtifactFromManifestArtifact(outputArtifact),
+		Log:        logRef,
 		Timestamp:  now,
 		ReplayOf: &runmanifest.ReplayLink{
 			RunID:  sourceRunID,
@@ -124,6 +155,96 @@ func (r RunRecorder) Record(
 		OutputArtifact: outputArtifact.SHA256,
 		OutputPath:     outputArtifact.Path,
 	}, nil
+}
+
+func (r RunRecorder) buildSessionEvidence(as *artifactstore.Store, role string, session *SessionInfo) *runmanifest.SessionEvidence {
+	evidence := &runmanifest.SessionEvidence{
+		SessionID:       session.SessionID,
+		TranscriptURI:   session.TranscriptURI,
+		RetrievalStatus: runmanifest.SessionEvidenceNotApplicable,
+		RedactionStatus: runmanifest.SessionEvidenceNotApplicable,
+	}
+	if strings.TrimSpace(session.TranscriptPath) == "" {
+		return evidence
+	}
+
+	path, root := resolveRecordedTranscriptPath(session.TranscriptPath, r.SessionScratchDir, r.SessionWorktreeDir)
+	if root == "" {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence
+	}
+	content, err := sessionevidence.ReadRegularFileUnder(root, path)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		return evidence
+	}
+	evidence.RetrievalStatus = runmanifest.SessionEvidenceRetrievalImported
+	if err := sessionevidence.ScanForSecrets(content); err != nil {
+		evidence.RedactionStatus = runmanifest.SessionEvidenceFailed
+		return evidence
+	}
+	evidence.RedactionStatus = runmanifest.SessionEvidenceRedactionPassed
+	artifact, err := as.AddContent(role, artifactmedia.Infer(path), content)
+	if err != nil {
+		evidence.RetrievalStatus = runmanifest.SessionEvidenceFailed
+		evidence.RedactionStatus = runmanifest.SessionEvidenceNotApplicable
+		return evidence
+	}
+	ref := runmanifest.ArtifactFromManifestArtifact(artifact)
+	evidence.TranscriptArtifact = &ref
+	return evidence
+}
+
+func resolveRecordedTranscriptPath(pathValue, scratchDir, worktreeDir string) (string, string) {
+	if filepath.IsAbs(pathValue) {
+		for _, root := range []string{scratchDir, worktreeDir} {
+			if root == "" {
+				continue
+			}
+			if matchingRoot := matchingAbsoluteRoot(pathValue, root); matchingRoot != "" {
+				return pathValue, matchingRoot
+			}
+		}
+		return "", ""
+	}
+	cleanPath := filepath.Clean(pathValue)
+	if cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
+		return "", ""
+	}
+	if scratchDir != "" {
+		scratchPath := filepath.Join(scratchDir, cleanPath)
+		if _, err := os.Lstat(scratchPath); err == nil {
+			return scratchPath, scratchDir
+		}
+	}
+	if worktreeDir != "" {
+		return filepath.Join(worktreeDir, cleanPath), worktreeDir
+	}
+	return "", ""
+}
+
+// matchingAbsoluteRoot returns the spelling of root found in pathValue's
+// ancestor chain. os.SameFile handles equivalent system aliases such as macOS
+// /var and /private/var without resolving any component below the boundary;
+// ReadRegularFileUnder therefore still rejects an internal symlink.
+func matchingAbsoluteRoot(pathValue, root string) string {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return ""
+	}
+	for current := filepath.Dir(pathValue); ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err != nil {
+			return ""
+		}
+		if os.SameFile(rootInfo, info) {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+	}
 }
 
 // AllocateRunID probes for a free replay run id, trying base then

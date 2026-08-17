@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +55,8 @@ func TestRunRecorderHappyPath(t *testing.T) {
 	fixedTime := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
 	res := RunResult{
 		Output:    []byte("replay output bytes"),
+		Log:       []byte("replay log bytes"),
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptURI: "file:///replay-transcript"},
 		MediaType: "text/plain; charset=utf-8",
 		Producer: runmanifest.Producer{
 			Skill: runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
@@ -101,6 +106,22 @@ func TestRunRecorderHappyPath(t *testing.T) {
 		t.Fatalf("stages = %d, want 1", len(m.Stages))
 	}
 	s := m.Stages[0]
+	if s.Log == nil {
+		t.Fatal("Log is nil")
+	}
+	if s.Producer.Session == nil || s.Producer.Session.SessionID != "replay-session" {
+		t.Fatalf("producer session = %#v", s.Producer.Session)
+	}
+	if s.Producer.Session.TranscriptURI != "file:///replay-transcript" || s.Producer.Session.RetrievalStatus != runmanifest.SessionEvidenceNotApplicable {
+		t.Fatalf("producer session metadata = %#v", s.Producer.Session)
+	}
+	logBytes, err := store.ReadCommitFile(context.Background(), recorded.Commit, s.Log.Path)
+	if err != nil {
+		t.Fatalf("ReadCommitFile log: %v", err)
+	}
+	if !bytes.Equal(logBytes, res.Log) {
+		t.Fatalf("log bytes = %q, want %q", logBytes, res.Log)
+	}
 
 	if s.ProducedBy != "replay" {
 		t.Errorf("ProducedBy = %q, want replay", s.ProducedBy)
@@ -155,6 +176,152 @@ func TestRunRecorderUsesResolvedRunCheckout(t *testing.T) {
 	}
 	if got := m.Stages[0].RunnerWorkspace; got != "" {
 		t.Fatalf("recorded replay RunnerWorkspace = %q, want hermetic despite source caller workspace", got)
+	}
+}
+
+func TestRunRecorderImportsSessionTranscript(t *testing.T) {
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	transcript := []byte("recorded replay transcript\n")
+	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: "transcript.jsonl"},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	rec := RunRecorder{
+		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC) },
+		SessionScratchDir: scratch,
+	}
+	recorded, err := rec.Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := m.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.RedactionStatus != runmanifest.SessionEvidenceRedactionPassed || session.TranscriptArtifact == nil {
+		t.Fatalf("session evidence = %#v", session)
+	}
+	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, transcript) {
+		t.Fatalf("transcript bytes = %q, want %q", got, transcript)
+	}
+}
+
+func TestResolveRecordedTranscriptPathRejectsRelativeTraversal(t *testing.T) {
+	if path, root := resolveRecordedTranscriptPath("nested/../../outside", t.TempDir(), t.TempDir()); path != "" || root != "" {
+		t.Fatalf("resolveRecordedTranscriptPath traversal = (%q, %q), want rejection", path, root)
+	}
+}
+
+func TestRunRecorderImportsAbsoluteTranscriptThroughRootAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink alias proof is Unix-specific")
+	}
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	transcript := []byte("aliased replay transcript\n")
+	if err := os.WriteFile(filepath.Join(scratch, "transcript.jsonl"), transcript, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(scratch, alias); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: filepath.Join(alias, "transcript.jsonl")},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	recorded, err := (RunRecorder{
+		Store: store, Now: func() time.Time { return time.Date(2026, 5, 23, 11, 0, 0, 0, time.UTC) },
+		SessionScratchDir: scratch,
+	}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := manifest.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceRetrievalImported || session.TranscriptArtifact == nil {
+		t.Fatalf("session evidence = %#v", session)
+	}
+	got, err := store.ReadCommitFile(context.Background(), recorded.Commit, session.TranscriptArtifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, transcript) {
+		t.Fatalf("transcript = %q, want %q", got, transcript)
+	}
+}
+
+func TestRunRecorderRejectsSymlinkBelowAliasedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink alias proof is Unix-specific")
+	}
+	store, _, resolved := seedRunForRecord(t)
+	scratch := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "transcript.jsonl"), []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scratch-alias")
+	if err := os.Symlink(scratch, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(scratch, "internal-link")); err != nil {
+		t.Fatal(err)
+	}
+	res := RunResult{
+		Output:    []byte("replay output"),
+		MediaType: "text/plain",
+		Session:   &SessionInfo{SessionID: "replay-session", TranscriptPath: filepath.Join(alias, "internal-link", "transcript.jsonl")},
+		Producer: runmanifest.Producer{
+			Harness: runmanifest.Harness{Name: "shell"},
+			Skill:   runmanifest.Skill{ID: "test-skill", Repo: "test-repo", Version: "v1"},
+		},
+	}
+	recorded, err := (RunRecorder{Store: store, SessionScratchDir: scratch}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	raw, err := store.ReadCommitFile(context.Background(), recorded.Commit, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := runmanifest.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := manifest.Stages[0].Producer.Session
+	if session == nil || session.RetrievalStatus != runmanifest.SessionEvidenceFailed || session.TranscriptArtifact != nil {
+		t.Fatalf("session evidence = %#v", session)
 	}
 }
 
@@ -389,6 +556,22 @@ func TestRunRecorderAcceptsEmptyOutput(t *testing.T) {
 	}
 	if recorded.OutputArtifact == "" {
 		t.Error("OutputArtifact is empty even for zero-byte output")
+	}
+}
+
+func TestRunRecorderRejectsOverLimitLog(t *testing.T) {
+	store, _, resolved := seedRunForRecord(t)
+	res := RunResult{
+		Output:    []byte("output"),
+		MediaType: "text/plain",
+		Log:       bytes.Repeat([]byte("x"), MaxStageLogBytes+1),
+		Producer: runmanifest.Producer{
+			Skill: runmanifest.Skill{ID: "sk", Repo: "repo", Version: "v1"},
+		},
+	}
+	_, err := (RunRecorder{Store: store}).Record(context.Background(), "source-run", "gen", resolved, res)
+	if err == nil || !strings.Contains(err.Error(), "runner log exceeds") {
+		t.Fatalf("Record error = %v", err)
 	}
 }
 

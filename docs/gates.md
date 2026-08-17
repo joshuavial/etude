@@ -69,11 +69,13 @@ preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
 recorded artifacts (its output or one of its inputs). The gate JSON is parsed
 strictly: an unknown or misspelled field (at any nesting level) is rejected
 rather than silently dropped, as is any trailing content after the gate object.
-Invalid input is rejected without changing the run. A run that carries
-any gates is written as `manifest_version` 3; a run containing a
-caller-workspace stage uses version 4 instead. Version 4 also carries top-level
-`original_git_sha`, keeping the run's pinned hermetic checkout distinct from
-each caller stage's clean post-run `git_sha`.
+Invalid input is rejected without changing the run. A run that carries gates
+is written as `manifest_version` 3 unless it also carries a stage-log artifact
+or caller-workspace stage, either of which uses version 4. A caller-workspace
+run also carries top-level `original_git_sha`, keeping its pinned hermetic
+checkout distinct from each caller stage's clean post-run `git_sha`. For
+compatibility with durable refs written by development builds, readers also
+accept a stage log in version 2 or 3, but new writers always emit version 4.
 
 The capture input above uses `session.transcript_path` because it points at a
 local file to import. Stored manifests replace that input-only path with:
@@ -327,9 +329,10 @@ live-specific characteristics:
   checkout. False is omitted, including for checks-only gates. This field is an
   audit record; current workflow configuration remains the authorization source.
   It is live-derived and is not accepted in an offline `capture-gate` input file.
-- A run that carries any gate attempts is stored as `manifest_version` 3, or
-  version 4 when it also contains a caller-workspace stage. Version 4 requires
-  top-level `original_git_sha` for the run's pinned hermetic checkout.
+- A run that carries gate attempts is stored as `manifest_version` 3, or
+  version 4 when any stage carries a log artifact or uses the caller workspace.
+  Caller-workspace runs require top-level `original_git_sha` for the run's
+  pinned hermetic checkout; log-only version 4 runs do not.
 
 ### Resuming an unusable-seat outage
 

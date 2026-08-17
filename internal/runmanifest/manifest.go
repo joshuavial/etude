@@ -34,8 +34,8 @@ var (
 type Manifest struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates; 4 = caller-workspace stage provenance.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
 	ManifestVersion int
 	RunID           string
 	Workflow        string
@@ -184,10 +184,12 @@ type Stage struct {
 	// Skill is the per-stage skill identity. For new manifests (manifest_version 2)
 	// it mirrors Producer.Skill; for legacy manifests it holds the lifted top-level
 	// skill block. Kept so capture.go / run.go / replay compile unmodified.
-	Skill     Skill
-	Producer  Producer
-	Inputs    []ArtifactRef
-	Output    ArtifactRef
+	Skill    Skill
+	Producer Producer
+	Inputs   []ArtifactRef
+	Output   ArtifactRef
+	// Log is optional bounded stdout/stderr evidence from the stage runner.
+	Log       *ArtifactRef
 	Timestamp time.Time
 	// ReplayOf, when non-nil, identifies the source run/stage this stage was
 	// replayed from. Required when ProducedBy=="replay"; forbidden otherwise.
@@ -391,6 +393,9 @@ func ArtifactPaths(manifest Manifest) []string {
 			seen[input.Path] = struct{}{}
 		}
 		seen[stage.Output.Path] = struct{}{}
+		if stage.Log != nil {
+			seen[stage.Log.Path] = struct{}{}
+		}
 	}
 	for _, gate := range manifest.Gates {
 		for _, seat := range gate.Seats {
@@ -450,6 +455,11 @@ func WriteManifestTree(ctx context.Context, store refstore.Store, refPrefix stri
 		}
 		if err := verifyArtifactFile(stage.Output, files, hashes); err != nil {
 			return "", err
+		}
+		if stage.Log != nil {
+			if err := verifyArtifactFile(*stage.Log, files, hashes); err != nil {
+				return "", err
+			}
 		}
 	}
 	for _, gate := range manifest.Gates {
@@ -554,6 +564,11 @@ func validateStage(index int, stage Stage) error {
 	if err := validateArtifactRef(stage.Output); err != nil {
 		return fmt.Errorf("%w: %s output: %v", ErrInvalidManifest, prefix, err)
 	}
+	if stage.Log != nil {
+		if err := validateArtifactRef(*stage.Log); err != nil {
+			return fmt.Errorf("%w: %s log: %v", ErrInvalidManifest, prefix, err)
+		}
+	}
 	if stage.Producer.Session != nil {
 		if err := validateSessionEvidence(prefix+".producer.session", *stage.Producer.Session); err != nil {
 			return err
@@ -626,6 +641,9 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
 
 func stageHasArtifact(stage Stage, artifact string) bool {
 	if stage.Output.Artifact == artifact {
+		return true
+	}
+	if stage.Log != nil && stage.Log.Artifact == artifact {
 		return true
 	}
 	for _, input := range stage.Inputs {
@@ -839,6 +857,9 @@ func referencedArtifactPaths(manifest Manifest) map[string]struct{} {
 			paths[input.Path] = struct{}{}
 		}
 		paths[stage.Output.Path] = struct{}{}
+		if stage.Log != nil {
+			paths[stage.Log.Path] = struct{}{}
+		}
 	}
 	for _, gate := range manifest.Gates {
 		for _, seat := range gate.Seats {
@@ -975,8 +996,8 @@ func cloneBytes(in []byte) []byte {
 type manifestJSON struct {
 	// ManifestVersion versions the on-disk document format.
 	// 0 = legacy/implicit v1 (no producer block); 2 = producer schema;
-	// 3 = schema with gates; 4 = caller-workspace stage provenance.
-	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3→4.)
+	// 3 = schema with gates; 4 = caller-workspace provenance and stage-log refs.
+	// (No v1 is ever emitted; the transition goes directly 0→2, then 2→3/4.)
 	ManifestVersion int    `json:"manifest_version,omitempty"`
 	RunID           string `json:"run_id"`
 	Workflow        string `json:"workflow"`
@@ -1060,6 +1081,7 @@ type stageJSON struct {
 	Producer  *producerJSON  `json:"producer,omitempty"`
 	Inputs    []artifactJSON `json:"inputs"`
 	Output    artifactJSON   `json:"output"`
+	Log       *artifactJSON  `json:"log,omitempty"`
 	Timestamp string         `json:"timestamp"`
 	ReplayOf  *replayOfJSON  `json:"replay_of,omitempty"`
 }
@@ -1162,6 +1184,7 @@ func (m Manifest) toJSON() manifestJSON {
 			Producer:  producerBlock,
 			Inputs:    inputs,
 			Output:    stage.Output.toJSON(),
+			Log:       artifactRefJSON(stage.Log),
 			Timestamp: formatTime(stage.Timestamp),
 			ReplayOf:  replayOfBlock,
 		})
@@ -1176,7 +1199,7 @@ func (m Manifest) toJSON() manifestJSON {
 		}
 	}
 	for _, stage := range m.Stages {
-		if stage.RunnerWorkspace != "" {
+		if stage.RunnerWorkspace != "" || stage.Log != nil {
 			version = 4
 			break
 		}
@@ -1318,7 +1341,7 @@ func ensureEOF(dec *json.Decoder) error {
 
 func (m manifestJSON) toManifest() (Manifest, error) {
 	// Version allowlist: accept 0 (legacy), 2 (producer schema), 3 (with gates),
-	// and 4 (caller-workspace stage provenance).
+	// and 4 (caller-workspace provenance and stage-log artifact refs).
 	// Reject 1 (never emitted) and any future version this binary cannot model.
 	switch m.ManifestVersion {
 	case 0, 2, 3, 4:
@@ -1330,7 +1353,16 @@ func (m manifestJSON) toManifest() (Manifest, error) {
 		return Manifest{}, fmt.Errorf("%w: original_git_sha requires manifest_version 4", ErrInvalidManifest)
 	}
 	if m.ManifestVersion == 4 && strings.TrimSpace(m.OriginalGitSHA) == "" {
-		return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha", ErrInvalidManifest)
+		hasStageLog := false
+		for _, stage := range m.Stages {
+			if stage.Log != nil {
+				hasStageLog = true
+				break
+			}
+		}
+		if !hasStageLog {
+			return Manifest{}, fmt.Errorf("%w: manifest_version 4 requires original_git_sha or a stage log", ErrInvalidManifest)
+		}
 	}
 
 	created, err := parseTime("created", m.Created)
@@ -1535,6 +1567,11 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 			Commit: s.ReplayOf.Commit,
 		}
 	}
+	var logRef *ArtifactRef
+	if s.Log != nil {
+		ref := s.Log.toArtifactRef()
+		logRef = &ref
+	}
 
 	return Stage{
 		Name:            s.Stage,
@@ -1546,6 +1583,7 @@ func (s stageJSON) toStage(index int) (Stage, error) {
 		Producer:        producer,
 		Inputs:          inputs,
 		Output:          s.Output.toArtifactRef(),
+		Log:             logRef,
 		Timestamp:       timestamp,
 		ReplayOf:        replayOf,
 	}, nil
@@ -1560,6 +1598,14 @@ func cloneStringMap(source map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func artifactRefJSON(ref *ArtifactRef) *artifactJSON {
+	if ref == nil {
+		return nil
+	}
+	encoded := ref.toJSON()
+	return &encoded
 }
 
 func (a artifactJSON) toArtifactRef() ArtifactRef {

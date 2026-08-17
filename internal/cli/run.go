@@ -365,6 +365,10 @@ func printRunDetail(out io.Writer, m runmanifest.Manifest) error {
 		o := stage.Output
 		fmt.Fprintf(out, "  output: role=%s path=%s size=%d storage=%s media-type=%s\n",
 			o.Role, o.Path, o.Size, o.Storage, o.MediaType)
+		if stage.Log != nil {
+			fmt.Fprintf(out, "  log:    digest=%s size=%d media-type=%s\n",
+				stage.Log.Artifact, stage.Log.Size, stage.Log.MediaType)
+		}
 		printSessionEvidence(out, "  ", stage.Producer.Session)
 	}
 
