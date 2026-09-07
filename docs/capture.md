@@ -109,6 +109,14 @@ fail rather than choose.
 passed through (reviewer seats, verdicts, provider/model/harness), use
 `etude capture-gate` — see [Gate reviewer records](gates.md).
 
+`etude gate` checks the supplied `--artifact` against the latest captured
+output for the stage's role before it invokes any reviewer, and refuses on a
+mismatch (see [Binding a supervised gate to the reviewed bytes](gates.md#binding-a-supervised-gate-to-the-reviewed-bytes)).
+When reviewed bytes need to change, recapture under the SAME stage name with
+`--expect append` rather than a new name. This appends another occurrence and
+does not replace the earlier one. Earlier gates keep citing the earlier
+occurrence by its recorded digest, so they remain valid after the recapture.
+
 ## Current Limits
 
 Not implemented yet:

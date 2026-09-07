@@ -20,6 +20,21 @@ mechanics.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- `etude gate` now hashes the supplied `--artifact` and refuses to run any
+  check or reviewer when it does not match the latest captured output for the
+  stage's role, closing the audit findings where a stale or wrong file could
+  be reviewed and recorded as if it were the captured artifact (A01, A15).
+  Manifest validation now accepts a `reviewed_stages` digest matching any
+  same-named stage occurrence's output, log, or input rather than only the
+  newest, so recapturing a stage under the same name (`--expect append`) keeps
+  earlier gates valid.
+
+---
+
 ## [v1.0.0] — 2026-07-30
 
 ### Added

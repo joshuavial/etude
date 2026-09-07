@@ -123,7 +123,9 @@ Run the plan gate only for high-risk designs. For the final gate, choose exactly
 one of `review` (consequential, L2) or `routine-review` (routine, L3 for dev-claude,
 L4 for dev-codex), capturing the matching output role before gating it. Supply
 `--harness`, `--model` and `--git-sha` when capturing actual agent work. Always
-recapture changed bytes before a review, preserving earlier attempts.
+recapture changed bytes before a review, preserving earlier attempts. `etude
+gate` enforces this: it refuses a supplied artifact that does not hash to the
+latest captured output for the stage's role, before any check or reviewer runs.
 
 Every configured gate explicitly requires `pass_threshold: 1`. L2 means both
 Astra and Fable must pass. Auth failures, timeout, missing tools or truncated

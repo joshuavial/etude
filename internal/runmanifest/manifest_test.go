@@ -1765,6 +1765,120 @@ func TestValidateGateRejects(t *testing.T) {
 	})
 }
 
+// sameNameStage builds a fully-valid Stage named "review" carrying the given
+// output/input/log artifacts, for the etude-3343 same-name recapture tests.
+func sameNameStage(output ArtifactRef, inputs []ArtifactRef, log *ArtifactRef, gitSHA string, ts time.Time) Stage {
+	return Stage{
+		Name:       "review",
+		ProducedBy: "original",
+		GitSHA:     gitSHA,
+		Skill:      Skill{ID: "dev-reviewer", Repo: "github.com/example/skills", Version: "v1"},
+		Inputs:     inputs,
+		Output:     output,
+		Log:        log,
+		Timestamp:  ts,
+	}
+}
+
+// TestValidateAcceptsReviewedRefOnEarlierSameNameStage is the etude-3343
+// R4/R5 regression: a stage can be recaptured under the same name (e.g. after
+// fixing reviewed bytes), and an earlier gate's reviewed_stages digest must
+// keep validating against the earlier occurrence it actually reviewed, not
+// only the newest one sharing that name.
+func TestValidateAcceptsReviewedRefOnEarlierSameNameStage(t *testing.T) {
+	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
+	outputA := contentArtifact("review", "text/markdown", []byte("review draft A"))
+	outputB := contentArtifact("review", "text/markdown", []byte("review draft B"))
+
+	m := validManifest(contentArtifact("plan", "text/markdown", []byte("plan")))
+	m.Stages = append(m.Stages,
+		sameNameStage(outputA, nil, nil, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now),
+		sameNameStage(outputB, nil, nil, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now.Add(time.Minute)),
+	)
+	m.Gates = []GateAttempt{{
+		GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
+		ReviewedStages: []ReviewedRef{{Stage: "review", Role: "review", Artifact: outputA.Artifact}},
+		Seats: []SeatResult{{
+			Seat: "opus", Harness: Harness{Name: "claude-code"}, Provider: Provider{Name: "anthropic", Model: "claude-opus"},
+			Verdict: SeatVerdictGo, Timestamp: now,
+		}},
+		Timestamp: now,
+	}}
+
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate rejected a gate citing the EARLIER same-name occurrence: %v", err)
+	}
+
+	encoded, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	got, err := ParseJSON(encoded)
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	if len(got.Stages) != 3 {
+		t.Fatalf("stage count after roundtrip = %d, want 3 (both same-name occurrences kept)", len(got.Stages))
+	}
+	if got.Stages[1].Output.Artifact != outputA.Artifact || got.Stages[2].Output.Artifact != outputB.Artifact {
+		t.Fatalf("same-name stage outputs not preserved in order: %+v", got.Stages[1:])
+	}
+	if len(got.Gates) != 1 || got.Gates[0].ReviewedStages[0].Artifact != outputA.Artifact {
+		t.Fatalf("reviewed_stages digest not preserved: %+v", got.Gates)
+	}
+}
+
+// TestValidateAcceptsSameNameEarlierOccurrenceViaInputOrLogDigest extends the
+// same regression to the input- and log-digest branches of stageHasArtifact:
+// a reviewed_stages digest naming an EARLIER same-name occurrence's input or
+// log (not its output) must also validate.
+func TestValidateAcceptsSameNameEarlierOccurrenceViaInputOrLogDigest(t *testing.T) {
+	now := time.Date(2026, 5, 25, 3, 0, 0, 0, time.UTC)
+	earlierInput := contentArtifact("review-source", "text/markdown", []byte("earlier input"))
+	earlierLog := contentArtifact("review-log", "text/plain", []byte("earlier log"))
+	earlierOutput := contentArtifact("review", "text/markdown", []byte("earlier output"))
+	laterOutput := contentArtifact("review", "text/markdown", []byte("later output"))
+
+	base := func() Manifest {
+		m := validManifest(contentArtifact("plan", "text/markdown", []byte("plan")))
+		m.Stages = append(m.Stages,
+			sameNameStage(earlierOutput, []ArtifactRef{earlierInput}, &earlierLog, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now),
+			sameNameStage(laterOutput, nil, nil, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now.Add(time.Minute)),
+		)
+		return m
+	}
+	seat := SeatResult{
+		Seat: "opus", Harness: Harness{Name: "claude-code"}, Provider: Provider{Name: "anthropic", Model: "claude-opus"},
+		Verdict: SeatVerdictGo, Timestamp: now,
+	}
+
+	t.Run("matched via earlier occurrence's input digest", func(t *testing.T) {
+		m := base()
+		m.Gates = []GateAttempt{{
+			GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
+			ReviewedStages: []ReviewedRef{{Stage: "review", Artifact: earlierInput.Artifact}},
+			Seats:          []SeatResult{seat},
+			Timestamp:      now,
+		}}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate rejected a reviewed_stages digest matching an earlier occurrence's INPUT: %v", err)
+		}
+	})
+
+	t.Run("matched via earlier occurrence's log digest", func(t *testing.T) {
+		m := base()
+		m.Gates = []GateAttempt{{
+			GateID: "review.r1", Phase: "review", Round: 1, Tier: 1, Status: GateStatusPass,
+			ReviewedStages: []ReviewedRef{{Stage: "review", Artifact: earlierLog.Artifact}},
+			Seats:          []SeatResult{seat},
+			Timestamp:      now,
+		}}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("Validate rejected a reviewed_stages digest matching an earlier occurrence's LOG: %v", err)
+		}
+	})
+}
+
 // TestVersionAllowlist verifies that ParseJSON accepts manifest_version 0, 2, 3,
 // and 4, and rejects unsupported versions with ErrInvalidManifest.
 func TestVersionAllowlist(t *testing.T) {

@@ -309,9 +309,12 @@ func (m Manifest) Validate() error {
 	}
 
 	// Build a stage index for referential integrity checks in gate validation.
-	stageIndex := make(map[string]Stage, len(m.Stages))
+	// Stage names are not unique: a stage may be recaptured under the same name
+	// (e.g. after fixing reviewed bytes), so every occurrence is retained in
+	// declaration order rather than only the latest.
+	stageIndex := make(map[string][]Stage, len(m.Stages))
 	for _, stage := range m.Stages {
-		stageIndex[stage.Name] = stage
+		stageIndex[stage.Name] = append(stageIndex[stage.Name], stage)
 	}
 
 	for _, name := range m.EnvAllowlist {
@@ -577,7 +580,7 @@ func validateStage(index int, stage Stage) error {
 	return nil
 }
 
-func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) error {
+func validateGate(index int, gate GateAttempt, stageIndex map[string][]Stage) error {
 	prefix := fmt.Sprintf("gate[%d]", index)
 
 	if err := validateIdentifier(prefix+".gate_id", gate.GateID); err != nil {
@@ -606,7 +609,7 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
 		if err := validateIdentifier(refPrefix+".stage", ref.Stage); err != nil {
 			return err
 		}
-		stage, ok := stageIndex[ref.Stage]
+		occurrences, ok := stageIndex[ref.Stage]
 		if !ok {
 			return fmt.Errorf("%w: %s stage %q not found in manifest", ErrInvalidManifest, refPrefix, ref.Stage)
 		}
@@ -619,8 +622,19 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string]Stage) erro
 			if !validSHA256(ref.Artifact) {
 				return fmt.Errorf("%w: %s artifact must be a lowercase sha256", ErrInvalidManifest, refPrefix)
 			}
-			// Artifact must match the stage's output or one of its inputs.
-			if !stageHasArtifact(stage, ref.Artifact) {
+			// The artifact must match the output, log, or an input of SOME stage
+			// occurrence carrying this name — not necessarily the newest one. A
+			// stage can be recaptured under the same name (etude-3343), and an
+			// earlier gate's reviewed_stages digest must keep validating against
+			// the earlier occurrence it actually reviewed.
+			found := false
+			for _, occurrence := range occurrences {
+				if stageHasArtifact(occurrence, ref.Artifact) {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return fmt.Errorf("%w: %s artifact %q not found on stage %q output or inputs", ErrInvalidManifest, refPrefix, ref.Artifact, ref.Stage)
 			}
 		}

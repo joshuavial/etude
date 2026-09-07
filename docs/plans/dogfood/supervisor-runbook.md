@@ -150,7 +150,10 @@ etude gate --run <bead> --stage <phase> --artifact ...
 
 The rerun stage name matches the convention `etude run`'s own gate uses for a
 re-driven stage. `etude gate` derives the round from the attempts already on the
-run, so the second attempt records as round 2 without being told.
+run, so the second attempt records as round 2 without being told. The `.r2`
+rename above is a convention, not a requirement: recapturing under the SAME
+stage name with `--expect append` also works and keeps earlier gates valid
+against the earlier occurrence's digest (see [Gate reviewer records](../../gates.md)).
 
 **Verify the ref after every capture.** `git show-ref refs/etude/runs/<bead>`
 before moving on. The run ref is the whole durable record; a capture that

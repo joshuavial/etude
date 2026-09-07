@@ -3,6 +3,8 @@ package liverun
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +22,13 @@ import (
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/workflow"
 )
+
+// seededGateArtifact is the exact byte content seedGateRun captures as the
+// reviewed stage's output. Tests that expect checks/seats to actually run must
+// pass this (or newline-equivalent bytes covered by the mismatch table test)
+// as GateRequest.Artifact, or the binding check added in etude-3343 rejects
+// them before either runs.
+const seededGateArtifact = "the artifact under review\n"
 
 // gateOnceStage is the stage under test: a `verify` stage gated at L2 with an
 // abstraction, mirroring the repo's own .etude/workflow.yaml.
@@ -39,9 +48,16 @@ func gateOnceStage(checks []workflow.Runner) workflow.Stage {
 // gated role, which is the precondition `etude gate` enforces.
 func seedGateRun(t *testing.T, repo, runID, stageName, role string) {
 	t.Helper()
+	seedGateRunWithContent(t, repo, runID, stageName, role, seededGateArtifact)
+}
+
+// seedGateRunWithContent is seedGateRun with the captured output content
+// parameterized, so tests can pin exact newline-boundary bytes.
+func seedGateRunWithContent(t *testing.T, repo, runID, stageName, role, content string) {
+	t.Helper()
 	store := refstore.New(repo)
 	as := artifactstore.New()
-	art, err := as.AddContent(role, "text/markdown; charset=utf-8", []byte("the artifact under review\n"))
+	art, err := as.AddContent(role, "text/markdown; charset=utf-8", []byte(content))
 	if err != nil {
 		t.Fatalf("add artifact: %v", err)
 	}
@@ -196,6 +212,154 @@ func TestGateStageRunWithoutReviewableStageIsAClearError(t *testing.T) {
 	}
 }
 
+// TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats is the etude-3343
+// regression: a supplied artifact that does not hash to the latest captured
+// output for the stage's role must be refused before any check runs, before
+// any seat is invoked, before ScratchDir is created, and without touching the
+// run ref at all.
+func TestGateStageRejectsArtifactMismatchBeforeChecksAndSeats(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	before, err := refstore.New(repo).Resolve(context.Background(), runsPrefix+"r1")
+	if err != nil {
+		t.Fatalf("resolve before gate: %v", err)
+	}
+
+	checkResolutions := 0
+	seatResolutions := 0
+	e := &Engine{
+		Store: refstore.New(repo),
+		ResolveCheck: func(workflow.Runner) (CheckRunner, error) {
+			checkResolutions++
+			return &stubCheckRunner{passed: true}, nil
+		},
+		ResolveSeat: func(string) (replay.Runner, SeatMeta, error) {
+			seatResolutions++
+			return &replay.StubRunner{CannedOutput: goEnvelope(), CannedMediaType: "application/json"}, SeatMeta{}, nil
+		},
+		Tiers: fixedTiers(map[string][2]interface{}{
+			"L2": {[]string{"opus", "codex"}, "L1"},
+		}),
+		Root: repo,
+		Now:  fixedClock(),
+	}
+
+	scratch := gateScratch(t)
+	mismatched := []byte("this is not the reviewed artifact\n")
+	_, err = e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID:       "r1",
+		Stage:       gateOnceStage([]workflow.Runner{{Command: "true"}}),
+		Artifact:    mismatched,
+		WorktreeDir: repo,
+		ScratchDir:  scratch,
+	})
+	if !errors.Is(err, ErrArtifactMismatch) {
+		t.Fatalf("expected ErrArtifactMismatch, got %v", err)
+	}
+
+	suppliedSum := sha256.Sum256(mismatched)
+	supplied := hex.EncodeToString(suppliedSum[:])
+	expectedSum := sha256.Sum256([]byte(seededGateArtifact))
+	expected := hex.EncodeToString(expectedSum[:])
+	for _, want := range []string{
+		"r1", "verify",
+		supplied, expected,
+		"etude capture verify --run r1 --expect append --output verify=",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q, got %q", want, err.Error())
+		}
+	}
+
+	if checkResolutions != 0 || seatResolutions != 0 {
+		t.Fatalf("mismatch resolved checks=%d seats=%d, want neither invoked", checkResolutions, seatResolutions)
+	}
+	if _, statErr := os.Stat(scratch); !os.IsNotExist(statErr) {
+		t.Fatalf("ScratchDir was created despite the rejected artifact: err=%v", statErr)
+	}
+	after, err := refstore.New(repo).Resolve(context.Background(), runsPrefix+"r1")
+	if err != nil {
+		t.Fatalf("resolve after gate: %v", err)
+	}
+	if after != before {
+		t.Fatalf("run ref commit changed on a rejected mismatch: before %s after %s", before, after)
+	}
+	if got := readLiveManifest(t, repo, "r1"); len(got.Gates) != 0 {
+		t.Fatalf("rejected mismatch recorded %d gate attempts, want none", len(got.Gates))
+	}
+}
+
+// TestGateStageArtifactNewlineDifferenceIsAMismatch pins the invariant that the
+// binding hash is over the raw bytes with no trimming or normalization: a
+// trailing-newline difference in either direction is a mismatch, and
+// byte-identical content (with or without a trailing newline) passes.
+func TestGateStageArtifactNewlineDifferenceIsAMismatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		seeded     string
+		supplied   string
+		wantReject bool
+	}{
+		{"identical without trailing newline passes", "no trailing newline here", "no trailing newline here", false},
+		{"identical with trailing newline passes", "has a trailing newline\n", "has a trailing newline\n", false},
+		{"seeded has newline, supplied strips it", "has a trailing newline\n", "has a trailing newline", true},
+		{"seeded lacks newline, supplied adds one", "no trailing newline here", "no trailing newline here\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initTestRepo(t)
+			seedGateRunWithContent(t, repo, "r1", "verify", "verify", tc.seeded)
+			e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+
+			_, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+				RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(tc.supplied),
+				WorktreeDir: repo, ScratchDir: gateScratch(t),
+			})
+			if tc.wantReject {
+				if !errors.Is(err, ErrArtifactMismatch) {
+					t.Fatalf("expected ErrArtifactMismatch, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected byte-identical content to pass, got %v", err)
+			}
+		})
+	}
+}
+
+// TestGateStageRecordsDigestOfReviewedBytes is R2: the recorded
+// reviewed_stages[0].artifact digest is the digest of the exact bytes every
+// seat reviewed (req.Artifact), which after the binding check is provably
+// equal to the stage's own recorded output digest.
+func TestGateStageRecordsDigestOfReviewedBytes(t *testing.T) {
+	repo := initTestRepo(t)
+	seedGateRun(t, repo, "r1", "verify", "verify")
+	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
+
+	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
+		WorktreeDir: repo, ScratchDir: gateScratch(t),
+	})
+	if err != nil {
+		t.Fatalf("GateStage: %v", err)
+	}
+	if !outcome.Passed() {
+		t.Fatalf("expected pass, got %s", outcome.Status)
+	}
+
+	sum := sha256.Sum256([]byte(seededGateArtifact))
+	want := hex.EncodeToString(sum[:])
+	if len(outcome.Attempt.ReviewedStages) != 1 || outcome.Attempt.ReviewedStages[0].Artifact != want {
+		t.Fatalf("reviewed_stages = %+v, want one entry with artifact %s", outcome.Attempt.ReviewedStages, want)
+	}
+
+	m := readLiveManifest(t, repo, "r1")
+	if len(m.Gates) != 1 || len(m.Gates[0].ReviewedStages) != 1 || m.Gates[0].ReviewedStages[0].Artifact != want {
+		t.Fatalf("stored gate reviewed artifact = %+v, want %s", m.Gates, want)
+	}
+}
+
 func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
 	repo := initTestRepo(t)
 	seedGateRun(t, repo, "r1", "verify", "verify")
@@ -206,7 +370,7 @@ func TestGateStagePassRecordsOneAttemptAndAdvances(t *testing.T) {
 	outcome, err := e.GateStage(context.Background(), &out, GateRequest{
 		RunID:       "r1",
 		Stage:       gateOnceStage(nil),
-		Artifact:    []byte("the artifact under review\n"),
+		Artifact:    []byte(seededGateArtifact),
 		WorktreeDir: repo,
 		ScratchDir:  gateScratch(t),
 	})
@@ -297,7 +461,7 @@ func TestGateStageOutputOnlySeatsUseNeutralRepoAndChecksUseCallerTree(t *testing
 	}
 	stage := gateOnceStage([]workflow.Runner{{Command: "inspect-caller"}})
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: stage, Artifact: []byte("artifact"),
+		RunID: "r1", Stage: stage, Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -376,7 +540,7 @@ func TestGateStageBlockDoesNotPassAndCarriesRequired(t *testing.T) {
 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), blockEnvelope()}, true, nil)
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -410,7 +574,7 @@ func TestGateStageSeatOutageEscalates(t *testing.T) {
 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), nil}, true, nil)
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -439,7 +603,7 @@ func TestGateStageFailingCheckDoesNotPass(t *testing.T) {
 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, false, nil)
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(checks), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(checks), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -458,7 +622,7 @@ func TestGateStageRoundIncrementsAcrossInvocations(t *testing.T) {
 
 	first := gateOnceEngine(t, repo, [][]byte{goEnvelope(), blockEnvelope()}, true, nil)
 	o1, err := first.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -470,7 +634,7 @@ func TestGateStageRoundIncrementsAcrossInvocations(t *testing.T) {
 
 	second := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
 	o2, err := second.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -517,7 +681,7 @@ func TestGateStageRecordParitesWithCaptureGate(t *testing.T) {
 	}
 
 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	}); err != nil {
 		t.Fatalf("GateStage: %v", err)
@@ -565,7 +729,7 @@ func TestGateStageSeatClaimingMissingTranscriptIsNotGo(t *testing.T) {
 	}
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -587,7 +751,7 @@ func TestGateStageRemovesNothingFromPriorRun(t *testing.T) {
 
 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	}); err != nil {
 		t.Fatalf("GateStage: %v", err)
@@ -729,7 +893,7 @@ func TestGateStageResolvesDocsStageByRoleNotName(t *testing.T) {
 	e := gateOnceEngine(t, repo, [][]byte{goEnvelope(), goEnvelope()}, true, nil)
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte("docs artifact"),
+		RunID: "r1", Stage: gateOnceDocsStage(), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -801,7 +965,7 @@ func TestSeatLadderResolvesCandidatesOncePerSeat(t *testing.T) {
 	}
 
 	if _, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	}); err != nil {
 		t.Fatalf("GateStage: %v", err)
@@ -823,7 +987,7 @@ func TestSeatLadderPrimarySucceedsFallbackUntouched(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -852,7 +1016,7 @@ func TestSeatLadderFallsThroughAndRecordsTheHarnessThatRan(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -891,7 +1055,7 @@ func TestSeatLadderBlockFromPrimaryIsNeverReplacedByAFallbackGo(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -927,7 +1091,7 @@ func TestSeatLadderSkipsInHarnessAndKeepsGoing(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -957,7 +1121,7 @@ func TestSeatLadderExhaustedRecordsEveryRungAndAHarness(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {
@@ -993,7 +1157,7 @@ func TestSeatLadderAllInHarnessRunsNothing(t *testing.T) {
 	})
 
 	outcome, err := e.GateStage(context.Background(), io.Discard, GateRequest{
-		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte("x"),
+		RunID: "r1", Stage: gateOnceStage(nil), Artifact: []byte(seededGateArtifact),
 		WorktreeDir: repo, ScratchDir: gateScratch(t),
 	})
 	if err != nil {

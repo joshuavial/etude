@@ -8,6 +8,8 @@ Run one stage's review gate and record the attempt on a run
 
 Resolve a stage's gate tier and abstraction from .etude/workflow.yaml, invoke that tier's seats from .etude/registry.yaml against one shared prompt, and append the gate attempt to refs/etude/runs/<run>.
 
+The supplied --artifact must be byte-identical to the latest captured output for the stage's role; a mismatch is refused before any reviewer runs.
+
 Exits 0 only when the gate passes. A blocked gate, a failing check, and a seat outage all exit non-zero, so a supervisor cannot advance past a gate that did not actually pass.
 
 ```

@@ -2,6 +2,8 @@ package liverun
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +30,13 @@ var ErrRunNotFound = errors.New("run not found")
 // ErrNoReviewableStage is returned when the run exists but carries no stage
 // producing the gated phase's role — there is nothing for the gate to review.
 var ErrNoReviewableStage = errors.New("no reviewable stage on run")
+
+// ErrArtifactMismatch is returned when the artifact supplied to GateStage does
+// not hash to the same digest as the latest captured output for the stage's
+// produced role. A mismatch means the bytes about to be reviewed are not the
+// bytes actually captured, so the gate refuses before any check, seat
+// invocation, or run-ref write.
+var ErrArtifactMismatch = errors.New("gate artifact does not match captured output")
 
 // GateRequest describes one supervised gate invocation.
 //
@@ -112,6 +121,23 @@ func (e *Engine) GateStage(ctx context.Context, out io.Writer, req GateRequest) 
 	if !ok {
 		return GateOutcome{}, fmt.Errorf("%w: run %s has no stage producing role %q; capture it before gating stage %q",
 			ErrNoReviewableStage, req.RunID, req.Stage.Produces, req.Stage.Name)
+	}
+
+	// The gate must review the exact bytes that were captured, not merely
+	// whatever file the caller currently points at. Hash req.Artifact — the
+	// same slice handed to buildGatePrompt below — and compare it against the
+	// digest already recorded on the reviewed stage's output. Every stage
+	// output already carries a valid SHA-256 (validateArtifactRef), so there is
+	// no digestless branch to consider.
+	suppliedSum := sha256.Sum256(req.Artifact)
+	supplied := hex.EncodeToString(suppliedSum[:])
+	if supplied != reviewed.Output.Artifact {
+		return GateOutcome{}, fmt.Errorf(
+			"%w: run %s stage %q output role %q is %s but the supplied artifact is %s; "+
+				"recapture it first (etude capture %s --run %s --expect append --output %s=<artifact-path>, "+
+				"where <artifact-path> is the file given to gate --artifact) then rerun this gate",
+			ErrArtifactMismatch, req.RunID, reviewed.Name, req.Stage.Produces, reviewed.Output.Artifact, supplied,
+			reviewed.Name, req.RunID, req.Stage.Produces)
 	}
 
 	// Resolve seats for the configured tier. No flag can widen or narrow this.

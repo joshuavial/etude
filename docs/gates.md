@@ -66,7 +66,13 @@ The gate file is a single JSON object. Field names mirror the stored record:
 Appending is additive and validated: existing stages and prior gate attempts are
 preserved, `gate_id` and `(phase, round)` must be unique on the run, and a
 `reviewed_stages` artifact (when set) must match one of the named stage's
-recorded artifacts (its output or one of its inputs). The gate JSON is parsed
+recorded artifacts (its output, log, or one of its inputs). A stage name is not
+unique: recapturing the same stage name (for example after fixing reviewed
+bytes) appends another occurrence rather than replacing the earlier one, and
+the artifact only has to match SOME occurrence carrying that name, not
+necessarily the newest. This is what lets an earlier gate keep validating
+against the exact bytes it actually reviewed after the stage is recaptured.
+The gate JSON is parsed
 strictly: an unknown or misspelled field (at any nesting level) is rejected
 rather than silently dropped, as is any trailing content after the gate object.
 Invalid input is rejected without changing the run. A run that carries gates
@@ -233,6 +239,19 @@ no manual `etude capture-gate` call is needed. See [Runs](run.md#gate-execution)
 for the full live execution semantics (check/seat invocation, synthesis,
 rerun, escalate). This section documents the **seat output envelope** contract
 that seat runners must satisfy when invoked by the live engine.
+
+### Binding a supervised gate to the reviewed bytes
+
+`etude gate` hashes the `--artifact` file with SHA-256 and refuses to proceed
+when that digest differs from the latest captured output for the stage's
+role. The refusal happens before any check runs, before any seat is invoked,
+and before anything is written to the run, so a mismatched artifact never buys
+a reviewer's attention or a recorded verdict. The error names the run, stage,
+role, expected digest, supplied digest, and the recapture command to run
+(`etude capture <stage> --run <run> --expect append --output <role>=<path>`)
+before regating. Recapturing under the same stage name, as described above,
+appends a new occurrence rather than replacing the old one, so an earlier gate
+keeps citing the exact bytes it reviewed.
 
 Live model adapters receive exactly one input file with role `gate-prompt`.
 It contains the checkout policy and the artifact under review; adapters do not
