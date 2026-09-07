@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -1015,6 +1016,120 @@ func createLiveRun(t *testing.T, repo, runID string) {
 	}
 }
 
+// sequenceReplayRunner gives each captured source stage distinct output bytes.
+// The forward-replay tests use real ExecRunners; this only builds the stored
+// run fixture whose recorded inputs are later replayed.
+type sequenceReplayRunner struct {
+	outputs [][]byte
+	calls   int
+}
+
+func (r *sequenceReplayRunner) Run(_ context.Context, req replay.RunRequest) (replay.RunResult, error) {
+	if r.calls >= len(r.outputs) {
+		return replay.RunResult{}, fmt.Errorf("unexpected source runner call %d", r.calls+1)
+	}
+	output := r.outputs[r.calls]
+	r.calls++
+	return replay.RunResult{Output: output, MediaType: req.OutputMediaType, Producer: req.Producer}, nil
+}
+
+// createForwardReplayFixture records six sequential stages with distinct
+// inputs. Callers may rename the recorded stages to model engine-generated
+// retry stages without changing the captured artifacts or their order.
+func createForwardReplayFixture(t *testing.T, repo, runID string) {
+	t.Helper()
+	headSHA := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	wf := workflow.Workflow{
+		Name: "replay-fixture",
+		Stages: []workflow.Stage{
+			{Name: "plan", Skill: "fixture", Produces: "plan", Inputs: []string{"task"}},
+			{Name: "review", Skill: "fixture", Produces: "review", Inputs: []string{"plan"}},
+			{Name: "draft", Skill: "fixture", Produces: "draft", Inputs: []string{"review"}},
+			{Name: "publish", Skill: "fixture", Produces: "published", Inputs: []string{"draft"}},
+			{Name: "release", Skill: "fixture", Produces: "released", Inputs: []string{"published"}},
+			{Name: "archive", Skill: "fixture", Produces: "archived", Inputs: []string{"released"}},
+		},
+	}
+	source := &sequenceReplayRunner{outputs: [][]byte{
+		[]byte("source-plan"), []byte("source-review"), []byte("source-draft"),
+		[]byte("source-publish"), []byte("source-release"), []byte("source-archive"),
+	}}
+	e := liverun.Engine{
+		Store:         refstore.New(repo),
+		ResolveRunner: func(workflow.Stage) (replay.Runner, error) { return source, nil },
+		Root:          repo,
+		Now:           func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
+	}
+	if err := e.Run(context.Background(), &bytes.Buffer{}, wf, liverun.RunOptions{
+		TaskBytes: []byte("source-task"),
+		TaskFile:  "task.txt",
+		RunID:     runID,
+		GitSHA:    headSHA,
+	}); err != nil {
+		t.Fatalf("create forward replay fixture: %v", err)
+	}
+}
+
+// writeForwardReplayConfig supplies three real shell adapters through the
+// workflow/registry path: plan, review, and literal plan.r2.
+func writeForwardReplayConfig(t *testing.T, repo string) {
+	t.Helper()
+	writeRunner := func(filename, label string) string {
+		path := filepath.Join(repo, filename)
+		body := "#!/bin/sh\nset -eu\nprintf '%s' '" + label + ":' > \"$ETUDE_OUTPUT_FILE\"\n" +
+			"for input in \"$ETUDE_INPUTS_DIR\"/*; do\n" +
+			"  [ -f \"$input\" ] && cat \"$input\" >> \"$ETUDE_OUTPUT_FILE\"\n" +
+			"done\n"
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatalf("write runner %s: %v", filename, err)
+		}
+		return path
+	}
+	planRunner := writeRunner("forward-plan.sh", "P")
+	reviewRunner := writeRunner("forward-review.sh", "R")
+	literalRunner := writeRunner("forward-literal.sh", "L")
+
+	etudeDir := filepath.Join(repo, ".etude")
+	if err := os.MkdirAll(etudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .etude: %v", err)
+	}
+	workflowYAML := `name: replay-fixture
+stages:
+  - name: plan
+    skill: fixture
+    produces: plan
+    runner: {name: plan-runner}
+  - name: review
+    skill: fixture
+    produces: review
+    runner: {name: review-runner}
+  - name: plan.r2
+    skill: fixture
+    produces: literal
+    runner: {name: literal-runner}
+`
+	registryYAML := fmt.Sprintf(`seats:
+  plan-runner:
+    provider: deterministic/plan
+    harness: shell
+    invoke: %s
+  review-runner:
+    provider: deterministic/review
+    harness: shell
+    invoke: %s
+  literal-runner:
+    provider: deterministic/literal
+    harness: shell
+    invoke: %s
+`, planRunner, reviewRunner, literalRunner)
+	if err := os.WriteFile(filepath.Join(etudeDir, "workflow.yaml"), []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(etudeDir, "registry.yaml"), []byte(registryYAML), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+}
+
 // AC2: etude replay <id> (no stage) forward re-executes all stages.
 func TestReplayForwardAllStages(t *testing.T) {
 	repo := initCaptureRepo(t)
@@ -1033,6 +1148,136 @@ func TestReplayForwardAllStages(t *testing.T) {
 	want := "replayedreplayedreplayed"
 	if stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestReplayForwardDefaultWorkflowResolvesRetryStages(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell adapter test")
+	}
+	repo := initCaptureRepo(t)
+	runID := "replay-fixture-20260101T000000Z-retries"
+	createForwardReplayFixture(t, repo, runID)
+	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].Name = "plan"
+		m.Stages[1].Name = "review"
+		m.Stages[2].Name = "review.r2"
+		m.Stages[3].Name = "review.r3"
+		m.Stages[4].Name = "plan.r2"    // literal workflow name must win.
+		m.Stages[5].Name = "plan.r2.r3" // retry of that literal name.
+		for i := range m.Stages {
+			m.Stages[i].Producer.Model = fmt.Sprintf("source-model-%d", i+1)
+		}
+	})
+	before := readRunManifest(t, repo, runID)
+	writeForwardReplayConfig(t, repo)
+	chdir(t, repo)
+
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+	cmd.SetArgs([]string{runID})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("forward replay: %v\nstderr: %s", err, errOut.String())
+	}
+	if got, want := out.String(), "P:source-taskR:source-planR:source-reviewR:source-draftL:source-publishL:source-release"; got != want {
+		t.Fatalf("forward output = %q, want %q", got, want)
+	}
+	if after := readRunManifest(t, repo, runID); !reflect.DeepEqual(after, before) {
+		t.Fatal("forward replay changed recorded stage names, metadata, inputs, or order")
+	}
+}
+
+func TestForwardReplayWorkflowStageRetryLookup(t *testing.T) {
+	wf := workflow.Workflow{Stages: []workflow.Stage{{Name: "plan"}, {Name: "plan.r2"}}}
+	tests := []struct {
+		name     string
+		recorded string
+		want     string
+		found    bool
+	}{
+		{name: "exact ordinary", recorded: "plan", want: "plan", found: true},
+		{name: "exact literal", recorded: "plan.r2", want: "plan.r2", found: true},
+		{name: "generated retry", recorded: "plan.r3", want: "plan", found: true},
+		{name: "nested literal retry", recorded: "plan.r2.r3", want: "plan.r2", found: true},
+		{name: "r1 is not generated", recorded: "plan.r1"},
+		{name: "zero is not generated", recorded: "plan.r0"},
+		{name: "leading zero is not canonical", recorded: "plan.r02"},
+		{name: "signed round is malformed", recorded: "plan.r+2"},
+		{name: "suffix text is malformed", recorded: "plan.r2extra"},
+		{name: "generated retry missing base", recorded: "missing.r2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := forwardReplayWorkflowStage(wf, tt.recorded)
+			if found != tt.found {
+				t.Fatalf("found = %v, want %v", found, tt.found)
+			}
+			if found && got.Name != tt.want {
+				t.Fatalf("stage = %q, want %q", got.Name, tt.want)
+			}
+		})
+	}
+}
+
+func TestReplayForwardDefaultWorkflowRejectsInvalidRetryNamesBeforeExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell adapter test")
+	}
+	for _, recordedName := range []string{"plan.r1", "plan.r02", "plan.r2extra", "missing.r2"} {
+		t.Run(recordedName, func(t *testing.T) {
+			repo := initCaptureRepo(t)
+			runID := "replay-fixture-20260101T000000Z-invalid"
+			createForwardReplayFixture(t, repo, runID)
+			rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+				m.Stages[1].Name = recordedName
+			})
+			writeForwardReplayConfig(t, repo)
+			marker := filepath.Join(repo, "runner-was-called")
+			planScript := filepath.Join(repo, "forward-plan.sh")
+			if err := os.WriteFile(planScript, []byte("#!/bin/sh\ntouch '"+marker+"'\nprintf P > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+				t.Fatalf("write side-effect runner: %v", err)
+			}
+			chdir(t, repo)
+
+			var out, errOut bytes.Buffer
+			cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+			cmd.SetArgs([]string{runID})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "stage \""+recordedName+"\" not found") {
+				t.Fatalf("forward replay error = %v, want missing stage %q", err, recordedName)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("forward replay produced partial output %q", out.String())
+			}
+			if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("runner side effect exists after failed preflight: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestReplayForwardRunnerOverrideBypassesWorkflowLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell adapter test")
+	}
+	repo, runID := captureStageForReplay(t)
+	rewriteReplayManifest(t, repo, runID, func(m *runmanifest.Manifest) {
+		m.Stages[0].Name = "unmapped.r2"
+	})
+	override := filepath.Join(repo, "forward-override.sh")
+	if err := os.WriteFile(override, []byte("#!/bin/sh\nprintf override > \"$ETUDE_OUTPUT_FILE\"\n"), 0o755); err != nil {
+		t.Fatalf("write override runner: %v", err)
+	}
+	chdir(t, repo)
+
+	var out, errOut bytes.Buffer
+	cmd := buildReplayCommand(&out, &errOut, &replayRunner{now: time.Now})
+	cmd.SetArgs([]string{runID, "--runner", override})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("forward replay with --runner: %v\nstderr: %s", err, errOut.String())
+	}
+	if got, want := out.String(), "override"; got != want {
+		t.Fatalf("override output = %q, want %q", got, want)
 	}
 }
 

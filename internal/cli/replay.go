@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -402,16 +403,57 @@ func (r *replayRunner) runForward(ctx context.Context, out io.Writer, runID, run
 			}
 		}
 		resolveRunner = func(stageName string) (replay.Runner, error) {
-			for _, s := range wf.Stages {
-				if s.Name == stageName {
-					return liverun.ResolveStageRunner(wf, reg, s, timeout, r.envAllowlist)
-				}
+			stage, ok := forwardReplayWorkflowStage(wf, stageName)
+			if !ok {
+				return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
 			}
-			return nil, fmt.Errorf("stage %q not found in workflow %q", stageName, wf.Name)
+			return liverun.ResolveStageRunner(wf, reg, stage, timeout, r.envAllowlist)
 		}
 	}
 
 	return liverun.ReplayForward(ctx, store, root, out, runID, resolveRunner)
+}
+
+// forwardReplayWorkflowStage resolves a recorded forward-replay stage to its
+// workflow definition. A literal workflow name always wins. When there is no
+// exact match, the engine's generated retry suffix (a final, canonical .rN for
+// N >= 2) is removed once and the exact base name is looked up. This preserves
+// legal literal names such as "review.r2" and allows a retry of one of those
+// names ("review.r2.r3") to resolve back to it.
+func forwardReplayWorkflowStage(wf workflow.Workflow, recordedName string) (workflow.Stage, bool) {
+	if stage, ok := findStage(wf, recordedName); ok {
+		return stage, true
+	}
+
+	base, ok := generatedRetryBase(recordedName)
+	if !ok {
+		return workflow.Stage{}, false
+	}
+	return findStage(wf, base)
+}
+
+// generatedRetryBase recognizes only the suffix emitted by the engine's
+// fmt.Sprintf("%s.r%d", stage, round): decimal digits without a leading zero
+// and a round of at least two. It removes one final suffix only.
+func generatedRetryBase(name string) (string, bool) {
+	idx := strings.LastIndex(name, ".r")
+	if idx < 0 || idx+2 == len(name) {
+		return "", false
+	}
+	roundText := name[idx+2:]
+	if roundText[0] == '0' {
+		return "", false
+	}
+	for _, c := range roundText {
+		if c < '0' || c > '9' {
+			return "", false
+		}
+	}
+	round, err := strconv.ParseUint(roundText, 10, 64)
+	if err != nil || round < 2 {
+		return "", false
+	}
+	return name[:idx], true
 }
 
 // gitConfigGet reads a single git config value for key using any scope.

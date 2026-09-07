@@ -3,6 +3,7 @@ package liverun
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,15 @@ import (
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/workflow"
 )
+
+type countingForwardRunner struct {
+	calls int
+}
+
+func (r *countingForwardRunner) Run(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+	r.calls++
+	return replay.RunResult{Output: []byte("unexpected")}, nil
+}
 
 // createRunForReplay creates a run with 3 stages using a stub runner
 // and returns the run id and the repo.
@@ -72,6 +82,51 @@ func TestReplayForwardThreeStages(t *testing.T) {
 		if !bytes.Contains([]byte(got), []byte(want)) {
 			t.Errorf("output missing %q; got %q", want, got)
 		}
+	}
+}
+
+func TestReplayForwardPreflightsAllRunnersBeforeExecution(t *testing.T) {
+	repo, runID := createRunForReplay(t)
+	var resolved []string
+	runner := runnerFunc(func(_ context.Context, _ replay.RunRequest) (replay.RunResult, error) {
+		if got, want := len(resolved), 3; got != want {
+			t.Errorf("runners resolved before execution = %d, want %d", got, want)
+		}
+		return replay.RunResult{Output: []byte("replayed")}, nil
+	})
+
+	if err := ReplayForward(context.Background(), refstore.New(repo), repo, &bytes.Buffer{}, runID,
+		func(stageName string) (replay.Runner, error) {
+			resolved = append(resolved, stageName)
+			return runner, nil
+		}); err != nil {
+		t.Fatalf("ReplayForward: %v", err)
+	}
+	if got, want := strings.Join(resolved, ","), "stage-a,stage-b,stage-c"; got != want {
+		t.Fatalf("runner resolution order = %q, want %q", got, want)
+	}
+}
+
+func TestReplayForwardPreflightFailureDoesNotExecuteAnyRunner(t *testing.T) {
+	repo, runID := createRunForReplay(t)
+	runner := &countingForwardRunner{}
+	var resolved []string
+	err := ReplayForward(context.Background(), refstore.New(repo), repo, &bytes.Buffer{}, runID,
+		func(stageName string) (replay.Runner, error) {
+			resolved = append(resolved, stageName)
+			if stageName == "stage-c" {
+				return nil, errors.New("missing runner")
+			}
+			return runner, nil
+		})
+	if err == nil || !strings.Contains(err.Error(), "stage-c") || !strings.Contains(err.Error(), "missing runner") {
+		t.Fatalf("ReplayForward error = %v, want stage-c runner-resolution failure", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0 after failed preflight", runner.calls)
+	}
+	if got, want := strings.Join(resolved, ","), "stage-a,stage-b,stage-c"; got != want {
+		t.Fatalf("runner resolution order = %q, want %q", got, want)
 	}
 }
 

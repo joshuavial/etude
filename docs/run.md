@@ -663,10 +663,27 @@ a live run: it replays what was captured, in order.
 Single-stage flags (`--record`, `--output`, producer overrides) are not valid
 in forward-replay mode and return an error if supplied.
 
-Forward replay uses one shared checkout, so every captured stage must record the
-same `git_sha`. For a historical or manually captured run whose stages record
-different commits, replay each stage independently with
-`etude replay <run-id> <stage>`.
+Forward replay uses one shared checkout at the run's original checkout SHA, so
+every hermetic captured stage must record that same `git_sha`. A
+caller-workspace stage may instead record its clean post-run commit; it still
+replays against the original checkout. A historical or manually captured run
+whose hermetic stages record different commits is rejected because Etude cannot
+verify a single recorded checkout for it.
+
+Without `--runner`, each recorded stage resolves its runner from the current
+workflow and registry. Etude first looks for an exact workflow stage name, so a
+literal stage such as `review.r2` keeps its own binding. Only when that lookup
+misses does it treat one final canonical retry suffix, `.rN` for decimal `N >=
+2`, as engine-generated and retry lookup with the suffix removed. Thus a
+recorded `review.r3` uses `review`'s runner, while `review.r2.r3` can use the
+literal `review.r2` runner. Names ending in `.r1`, a leading-zero round such as
+`.r02`, or another malformed suffix do not fall back. `--runner` overrides this
+per-stage lookup for the whole forward replay.
+
+The recorded stage names, producer metadata, input artifacts, and manifest
+order remain authoritative: forward replay does not regenerate upstream inputs.
+It resolves every stage runner before it creates a checkout or invokes any
+runner, so an unresolved later stage fails without partial replay execution.
 
 ## Resume
 

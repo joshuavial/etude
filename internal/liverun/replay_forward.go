@@ -50,6 +50,17 @@ func ReplayForward(
 		return fmt.Errorf("run %q has no stages to replay", runID)
 	}
 
+	// Resolve every runner before creating a checkout or executing a stage. A
+	// malformed later stage must not leave a forward replay partially executed.
+	runners := make([]replay.Runner, len(manifest.Stages))
+	for i, stage := range manifest.Stages {
+		runner, err := resolveRunner(stage.Name)
+		if err != nil {
+			return fmt.Errorf("stage %q: resolve runner: %w", stage.Name, err)
+		}
+		runners[i] = runner
+	}
+
 	gitSHA := manifest.OriginalCheckout()
 	wt, err := worktree.Checkout(ctx, root, gitSHA)
 	if err != nil {
@@ -79,11 +90,6 @@ func ReplayForward(
 	defer os.RemoveAll(scratch)
 
 	for i, stage := range manifest.Stages {
-		runner, err := resolveRunner(stage.Name)
-		if err != nil {
-			return fmt.Errorf("stage %q: resolve runner: %w", stage.Name, err)
-		}
-
 		// Materialize recorded inputs from the manifest commit.
 		inputs := make([]replay.RunInput, 0, len(stage.Inputs))
 		for _, inp := range stage.Inputs {
@@ -103,7 +109,7 @@ func ReplayForward(
 			return fmt.Errorf("stage %q: mkdir scratch: %w", stage.Name, err)
 		}
 
-		res, err := runner.Run(ctx, replay.RunRequest{
+		res, err := runners[i].Run(ctx, replay.RunRequest{
 			WorktreeDir:     wt.Dir,
 			ScratchDir:      stageScratch,
 			Inputs:          inputs,
