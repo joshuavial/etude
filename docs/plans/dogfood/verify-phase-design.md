@@ -1,5 +1,9 @@
 # Verify Phase Design
 
+> Historical workflow guidance. Current execution, QA, documentation and gate
+> policy is [Developing Etude](../../development.md); it supersedes conflicting
+> phase-gate requirements here.
+
 Status: planning note. This defines the intended Verify phase boundary for the
 dogfood workflow before any external skill files are changed.
 

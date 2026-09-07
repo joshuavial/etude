@@ -1,5 +1,9 @@
 # Docs Freshness Checklist
 
+> Historical workflow guidance. Current execution, QA, documentation and gate
+> policy is [Developing Etude](../../development.md); it supersedes conflicting
+> phase-gate requirements here.
+
 Status: dogfood process note. This checklist keeps shipped docs accurate while
 most `etude` behavior is still planned.
 

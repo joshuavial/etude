@@ -3,8 +3,8 @@ package cli
 // migration_test.go is a durable proof guard for the etude-2pc.2 migration:
 // gates.yaml seats/tiers/quorum → .etude/registry.yaml; phase_gates →
 // per-stage gate blocks in .etude/workflow.yaml. These tests run against the
-// REAL files in the repo (no secrets required) and fail immediately if the
-// migration regresses critical field values or if gates.yaml is re-introduced.
+// REAL files in the repo (no secrets required). Current profile contracts replace
+// historical fixed model and five-gate expectations; schema migration guards remain.
 
 import (
 	"bytes"
@@ -32,244 +32,98 @@ func repoRootForMigration(t *testing.T) string {
 	return filepath.Join(filepath.Dir(thisFile), "../..")
 }
 
-// TestMigrationRegistryMatchesDefault makes etude init --force regeneration
-// semantically safe for this repository's canonical registry. Comments are not
-// modeled, but every executable seat and tier setting must remain identical.
-func TestMigrationRegistryMatchesDefault(t *testing.T) {
+// The repository is allowed to customize init scaffolding. Its default profile
+// must instead agree with the named dev-codex profile used by explicit callers.
+func TestDevelopmentDefaultMatchesNamedProfile(t *testing.T) {
 	root := repoRootForMigration(t)
-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
-	if err != nil {
-		t.Fatalf("read .etude/registry.yaml: %v", err)
+	read := func(path string) workflow.Workflow {
+		data, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wf, err := workflow.ParseYAML(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wf
 	}
-	got, err := registry.ParseYAML(content)
-	if err != nil {
-		t.Fatalf("registry.ParseYAML: %v", err)
-	}
-	want := registry.Default()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("checked-in registry differs from registry.Default()\n got: %#v\nwant: %#v", got, want)
+	if !reflect.DeepEqual(read(".etude/workflow.yaml"), read(".etude/workflows/dev-codex.yaml")) {
+		t.Fatal("default must match named dev-codex profile")
 	}
 }
 
-// TestMigrationRegistryParsesAndValidates asserts that .etude/registry.yaml
-// is accepted by registry.ParseYAML and carries exactly 4 seats and 4 tiers
-// with unanimous quorum.
-func TestMigrationRegistryParsesAndValidates(t *testing.T) {
+func TestDevelopmentReviewerBoundaries(t *testing.T) {
 	root := repoRootForMigration(t)
-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
+	data, err := os.ReadFile(filepath.Join(root, ".etude/registry.yaml"))
 	if err != nil {
-		t.Fatalf("read .etude/registry.yaml: %v", err)
+		t.Fatal(err)
 	}
-	reg, err := registry.ParseYAML(content)
+	reg, err := registry.ParseYAML(data)
 	if err != nil {
-		t.Fatalf("registry.ParseYAML: %v", err)
+		t.Fatal(err)
 	}
-	if got := reg.EffectiveQuorum(); got != "unanimous" {
-		t.Errorf("quorum = %q, want %q", got, "unanimous")
+	if reg.EffectiveQuorum() != "unanimous" {
+		t.Fatal("review requires unanimity")
 	}
-	if got := len(reg.Seats); got != 3 {
-		t.Errorf("seat count = %d, want 3 (opus/codex/dev)", got)
-	}
-	if got := len(reg.Tiers); got != 4 {
-		t.Errorf("tier count = %d, want 4 (L1/L2/L3/L4)", got)
-	}
-	for _, name := range []string{"opus", "codex", "dev"} {
-		if _, ok := reg.Seats[name]; !ok {
-			t.Errorf("seat %q missing from registry", name)
-		}
-	}
-	for _, tier := range []string{"L1", "L2", "L3", "L4"} {
-		if _, ok := reg.Tiers[tier]; !ok {
-			t.Errorf("tier %q missing from registry", tier)
-		}
-	}
-}
-
-// TestMigrationCriticalSeatFieldsPreserved guards against data-loss during
-// the port from gates.yaml. Asserts the exact invoke substrings that the
-// etude-review skill and live-run engine rely on are present verbatim.
-func TestMigrationCriticalSeatFieldsPreserved(t *testing.T) {
-	root := repoRootForMigration(t)
-	content, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
-	if err != nil {
-		t.Fatalf("read .etude/registry.yaml: %v", err)
-	}
-	reg, err := registry.ParseYAML(content)
-	if err != nil {
-		t.Fatalf("registry.ParseYAML: %v", err)
-	}
-
-	// The gemini seat was removed 2026-08-16: the CLI fails before review with
-	// IneligibleTierError for individual accounts. Assert it stays gone so a
-	// regenerated registry cannot silently reintroduce an unreachable seat.
-	if _, ok := reg.Seats["gemini"]; ok {
-		t.Error("gemini seat present; it was removed as unreachable")
-	}
-
-	codex, ok := reg.Seats["codex"]
-	if !ok {
-		t.Fatal("codex seat missing")
-	}
-	// The SETTING is what must survive, not its shell quoting. An invoke is split
-	// with strings.Fields before exec, so a quoted value would reach codex as the
-	// literal `model_reasoning_effort="xhigh"` including the quote characters.
-	// The quotes were dropped when the seats moved behind the adapter; the
-	// unquoted form is what actually runs (verified against a live codex seat).
-	if !strings.Contains(codex.Invoke, "model_reasoning_effort=xhigh") {
-		t.Errorf("codex invoke missing model_reasoning_effort=xhigh: %q", codex.Invoke)
-	}
-	if strings.Contains(codex.Invoke, `model_reasoning_effort="xhigh"`) {
-		t.Errorf("codex invoke re-quotes the reasoning effort; strings.Fields would pass the quotes through to codex: %q", codex.Invoke)
-	}
-	if !strings.Contains(codex.Invoke, "-s read-only") {
-		t.Errorf("codex invoke missing -s read-only: %q", codex.Invoke)
-	}
-	if len(codex.ModelFallbacks) == 0 {
-		t.Error("codex model_fallbacks must be non-empty")
-	}
-
-	// Both mechanisms must survive together: invocation_fallbacks is the
-	// CONFIG-level statement of which candidates a consumer may try, and the
-	// seat adapter is the EXECUTION-level bridge that makes any of them
-	// satisfy the seat envelope contract. Neither replaces the other.
-	opus, ok := reg.Seats["opus"]
-	if !ok {
-		t.Fatal("opus seat missing")
-	}
-	invocations := opus.Invocations()
-	if len(invocations) != 2 {
-		t.Fatalf("opus invocations = %v, want primary + in-harness sub-agent", invocations)
-	}
-	if invocations[0].Harness != "claude-code" || !strings.Contains(invocations[0].Invoke, "claude -p --model opus") {
-		t.Errorf("opus primary invocation = %+v", invocations[0])
-	}
-	// The in-harness sub-agent seat is what a Claude Code orchestrator actually
-	// uses, because it cannot authenticate a `claude` subprocess. It lived only
-	// in a prose comment before, which let a worker read it and stop; it is
-	// config now so a consumer can act on it. It is deliberately NOT a shell
-	// command — `in-harness:` means the host runs it rather than exec'ing it.
-	if invocations[1].Harness != "claude-code-subagent" {
-		t.Errorf("opus fallback[0] must be the in-harness sub-agent seat, got %+v", invocations[1])
-	}
-	if !strings.HasPrefix(invocations[1].Invoke, "in-harness:") {
-		t.Errorf("the sub-agent candidate must be marked in-harness so a consumer does not exec it: %q", invocations[1].Invoke)
-	}
-	for _, want := range []string{"subagent_type=general-purpose", "model=opus"} {
-		if !strings.Contains(invocations[1].Invoke, want) {
-			t.Errorf("sub-agent candidate missing %q: %q", want, invocations[1].Invoke)
-		}
-	}
-	// The agy fallback was removed 2026-08-16 along with the gemini seat. Assert
-	// it stays gone: agy is the Antigravity CLI, and reintroducing it as an opus
-	// substitute is what let a lane spend a day concluding opus was unreachable.
-	for i, inv := range invocations {
-		if inv.Harness == "agy" || strings.Contains(inv.Invoke, "agy ") {
-			t.Errorf("agy invocation present at [%d]: %+v", i, inv)
-		}
-	}
-
-	// Every REVIEW seat must invoke through the adapter on any candidate that is
-	// actually exec'd. A bare model CLI writes prose to stdout and nothing to
-	// $ETUDE_OUTPUT_FILE, so etude classifies it `empty` and the gate escalates —
-	// the command would ship unable to gate anything. (`dev` is a stage RUNNER,
-	// not a review seat, so it is exempt; in-harness candidates are not exec'd.)
-	for _, name := range []string{"opus", "codex"} {
+	for name, model := range map[string]string{"astra": "gpt-6-astra", "fable": "claude-fable-5-1", "sol": "gpt-5.6-sol", "sonnet": "claude-sonnet-5"} {
 		seat, ok := reg.Seats[name]
 		if !ok {
-			t.Errorf("review seat %q missing from registry", name)
-			continue
+			t.Fatalf("missing reviewer %s", name)
 		}
-		for i, inv := range seat.Invocations() {
-			if strings.HasPrefix(inv.Invoke, "in-harness:") {
-				continue
-			}
-			if !strings.Contains(inv.Invoke, "seat-adapter.sh") {
-				t.Errorf("review seat %q invocation[%d] must go through the seat adapter, got %q", name, i, inv.Invoke)
-			}
+		if !strings.HasSuffix(seat.Provider, "/"+model) || !strings.Contains(seat.Invoke, model) {
+			t.Fatalf("reviewer %s identity mismatch", name)
 		}
+		if !strings.Contains(seat.Invoke, "seat-adapter.sh") {
+			t.Fatalf("reviewer %s missing output adapter", name)
+		}
+		if len(seat.ModelFallbacks) != 0 || len(seat.InvocationFallbacks) != 0 {
+			t.Fatalf("reviewer %s has unvalidated fallbacks", name)
+		}
+		if seat.Harness == "codex" && !strings.Contains(seat.Invoke, "-s read-only") {
+			t.Fatalf("reviewer %s lacks read-only sandbox", name)
+		}
+		if seat.Harness == "claude-code" && !strings.Contains(seat.Invoke, "--tools=") {
+			t.Fatalf("reviewer %s must review inline evidence without tools", name)
+		}
+	}
+	if !reflect.DeepEqual(reg.Tiers["L2"].Seats, []string{"astra", "fable"}) {
+		t.Fatal("strong gate must require Astra and Fable")
 	}
 }
 
-// TestMigrationWorkflowParsesAndCrossResolves asserts that .etude/workflow.yaml
-// is accepted by workflow.ParseYAML with 5 stages, every stage runner name
-// resolves to a registry seat, every stage gate tier resolves to a registry
-// tier whose seats are all defined, and the verify stage has exactly 2 checks.
-func TestMigrationWorkflowParsesAndCrossResolves(t *testing.T) {
+func TestDevelopmentWorkflowCaptureAndGateContracts(t *testing.T) {
 	root := repoRootForMigration(t)
-
-	regContent, err := os.ReadFile(filepath.Join(root, ".etude", "registry.yaml"))
-	if err != nil {
-		t.Fatalf("read .etude/registry.yaml: %v", err)
-	}
-	reg, err := registry.ParseYAML(regContent)
-	if err != nil {
-		t.Fatalf("registry.ParseYAML: %v", err)
-	}
-
-	wfContent, err := os.ReadFile(filepath.Join(root, ".etude", "workflow.yaml"))
-	if err != nil {
-		t.Fatalf("read .etude/workflow.yaml: %v", err)
-	}
-	wf, err := workflow.ParseYAML(wfContent)
-	if err != nil {
-		t.Fatalf("workflow.ParseYAML: %v", err)
-	}
-
-	if got := len(wf.Stages); got != 5 {
-		t.Errorf("stage count = %d, want 5", got)
-	}
-
-	for _, s := range wf.Stages {
-		if s.Runner == nil {
-			t.Errorf("stage %q: runner is nil, every stage must have a runner", s.Name)
-			continue
+	for _, profile := range []string{"dev-claude", "dev-codex"} {
+		data, err := os.ReadFile(filepath.Join(root, ".etude/workflows", profile+".yaml"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if s.Runner.Name == "" {
-			t.Errorf("stage %q: runner.name is empty", s.Name)
-			continue
+		wf, err := workflow.ParseYAML(data)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if _, ok := reg.Seats[s.Runner.Name]; !ok {
-			t.Errorf("stage %q: runner name %q not found in registry seats", s.Name, s.Runner.Name)
+		if wf.DefaultRunner != nil {
+			t.Fatal("external worker profile must not claim an autonomous runner")
 		}
-	}
-
-	for _, s := range wf.Stages {
-		if s.Gate == nil {
-			t.Errorf("stage %q: gate is nil, every stage must have a gate", s.Name)
-			continue
-		}
-		if s.Gate.Tier == "" {
-			t.Errorf("stage %q: gate.tier is empty", s.Name)
-			continue
-		}
-		tier, ok := reg.Tiers[s.Gate.Tier]
-		if !ok {
-			t.Errorf("stage %q: gate tier %q not found in registry tiers", s.Name, s.Gate.Tier)
-			continue
-		}
-		for _, seatName := range tier.Seats {
-			if _, ok := reg.Seats[seatName]; !ok {
-				t.Errorf("stage %q: gate tier %q references undefined seat %q", s.Name, s.Gate.Tier, seatName)
+		found := map[string]bool{}
+		for _, stage := range wf.Stages {
+			found[stage.Name] = true
+			if stage.Runner != nil {
+				t.Fatalf("%s unexpectedly has autonomous runner", stage.Name)
+			}
+			wantGate := stage.Name == "plan" || stage.Name == "review" || stage.Name == "routine-review"
+			if (stage.Gate != nil) != wantGate {
+				t.Fatalf("%s gate violates proportional review policy", stage.Name)
+			}
+			if stage.Name == "docs" && stage.Optional {
+				t.Fatal("documentation assessment must be mandatory")
 			}
 		}
-	}
-
-	// verify stage must have exactly 2 deterministic checks
-	var verifyStage *workflow.Stage
-	for i := range wf.Stages {
-		if wf.Stages[i].Name == "verify" {
-			verifyStage = &wf.Stages[i]
-			break
+		for _, name := range []string{"plan", "implement", "verify", "docs", "review", "routine-review"} {
+			if !found[name] {
+				t.Fatalf("missing stage %s", name)
+			}
 		}
-	}
-	if verifyStage == nil {
-		t.Fatal("verify stage not found")
-	}
-	if verifyStage.Gate == nil {
-		t.Fatal("verify stage has no gate")
-	}
-	if got := len(verifyStage.Gate.Checks); got != 2 {
-		t.Errorf("verify gate check count = %d, want 2", got)
 	}
 }
 

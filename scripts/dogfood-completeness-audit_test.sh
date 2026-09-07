@@ -488,6 +488,35 @@ add_run "$r" b1 1
 run_audit "$r" --last 1
 assert_exit 1 "$RC" "$OUT"
 
+t_start "explicit named workflow run satisfies bead evidence"
+r=$(new_repo "$ONE")
+mkdir -p "$r/.etude"
+printf 'b1 b1-dev-codex\n' > "$r/.etude/run-map.tsv"
+add_run "$r" b1-dev-codex 1
+push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 0 "$RC" "$OUT"
+
+t_start "mapped run missing does not fall back to old bead run"
+r=$(new_repo "$ONE")
+mkdir -p "$r/.etude"
+printf 'b1 b1-dev-codex\n' > "$r/.etude/run-map.tsv"
+add_run "$r" b1 1
+push_etude "$r"
+run_audit "$r" --last 1
+assert_exit 1 "$RC" "$OUT"
+assert_contains 'missing-run' "$OUT"
+
+t_start "duplicate mappings fail closed"
+printf 'b1 b1-dev-claude\n' >> "$r/.etude/run-map.tsv"
+run_audit "$r" --last 1
+assert_exit 2 "$RC" "$OUT"
+
+t_start "malformed mapping fails closed"
+printf 'b1 ../bad\n' > "$r/.etude/run-map.tsv"
+run_audit "$r" --last 1
+assert_exit 2 "$RC" "$OUT"
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "==========================================="

@@ -1,5 +1,9 @@
 # Review Gate Runbook
 
+> Historical workflow guidance. Current execution, QA, documentation and gate
+> policy is [Developing Etude](../../development.md); it supersedes conflicting
+> phase-gate requirements here.
+
 Status: planning note. This is the judgement reference for the phase gate whose
 policy is defined in [Review Gate Process](review-gate-process.md).
 

@@ -881,3 +881,28 @@ func TestDefaultYAMLSelfChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestSeatEnvironmentRoundTrip(t *testing.T) {
+	r := Default()
+	s := r.Seats["codex"]
+	s.EnvAllowlist = []string{"CODEX_HOME", "REVIEW_TOKEN"}
+	r.Seats["codex"] = s
+	data, err := r.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ParseYAML(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(decoded.Seats["codex"].EnvAllowlist, ",") != "CODEX_HOME,REVIEW_TOKEN" {
+		t.Fatal("seat environment lost on round trip")
+	}
+	for _, invalid := range [][]string{{"TOKEN=secret"}, {"PATH"}, {"ETUDE_OUTPUT_FILE"}, {"ETUDE_INPUTS_DIR"}, {"ETUDE_SESSION_FILE"}, {"TOKEN", "TOKEN"}, {""}} {
+		s.EnvAllowlist = invalid
+		r.Seats["codex"] = s
+		if !errors.Is(r.Validate(), ErrInvalidRegistry) {
+			t.Fatalf("accepted invalid names %q", invalid)
+		}
+	}
+}

@@ -370,3 +370,20 @@ degraded-gate policy), see
   [`run show`](cli/etude_run_show.md) — generated per-command flag reference.
 - [Gate reviewer record schema](plans/product/gate-reviewer-record-schema.md) —
   the full data model and validation rules.
+
+## Reviewer-only authentication environment
+
+A registry seat may declare `env_allowlist` containing environment variable
+names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
+resolver combines these names with the workflow allowlist for that seat's
+primary and fallback subprocesses. Values come from the calling environment at
+execution time; do not put credential values in YAML or captured artifacts.
+
+Seat-only names are not applied when resolving a stage runner or a deterministic
+check, even when it references the same registry seat by name. Invalid names,
+duplicates, PATH and Etude's input/output/session control variables are rejected.
+This controls environment inheritance, not access to credentials elsewhere on
+the filesystem. Configure actual harness tool restrictions separately.
+
+For this repository's development profiles and delivery requirements, see
+[Developing Etude](development.md).

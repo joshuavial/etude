@@ -1,6 +1,9 @@
 package liverun
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +252,51 @@ func TestDeriveFrontier(t *testing.T) {
 	frontier = DeriveFrontier(wf, full)
 	if frontier != 3 {
 		t.Errorf("complete run: frontier = %d, want 3", frontier)
+	}
+}
+
+func TestReviewerEnvironmentDoesNotReachChecksOrStages(t *testing.T) {
+	t.Setenv("REVIEW_ONLY_TOKEN", "test-secret")
+	script := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nvalue=${REVIEW_ONLY_TOKEN-unset}\nprintf '%s' \"$value\"\nif [ -n \"${ETUDE_OUTPUT_FILE-}\" ]; then printf '%s' \"$value\" > \"$ETUDE_OUTPUT_FILE\"; fi\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.Registry{Seats: map[string]registry.Seat{"probe": {Provider: "deterministic/test", Harness: "shell", Invoke: script, EnvAllowlist: []string{"REVIEW_ONLY_TOKEN"}, InvocationFallbacks: []registry.SeatInvocation{{Harness: "shell", Invoke: script}}}}}
+	req := func() replay.RunRequest {
+		return replay.RunRequest{WorktreeDir: t.TempDir(), ScratchDir: t.TempDir(), OutputRole: "result"}
+	}
+	runner, _, err := ResolveGateSeat(reg, "probe", time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), req())
+	if err != nil || string(result.Output) != "test-secret" {
+		t.Fatalf("seat did not receive credential: %v", err)
+	}
+	candidates, err := ResolveGateSeatCandidates(reg, "probe", time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range candidates {
+		result, err := c.Runner.Run(context.Background(), req())
+		if err != nil || string(result.Output) != "test-secret" {
+			t.Fatalf("candidate credential missing: %v", err)
+		}
+	}
+	stage, err := ResolveStageRunner(workflow.Workflow{}, reg, workflow.Stage{Name: "work", Runner: &workflow.Runner{Name: "probe"}}, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = stage.Run(context.Background(), req())
+	if err != nil || string(result.Output) != "unset" {
+		t.Fatalf("stage credential isolation failed: %v", err)
+	}
+	check, err := ResolveCheckRunner(reg, workflow.Runner{Name: "probe"}, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passed, raw, detail := check.RunCheck(context.Background(), req())
+	if !passed || strings.Contains(string(raw), "test-secret") || !strings.Contains(string(raw), "unset") {
+		t.Fatalf("check isolation failed: %s", detail)
 	}
 }

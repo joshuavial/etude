@@ -147,7 +147,7 @@ func ResolveGateSeatCandidates(reg registry.Registry, seatName string, timeout t
 				Command:        strings.Fields(inv.Invoke),
 				Timeout:        timeout,
 				MaxOutputBytes: 64 << 20,
-				EnvAllowlist:   envAllowlist,
+				EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
 			}
 		}
 		candidates = append(candidates, c)
@@ -171,7 +171,7 @@ func ResolveGateSeat(reg registry.Registry, seatName string, timeout time.Durati
 		Command:        strings.Fields(seat.Invoke),
 		Timeout:        timeout,
 		MaxOutputBytes: 64 << 20,
-		EnvAllowlist:   envAllowlist,
+		EnvAllowlist:   gateSeatEnv(envAllowlist, seat.EnvAllowlist),
 	}
 	return runner, meta, nil
 }
@@ -225,4 +225,20 @@ func DeriveFrontier(wf workflow.Workflow, manifest runmanifest.Manifest) int {
 		}
 	}
 	return len(wf.Stages)
+}
+
+// Do not mutate the workflow list: checks/stages must not inherit reviewer auth.
+func gateSeatEnv(workflowNames, seatNames []string) []string {
+	out := append([]string(nil), workflowNames...)
+	seen := map[string]bool{}
+	for _, name := range out {
+		seen[name] = true
+	}
+	for _, name := range seatNames {
+		if !seen[name] {
+			out = append(out, name)
+			seen[name] = true
+		}
+	}
+	return out
 }

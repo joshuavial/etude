@@ -1,7 +1,6 @@
-# Default profile; keep aligned with workflows/dev-codex.yaml.
 # External workers produce artifacts; supervisor captures and gates them.
 # No autonomous stage runner is configured. See docs/development.md.
-name: dev-codex
+name: dev-claude
 env_allowlist: [HOME]
 stages:
   - name: plan
@@ -40,7 +39,7 @@ stages:
     skill: dev-pr-reviewer
     optional: true
     gate:
-      tier: L4
+      tier: L3
       pass_threshold: 1
       max_rounds: 3
       abstraction: "Routine final review: code, docs and verification evidence satisfy acceptance criteria. Optional improvements are not blockers."

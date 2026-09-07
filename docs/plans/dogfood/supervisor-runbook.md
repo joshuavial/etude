@@ -1,5 +1,9 @@
 # Supervisor Runbook
 
+> Historical workflow guidance. Current execution, QA, documentation and gate
+> policy is [Developing Etude](../../development.md); it supersedes conflicting
+> phase-gate requirements here.
+
 Status: planning note. This describes how a bead is worked while `etude` is
 still being built. It is not shipped user-facing behavior.
 

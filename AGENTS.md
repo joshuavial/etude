@@ -38,9 +38,11 @@ implemented.
 The current product brief is planning material, so it lives at
 `docs/plans/product/BRIEF.md`.
 
-## Dogfood Session Boot
+## Development session boot
 
-When starting after a context clear or on a new ticket, read
-`docs/plans/dogfood/README.md` after `bd prime`. Its Session Boot section is
-the current entry point for the dogfood workflow, including the review-gate
-process and next-bead flow.
+After `bd prime`, read `docs/development.md`, the current contract for
+`dev-claude` and `dev-codex`. Read relevant technical docs before planning;
+ship accurate technical documentation alongside code. Historical dogfood plans
+and generic loop skills do not override this repo's current proportional review
+and independent QA policy. In worktrees, verify access to the canonical beads
+store before claiming work.

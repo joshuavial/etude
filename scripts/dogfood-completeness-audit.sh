@@ -104,9 +104,23 @@ done
 
 echo "dogfood-audit: ${#in_scope[@]} closed bead(s) in window, ${#active[@]} active"
 
+# Optional explicit bead-to-run mapping for named workflow pilots. No guessing:
+# an invalid or duplicate mapping is an environment/configuration error.
+declare -A mapped_runs=()
+if [[ -f .etude/run-map.tsv ]]; then
+  while read -r bead run extra || [[ -n "$bead" ]]; do
+    [[ -z "$bead" || "$bead" == \#* ]] && continue
+    if [[ ! "$bead" =~ ^[A-Za-z0-9_.-]+$ || ! "$run" =~ ^[A-Za-z0-9_.-]+$ || -n "$extra" || -v "mapped_runs[$bead]" ]]; then
+      echo "error: invalid or duplicate entry in .etude/run-map.tsv" >&2
+      exit 2
+    fi
+    mapped_runs["$bead"]="$run"
+  done < .etude/run-map.tsv
+fi
+
 # --- (a) run ref present, (b) run has gates ----------------------------------
 for b in "${active[@]}"; do
-  ref="refs/etude/runs/$b"
+  ref="refs/etude/runs/${mapped_runs[$b]:-$b}"
   if ! git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
     gap "missing-run" "$b" "no $ref"
     continue

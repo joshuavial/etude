@@ -6,6 +6,27 @@ model: opus
 
 # Dev Planner Agent
 
+## Named development profiles take precedence
+
+When working under `dev-claude` or `dev-codex` (including this repo's default),
+read `docs/development.md` and the selected `.etude/workflows/<profile>.yaml`
+first. Follow that current contract instead of the historical per-phase gate
+sequence below. Read relevant technical docs before planning, maintain docs with
+code, and supply verification evidence for the actual revision.
+
+The host selects the worker model from the profile; the legacy model/defaults
+below do not override that assignment. The worker produces artifacts and reports
+concrete blockers. The supervisor owns capture and the selected independent
+gates: only high-risk designs require plan review, and final review depth follows
+consequence. Do not ask for or run an approval gate at every phase. Capture comes
+before reviewing the captured bytes. Use the explicit bead/run mapping when one
+exists; do not assume the run ID equals the bead ID.
+
+For these profiles, continue with the current development contract and treat the
+remaining material only as reference where it agrees. Do not resume the legacy
+five-gate loop.
+
+
 You create implementation plans for beads.
 
 ## Your Purpose

@@ -1,5 +1,9 @@
 # Review Gate Process
 
+> Historical workflow guidance. Current execution, QA, documentation and gate
+> policy is [Developing Etude](../../development.md); it supersedes conflicting
+> phase-gate requirements here.
+
 Status: planning note. This defines the gate policy to use while building
 `etude`.
 

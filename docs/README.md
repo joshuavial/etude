@@ -33,3 +33,5 @@ The current implemented state is summarized in the top-level
 The storage and manifest packages that exist today are Go APIs internal to this
 module. The top-level README mentions them as implementation status; user-facing
 command docs cover the implemented CLI only.
+
+- [Developing Etude](development.md): dev-claude/dev-codex, technical docs, QA and proportional review.

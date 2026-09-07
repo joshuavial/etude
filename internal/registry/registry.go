@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/joshuavial/etude/internal/ident"
@@ -32,6 +33,9 @@ type Registry struct {
 
 // Seat is a model/harness identity that participates in gate reviews.
 type Seat struct {
+	// EnvAllowlist adds environment variable names only for gate reviewer execution.
+	// It never applies when the same seat is used as a stage or check runner.
+	EnvAllowlist []string
 	// Provider is the model provider and model identifier (required).
 	Provider string
 	// Harness is the CLI harness name used to invoke the seat (required).
@@ -122,6 +126,9 @@ func (r Registry) Validate() error {
 		}
 		if err := validateSeatMode(fmt.Sprintf("seat[%q].mode", key), seat.Mode); err != nil {
 			return err
+		}
+		if err := validateSeatEnv(seat.EnvAllowlist); err != nil {
+			return fmt.Errorf("%w: seat[%q]: %v", ErrInvalidRegistry, key, err)
 		}
 		for i, fallback := range seat.InvocationFallbacks {
 			if strings.TrimSpace(fallback.Harness) == "" {
@@ -301,6 +308,7 @@ type registryYAML struct {
 }
 
 type seatYAML struct {
+	EnvAllowlist        []string             `yaml:"env_allowlist,omitempty"`
 	Provider            string               `yaml:"provider"`
 	Harness             string               `yaml:"harness"`
 	Invoke              string               `yaml:"invoke"`
@@ -332,6 +340,7 @@ func (r Registry) toYAML() registryYAML {
 				Invoke:         s.Invoke,
 				Mode:           s.Mode,
 				ModelFallbacks: s.ModelFallbacks,
+				EnvAllowlist:   s.EnvAllowlist,
 			}
 			if len(s.InvocationFallbacks) > 0 {
 				seat.InvocationFallbacks = make([]seatInvocationYAML, len(s.InvocationFallbacks))
@@ -370,6 +379,7 @@ func (d registryYAML) toRegistry() Registry {
 				Invoke:         s.Invoke,
 				Mode:           s.Mode,
 				ModelFallbacks: s.ModelFallbacks,
+				EnvAllowlist:   s.EnvAllowlist,
 			}
 			if len(s.InvocationFallbacks) > 0 {
 				seat.InvocationFallbacks = make([]SeatInvocation, len(s.InvocationFallbacks))
@@ -395,4 +405,23 @@ func (d registryYAML) toRegistry() Registry {
 		}
 	}
 	return r
+}
+
+// Names only: reject values and engine-owned control variables before execution.
+func validateSeatEnv(names []string) error {
+	valid := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !valid.MatchString(name) {
+			return fmt.Errorf("invalid env_allowlist name %q", name)
+		}
+		if name == "PATH" || name == "ETUDE_INPUTS_DIR" || name == "ETUDE_OUTPUT_FILE" || name == "ETUDE_SESSION_FILE" {
+			return fmt.Errorf("reserved env_allowlist name %q", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate env_allowlist name %q", name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
