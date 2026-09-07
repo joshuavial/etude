@@ -517,6 +517,39 @@ printf 'b1 ../bad\n' > "$r/.etude/run-map.tsv"
 run_audit "$r" --last 1
 assert_exit 2 "$RC" "$OUT"
 
+t_start "recent window uses all closed beads before sorting by closure"
+r=$(new_repo "$ONE")
+# Model bd's default priority-sorted page: 50 old closures hide the newest nine.
+python3 - "$r" <<'PYFIXTURE'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+old = [{"id": f"old{i}", "closed_at": "2026-01-01T00:00:00Z"} for i in range(50)]
+recent = [{"id": f"recent{i}", "closed_at": f"2026-09-0{i}T00:00:00Z"} for i in range(1, 10)]
+(root / "closed-default.json").write_text(json.dumps(old))
+(root / "closed-all.json").write_text(json.dumps(old + recent))
+PYFIXTURE
+cat > "$r/bd" <<'BDFIXTURE'
+#!/usr/bin/env bash
+file=closed-default.json
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --limit && "${2:-}" == 0 ]]; then file=closed-all.json; fi
+  shift
+done
+cat "$(dirname "$0")/$file"
+BDFIXTURE
+for i in {1..9}; do add_run "$r" "recent$i" 1; done
+push_etude "$r"
+run_audit "$r" --last 9
+assert_exit 0 "$RC" "$OUT"
+assert_not_contains 'old[0-9]' "$OUT"
+
+# A newest missing run must still fail; unlimited retrieval cannot hide gaps.
+t_start "actual newest closure is included in the audited window"
+(cd "$r" && git update-ref -d refs/etude/runs/recent9)
+run_audit "$r" --last 9
+assert_exit 1 "$RC" "$OUT"
+assert_contains 'missing-run.*recent9' "$OUT"
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "==========================================="

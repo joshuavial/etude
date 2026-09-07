@@ -66,8 +66,10 @@ bd_json="$(mktemp)"; trap 'rm -f "$bd_json"' EXIT
 # Defense in depth: if this guard were removed the run would still fail closed
 # downstream (an empty window exits 2), so it carries no independent test signal.
 # It exists to report the ACTUAL cause rather than a misleading empty-window one.
-bd list --status closed --json > "$bd_json" 2>/dev/null \
-  || { echo "error: 'bd list --status closed --json' failed" >&2; exit 2; }
+# bd defaults to a priority-sorted page of 50. Fetch all closures before sorting
+# by closed_at below, or newer low-priority work can be omitted from the window.
+bd list --status closed --limit 0 --json > "$bd_json" 2>/dev/null \
+  || { echo "error: 'bd list --status closed --limit 0 --json' failed" >&2; exit 2; }
 
 # Materialise the window through a file, not a process substitution: `mapfile
 # < <(...)` discards the producer's exit status, so a python failure mid-loop
