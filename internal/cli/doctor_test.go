@@ -73,17 +73,16 @@ func TestDoctorDangerousFetchFailsWithExactScopedRemediation(t *testing.T) {
 	}
 }
 
-func TestDoctorMissingPushRefspecFailsWithInitRemediation(t *testing.T) {
+func TestDoctorMissingPushRefspecUsesExplicitSync(t *testing.T) {
 	repo, _ := doctorRepo(t)
-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
 	chdir(t, repo)
 
 	stdout, _, err := execute("doctor")
-	if err == nil {
-		t.Fatalf("doctor succeeded without push mappings:\n%s", stdout)
+	if err != nil {
+		t.Fatalf("doctor failed without push mappings: %v\n%s", err, stdout)
 	}
-	if !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, "remedy: etude init --remote 'origin'") {
-		t.Fatalf("missing push finding/remediation absent:\n%s", stdout)
+	if !strings.Contains(stdout, "OK push-refspec[origin]") || !strings.Contains(stdout, "etude sync publishes refs/etude metadata explicitly") {
+		t.Fatalf("explicit sync guidance absent:\n%s", stdout)
 	}
 }
 
@@ -467,7 +466,7 @@ func TestDoctorMissingRunnerScriptFails(t *testing.T) {
 	}
 }
 
-func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
+func TestDoctorAcceptsPartialUserPushMappings(t *testing.T) {
 	for name, value := range map[string]string{
 		"delete":        ":refs/etude/runs/x",
 		"single":        "refs/etude/runs/x:refs/etude/runs/x",
@@ -475,12 +474,11 @@ func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo, _ := doctorRepo(t)
-			gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
 			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", value)
 			chdir(t, repo)
 			stdout, _, err := execute("doctor")
-			if err == nil || !strings.Contains(stdout, "FAIL push-refspec[origin]") || !strings.Contains(stdout, name) {
-				t.Fatalf("shape %q was not diagnosed: err=%v\n%s", name, err, stdout)
+			if err != nil || !strings.Contains(stdout, "OK push-refspec[origin]") {
+				t.Fatalf("valid partial mapping %q was rejected: err=%v\n%s", name, err, stdout)
 			}
 		})
 	}
@@ -488,11 +486,10 @@ func TestDoctorPushCoverageRejectsMisleadingShapes(t *testing.T) {
 
 func TestDoctorMirrorPushBooleanProvidesCoverage(t *testing.T) {
 	repo, _ := doctorRepo(t)
-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
 	gitCapture(t, repo, "config", "--local", "remote.origin.mirror", "yes")
 	chdir(t, repo)
 	stdout, _, err := execute("doctor")
-	if err != nil || !strings.Contains(stdout, "mirror-push semantics cover") {
+	if err != nil || !strings.Contains(stdout, "mirror-push semantics can delete remote-only refs") {
 		t.Fatalf("mirror push was not accepted: err=%v\n%s", err, stdout)
 	}
 }
@@ -543,17 +540,16 @@ func TestDoctorRubricDirectoryFails(t *testing.T) {
 	}
 }
 
-func TestDoctorExactSentinelsDoNotCountAsNamespaceCoverage(t *testing.T) {
+func TestDoctorExactSentinelsAreValidUserPushPolicy(t *testing.T) {
 	repo, _ := doctorRepo(t)
-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
 	for _, kind := range []string{"runs", "retros", "evals"} {
 		ref := "refs/etude/" + kind + "/__doctor_probe__"
 		gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", ref+":"+ref)
 	}
 	chdir(t, repo)
 	stdout, _, err := execute("doctor")
-	if err == nil || !strings.Contains(stdout, "FAIL push-refspec[origin]") {
-		t.Fatalf("exact sentinel mappings counted as full coverage: err=%v\n%s", err, stdout)
+	if err != nil || !strings.Contains(stdout, "OK push-refspec[origin]") {
+		t.Fatalf("valid exact sentinel mappings rejected: err=%v\n%s", err, stdout)
 	}
 }
 
@@ -883,7 +879,7 @@ func TestDoctorMirrorPushNeverRecommendsSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mirror-push hazard should warn, not fail: %v\n%s", err, stdout)
 	}
-	if strings.Contains(stdout, "remedy: etude sync") || !strings.Contains(stdout, "replace mirror-push semantics") {
+	if strings.Contains(stdout, "remedy: etude sync") || !strings.Contains(stdout, "disable remote mirror-push semantics") {
 		t.Fatalf("mirror-push emitted unsafe sync advice:\n%s", stdout)
 	}
 }
@@ -905,7 +901,6 @@ func TestDoctorInvalidMirrorNeverRecommendsSync(t *testing.T) {
 
 func TestDoctorRefspecWhitespaceIsNotTrimmed(t *testing.T) {
 	repo, _ := doctorRepo(t)
-	gitCapture(t, repo, "config", "--local", "--unset-all", "remote.origin.push")
 	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "+refs/etude/*:refs/etude/* ")
 	chdir(t, repo)
 	stdout, _, err := execute("doctor")

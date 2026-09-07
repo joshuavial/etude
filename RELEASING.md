@@ -120,15 +120,16 @@ retros) after a normal clone.
 To move run data explicitly:
 
 ```bash
-etude init     # writes the +refs/etude/*:refs/etude/* fetch refspec into
-               # git config so subsequent plain git-fetches pick up the namespace
-etude sync     # explicitly pushes and fetches refs/etude/* right now
+etude init     # configures per-kind fetches into
+               # refs/etude-mirror/<remote>/<kind>/*
+etude sync     # explicitly fetches and pushes authoritative refs/etude/* now
 ```
 
 `etude sync` passes the refspec on the command line and works regardless of
 whether `etude init` was previously run. Running both is the recommended
-post-release sequence: `init` wires up future fetches; `sync` transfers any
-run data accumulated on the release commit immediately.
+post-release sequence: `init` wires up safe mirror snapshots without making a
+plain `git fetch` populate authoritative `refs/etude/*`; `sync` transfers any
+authoritative run data accumulated on the release commit immediately.
 
 See [`docs/sync.md`](docs/sync.md) for the full sync behavior, reconciliation
 rules, and error cases.

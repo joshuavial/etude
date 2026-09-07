@@ -2,16 +2,13 @@
 
 ## Overview
 
-`etude init` scaffolds the `.etude/` configuration directory in the current
-repository and registers the `refs/etude/*` **push** refspec on the named git
-remote. Transferring the namespace is the job of [`etude sync`](sync.md), which
-passes its own refspecs on the command line and works whether or not `init`
-configured the remote.
+`etude init` scaffolds the `.etude/` configuration directory and configures
+safe fetching of Etude metadata from one Git remote. It does not install a push
+refspec. Ordinary `git push` therefore continues to follow the repository's
+existing `push.default`, upstream, branch, and remote policy.
 
-`init` registers a *fetch* refspec that mirrors the remote's etude refs into a
-separate, disposable namespace — never into your local one — and removes any
-older refspec that pointed at the local namespace directly. See
-[Local refs and remote mirrors](#local-refs-and-remote-mirrors).
+Publish and reconcile `refs/etude/*` with [`etude sync`](sync.md). Sync supplies
+its own explicit refspecs, independently of configured Git push policy.
 
 ## What it creates
 
@@ -29,18 +26,18 @@ All files are written to the working tree for normal review and commit on main.
 
 ## Refspec configuration
 
-By default init configures `origin` with:
+By default init configures these fetch mappings on `origin`:
 
 ```
-remote.origin.push  =  refs/etude/*:refs/etude/*
 remote.origin.fetch = +refs/etude/runs/*:refs/etude-mirror/origin/runs/*
 remote.origin.fetch = +refs/etude/retros/*:refs/etude-mirror/origin/retros/*
 remote.origin.fetch = +refs/etude/evals/*:refs/etude-mirror/origin/evals/*
 ```
 
-The push refspec is non-forced: a non-fast-forward push fails loudly rather
-than silently overwriting a remote ref. The fetch refspecs ARE forced, which is
-safe precisely because their destination is the mirror — see below.
+The fetch refspecs are forced because their destinations are disposable mirror
+refs. Init does not create `remote.origin.push`. If that key is absent, normal
+Git rules decide what `git push` sends. If it contains user mappings, they remain
+in effect.
 
 If `origin` does not exist, the refspec step is skipped and init still succeeds
 (useful when initializing a repo before the remote is added). Use `--remote` to
@@ -64,17 +61,17 @@ the only refs it can reach are mirror refs, which are re-created by the next
 fetch. A run you have produced and not yet pushed is not reachable by prune at
 all.
 
-The mirror is a **sibling** of `refs/etude/`, not nested inside it. That is
-deliberate: `refs/etude/*:refs/etude/*` — the push refspec — would match a nested
-mirror and upload this clone's copy of the remote back to the remote. As a
-sibling it cannot match, so no push refspec, present or future, can carry it.
+The mirror is a **sibling** of `refs/etude/`, not nested inside it. Etude's
+explicit `refs/etude/*:refs/etude/*` sync mapping therefore cannot match the
+mirror and upload this clone's copy back to the remote. A user-authored broader
+mapping can have different semantics and remains the user's policy.
 
 Two consequences worth knowing:
 
-- **Nothing reads the mirror yet.** It is populated by `git fetch` and pruned by
-  `git fetch --prune`, and that is all. `etude run show`, `etude log`, `etude gc`
-  and the index all read your local namespace only. Reporting what a remote has
-  that you do not — and detecting divergence — is a separate, later change.
+- **Doctor reads the mirror as a snapshot.** `etude doctor` compares local refs
+  with the last-fetched mirror while reporting that the remote may since have
+  changed. `etude run show`, `etude log`, `etude gc`, and the index continue to
+  read the authoritative local namespace only.
 - **Mirror refs pin objects.** A plain `git fetch` now downloads the remote's
   etude objects and the mirror refs keep them reachable, so they are not
   reclaimed by `git gc`. There is no expiry for the mirror yet, including after a
@@ -109,24 +106,22 @@ The fix is not to go without a fetch refspec — it is to point it somewhere
 disposable. A refspec whose destination is `refs/etude-mirror/<remote>/…` gives
 prune nothing of yours to delete, which is what `init` now configures.
 
-The push refspec is **not** affected and must stay: it is what makes
-`git push origin` carry run refs at all. Pushing cannot delete a local ref.
-
-Note the corollary: `refs/etude/` now means "everything here is pushed to the
-remote". A future local-only ref — a cache, an index, a cursor — must NOT be
-placed under `refs/etude/`, or the broad push refspec will upload it.
-
-One user-authored spelling can reach the mirror: a refspec written as
-`refs/etude*` (no trailing slash) matches `refs/etude-mirror/…` as well as
-`refs/etude/…`. Everything etude writes anchors on `refs/etude/` with the slash,
-so this cannot arise from `etude init` — but if you hand-write refspecs, keep the
-slash.
+Push and fetch solve different problems. Init keeps configured fetch pruning
+away from authoritative local refs. `etude sync` performs a non-forced explicit
+metadata transfer. Ordinary branch pushing remains under normal Git policy.
 
 ### Migrating an existing repository
 
-Any repository initialised by an older `etude init` still carries the dangerous
-refspec and will not fix itself. Re-run init — it removes that refspec and
-installs the mirrored ones in its place, on both the normal and `--force` paths:
+Older Etude versions installed two mappings that current init migrates:
+
+```text
++refs/etude/*:refs/etude/*  # fetch into the authoritative local namespace
+ refs/etude/*:refs/etude/*  # push only metadata on ordinary git push
+```
+
+Re-run init against the same remote. Normal init removes both legacy mappings
+and installs safe per-kind mirrors. `--force` also removes both mappings but
+retains its existing behavior of not adding mirror mappings:
 
 ```bash
 etude init                      # repairs the DEFAULT remote (origin)
@@ -145,28 +140,31 @@ for r in $(git remote); do
 done
 ```
 
-Any entry whose part *after* the colon begins with `refs/etude/` is the hazard.
+Any fetch entry whose part *after* the colon begins with `refs/etude/` is the
+prune hazard.
 (An entry with no colon at all is harmless — git fetches it to `FETCH_HEAD`
 without creating a local ref, so there is nothing for `--prune` to delete.)
 
-Or fix it by hand, without running init. List the fetch refspecs, then unset the
-one whose destination is inside `refs/etude/`:
+To inspect the local migration state directly:
 
 ```bash
 git config --local --get-all remote.origin.fetch
-git config --local --unset-all remote.origin.fetch '^\+refs/etude/\*:refs/etude/\*$'
-git config --local --get-all remote.origin.fetch   # verify: no refs/etude entry
-git config --local --get-all remote.origin.push    # verify: still present
+git config --local --get-all remote.origin.push
 ```
 
-The value is a POSIX regex, so the `+` and `*` are escaped and the pattern is
-anchored — that removes exactly that entry and cannot touch your `refs/heads/*`
-refspec. Adjust the pattern if your entry is spelled differently (for example
-without the leading `+`); `git config --local --get-all remote.origin.fetch`
-above shows you the exact value to escape.
+Push migration is deliberately exact and local. Init removes every local value
+equal byte-for-byte to `refs/etude/*:refs/etude/*`, including duplicates. It
+preserves the order and bytes of every other value: custom branch mappings,
+forced or name-changing Etude mappings, colonless mappings, surrounding
+whitespace, and multiline values. The literal is an ownership heuristic, not
+proof; if you intentionally configured that exact local value, init removes it
+as part of this migration.
 
-Unset only the **fetch** refspec. Unsetting the push refspec too would stop run
-refs reaching the remote, which loses the same data by another route.
+System, global, and included configuration is never edited. An inherited
+`refs/etude/*:refs/etude/*` mapping can therefore remain effective and continue
+to affect ordinary pushes. Init does not manufacture a branch refspec to
+counter it. Inspect effective policy with `git config --show-origin --get-all
+remote.origin.push` and edit its owning configuration if needed.
 
 ### Safety warnings
 
@@ -175,9 +173,7 @@ state, and prints a `warning:` line when it is not. `init` configures one
 remote, so these catch what it cannot fix itself:
 
 - an etude-registered fetch refspec still present on the target remote;
-- the target remote not carrying the canonical `refs/etude/*:refs/etude/*` push
-  refspec, so run refs never reach it;
-- the target remote not existing at all, so run refs stay local-only;
+- the target remote not existing, so `etude sync` cannot publish metadata there;
 - an etude-registered fetch refspec on **any other remote**. init configures the
   one remote it was pointed at, so a hazardous entry on a sibling remote survives
   the run, and `git fetch --prune <that remote>` deletes unpushed run refs just
@@ -204,9 +200,10 @@ preserves ref names — those need a full model of refspec semantics, and
 answering them confidently but wrongly is worse than not answering. That is the
 job of [`etude doctor`](doctor.md); `init` does not guess.
 
-In particular a refspec broader than `refs/etude/*` **is** dangerous and init
-neither removes nor reports it. It is also your own configuration — deleting it
-would break your branch fetching — so it is not a setup command's call to make.
+In particular a fetch refspec broader than `refs/etude/*` can be dangerous and
+init neither removes nor reports it. It is user configuration, so deleting it
+could break branch fetching. [`etude doctor`](doctor.md) performs the semantic
+check.
 
 ## Idempotency
 
@@ -214,58 +211,39 @@ Running `etude init` twice is safe:
 
 - Existing files are skipped (reported as `skipped <path>`). Use `--force` to
   regenerate them from the canonical default.
-- The push refspec is added at most once. Running init twice results in exactly
-  one entry for the key.
-- Removing a fetch refspec into `refs/etude/*` is idempotent: the second run
-  finds none and says nothing.
-
-Refspec idempotency is byte-exact: init compares the full refspec string
-character-for-character against every existing value for the config key. If
-exactly one canonical entry already exists, init leaves it alone and prints
-`already configured <key> = <value>`.
-
-Otherwise it writes with `git config --replace-all` against a pattern matching
-exactly the canonical value. That has two consequences worth knowing:
-
-- **Concurrent runs converge.** Two `etude init` processes racing on the same
-  repository — normal when linked worktrees share one `.git/config` — cannot
-  leave duplicate entries, because `--replace-all` collapses every matching line
-  to one and adds when none match.
-- **Pre-existing duplicates are collapsed.** A repository carrying two identical
-  canonical entries, left by an older version of this command, ends up with one.
-
-A refspec hand-edited to a *non-identical* variant (e.g. without the forced-fetch
-`+` prefix, or with a trailing space) is a different value: init adds the
-canonical one alongside it rather than rewriting your edit. Init does not attempt
-to detect or merge semantically equivalent refspecs — see `etude doctor`.
+- Removing legacy fetch and push mappings is idempotent: the next run finds none.
+- Safe mirror fetch mappings are present exactly once after normal init.
+- Git config writes use Git's lock and retry briefly when linked worktrees run
+  init concurrently.
 
 ## Plan → apply pipeline
 
-`etude init` runs a plan → apply pipeline. `plan` derives an ordered action
-list (read-only: no writes, no git config queries). `apply` executes each
-action and is the sole site that prints output and tallies counts.
+`etude init` runs an ordered plan and apply pipeline. Fetch-hazard cleanup comes
+first, push migration comes second, and normal init adds safe mirrors last. An
+error or interruption during a later addition therefore cannot leave the old
+hazardous fetch mapping in place.
 
 After all actions run, a summary line is printed:
 
 ```
-init: 4 created, 0 skipped, 1 configured
+init: 4 created, 0 skipped, 3 configured
 ```
 
-The `configured` count covers freshly configured, already-configured, and
-removed refspecs. A second `init` run on a repo that needed no removal reports
-`1 configured` (idempotent, already-configured entries fall into the same
-bucket). `warning:` lines are not counted.
+The `configured` count covers configured, already-configured, and removed
+refspec values. Fresh and repeated normal init each count the three safe mirror
+mappings. Each removed duplicate is also counted. Informational and `warning:`
+lines are not counted.
 
 ## --dry-run
 
 `--dry-run` previews the planned actions without writing any files or modifying
-git config. It prints `plan: create <path>` / `plan: skip <path>` lines for the
-scaffold, `plan: configure push refspec on <remote>` for the push refspec, and
-`plan: remove <key> = <value>` for any fetch refspec into `refs/etude/*` it
-would remove, followed by a summary:
+git config. It prints `plan: create <path>` / `plan: skip <path>` for the
+scaffold; `plan: configure` or `plan: keep` for safe mirror mappings; and one
+`plan: remove <key> = <value>` per legacy fetch or exact local legacy push value.
+It then prints a summary such as:
 
 ```
-dry-run: 4 to create, 0 to skip, 1 to configure
+dry-run: 4 to create, 0 to skip, 3 to configure
 ```
 
 Dry-run behavior:
@@ -275,8 +253,8 @@ Dry-run behavior:
   "bad name"`) errors immediately, before any reads.
 - **Workflow self-check still runs.** The YAML round-trip validation runs during
   plan (read-only) and can error under dry-run.
-- **`--force --dry-run`** previews 0 to configure, *except* for a fetch refspec
-  removal, which is previewed on the force path too.
+- **`--force --dry-run`** does not preview mirror additions. It does preview
+  legacy fetch and push removals because real `--force` performs both.
 - **Safety warnings are printed under `--dry-run`** — the check is read-only and
   runs on every path. Its *output* is not identical between a preview and a real
   run, and cannot be: a real run removes the hazardous fetch refspec before the
@@ -289,7 +267,7 @@ Dry-run behavior:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dry-run` | false | Preview the planned actions without writing files or modifying git config. |
-| `--force` | false | Overwrite existing scaffolded files with freshly generated content. Silent on refspec configuration, with one exception: it still removes a fetch refspec into `refs/etude/*`, because leaving a known data-loss setting in place is never the right outcome of a setup command. It does **not** add the push refspec — if it is missing, `--force` reports it and a plain `etude init` adds it. |
+| `--force` | false | Overwrite existing scaffolded files. It still removes legacy fetch and exact local legacy push mappings, but does not add mirror mappings. |
 | `--remote <name>` | `origin` | Git remote to configure refspecs on. Passing an explicit name for a missing remote is an error (even under `--force`). |
 
 ## Example
@@ -301,8 +279,12 @@ etude init
 # Inspect what was created:
 cat .etude/workflow.yaml
 git config --local --get-all remote.origin.push
-# Should print no refs/etude entry:
+# A fresh init prints nothing here. Existing user policy may still appear.
 git config --local --get-all remote.origin.fetch
+# Safe Etude entries point only at refs/etude-mirror/origin/.
+
+# Publish metadata explicitly:
+etude sync
 
 # Regenerate config files after editing workflow.go upstream:
 etude init --force

@@ -14,7 +14,7 @@
 
 | Command | Notes |
 |---|---|
-| `etude init` | Scaffold `workflow.yaml`; register `refs/etude/*` refspec. |
+| `etude init` | Scaffold configuration; configure safe metadata mirrors without changing branch push policy. |
 | `etude capture` | Record a stage artifact for the current run. |
 | `etude capture-gate` | Record a gate decision artifact. |
 | `etude capture-run` | Record a full run manifest. |

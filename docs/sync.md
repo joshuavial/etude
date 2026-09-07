@@ -142,10 +142,13 @@ etude sync --remote upstream
 ## Relationship to etude init
 
 `etude init` writes per-kind fetch refspecs that map remote
-`refs/etude/<kind>/*` into `refs/etude-mirror/<remote>/<kind>/*`, plus
-name-preserving push refspecs for the authoritative local namespace. `etude
-sync` passes its own refspecs explicitly and does not rely on those config
-entries, so it works independently of whether init was run.
+`refs/etude/<kind>/*` into `refs/etude-mirror/<remote>/<kind>/*`. Init does not
+install a push refspec, so ordinary branch pushes keep following the user's Git
+policy. It also removes the exact local metadata-only push mapping installed by
+older Etude versions. `etude sync` passes its own non-forced refspecs explicitly
+and does not rely on configured push mappings, so it works independently of
+whether init was run. Its `refs/etude/*` source excludes the sibling
+`refs/etude-mirror/*` namespace.
 
 See [Init](init.md) for the init command.
 

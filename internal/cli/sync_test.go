@@ -166,6 +166,29 @@ func TestSyncPushRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSyncUsesExplicitMetadataRefspecAndExcludesMirrors(t *testing.T) {
+	repo := initCaptureRepo(t)
+	bare := setupBareRemote(t, repo)
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "HEAD:refs/heads/custom-backup")
+	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	gitCapture(t, repo, "update-ref", "refs/etude/runs/explicit-sync", head)
+	gitCapture(t, repo, "update-ref", "refs/etude-mirror/origin/runs/remote-copy", head)
+	chdir(t, repo)
+
+	if _, stderr, err := execute("sync"); err != nil {
+		t.Fatalf("sync with custom branch push mapping: %v\nstderr: %s", err, stderr)
+	}
+	if !refExists(t, bare, "refs/etude/runs/explicit-sync") {
+		t.Fatal("explicit sync did not publish the authoritative run ref")
+	}
+	if refExists(t, bare, "refs/etude-mirror/origin/runs/remote-copy") {
+		t.Fatal("explicit sync uploaded the sibling mirror namespace")
+	}
+	if refExists(t, bare, "refs/heads/custom-backup") {
+		t.Fatal("sync unexpectedly applied the remote's configured branch push mapping")
+	}
+}
+
 // TestSyncFetchIntoClone: capture in A, sync A→bare, clone B, sync B → ref resolves in B.
 func TestSyncFetchIntoClone(t *testing.T) {
 	repoA := initCaptureRepo(t)

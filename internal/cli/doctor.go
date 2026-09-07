@@ -391,51 +391,29 @@ func (r doctorRunner) checkRemoteRefspecs(ctx context.Context, state doctorRemot
 		*findings = append(*findings, doctorFinding{doctorOK, "fetch-refspec[" + remote + "]", "no fetch refspec can prune authoritative refs/etude refs", ""})
 	}
 
-	validPush := make([]doctorRefspec, 0, len(pushEntries))
+	invalidPush := 0
 	for _, entry := range pushEntries {
-		rs, err := r.git.parseRefspec(ctx, entry.value, false)
+		_, err := r.git.parseRefspec(ctx, entry.value, false)
 		if err != nil {
+			invalidPush++
 			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("invalid push refspec %q: %v", entry.value, err), doctorConfigUnsetRemediation(r.git.root, pushKey, entry)})
 			continue
 		}
-		validPush = append(validPush, rs)
 	}
 	mirrorPush := false
+	invalidMirror := false
 	if entries, err := r.git.configEntries(ctx, "remote."+remote+".mirror"); err == nil && len(entries) > 0 {
 		last := entries[len(entries)-1]
 		mirrorPush, err = r.git.configBool(ctx, "remote."+remote+".mirror")
 		if err != nil {
+			invalidMirror = true
 			*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", fmt.Sprintf("remote.%s.mirror has invalid boolean value %q", remote, last.value), doctorConfigUnsetRemediation(r.git.root, "remote."+remote+".mirror", last)})
 		}
 	}
-	missingKinds := make([]string, 0, len(refstore.Kinds))
-	for _, kind := range refstore.Kinds {
-		if mirrorPush {
-			continue
-		}
-		prefix := "refs/etude/" + kind + "/"
-		covered := false
-		for _, rs := range validPush {
-			if doctorRefspecMapsPrefix(rs, prefix, prefix) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			missingKinds = append(missingKinds, kind)
-		}
-	}
-	if len(missingKinds) > 0 {
-		shapes := doctorMisleadingPushShapes(validPush)
-		message := "no name-preserving push coverage for refs/etude/" + strings.Join(missingKinds, ", refs/etude/")
-		if len(shapes) > 0 {
-			message += "; observed " + strings.Join(shapes, ", ")
-		}
-		*findings = append(*findings, doctorFinding{doctorFail, "push-refspec[" + remote + "]", message, "etude init --remote " + doctorShellQuote(remote)})
-	} else if mirrorPush {
-		*findings = append(*findings, doctorFinding{doctorWarn, "push-refspec[" + remote + "]", "remote mirror-push semantics cover every refs/etude kind but can delete remote-only refs", doctorHuman("replace mirror-push semantics with explicit name-preserving refs/etude push mappings if remote-only refs must be preserved")})
-	} else {
-		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "name-preserving push mappings cover every refs/etude kind", ""})
+	if mirrorPush {
+		*findings = append(*findings, doctorFinding{doctorWarn, "push-refspec[" + remote + "]", "remote mirror-push semantics can delete remote-only refs", doctorHuman("disable remote mirror-push semantics unless deleting remote refs absent locally is intended")})
+	} else if invalidPush == 0 && !invalidMirror {
+		*findings = append(*findings, doctorFinding{doctorOK, "push-refspec[" + remote + "]", "configured Git push mappings are syntactically valid; etude sync publishes refs/etude metadata explicitly", ""})
 	}
 
 	missingMirrors := make([]string, 0, len(refstore.Kinds))
@@ -1047,51 +1025,6 @@ func doctorPatternMatches(pattern, ref string) bool {
 	}
 	pre, post, _ := strings.Cut(pattern, "*")
 	return strings.HasPrefix(ref, pre) && strings.HasSuffix(ref, post) && len(ref) >= len(pre)+len(post)
-}
-
-func doctorMisleadingPushShapes(refspecs []doctorRefspec) []string {
-	shapes := make(map[string]bool)
-	for _, rs := range refspecs {
-		switch {
-		case rs.src == "" && strings.HasPrefix(rs.dst, "refs/etude/"):
-			shapes["empty-source delete mapping"] = true
-		case !strings.Contains(rs.src, "*") && strings.HasPrefix(rs.src, "refs/etude/"):
-			shapes["single-ref mapping"] = true
-		case strings.Contains(rs.src, "*") && doctorPatternIntersectsPrefix(rs.src, "refs/etude/"):
-			probe := "refs/etude/runs/__doctor_probe__"
-			if dst, ok := doctorMapRefspec(rs, probe); ok && dst != probe {
-				shapes["name-changing mapping"] = true
-			}
-		}
-	}
-	result := make([]string, 0, len(shapes))
-	for shape := range shapes {
-		result = append(result, shape)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func doctorMapRefspec(rs doctorRefspec, ref string) (string, bool) {
-	if rs.negative || rs.src == "" {
-		return "", false
-	}
-	dstPattern := rs.dst
-	if !rs.hasDst {
-		dstPattern = rs.src
-	}
-	if !strings.Contains(rs.src, "*") {
-		if rs.src != ref {
-			return "", false
-		}
-		return dstPattern, true
-	}
-	pre, post, _ := strings.Cut(rs.src, "*")
-	if !strings.HasPrefix(ref, pre) || !strings.HasSuffix(ref, post) || len(ref) < len(pre)+len(post) {
-		return "", false
-	}
-	capture := ref[len(pre) : len(ref)-len(post)]
-	return strings.Replace(dstPattern, "*", capture, 1), true
 }
 
 // doctorRefspecMapsPrefix proves that every ref below sourcePrefix maps to the

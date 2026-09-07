@@ -39,7 +39,8 @@ For every configured Git remote, doctor checks:
 - fetch refspecs cannot prune authoritative local `refs/etude/<kind>/*` refs;
 - ordinary fetches mirror each kind into
   `refs/etude-mirror/<remote>/<kind>/*`, not the old authoritative namespace;
-- name-preserving push refspecs cover every Etude ref kind;
+- configured push refspecs are syntactically valid, and `remote.<name>.mirror`
+  is not enabled with its remote-deletion semantics;
 - each local run, retro, and eval ref is present in the last locally fetched
   mirror, without recommending a push when the mirrored ref is newer or its
   direction cannot be established.
@@ -49,6 +50,12 @@ reported as `NOT CHECKED`, never inferred from a URL or local executable. Run-re
 comparison uses `refs/etude-mirror/<remote>/<kind>/*`, the disposable local
 snapshot updated by the last fetch. Git does not record a reliable per-mirror
 fetch timestamp, so doctor reports the update time as `NOT RECORDED`.
+
+Doctor does not require configured push coverage for Etude metadata. Missing or
+partial `remote.<name>.push` mappings are valid because `etude sync` supplies an
+explicit `refs/etude/*:refs/etude/*` mapping. Doctor still rejects malformed
+configured mappings and warns when remote mirror-push mode could delete refs
+that exist only on the remote.
 
 That staleness matters: an absent mirrored ref may already exist remotely, a
 matching ref may since have changed, and a differing ref may now have another

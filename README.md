@@ -19,7 +19,7 @@ Implemented:
 - Go module and `etude` binary entrypoint.
 - Root command help and version output.
 - `etude init` command to scaffold `.etude/workflow.yaml`, rubric placeholders,
-  and configure `refs/etude/*` fetch/push refspecs on a git remote.
+  and configure safe per-remote metadata mirrors without changing branch push policy.
 - `etude doctor` to perform a strictly read-only health check of configuration,
   refspec safety, locally mirrored run refs, configured paths, and reviewer executables.
 - Manual `etude capture` command for local file artifacts.

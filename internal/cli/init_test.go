@@ -79,16 +79,16 @@ func TestInitCreatesScaffoldAndRefspecs(t *testing.T) {
 		}
 	}
 
-	// The push refspec is configured; a FETCH refspec into refs/etude/* must
-	// NOT be, because it would make every local run ref prunable by a bare
-	// `git fetch --prune` (etude-i19).
+	// Safe mirror fetches are configured, while init leaves ordinary Git push
+	// policy alone. A fetch destination inside refs/etude/* would make local run
+	// refs prunable by a bare `git fetch --prune` (etude-i19).
 	fetchVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
 	if strings.Contains(fetchVal, ":refs/etude/") {
 		t.Fatalf("init configured a fetch refspec into refs/etude/*: %q", fetchVal)
 	}
-	pushVal := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
-	if !strings.Contains(pushVal, "refs/etude/*:refs/etude/*") {
-		t.Fatalf("push refspec not configured: %q", pushVal)
+	pushVal, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
+	if len(pushVal) != 0 {
+		t.Fatalf("init unexpectedly configured push policy: %q", pushVal)
 	}
 
 	// Output must mention "created" lines.
@@ -196,23 +196,17 @@ func TestInitIdempotency(t *testing.T) {
 		t.Fatalf("fetch refspec into refs/etude/* present after repeat init: %q", fetchOut)
 	}
 
-	pushOut := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
-	etudePush := 0
-	for _, line := range strings.Split(strings.TrimSpace(pushOut), "\n") {
-		if strings.Contains(line, "refs/etude") {
-			etudePush++
-		}
-	}
-	if etudePush != 1 {
-		t.Fatalf("push refspec duplicated: found %d etude entries in %q", etudePush, pushOut)
+	pushOut, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
+	if len(pushOut) != 0 {
+		t.Fatalf("repeat init unexpectedly configured push policy: %q", pushOut)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// --force overwrites files but does NOT touch git config.
+// --force overwrites files but does not add or rewrite safe mirror mappings.
 // ---------------------------------------------------------------------------
 
-func TestInitForceOverwritesFilesNotConfig(t *testing.T) {
+func TestInitForceOverwritesFilesWithoutRewritingMirrors(t *testing.T) {
 	repo := initCaptureRepo(t)
 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/repo.git")
 	chdir(t, repo)
@@ -253,10 +247,10 @@ func TestInitForceOverwritesFilesNotConfig(t *testing.T) {
 		t.Fatalf("--force stdout missing 'created': %q", stdout)
 	}
 
-	// Git config must be unchanged: exactly same fetch entries as before.
+	// Existing safe fetch entries must be unchanged.
 	fetchAfter := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch")
 	if fetchBefore != fetchAfter {
-		t.Fatalf("--force modified git config: before=%q after=%q", fetchBefore, fetchAfter)
+		t.Fatalf("--force modified safe mirror config: before=%q after=%q", fetchBefore, fetchAfter)
 	}
 }
 
@@ -415,9 +409,9 @@ func TestInitAcceptsEmbeddedDashRemote(t *testing.T) {
 	if _, stderr, err := execute("init", "--remote", "my-origin"); err != nil {
 		t.Fatalf("init --remote my-origin errored: %v (stderr %q)", err, stderr)
 	}
-	got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.push")
-	if !strings.Contains(got, "refs/etude/*:refs/etude/*") {
-		t.Fatalf("push refspec not configured on my-origin: %q", got)
+	got, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.my-origin.push").Output()
+	if len(got) != 0 {
+		t.Fatalf("push policy unexpectedly configured on my-origin: %q", got)
 	}
 	fetchGot := gitCapture(t, repo, "config", "--local", "--get-all", "remote.my-origin.fetch")
 	if strings.Contains(fetchGot, ":refs/etude/") {
@@ -725,23 +719,22 @@ func TestInitSummaryCounts(t *testing.T) {
 	}
 	expectedCreated := 1 + 1 + rubricCount // workflow.yaml + registry.yaml + rubrics
 
-	// First run: all created + 4 configured — the push refspec plus one mirrored
-	// fetch refspec per etude ref kind (runs, retros, evals).
+	// First run: all created + one mirrored fetch refspec per etude ref kind.
 	stdout, stderr, err := execute("init")
 	if err != nil {
 		t.Fatalf("first init failed: %v\nstderr: %s", err, stderr)
 	}
-	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 4 configured", expectedCreated)
+	wantSummary1 := fmt.Sprintf("init: %d created, 0 skipped, 3 configured", expectedCreated)
 	if !strings.Contains(stdout, wantSummary1) {
 		t.Fatalf("first run summary mismatch: want %q in %q", wantSummary1, stdout)
 	}
 
-	// Second run: all skipped + 4 configured (already-configured → same bucket).
+	// Second run: all skipped + 3 configured (already-configured → same bucket).
 	stdout2, stderr2, err := execute("init")
 	if err != nil {
 		t.Fatalf("second init failed: %v\nstderr: %s", err, stderr2)
 	}
-	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 4 configured", expectedCreated)
+	wantSummary2 := fmt.Sprintf("init: 0 created, %d skipped, 3 configured", expectedCreated)
 	if !strings.Contains(stdout2, wantSummary2) {
 		t.Fatalf("second run summary mismatch: want %q in %q", wantSummary2, stdout2)
 	}
@@ -791,6 +784,243 @@ func assertFileContains(t *testing.T, path, substr string) {
 	}
 }
 
+func localConfigValues(t *testing.T, repo, key string) []string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "config", "--local", "--no-includes", "--null", "--get-all", key)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		t.Fatalf("read local config %s: %v", key, err)
+	}
+	values := strings.Split(string(out), "\x00")
+	if len(values) > 0 && values[len(values)-1] == "" {
+		values = values[:len(values)-1]
+	}
+	return values
+}
+
+func TestInitPreservesOrdinaryBranchPush(t *testing.T) {
+	remote := t.TempDir()
+	gitCapture(t, remote, "init", "--bare")
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", remote)
+	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init: %v\nstderr: %s", err, stderr)
+	}
+	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
+		t.Fatalf("init installed push policy: %#v", got)
+	}
+	writeFile(t, repo, "after-init.txt", "ordinary branch push\n")
+	gitCapture(t, repo, "add", "after-init.txt")
+	gitCapture(t, repo, "commit", "-m", "advance main")
+	want := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	gitCapture(t, repo, "push")
+	if got := strings.TrimSpace(gitCapture(t, remote, "rev-parse", "refs/heads/main")); got != want {
+		t.Fatalf("ordinary git push left remote main at %s, want %s", got, want)
+	}
+}
+
+func TestInitMigratesLegacyOnlyConfigAndRestoresBranchPush(t *testing.T) {
+	remote := t.TempDir()
+	gitCapture(t, remote, "init", "--bare")
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", remote)
+	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+	chdir(t, repo)
+
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init: %v\nstderr: %s", err, stderr)
+	}
+	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
+		t.Fatalf("legacy-only push config survived: %#v", got)
+	}
+	writeFile(t, repo, "after-migration.txt", "branch push restored\n")
+	gitCapture(t, repo, "add", "after-migration.txt")
+	gitCapture(t, repo, "commit", "-m", "advance after migration")
+	want := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	gitCapture(t, repo, "push")
+	if got := strings.TrimSpace(gitCapture(t, remote, "rev-parse", "refs/heads/main")); got != want {
+		t.Fatalf("ordinary git push after migration left remote main at %s, want %s", got, want)
+	}
+}
+
+func TestInitRemovesOnlyExactLocalLegacyPushValues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "normal"},
+		{name: "force", args: []string{"--force"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initCaptureRepo(t)
+			gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
+			key := "remote.origin.push"
+			want := []string{
+				"HEAD:refs/heads/deploy",
+				"+refs/etude/*:refs/etude/*",
+				"refs/etude/*:refs/archive/*",
+				"refs/etude/*",
+				" refs/etude/*:refs/etude/*",
+				"refs/etude/*:refs/etude/* ",
+				"prefix\n" + canonicalPushRefspec + "\nsuffix",
+			}
+			gitCapture(t, repo, "config", "--local", "--add", key, want[0])
+			gitCapture(t, repo, "config", "--local", "--add", key, canonicalPushRefspec)
+			for _, value := range want[1:4] {
+				gitCapture(t, repo, "config", "--local", "--add", key, value)
+			}
+			gitCapture(t, repo, "config", "--local", "--add", key, canonicalPushRefspec)
+			for _, value := range want[4:] {
+				gitCapture(t, repo, "config", "--local", "--add", key, value)
+			}
+			chdir(t, repo)
+			stdout, stderr, err := execute(append([]string{"init"}, tc.args...)...)
+			if err != nil {
+				t.Fatalf("init %v: %v\nstderr: %s", tc.args, err, stderr)
+			}
+			if got := localConfigValues(t, repo, key); !reflect.DeepEqual(got, want) {
+				t.Fatalf("remaining push values changed\ngot:  %#v\nwant: %#v", got, want)
+			}
+			if count := strings.Count(stdout, "removed remote.origin.push"); count != 2 {
+				t.Fatalf("reported %d removals, want 2:\n%s", count, stdout)
+			}
+		})
+	}
+}
+
+func TestInitSelectedRemoteLeavesOtherRemotePushConfigUntouched(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
+	gitCapture(t, repo, "remote", "add", "backup", "https://example.com/backup.git")
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+	gitCapture(t, repo, "config", "--local", "--add", "remote.backup.push", canonicalPushRefspec)
+	chdir(t, repo)
+
+	if _, stderr, err := execute("init", "--remote", "backup"); err != nil {
+		t.Fatalf("init --remote backup: %v\nstderr: %s", err, stderr)
+	}
+	if got := localConfigValues(t, repo, "remote.backup.push"); len(got) != 0 {
+		t.Fatalf("selected remote legacy value survived: %#v", got)
+	}
+	if got := localConfigValues(t, repo, "remote.origin.push"); !reflect.DeepEqual(got, []string{canonicalPushRefspec}) {
+		t.Fatalf("unselected remote push config changed: %#v", got)
+	}
+}
+
+func TestInitPreservesInheritedAndIncludedPushPolicies(t *testing.T) {
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+
+	systemPath := filepath.Join(t.TempDir(), "system.gitconfig")
+	globalPath := filepath.Join(t.TempDir(), "global.gitconfig")
+	includePath := filepath.Join(t.TempDir(), "included.gitconfig")
+	localIncludePath := filepath.Join(t.TempDir(), "local-included.gitconfig")
+	systemBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
+	includeBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
+	localIncludeBytes := []byte("[remote \"origin\"]\n\tpush = " + canonicalPushRefspec + "\n")
+	globalBytes := []byte("[include]\n\tpath = " + includePath + "\n[remote \"origin\"]\n\tpush = HEAD:refs/heads/global-backup\n")
+	for path, data := range map[string][]byte{systemPath: systemBytes, globalPath: globalBytes, includePath: includeBytes, localIncludePath: localIncludeBytes} {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCapture(t, repo, "config", "--local", "--add", "include.path", localIncludePath)
+	t.Setenv("GIT_CONFIG_SYSTEM", systemPath)
+	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
+	chdir(t, repo)
+
+	preview, previewErr, err := execute("init", "--dry-run")
+	if err != nil {
+		t.Fatalf("init --dry-run: %v\nstderr: %s", err, previewErr)
+	}
+	if count := strings.Count(preview, "plan: remove remote.origin.push"); count != 1 {
+		t.Fatalf("dry-run included inherited/include values in local migration: got %d removals\n%s", count, preview)
+	}
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init: %v\nstderr: %s", err, stderr)
+	}
+	if got := localConfigValues(t, repo, "remote.origin.push"); len(got) != 0 {
+		t.Fatalf("local legacy value survived: %#v", got)
+	}
+	for path, want := range map[string][]byte{systemPath: systemBytes, globalPath: globalBytes, includePath: includeBytes, localIncludePath: localIncludeBytes} {
+		got, err := os.ReadFile(path)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("inherited config %s changed: err=%v\ngot:  %q\nwant: %q", path, err, got, want)
+		}
+	}
+	effective := gitCapture(t, repo, "config", "--get-all", "remote.origin.push")
+	if strings.Count(effective, canonicalPushRefspec) != 3 || !strings.Contains(effective, "HEAD:refs/heads/global-backup") {
+		t.Fatalf("inherited push policy no longer effective:\n%s", effective)
+	}
+}
+
+func TestInitPreservesPushDefaultNothing(t *testing.T) {
+	remote := t.TempDir()
+	gitCapture(t, remote, "init", "--bare")
+	repo := initCaptureRepo(t)
+	gitCapture(t, repo, "remote", "add", "origin", remote)
+	gitCapture(t, repo, "push", "--set-upstream", "origin", "HEAD:main")
+	gitCapture(t, repo, "config", "--local", "push.default", "nothing")
+	chdir(t, repo)
+	if _, stderr, err := execute("init"); err != nil {
+		t.Fatalf("init: %v\nstderr: %s", err, stderr)
+	}
+	if got := strings.TrimSpace(gitCapture(t, repo, "config", "--local", "push.default")); got != "nothing" {
+		t.Fatalf("push.default changed to %q", got)
+	}
+	cmd := exec.Command("git", "-C", repo, "push")
+	if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), `push.default is "nothing"`) {
+		t.Fatalf("deliberate push.default=nothing policy not effective: err=%v\n%s", err, output)
+	}
+}
+
+func TestInitDryRunPreviewsLegacyPushRemovalWithoutWrites(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		name := "normal"
+		args := []string{"init", "--dry-run"}
+		if force {
+			name = "force"
+			args = append(args, "--force")
+		}
+		t.Run(name, func(t *testing.T) {
+			repo := initCaptureRepo(t)
+			gitCapture(t, repo, "remote", "add", "origin", "https://example.com/origin.git")
+			chdir(t, repo)
+			if _, stderr, err := execute("init"); err != nil {
+				t.Fatalf("seed init: %v\nstderr: %s", err, stderr)
+			}
+			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+			gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
+			configPath := filepath.Join(repo, ".git", "config")
+			workflowPath := filepath.Join(repo, ".etude", "workflow.yaml")
+			configBefore, _ := os.ReadFile(configPath)
+			workflowBefore, _ := os.ReadFile(workflowPath)
+
+			stdout, stderr, err := execute(args...)
+			if err != nil {
+				t.Fatalf("%v: %v\nstderr: %s", args, err, stderr)
+			}
+			if count := strings.Count(stdout, "plan: remove remote.origin.push"); count != 2 {
+				t.Fatalf("preview reported %d push removals, want 2:\n%s", count, stdout)
+			}
+			configAfter, _ := os.ReadFile(configPath)
+			workflowAfter, _ := os.ReadFile(workflowPath)
+			if !reflect.DeepEqual(configAfter, configBefore) || !reflect.DeepEqual(workflowAfter, workflowBefore) {
+				t.Fatal("dry-run changed config or scaffold bytes")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // etude-i19: a fetch refspec whose destination is refs/etude/* makes every
 // local run ref a remote-tracking ref, so any `git fetch --prune` deletes every
@@ -826,9 +1056,9 @@ func TestInitRemovesPreexistingEtudeFetchRefspec(t *testing.T) {
 	if !strings.Contains(stdout, "removed remote.origin.fetch") {
 		t.Fatalf("init did not report the removal: %q", stdout)
 	}
-	// Push is still configured — pushing cannot delete a local ref.
-	if push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(push, "refs/etude/*:refs/etude/*") {
-		t.Fatalf("push refspec not configured: %q", push)
+	// Init does not install push policy; metadata publication is explicit sync.
+	if push, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output(); len(push) != 0 {
+		t.Fatalf("init unexpectedly configured push policy: %q", push)
 	}
 }
 
@@ -902,11 +1132,9 @@ func TestInitLeavesRunRefsSafeFromFetchPrune(t *testing.T) {
 	}
 }
 
-// TestInitKeepsPushRefspecWhenRemovingFetchRefspec pins the distinction the fix
-// turns on. Only the FETCH refspec is dangerous: it makes local run refs
-// prunable. The PUSH refspec is what carries run refs to the remote at all, so
-// removing both would be the same data loss by another route.
-func TestInitKeepsPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
+// Older init versions installed both legacy settings. One rerun removes both;
+// explicit etude sync publishes metadata afterward.
+func TestInitRemovesLegacyPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
 	repo := initCaptureRepo(t)
 	chdir(t, repo)
 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
@@ -920,13 +1148,9 @@ func TestInitKeepsPushRefspecWhenRemovingFetchRefspec(t *testing.T) {
 	if fetch := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(fetch, ":refs/etude/") {
 		t.Fatalf("fetch refspec into refs/etude/* survived: %q", fetch)
 	}
-	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
-	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
-		t.Fatalf("init removed the etude PUSH refspec; run refs could no longer be pushed: %q", push)
-	}
-	// Exactly one push entry — removal must not have dropped-and-re-added a dup.
-	if n := strings.Count(push, "refs/etude/*:refs/etude/*"); n != 1 {
-		t.Fatalf("etude push refspec count = %d, want 1: %q", n, push)
+	push, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
+	if len(push) != 0 {
+		t.Fatalf("legacy push refspec survived init: %q", push)
 	}
 }
 
@@ -966,11 +1190,9 @@ func TestInitEmitsNoWarningsWhenSafe(t *testing.T) {
 	}
 }
 
-// A push refspec with an EMPTY source (":refs/etude/runs/foo") is git's syntax
-// for DELETING that ref on the remote. It mentions the namespace but uploads
-// nothing, so it must not be mistaken for "push is configured" — otherwise the
-// warning is suppressed on a repo whose run refs never leave the machine.
-func TestInitWarnsWhenPushRefspecDeletesInsteadOfUploading(t *testing.T) {
+// A delete refspec is user policy. It is not byte-equal to the legacy mapping,
+// so init preserves it and does not require configured metadata coverage.
+func TestInitPreservesDeletePushRefspec(t *testing.T) {
 	repo := initCaptureRepo(t)
 	chdir(t, repo)
 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
@@ -980,8 +1202,12 @@ func TestInitWarnsWhenPushRefspecDeletesInsteadOfUploading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init --force errored: %v\nstderr: %s", err, stderr)
 	}
-	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
-		t.Fatalf("delete-only push refspec was accepted as configured: %q", stdout)
+	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
+	if push != ":refs/etude/runs/foo\n" {
+		t.Fatalf("delete-only user push refspec changed: %q", push)
+	}
+	if strings.Contains(stdout, "has no") && strings.Contains(stdout, "push refspec") {
+		t.Fatalf("init still requires metadata push coverage: %q", stdout)
 	}
 }
 
@@ -1248,17 +1474,14 @@ func TestInitWarnsAboutOtherRemotesEvenWhenTargetRemoteMissing(t *testing.T) {
 	}
 }
 
-// --force removes a hazardous fetch refspec (a data-loss setting is never left
-// in place) but is silent on the PUSH refspec by long-standing design. So a
-// --force-only operator stays without the push refspec — which is reported on
-// every run, because the safety phase ignores --force, and repaired by one
-// non-force init. Pinned because a gate seat correctly caught the declaration
-// claiming any re-run repairs it.
-func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
+// --force still performs both legacy cleanups, while continuing not to install
+// the safe mirror mappings it normally leaves alone.
+func TestInitForceRemovesLegacyPushRefspec(t *testing.T) {
 	repo := initCaptureRepo(t)
 	chdir(t, repo)
 	gitCapture(t, repo, "remote", "add", "origin", "https://example.com/x.git")
 	seedHazardousFetchRefspec(t, repo, "origin")
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", canonicalPushRefspec)
 
 	stdout, stderr, err := execute("init", "--force")
 	if err != nil {
@@ -1268,23 +1491,13 @@ func TestInitForceReportsButDoesNotAddPushRefspec(t *testing.T) {
 	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.fetch"); strings.Contains(got, ":refs/etude/") {
 		t.Fatalf("--force left the hazardous fetch refspec: %q", got)
 	}
-	// The push refspec is NOT added under --force, and that is reported. git
-	// exits 1 when the key is absent entirely, which is the expected state here,
-	// so read it tolerantly rather than through the fail-on-error helper.
+	// The exact legacy push refspec is removed and is not re-added.
 	pushOut, _ := exec.Command("git", "-C", repo, "config", "--local", "--get-all", "remote.origin.push").Output()
 	if strings.Contains(string(pushOut), canonicalPushRefspec) {
-		t.Fatalf("--force added the push refspec, contrary to its documented silence: %q", pushOut)
+		t.Fatalf("--force left the legacy push refspec in place: %q", pushOut)
 	}
-	if !strings.Contains(stdout, "has no refs/etude/*:refs/etude/* push refspec") {
-		t.Fatalf("--force did not report the missing push refspec: %q", stdout)
-	}
-
-	// One non-force run repairs it.
-	if _, stderr, err := execute("init"); err != nil {
-		t.Fatalf("non-force init errored: %v\nstderr: %s", err, stderr)
-	}
-	if got := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push"); !strings.Contains(got, canonicalPushRefspec) {
-		t.Fatalf("non-force init did not repair the push refspec: %q", got)
+	if !strings.Contains(stdout, "removed remote.origin.push") {
+		t.Fatalf("--force did not report the legacy push removal: %q", stdout)
 	}
 }
 
@@ -1326,10 +1539,8 @@ func TestInitRegistersMirroredFetchRefspecs(t *testing.T) {
 	}
 }
 
-// The push refspec is deliberately left alone: it spans exactly the local
-// namespaces, which is correct, and it cannot match a sibling mirror. Narrowing
-// it would need a migration whose predicate would also delete a user's own
-// deliberate variant.
+// Non-exact push values remain user policy. Init removes only the literal value
+// its older versions installed.
 func TestInitLeavesPushRefspecUntouched(t *testing.T) {
 	repo := initCaptureRepo(t)
 	chdir(t, repo)
@@ -1343,14 +1554,8 @@ func TestInitLeavesPushRefspecUntouched(t *testing.T) {
 	if !strings.Contains(push, "refs/etude/*:refs/archive/etude/*") {
 		t.Fatalf("init deleted the user's own push refspec: %q", push)
 	}
-	if !strings.Contains(push, canonicalPushRefspec) {
-		t.Fatalf("canonical push refspec missing: %q", push)
-	}
-	// Count, not just survival: --replace-all with a mis-anchored or
-	// metacharacter-naive value pattern could eat the user's variant while
-	// leaving the canonical one, which a Contains check cannot detect.
-	if n := len(strings.Fields(strings.TrimSpace(push))); n != 2 {
-		t.Fatalf("push refspec line count = %d, want 2 (canonical + the user's own):\n%s", n, push)
+	if n := len(strings.Split(strings.TrimSuffix(push, "\n"), "\n")); n != 1 {
+		t.Fatalf("push refspec line count = %d, want the one user value:\n%s", n, push)
 	}
 }
 
@@ -1521,8 +1726,8 @@ func TestFetchPruneOnlyDeletesFromMirror(t *testing.T) {
 	}
 }
 
-// TestBroadPushRefspecDoesNotCarryMirrorToRemote settles by DEMONSTRATION, not
-// assertion, the question of whether the broad push refspec must be narrowed.
+// TestBroadPushRefspecDoesNotCarryMirrorToRemote demonstrates that a
+// user-authored forced variant remains intact and cannot carry sibling mirrors.
 //
 // Under the rejected NESTED layout (refs/etude/remotes/<remote>/…) it must be:
 // refs/etude/*:refs/etude/* matches a nested mirror, so a push uploads this
@@ -1539,14 +1744,16 @@ func TestBroadPushRefspecDoesNotCarryMirrorToRemote(t *testing.T) {
 	gitCapture(t, repo, "remote", "add", "origin", origin)
 	gitCapture(t, repo, "push", "origin", "HEAD:main")
 	head := strings.TrimSpace(gitCapture(t, repo, "rev-parse", "HEAD"))
+	gitCapture(t, repo, "config", "--local", "--add", "remote.origin.push", "+refs/etude/*:refs/etude/*")
 
 	if _, stderr, err := execute("init"); err != nil {
 		t.Fatalf("init errored: %v\nstderr: %s", err, stderr)
 	}
-	// The broad push refspec is deliberately left in place by this bead.
+	// The forced variant is user policy because it is not byte-equal to the
+	// legacy value init owns.
 	push := gitCapture(t, repo, "config", "--local", "--get-all", "remote.origin.push")
-	if !strings.Contains(push, "refs/etude/*:refs/etude/*") {
-		t.Fatalf("precondition: expected the broad push refspec to still be configured, got %q", push)
+	if !strings.Contains(push, "+refs/etude/*:refs/etude/*") {
+		t.Fatalf("user-authored forced push refspec was removed: %q", push)
 	}
 
 	// A local run (should travel) and a mirror ref (must NOT).

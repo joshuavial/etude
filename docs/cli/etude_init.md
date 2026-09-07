@@ -2,7 +2,7 @@
 
 ## etude init
 
-Scaffold .etude/ config and register refs/etude/* refspecs
+Scaffold .etude/ config and configure safe metadata fetching
 
 ```
 etude init [flags]
@@ -14,7 +14,7 @@ etude init [flags]
       --dry-run         preview the planned actions without writing files or modifying git config
       --force           overwrite existing scaffolded files with fresh generated content
   -h, --help            help for init
-      --remote string   git remote to configure refspecs on (default: origin) (default "origin")
+      --remote string   git remote whose metadata mirrors to configure (default: origin) (default "origin")
 ```
 
 ### SEE ALSO

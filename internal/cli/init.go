@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -43,6 +44,7 @@ const (
 	fmtAlreadyConfigured = "already configured %s = %s"
 	fmtRemoteNotFound    = "remote %s not found, skipping refspec configuration"
 	fmtRemovedFetch      = "removed %s = %s (a fetch refspec into refs/etude/* makes any 'git fetch --prune' delete run refs not yet pushed)"
+	fmtRemovedPush       = "removed %s = %s (etude sync publishes metadata explicitly; leaving this mapping would suppress ordinary branch pushes)"
 
 	// Warnings state the CONDITION and point at the docs. They deliberately do
 	// NOT embed a runnable shell command any more.
@@ -65,19 +67,18 @@ const (
 	// commands it cannot guarantee.
 	fmtWarnFetchRemains    = "warning: %s still has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. See the migration section of docs/init.md."
 	fmtWarnFetchRemainsDry = "warning: %s has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' will delete run refs not yet pushed. This is a preview; a real run of this command on remote %q removes it."
-	fmtWarnNoPush          = "warning: remote %q has no %s push refspec, so run refs never reach it and stay local-only. See docs/init.md."
-	fmtWarnNoRemote        = "warning: remote %q not found, so no refs/etude/* push refspec is configured and run refs stay local-only. Add the remote, then re-run etude init against it. See docs/init.md."
+	fmtWarnNoRemote        = "warning: remote %q not found, so etude sync cannot publish refs/etude/* there. Add the remote, then re-run etude init against it. See docs/init.md."
 	fmtWarnOtherRemote     = "warning: remote %q also has a fetch refspec into refs/etude/* (%s) — any 'git fetch --prune' against it will delete run refs not yet pushed. This run only configured the remote it was pointed at; re-run etude init with --remote %q to repair that one. See docs/init.md."
+	fmtMetadataSync        = "metadata publication for remote %q is handled by etude sync, which supplies its own refs/etude/* refspec"
 )
 
 // etudeRefPrefix is the ref namespace this tool owns.
 const etudeRefPrefix = "refs/etude/"
 
-// canonicalPushRefspec is the one push refspec etude registers and checks for.
-// init compares against it EXACTLY. Deciding whether some other refspec happens
-// to be equivalent needs a full model of refspec semantics — glob matching, name
-// preservation, grammar — which belongs in `etude doctor` (bead etude-ldf), not
-// in a setup command that would only be guessing.
+// canonicalPushRefspec is the legacy push refspec older etude versions
+// registered. Init removes only byte-exact local instances of this value. It is
+// an ownership heuristic rather than proof: custom, forced, whitespace-bearing,
+// name-changing and colonless variants remain user policy.
 const canonicalPushRefspec = "refs/etude/*:refs/etude/*"
 
 type actionLine struct {
@@ -96,7 +97,7 @@ func newInitCommand(out, errOut io.Writer) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:           "init",
-		Short:         "Scaffold .etude/ config and register refs/etude/* refspecs",
+		Short:         "Scaffold .etude/ config and configure safe metadata fetching",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -111,7 +112,7 @@ func newInitCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing scaffolded files with fresh generated content")
-	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote to configure refspecs on (default: origin)")
+	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote whose metadata mirrors to configure (default: origin)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the planned actions without writing files or modifying git config")
 	return cmd
 }
@@ -241,18 +242,18 @@ func writeAction(path string, content []byte) initAction {
 func refspecAction(ctx context.Context, root, remote string, remoteChanged bool) initAction {
 	return initAction{
 		run: func(force, dryRun bool) ([]actionLine, error) {
-			// No FETCH refspec is registered. One whose destination is inside
-			// refs/etude/* makes every local run ref a remote-tracking ref, so
-			// any `git fetch --prune` deletes every run ref not yet pushed. Any
-			// left by an older etude init is removed instead. `etude sync`
-			// passes the refspec explicitly, so nothing needs it in config.
+			// A FETCH refspec whose destination is inside refs/etude/* makes
+			// every local run ref a remote-tracking ref, so any `git fetch
+			// --prune` deletes every run ref not yet pushed. Any left by an older
+			// etude init is removed instead.
 			//
-			// The PUSH refspec stays: it is what makes `git push` carry run refs
-			// at all, and pushing cannot delete a local ref. Removing both would
-			// lose the same data by another route.
+			// Older etude versions also installed a sole PUSH refspec for the
+			// metadata namespace. That changes ordinary `git push` from its
+			// branch/upstream behavior into a metadata-only push. Remove only the
+			// byte-exact local legacy value; `etude sync` publishes metadata with
+			// an explicit command-line refspec.
 			fetchKey := fmt.Sprintf("remote.%s.fetch", remote)
 			pushKey := fmt.Sprintf("remote.%s.push", remote)
-			pushVal := canonicalPushRefspec
 
 			// Dry-run is always read-only and NEVER errors on a missing remote,
 			// even under --force with an explicit missing remote. Check dryRun
@@ -279,11 +280,37 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
 				for _, v := range stale {
 					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: remove %s = %s", fetchKey, v)})
 				}
+				legacyPush, err := findLegacyPushRefspecs(ctx, root, pushKey)
+				if err != nil {
+					return nil, err
+				}
+				for range legacyPush {
+					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: remove %s = %s", pushKey, canonicalPushRefspec)})
+				}
 				if force {
-					// force + present → silent except for the removal.
+					// Force does not add mirror mappings, but both legacy
+					// cleanups are still previewed.
 					return lines, nil
 				}
-				return append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: configure push refspec on %s", remote)}), nil
+				for _, kind := range refstore.Kinds {
+					value := mirroredFetchRefspec(remote, kind)
+					existing, err := gitGetAll(ctx, root, fetchKey)
+					if err != nil {
+						return nil, err
+					}
+					matches := 0
+					for _, configured := range existing {
+						if configured == value {
+							matches++
+						}
+					}
+					verb := "configure"
+					if matches == 1 {
+						verb = "keep"
+					}
+					lines = append(lines, actionLine{statusConfigured, fmt.Sprintf("plan: %s %s = %s", verb, fetchKey, value)})
+				}
+				return lines, nil
 			}
 
 			// Normal (non-dry-run) run.
@@ -297,10 +324,15 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
 				if !remoteExists(ctx, root, remote) {
 					return nil, nil
 				}
-				// Force is silent on refspecs EXCEPT for removing a hazardous
-				// fetch refspec — a known data-loss setting is never left in
-				// place just because the caller passed --force.
-				return removeEtudeFetchRefspecs(ctx, root, fetchKey)
+				// Force does not install mirror mappings, but known legacy
+				// settings are never left in place just because the caller passed
+				// --force. Fetch cleanup remains first for prune safety.
+				lines, err := removeEtudeFetchRefspecs(ctx, root, fetchKey)
+				if err != nil {
+					return nil, err
+				}
+				pushLines, err := removeLegacyPushRefspecs(ctx, root, pushKey)
+				return append(lines, pushLines...), err
 			}
 
 			// Non-force normal run.
@@ -328,7 +360,7 @@ func refspecAction(ctx context.Context, root, remote string, remoteChanged bool)
 			if err != nil {
 				return nil, err
 			}
-			pushLines, err := addRefspecIfAbsent(ctx, root, pushKey, pushVal)
+			pushLines, err := removeLegacyPushRefspecs(ctx, root, pushKey)
 			if err != nil {
 				return nil, err
 			}
@@ -448,7 +480,10 @@ func addRefspecIfAbsent(ctx context.Context, root, key, value string) ([]actionL
 func gitGetAll(ctx context.Context, root, key string) ([]string, error) {
 	// Directive A: use --local explicitly.
 	// Directive G (see addRefspecIfAbsent): git -C <root> for robustness.
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--get-all", key)
+	// --no-includes makes the migration boundary explicit, and --null preserves
+	// embedded newlines so a custom multiline value cannot be mistaken for the
+	// legacy canonical value.
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--no-includes", "--null", "--get-all", key)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
@@ -457,11 +492,49 @@ func gitGetAll(ctx context.Context, root, key string) ([]string, error) {
 		}
 		return nil, err
 	}
-	raw := strings.TrimRight(string(out), "\n")
-	if raw == "" {
-		return nil, nil
+	parts := strings.Split(string(out), "\x00")
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
 	}
-	return strings.Split(raw, "\n"), nil
+	return parts, nil
+}
+
+// findLegacyPushRefspecs returns byte-exact local instances of the one push
+// refspec older etude versions installed. Inherited values and included config
+// are intentionally outside this migration.
+func findLegacyPushRefspecs(ctx context.Context, root, key string) ([]string, error) {
+	existing, err := gitGetAll(ctx, root, key)
+	if err != nil {
+		return nil, fmt.Errorf("git config --get-all %s: %w", key, err)
+	}
+	var legacy []string
+	for _, value := range existing {
+		if value == canonicalPushRefspec {
+			legacy = append(legacy, value)
+		}
+	}
+	return legacy, nil
+}
+
+// removeLegacyPushRefspecs removes all exact local legacy values in one locked
+// Git config rewrite. Every other value remains in its original order.
+func removeLegacyPushRefspecs(ctx context.Context, root, key string) ([]actionLine, error) {
+	legacy, err := findLegacyPushRefspecs(ctx, root, key)
+	if err != nil || len(legacy) == 0 {
+		return nil, err
+	}
+	pattern := "^" + regexp.QuoteMeta(canonicalPushRefspec) + "$"
+	if err := runGitConfigWithLockRetry(ctx, root, "--unset-all", key, pattern); err != nil {
+		if errors.Is(err, errNothingToUnset) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	lines := make([]actionLine, 0, len(legacy))
+	for range legacy {
+		lines = append(lines, actionLine{statusConfigured, fmt.Sprintf(fmtRemovedPush, key, canonicalPushRefspec)})
+	}
+	return lines, nil
 }
 
 // repoRoot resolves the repository root via git rev-parse --show-toplevel.
@@ -488,9 +561,12 @@ func remoteNotFoundErr(name string) error {
 
 // remoteExists returns true if the named remote is configured in the repo.
 func remoteExists(ctx context.Context, root, remote string) bool {
-	// Directive G: git -C <root> for consistency.
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "remote", "get-url", remote)
-	return cmd.Run() == nil
+	// Read the URL key directly. `git remote get-url` parses configured push
+	// refspecs first and can reject a user value that init must preserve, making
+	// an existing remote look absent before migration gets a chance to run.
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--null", "--get-all", "remote."+remote+".url")
+	out, err := cmd.Output()
+	return err == nil && len(out) > 0
 }
 
 // validateRemoteName rejects empty or git-invalid remote names before the value
@@ -656,9 +732,8 @@ func removeEtudeFetchRefspecs(ctx context.Context, root, key string) ([]actionLi
 // init was pointed at ended up in the safe state. Exiting quietly on an exposed
 // repo is how the original bug went unnoticed across two incidents.
 //
-// Deliberately narrow: it checks only the TARGET remote, and only by exact
-// comparison — "is an etude-registered fetch refspec still present" and "is the
-// canonical push refspec present". A general audit (other remotes, refspecs
+// Deliberately narrow: it checks whether an etude-registered fetch refspec is
+// still present. A general audit (other remotes, refspecs
 // broader than the namespace, mappings that do not preserve names, invalid
 // grammar) requires a full refspec-semantics model and is `etude doctor`'s job,
 // tracked as bead etude-ldf. A setup command that guessed at those would report
@@ -683,6 +758,8 @@ func refspecSafetyAction(ctx context.Context, root, remote string) initAction {
 			targetExists := remoteExists(ctx, root, remote)
 			if !targetExists {
 				lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoRemote, remote)})
+			} else {
+				lines = append(lines, actionLine{statusNote, fmt.Sprintf(fmtMetadataSync, remote)})
 			}
 
 			// Target-remote checks only make sense when it exists; the
@@ -705,21 +782,6 @@ func refspecSafetyAction(ctx context.Context, root, remote string) initAction {
 					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnFetchRemains, fetchKey, v)})
 				}
 
-				pushKey := fmt.Sprintf("remote.%s.push", remote)
-				push, err := gitGetAll(ctx, root, pushKey)
-				if err != nil {
-					return nil, err
-				}
-				found := false
-				for _, v := range push {
-					if v == canonicalPushRefspec {
-						found = true
-						break
-					}
-				}
-				if !found {
-					lines = append(lines, actionLine{statusWarn, fmt.Sprintf(fmtWarnNoPush, remote, canonicalPushRefspec)})
-				}
 			}
 
 			// Every OTHER remote is checked too, and only warned about. init
@@ -814,16 +876,33 @@ func runGitConfigWithLockRetry(ctx context.Context, root string, args ...string)
 
 // gitRemotes lists the repo's configured remotes.
 func gitRemotes(ctx context.Context, root string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "remote")
+	const pattern = `^remote\..*\..*$`
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--no-includes", "--null", "--name-only", "--get-regexp", pattern)
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git remote: %w", err)
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list local Git remote configuration: %w", err)
 	}
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return nil, nil
+	seen := make(map[string]bool)
+	for _, key := range strings.Split(string(out), "\x00") {
+		if key == "" {
+			continue
+		}
+		nameAndKey := strings.TrimPrefix(key, "remote.")
+		separator := strings.LastIndex(nameAndKey, ".")
+		if separator <= 0 {
+			return nil, fmt.Errorf("Git returned an invalid remote configuration key %q", key)
+		}
+		seen[nameAndKey[:separator]] = true
 	}
-	return strings.Split(raw, "\n"), nil
+	remotes := make([]string, 0, len(seen))
+	for remote := range seen {
+		remotes = append(remotes, remote)
+	}
+	sort.Strings(remotes)
+	return remotes, nil
 }
 
 // mirroredFetchRefspec is the refspec that mirrors one kind from a remote:

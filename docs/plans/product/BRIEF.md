@@ -197,10 +197,11 @@ across runs.
 **The cost — and it is real — is that custom refs do not sync with
 `git push`/`fetch` by default.** This is the same issue that kept `git notes`
 obscure. The mitigation, following DVC, is to make sync a **first-class CLI
-concern**: `etude init` writes the fetch refspec
-(`+refs/etude/*:refs/etude/*`) into the repo's git config, and
-`etude sync` does explicit push/fetch of the namespace. Discoverability
-is the tool's job, never assumed of the user.
+concern**: `etude init` writes safe per-kind fetch mappings into the sibling
+`refs/etude-mirror/<remote>/` namespace, and `etude sync` does explicit
+push/fetch of the authoritative namespace. The original direct fetch mapping
+described here was superseded because pruning it could delete unpushed local
+run refs. Discoverability is the tool's job, never assumed of the user.
 
 Cloudflare Artifacts (2025, closed beta) is sometimes cited as prior art, but
 on inspection it is a *hosted, proprietary* service for provisioning
@@ -389,7 +390,7 @@ absolute quality over time and surfacing *why*.
 ## 5. CLI surface
 
 ```
-etude init      # scaffold workflow.yaml, register refs/etude/* refspec
+etude init      # scaffold workflow.yaml, configure safe metadata mirrors
 etude capture <stage> --run <id> --input ... --output ...
 etude run list [--cohort ...]
 etude run show <run-id>
