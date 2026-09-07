@@ -32,6 +32,13 @@ mechanics.
   same-named stage occurrence's output, log, or input rather than only the
   newest, so recapturing a stage under the same name (`--expect append`) keeps
   earlier gates valid.
+- Stage runners, gate seats, gate checks, bench judges and retro generators
+  now run in their own Unix process group, which is killed on timeout or
+  cancellation and again after the command exits, so backgrounded descendants
+  can no longer keep writing after etude has returned (A03). `Ctrl-C` and
+  `SIGTERM` cancel the running command and its group. Non-Unix platforms keep
+  the previous direct-child cancellation. See
+  [Subprocess lifecycle](docs/run.md#subprocess-lifecycle).
 
 ---
 

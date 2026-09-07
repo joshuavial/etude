@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joshuavial/etude/internal/subproc"
 )
 
 // judgeWaitDelay is the grace period after context cancellation or process
@@ -106,9 +108,11 @@ type findingWire struct {
 // command, reads the output file, and validates the result per method.
 //
 // When Timeout > 0, the execution context is wrapped with a per-invocation
-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
-// the process exits or the context fires, preventing hangs from backgrounded
-// grandchild processes that hold inherited pipe write-ends open.
+// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
+// pipe-drain after the process exits or the context fires, and on Unix confines
+// the command to its own process group that is killed on cancellation and again
+// after it exits, so backgrounded grandchildren neither hang the run nor
+// outlive it.
 func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
 	if len(e.Command) == 0 {
 		return JudgeResponse{}, ErrJudgeNotConfigured
@@ -180,12 +184,13 @@ func (e *ExecJudge) Judge(ctx context.Context, req JudgeRequest) (JudgeResponse,
 	cmd.Dir = scratch
 	cmd.Env = env
 	cmd.Stderr = &stderrBuf
-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
-	// open can cause cmd.Run to hang indefinitely.
-	cmd.WaitDelay = judgeWaitDelay
-
-	runErr := cmd.Run()
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, judgeWaitDelay)
 
 	// Context cancellation/timeout takes precedence over generic exit-status errors.
 	if ctx.Err() != nil {

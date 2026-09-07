@@ -327,7 +327,10 @@ regardless of output. All three carry a `failure_note` in the stored
 **Check runners** do not write an output envelope. Their verdict is the
 process exit code: 0 = pass, nonzero = hard BLOCK. A check that cannot
 launch, times out, or exits nonzero is always a hard veto, independent of seat
-votes.
+votes. A check runs in its own process group, and that group is terminated when
+the check times out or is cancelled, and again after it exits (even on a passing
+exit, so a check must not leave helpers running) — see
+[Subprocess lifecycle](run.md#subprocess-lifecycle).
 
 ### Synthesis and the stored record
 
@@ -393,7 +396,10 @@ degraded-gate policy), see
 ## Reviewer-only authentication environment
 
 A registry seat may declare `env_allowlist` containing environment variable
-names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]`. The gate
+names, for example `[CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]`. The
+`claude` CLI needs `USER` in addition to `CLAUDE_CONFIG_DIR` to locate its
+keychain credential, so a seat that authenticates through the keychain rather
+than an OAuth token must list it. The gate
 resolver combines these names with the workflow allowlist for that seat's
 primary and fallback subprocesses. Values come from the calling environment at
 execution time; do not put credential values in YAML or captured artifacts.

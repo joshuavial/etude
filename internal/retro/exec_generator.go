@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joshuavial/etude/internal/subproc"
 )
 
 // Sentinel errors for ExecGenerator.
@@ -66,9 +68,11 @@ var _ Generator = (*ExecGenerator)(nil)
 // Generate implements Generator for ExecGenerator.
 //
 // When Timeout > 0, the execution context is wrapped with a per-invocation
-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
-// the process exits or the context fires, preventing hangs from backgrounded
-// grandchild processes that hold inherited pipe write-ends open.
+// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
+// pipe-drain after the process exits or the context fires, and on Unix confines
+// the command to its own process group that is killed on cancellation and again
+// after it exits, so backgrounded grandchildren neither hang the run nor
+// outlive it.
 func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
 	if len(g.Command) == 0 {
 		return GenerateResult{}, ErrGeneratorNotConfigured
@@ -137,12 +141,13 @@ func (g *ExecGenerator) Generate(ctx context.Context, req GenerateRequest) (Gene
 	cmd.Dir = scratch
 	cmd.Env = env
 	cmd.Stderr = &stderrBuf
-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
-	// open can cause cmd.Run to hang indefinitely.
-	cmd.WaitDelay = generatorWaitDelay
-
-	runErr := cmd.Run()
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, generatorWaitDelay)
 
 	// Context cancellation/timeout takes precedence over generic exit-status errors.
 	if ctx.Err() != nil {

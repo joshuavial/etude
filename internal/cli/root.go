@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joshuavial/etude/internal/nudge"
@@ -70,7 +72,19 @@ func Execute() error {
 func ExecuteWithWriters(out, errOut io.Writer, args []string) error {
 	cmd := NewRootCommand(out, errOut)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	// Managed subprocesses run in their own process group (internal/subproc), so
+	// a terminal SIGINT no longer reaches them; without this handler Ctrl-C
+	// would kill etude and orphan the running command. Cancelling the root
+	// context kills the command's group instead. stop() is deferred so the
+	// interception is released on every return path, and the goroutine below
+	// restores the default action for a second signal.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	err := cmd.ExecuteContext(ctx)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 	}

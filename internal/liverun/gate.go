@@ -19,6 +19,7 @@ import (
 	"github.com/joshuavial/etude/internal/replay"
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/sessionevidence"
+	"github.com/joshuavial/etude/internal/subproc"
 	"github.com/joshuavial/etude/internal/workflow"
 	"github.com/joshuavial/etude/internal/worktree"
 )
@@ -155,9 +156,10 @@ func (r *execCheckRunner) RunCheck(ctx context.Context, req replay.RunRequest) (
 	cmd.Env = env
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
-	cmd.WaitDelay = checkWaitDelay
-
-	runErr := cmd.Run()
+	// subproc.Run sets WaitDelay and, on Unix, runs the check in its own process
+	// group that is SIGKILLed on cancellation and again after the check exits,
+	// so descendants do not outlive the check (docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, checkWaitDelay)
 	combined := append(append([]byte(nil), stdoutBuf.Bytes()...), stderrBuf.Bytes()...)
 
 	if ctx.Err() != nil {

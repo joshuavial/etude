@@ -621,6 +621,38 @@ etude replay <run-id> <stage> --allow-env
 
 `--allow-env` and `--record` cannot be combined (rejected with a clear error).
 
+### Subprocess lifecycle
+
+On Unix, every command etude manages — a stage runner, a gate model seat, a gate
+check, a bench judge, and the retro generator — runs in its own process group.
+The whole group is killed with `SIGKILL` when the command's timeout fires or its
+context is cancelled, and again after the command exits.
+
+The consequence is that **no process left in the group survives the invocation,
+including after a successful exit**. Backgrounded helpers, a wrapper script's
+real worker, and children that redirected their stdio are all terminated, so
+none of them can keep writing into the worktree or the output file after etude
+has moved on. A runner that deliberately backgrounds a helper must expect that
+helper to be killed when the stage returns.
+
+Pipe draining stays bounded by a 10 s grace period after the command exits or is
+cancelled, so a child holding the inherited stdout/stderr write-ends cannot hang
+the run.
+
+This is a lifecycle guarantee, not a sandbox:
+
+- a child that calls `setsid` or `setpgid` leaves the group and is not reached;
+- a terminated descendant may linger as a zombie until its parent reaps it —
+  etude guarantees the signal was delivered, not that the pid disappears.
+
+On Windows and other non-Unix platforms there are no process groups here: the
+direct child is killed and the same drain grace applies, so descendants of the
+command may survive.
+
+`Ctrl-C` (SIGINT) or SIGTERM cancels the running command and its process group,
+and etude exits non-zero. A second signal takes the default action and exits
+immediately.
+
 ### Forward replay
 
 Once a live run is captured, `etude replay <run-id>` (one argument, no stage)

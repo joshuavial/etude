@@ -5,7 +5,7 @@ seats:
   fable:
     provider: anthropic/claude-fable-5-1
     harness: claude-code
-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
+    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
     invoke: 'scripts/seat-adapter.sh fable claude -p --model claude-fable-5-1 --effort high --no-session-persistence --tools='
   astra:
     provider: openai/gpt-6-astra
@@ -20,7 +20,7 @@ seats:
   sonnet:
     provider: anthropic/claude-sonnet-5
     harness: claude-code
-    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN]
+    env_allowlist: [CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, USER]
     invoke: 'scripts/seat-adapter.sh sonnet claude -p --model claude-sonnet-5 --effort high --no-session-persistence --tools='
 tiers:
   L2:

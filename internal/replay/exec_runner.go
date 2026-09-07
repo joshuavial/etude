@@ -17,6 +17,7 @@ import (
 
 	"github.com/joshuavial/etude/internal/runmanifest"
 	"github.com/joshuavial/etude/internal/sessionevidence"
+	"github.com/joshuavial/etude/internal/subproc"
 )
 
 // Sentinel errors for ExecRunner.
@@ -69,9 +70,11 @@ var _ Runner = (*ExecRunner)(nil)
 // the output from <ScratchDir>/output.
 //
 // When Timeout > 0, the execution context is wrapped with a per-invocation
-// deadline. WaitDelay is always set on the exec.Cmd to bound pipe-drain after
-// the process exits or the context fires, preventing hangs from backgrounded
-// grandchild processes that hold inherited pipe write-ends open.
+// deadline. The command runs through subproc.Run, which sets WaitDelay to bound
+// pipe-drain after the process exits or the context fires, and on Unix confines
+// the command to its own process group that is killed on cancellation and again
+// after it exits, so backgrounded grandchildren neither hang the run nor
+// outlive it.
 func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	// Step 1: command must be configured.
 	if len(r.Command) == 0 {
@@ -188,12 +191,13 @@ func (r *ExecRunner) Run(ctx context.Context, req RunRequest) (RunResult, error)
 	cmd.Env = env
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
-	// WaitDelay bounds cmd.Wait after ctx fires or the process exits.
-	// Without it, a backgrounded grandchild holding inherited pipe write-ends
-	// open can cause cmd.Run to hang indefinitely.
-	cmd.WaitDelay = runnerWaitDelay
-
-	runErr := cmd.Run()
+	// subproc.Run sets WaitDelay, which bounds cmd.Wait after ctx fires or the
+	// process exits — without it, a backgrounded grandchild holding inherited
+	// pipe write-ends open can cause cmd.Run to hang indefinitely. On Unix it
+	// also runs the command in its own process group and SIGKILLs that group on
+	// cancellation and again after the command exits, so descendants do not
+	// outlive the invocation (see docs/run.md#subprocess-lifecycle).
+	runErr := subproc.Run(cmd, runnerWaitDelay)
 
 	// Step 8: ctx taxonomy — context cancellation/timeout takes precedence.
 	if ctx.Err() != nil {
