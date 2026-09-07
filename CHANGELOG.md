@@ -22,7 +22,28 @@ mechanics.
 
 ## [Unreleased]
 
+## [v1.1.0] — 2026-09-07
+
+### Added
+
+- `etude gate` for independently reviewing captured stage artifacts, and gate
+  prompt benchmarking through `etude bench`.
+- Read-only repository health checks with `etude doctor`.
+- Opt-in caller-workspace runners, pinned read-only checkout evidence for gate
+  seats, and recorded submodule revisions in run worktrees.
+- Stage session/log capture and prior-attempt evidence for live gate reruns.
+- `dev-claude` and `dev-codex` development profiles with scoped reviewer
+  authentication and documentation-driven verification.
+
 ### Fixed
+
+- Init preserves ordinary Git branch pushes, removes exact local legacy metadata
+  push mappings, and configures safe sibling fetch mirrors. Metadata publication
+  remains explicit through `etude sync`.
+- Forward replay resolves generated retry stage names through their logical
+  workflow runners, preserves exact literal-name precedence and recorded inputs,
+  and resolves all runners before execution.
+- Resume recovers captured gate artifacts and retries zero-seat reviewer outages.
 
 - `etude gate` now hashes the supplied `--artifact` and refuses to run any
   check or reviewer when it does not match the latest captured output for the
