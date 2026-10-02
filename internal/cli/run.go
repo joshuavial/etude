@@ -407,6 +407,9 @@ func printGate(out io.Writer, g runmanifest.GateAttempt) {
 	fmt.Fprintf(out, "  round:    %d\n", g.Round)
 	fmt.Fprintf(out, "  tier:     %d\n", g.Tier)
 	fmt.Fprintf(out, "  status:   %s\n", g.Status)
+	if g.Packet != nil {
+		fmt.Fprintf(out, "  packet:   %s (sha256=%s)\n", g.Packet.Path, g.Packet.SHA256)
+	}
 	for _, r := range g.ReviewedStages {
 		line := r.Stage
 		if r.Role != "" {

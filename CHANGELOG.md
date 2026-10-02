@@ -22,6 +22,11 @@ mechanics.
 
 ## [Unreleased]
 
+### Fixed
+
+- `capture-gate` accepts, validates, preserves, and displays an externally
+  supervised review packet's project-relative path and SHA-256 provenance.
+
 ## [v1.1.0] — 2026-09-07
 
 ### Added

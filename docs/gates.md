@@ -32,6 +32,10 @@ The gate file is a single JSON object. Field names mirror the stored record:
   "round": 2,                  // 1-based; each rerun is a new attempt, round+1
   "tier": 2,                   // 0 (unknown) | 1 | 2 | 3 | 4  (mirrors registry L1..L4)
   "status": "pass",            // pass | rerun | escalated
+  "packet": {                  // optional exact externally-built review prompt
+    "path": ".etude/tmp/plan-review.md",
+    "sha256": "<lowercase sha256>"
+  },
   "reviewed_stages": [         // >=1; each stage must exist on the run
     {"stage": "plan", "role": "plan", "artifact": ""}  // artifact optional (sha); "" = name-only
   ],
@@ -82,6 +86,15 @@ run also carries top-level `original_git_sha`, keeping its pinned hermetic
 checkout distinct from each caller stage's clean post-run `git_sha`. For
 compatibility with durable refs written by development builds, readers also
 accept a stage log in version 2 or 3, but new writers always emit version 4.
+
+Externally supervised gates can include `packet` to bind the verdict to the
+exact prompt sent to every seat. When present, both `packet.path` and a
+lowercase 64-character `packet.sha256` are required, preserved in the run
+manifest, and shown by `etude run show`. The path is provenance metadata rather
+than an imported artifact; callers should use a durable project-relative path
+and verify its bytes against the recorded digest. Older and engine-managed gate
+attempts may omit the field, so this additive metadata does not invalidate
+existing run refs or require a manifest-version bump.
 
 The capture input above uses `session.transcript_path` because it points at a
 local file to import. Stored manifests replace that input-only path with:

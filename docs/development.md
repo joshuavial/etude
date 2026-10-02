@@ -110,6 +110,13 @@ have tools disabled, so a path without its contents is not sufficient evidence.
 Codex reviewers also have a read-only sandbox; config `mode` alone is not an
 access-control mechanism.
 
+For an externally supervised gate, record that exact packet in the
+`capture-gate` JSON as `"packet":{"path":"<project-relative path>",
+"sha256":"<lowercase sha256>"}`. Compute the digest after the packet is final
+and before dispatch, send the same bytes to every seat, and recheck it before
+capture. This makes the durable verdict identify what was reviewed rather than
+relying on a tracker comment.
+
 Example commands, using an existing plan file and a new named run:
 
 ```sh

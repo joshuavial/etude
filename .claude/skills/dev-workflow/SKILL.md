@@ -25,6 +25,11 @@ For these profiles, continue with the current development contract and treat the
 remaining material only as reference where it agrees. Do not resume the legacy
 five-gate loop.
 
+When the supervisor captures an externally run gate, its gate JSON must include
+`packet.path` and `packet.sha256` for the exact shared review packet, as specified
+in `docs/development.md`. Recheck the digest before `etude capture-gate`; do not
+leave packet provenance only in a bead or tracker comment.
+
 
 Structured development for commit-sized work:
 

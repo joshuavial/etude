@@ -700,6 +700,48 @@ func TestCaptureGateAppendsToExistingRun(t *testing.T) {
 	}
 }
 
+func TestCaptureGatePreservesPacketProvenance(t *testing.T) {
+	repo := initCaptureRepo(t)
+	writeFile(t, repo, "plan.md", "# plan\n")
+	chdir(t, repo)
+
+	if _, stderr, err := execute("capture", "plan", "--run", "run-1", "--output", "plan=plan.md"); err != nil {
+		t.Fatalf("capture plan: %v\nstderr: %s", err, stderr)
+	}
+
+	m := readRunManifest(t, repo, "run-1")
+	gateFile := writeGateJSON(t, repo, "gate.json", "plan.r1", "plan", 1, m.Stages[0].Output.Artifact)
+	content, err := os.ReadFile(gateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = bytes.Replace(
+		content,
+		[]byte(`"reviewed_stages"`),
+		[]byte(`"packet":{"path":".etude/tmp/plan-review.md","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"reviewed_stages"`),
+		1,
+	)
+	if err := os.WriteFile(gateFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, stderr, err := execute("capture-gate", "--run", "run-1", "--gate-file", gateFile); err != nil {
+		t.Fatalf("capture-gate with packet provenance: %v\nstderr: %s", err, stderr)
+	}
+
+	got := readRunManifest(t, repo, "run-1").Gates[0].Packet
+	if got == nil || got.Path != ".etude/tmp/plan-review.md" || got.SHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("packet provenance = %+v", got)
+	}
+	stdout, stderr, err := execute("run", "show", "run-1")
+	if err != nil {
+		t.Fatalf("run show: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "packet:   .etude/tmp/plan-review.md (sha256="+strings.Repeat("a", 64)+")") {
+		t.Fatalf("run show omitted packet provenance:\n%s", stdout)
+	}
+}
+
 // TestCaptureGateMultipleAttemptsSamePhase verifies that two gate records for
 // the same phase (different rounds) both land.
 func TestCaptureGateMultipleAttemptsSamePhase(t *testing.T) {

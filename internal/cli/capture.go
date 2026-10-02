@@ -357,10 +357,16 @@ type gateInputJSON struct {
 	Round          int                    `json:"round"`
 	Tier           int                    `json:"tier"`
 	Status         string                 `json:"status"`
+	Packet         *packetInputJSON       `json:"packet"`
 	ReviewedStages []reviewedRefInputJSON `json:"reviewed_stages"`
 	Seats          []seatInputJSON        `json:"seats"`
 	Decision       gateDecisionInputJSON  `json:"decision"`
 	Timestamp      string                 `json:"timestamp"`
+}
+
+type packetInputJSON struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type reviewedRefInputJSON struct {
@@ -526,12 +532,20 @@ func (r captureRunner) runGate(ctx context.Context, cfg captureGateConfig) error
 		})
 	}
 
+	var packet *runmanifest.PacketProvenance
+	if input.Packet != nil {
+		packet = &runmanifest.PacketProvenance{
+			Path:   input.Packet.Path,
+			SHA256: input.Packet.SHA256,
+		}
+	}
 	gate := runmanifest.GateAttempt{
 		GateID:         input.GateID,
 		Phase:          input.Phase,
 		Round:          input.Round,
 		Tier:           input.Tier,
 		Status:         runmanifest.GateStatus(input.Status),
+		Packet:         packet,
 		ReviewedStages: reviewedStages,
 		Seats:          seats,
 		Decision: runmanifest.GateDecision{

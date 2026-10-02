@@ -1512,6 +1512,22 @@ func TestValidateGateRejects(t *testing.T) {
 			g.Status = "unknown"
 			m.Gates = []GateAttempt{g}
 		}},
+		// packet provenance
+		{"packet missing path", func(m *Manifest) {
+			g := validGate()
+			g.Packet = &PacketProvenance{SHA256: strings.Repeat("a", 64)}
+			m.Gates = []GateAttempt{g}
+		}},
+		{"packet invalid sha256", func(m *Manifest) {
+			g := validGate()
+			g.Packet = &PacketProvenance{Path: "packet.md", SHA256: "not-a-sha256"}
+			m.Gates = []GateAttempt{g}
+		}},
+		{"packet unsafe path", func(m *Manifest) {
+			g := validGate()
+			g.Packet = &PacketProvenance{Path: "../packet.md", SHA256: strings.Repeat("a", 64)}
+			m.Gates = []GateAttempt{g}
+		}},
 		// escalation_reason
 		{"escalated without reason", func(m *Manifest) {
 			g := validGate()
