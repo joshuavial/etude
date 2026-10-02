@@ -81,6 +81,9 @@ type GateAttempt struct {
 	Round  int
 	Tier   int
 	Status GateStatus
+	// Packet binds an externally supervised review to the exact prompt bytes
+	// supplied to its seats. It is optional for legacy and engine-managed gates.
+	Packet *PacketProvenance
 	// ReadCheckout records that model seats were granted read access to the
 	// pinned checkout. False and absent mean output-only.
 	ReadCheckout   bool
@@ -88,6 +91,12 @@ type GateAttempt struct {
 	Seats          []SeatResult
 	Decision       GateDecision
 	Timestamp      time.Time
+}
+
+// PacketProvenance identifies the exact review packet used for a gate attempt.
+type PacketProvenance struct {
+	Path   string
+	SHA256 string
 }
 
 // ReviewedRef ties a gate attempt to the exact stage/artifact it reviewed.
@@ -598,6 +607,14 @@ func validateGate(index int, gate GateAttempt, stageIndex map[string][]Stage) er
 	if !isGateStatus(gate.Status) {
 		return fmt.Errorf("%w: %s status %q is not one of {pass, rerun, escalated}", ErrInvalidManifest, prefix, gate.Status)
 	}
+	if gate.Packet != nil {
+		if err := validateFilePath(gate.Packet.Path); err != nil {
+			return fmt.Errorf("%w: %s packet.path: %v", ErrInvalidManifest, prefix, err)
+		}
+		if !validSHA256(gate.Packet.SHA256) {
+			return fmt.Errorf("%w: %s packet.sha256 must be a lowercase sha256", ErrInvalidManifest, prefix)
+		}
+	}
 	if gate.Status == GateStatusEscalated && strings.TrimSpace(gate.Decision.EscalationReason) == "" {
 		return fmt.Errorf("%w: %s escalation_reason required when status is escalated", ErrInvalidManifest, prefix)
 	}
@@ -1037,11 +1054,17 @@ type gateJSON struct {
 	Round          int               `json:"round"`
 	Tier           int               `json:"tier"`
 	Status         string            `json:"status"`
+	Packet         *packetJSON       `json:"packet,omitempty"`
 	ReadCheckout   bool              `json:"read_checkout,omitempty"`
 	ReviewedStages []reviewedRefJSON `json:"reviewed_stages"`
 	Seats          []seatResultJSON  `json:"seats"`
 	Decision       gateDecisionJSON  `json:"decision,omitempty"`
 	Timestamp      string            `json:"timestamp"`
+}
+
+type packetJSON struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type reviewedRefJSON struct {
@@ -1247,12 +1270,17 @@ func (g GateAttempt) toJSON() gateJSON {
 	for _, seat := range g.Seats {
 		seats = append(seats, seat.toJSON())
 	}
+	var packet *packetJSON
+	if g.Packet != nil {
+		packet = &packetJSON{Path: g.Packet.Path, SHA256: g.Packet.SHA256}
+	}
 	return gateJSON{
 		GateID:         g.GateID,
 		Phase:          g.Phase,
 		Round:          g.Round,
 		Tier:           g.Tier,
 		Status:         string(g.Status),
+		Packet:         packet,
 		ReadCheckout:   g.ReadCheckout,
 		ReviewedStages: refs,
 		Seats:          seats,
@@ -1449,12 +1477,17 @@ func (g gateJSON) toGate(index int) (GateAttempt, error) {
 		}
 		seats = append(seats, seat)
 	}
+	var packet *PacketProvenance
+	if g.Packet != nil {
+		packet = &PacketProvenance{Path: g.Packet.Path, SHA256: g.Packet.SHA256}
+	}
 	return GateAttempt{
 		GateID:         g.GateID,
 		Phase:          g.Phase,
 		Round:          g.Round,
 		Tier:           g.Tier,
 		Status:         GateStatus(g.Status),
+		Packet:         packet,
 		ReadCheckout:   g.ReadCheckout,
 		ReviewedStages: refs,
 		Seats:          seats,
