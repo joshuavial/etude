@@ -43,39 +43,35 @@ func ReadRegularFile(path string) ([]byte, error) {
 // ReadRegularFileUnder reads path only when it is inside root and has no symlink
 // components below that root. Use this for run-owned scratch/worktree paths.
 func ReadRegularFileUnder(root, path string) ([]byte, error) {
-	checkedPath, err := checkedRegularPath(path, root)
-	if err != nil {
-		return nil, err
-	}
-	return readCheckedRegularFile(checkedPath)
+	return readRegularFileUnder(root, path, 0, false)
 }
 
 // ReadRegularFileUnderLimit is ReadRegularFileUnder with a hard byte cap. It
 // reads at most limit+1 bytes from the already-open regular file so a writer
 // cannot race a size pre-check and exceed the cap.
 func ReadRegularFileUnderLimit(root, path string, limit int64) ([]byte, error) {
-	checkedPath, err := checkedRegularPath(path, root)
-	if err != nil {
-		return nil, err
-	}
-	fi, err := os.Lstat(checkedPath)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, ErrNotRegular
-	}
-	f, err := os.OpenFile(checkedPath, os.O_RDONLY|nofollowFlag|nonblockFlag, 0)
+	return readRegularFileUnder(root, path, limit, true)
+}
+
+func readCheckedRegularFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	fi, err = f.Stat()
+	return readOpenedRegularFile(f, 0, false)
+}
+
+func readOpenedRegularFile(f *os.File, limit int64, limited bool) ([]byte, error) {
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, ErrNotRegular
+	}
+	if !limited {
+		return io.ReadAll(f)
 	}
 	content, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
@@ -87,20 +83,24 @@ func ReadRegularFileUnderLimit(root, path string, limit int64) ([]byte, error) {
 	return content, nil
 }
 
-func readCheckedRegularFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|nofollowFlag, 0)
+func relativePathUnder(root, path string) (string, string, error) {
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	defer f.Close()
-	fi, err := f.Stat()
+	absPath := filepath.Clean(path)
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(absRoot, absPath)
+	}
+	absPath, err = filepath.Abs(absPath)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, ErrNotRegular
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("%w: %s is outside %s", ErrNotRegular, absPath, absRoot)
 	}
-	return io.ReadAll(f)
+	return absRoot, rel, nil
 }
 
 func checkedRegularPath(path, root string) (string, error) {
@@ -109,26 +109,14 @@ func checkedRegularPath(path, root string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrNotRegular, path)
 	}
 	if root != "" {
-		absRoot, err := filepath.Abs(root)
+		absRoot, rel, err := relativePathUnder(root, path)
 		if err != nil {
 			return "", err
-		}
-		absPath := clean
-		if !filepath.IsAbs(absPath) {
-			absPath = filepath.Join(absRoot, absPath)
-		}
-		absPath, err = filepath.Abs(absPath)
-		if err != nil {
-			return "", err
-		}
-		rel, err := filepath.Rel(absRoot, absPath)
-		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-			return "", fmt.Errorf("%w: %s is outside %s", ErrNotRegular, absPath, absRoot)
 		}
 		if err := rejectSymlinkComponents(absRoot, rel); err != nil {
 			return "", err
 		}
-		return absPath, nil
+		return filepath.Join(absRoot, rel), nil
 	}
 	if filepath.IsAbs(clean) {
 		cwd, err := os.Getwd()

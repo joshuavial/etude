@@ -104,17 +104,19 @@ local file to import. Stored manifests replace that input-only path with:
 ```
 
 A seat's `raw_output.path` and `session.transcript_path` must point at a
-**regular file**. For paths relative to the current working directory, and for
-live-run transcript paths resolved under a run-owned scratch/worktree root,
-Etude rejects symlink path components before reading the file. On Unix, it also
-opens the final component with `O_NOFOLLOW` so a final-component symlink fails
-atomically. Absolute offline `capture-gate` paths outside the current working
-directory retain the final-component check but do not get full parent-component
-inspection. These checks prevent a machine-generated gate file from causing
-`etude` to capture a file outside the intended transcript in the normal
-run-owned path cases. The parent-chain checks are a hardening guard, not a
-race-free `openat`-style containment walk; callers should still treat transcript
-directories as trusted run scratch space.
+**regular file**. On Unix, live-run transcript and session-sidecar reads under a
+run-owned scratch/worktree root open that root once, then open every descendant
+relative to its directory descriptor with `O_NOFOLLOW`. This `openat`-style walk
+is race-free against descendant symlink swaps and root-path rename/replacement;
+the caller-designated root itself remains the trusted boundary and may be a
+filesystem alias. Other platforms retain component checks as best-effort
+hardening.
+
+Offline `capture-gate` paths keep their existing behavior. Relative paths and
+absolute paths under the current working directory get parent-component checks;
+absolute paths outside it get an atomic final-component `O_NOFOLLOW` check on
+Unix. Those ordinary-path parent checks are not a race-free containment walk,
+so callers should still treat offline transcript directories as trusted input.
 
 Live agentic seats may also return a `session` object in their JSON envelope.
 When a registry-resolved seat is agentic (non-`deterministic` provider and
