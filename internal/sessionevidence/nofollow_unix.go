@@ -21,7 +21,7 @@ func readRegularFileUnder(root, path string, limit int64, limited bool) ([]byte,
 	}
 	rootFD, err := unix.Open(absRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open transcript root: %w", err)
+		return nil, &os.PathError{Op: "open transcript root", Path: absRoot, Err: err}
 	}
 	defer unix.Close(rootFD)
 	return readRegularFileAt(rootFD, rel, limit, limited)

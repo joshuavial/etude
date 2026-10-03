@@ -124,6 +124,10 @@ func TestReadRegularFileUnderPreservesRootAlias(t *testing.T) {
 
 func TestReadRegularFileUnderRejectsMissingAndDirectory(t *testing.T) {
 	root := t.TempDir()
+	missingRoot := filepath.Join(root, "missing-root")
+	if _, err := ReadRegularFileUnder(missingRoot, filepath.Join(missingRoot, "transcript.txt")); !os.IsNotExist(err) {
+		t.Fatalf("missing root error = %v, want os.IsNotExist", err)
+	}
 	if _, err := ReadRegularFileUnder(root, filepath.Join(root, "missing")); !os.IsNotExist(err) {
 		t.Fatalf("missing error = %v, want os.IsNotExist", err)
 	}
