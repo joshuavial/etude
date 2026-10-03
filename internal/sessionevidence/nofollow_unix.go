@@ -3,7 +3,6 @@
 package sessionevidence
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,7 +77,7 @@ func readRegularFileAt(rootFD int, relativePath string, limit int64, limited boo
 }
 
 func classifyOpenatError(dirFD int, name string, openErr error) error {
-	if errors.Is(openErr, unix.ELOOP) || isSymlinkAt(dirFD, name) {
+	if isNoFollowError(openErr) || isSymlinkAt(dirFD, name) {
 		return fmt.Errorf("%w: %s", ErrSymlink, name)
 	}
 	return &os.PathError{Op: "openat", Path: name, Err: openErr}
