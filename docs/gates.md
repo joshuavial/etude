@@ -109,8 +109,10 @@ run-owned scratch/worktree root open that root once, then open every descendant
 relative to its directory descriptor with `O_NOFOLLOW`. This `openat`-style walk
 is race-free against descendant symlink swaps and root-path rename/replacement;
 the caller-designated root itself remains the trusted boundary and may be a
-filesystem alias. Other platforms retain component checks as best-effort
-hardening.
+filesystem alias. Run-owned roots and descendant directories must grant Etude
+read and search access so it can open those directory descriptors; this is an
+intentional requirement of the stronger Unix containment boundary. Other
+platforms retain component checks as best-effort hardening.
 
 Offline `capture-gate` paths keep their existing behavior. Relative paths and
 absolute paths under the current working directory get parent-component checks;

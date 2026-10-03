@@ -42,6 +42,8 @@ func ReadRegularFile(path string) ([]byte, error) {
 
 // ReadRegularFileUnder reads path only when it is inside root and has no symlink
 // components below that root. Use this for run-owned scratch/worktree paths.
+// On Unix, root and its descendant directories must grant the current process
+// both read and search access so they can be opened as directory descriptors.
 func ReadRegularFileUnder(root, path string) ([]byte, error) {
 	return readRegularFileUnder(root, path, 0, false)
 }
